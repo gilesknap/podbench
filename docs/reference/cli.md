@@ -33,6 +33,7 @@ $ podbench --help
 │ capreport      name the mechanism that denies ptrace in this container                           │
 │ pids           list the pod's processes                                                          │
 │ dbg            debug a process                                                                   │
+│ debug-config   write VS Code's launch.json for this seat                                         │
 │ dev-bootstrap  clone, sync and editable-install a checkout                                       │
 │ run            relaunch the app and verify it                                                    │
 │ stop           stop the recorded child                                                           │
@@ -42,7 +43,7 @@ $ podbench --help
 | Where it runs | Verbs |
 |---|---|
 | Your machine | `doctor`, `attach`, `ssh-config`, `status`, `list`, `dev`, `patch` |
-| Inside the debug container | `agent`, `capreport`, `pids`, `dbg`, `dev-bootstrap`, `run`, `stop` |
+| Inside the debug container | `agent`, `capreport`, `pids`, `dbg`, `debug-config`, `dev-bootstrap`, `run`, `stop` |
 
 Every verb below is written as `podbench <verb>`, which is the only spelling
 there is — there is no kubectl plugin. How you reach that program is your
@@ -59,7 +60,7 @@ to run it before the first PyPI release.
 
 The in-pod verbs are also reachable as `podbench <verb>` from a terminal in the
 seat; several have shorter aliases on `PATH` (`pids`, `dbg`, `capreport`,
-`dev-bootstrap`, `podbench-run`, `podbench-stop`).
+`debug-config`, `dev-bootstrap`, `podbench-run`, `podbench-stop`).
 
 ## Common options
 
@@ -652,6 +653,52 @@ produces a correct backtrace.
 
 `--launch` consumes the remainder of the command line, so any other flag must
 come first. See [Debug with gdb](../how-to/debug-with-gdb.md).
+
+### `debug-config`
+
+The VS Code debug configuration for this seat, written the way `attach` writes
+the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed `program` or a
+setup ordering, each of which fails *silently* when wrong.
+
+```
+                                                                                                    
+ Usage: debug-config [OPTIONS] [PID]                                                                
+                                                                                                    
+ Write the VS Code debug configuration for this seat, with the pid, the sysroot-prefixed program    
+ path and the gdb setup order already filled in.                                                    
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      <int>  pid to attach to; discovered from the container id if omitted                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id         ID       target container id used to discover the pid (default:           │
+│                                 $PODBENCH_TARGET_CID)                                            │
+│ --program              PATH     the target's binary as its own rootfs spells it, when            │
+│                                 /proc/<pid>/exe cannot be read. It is prefixed with the sysroot  │
+│                                 here, so do not prefix it yourself                               │
+│ --source-dir           DIR      extra source directory in *this* container, wired with gdb's     │
+│                                 `directory`. Repeatable                                          │
+│ --source-map           FROM=TO  map a DWARF compilation directory (`info source` prints it) onto │
+│                                 a readable path. Repeatable                                      │
+│ --no-debuginfod                 do not enable debuginfod (it needs ca-certificates and network)  │
+│ --lldb                          emit a CodeLLDB configuration instead of cpptools' cppdbg        │
+│ --print-config                  print the configuration instead of writing it                    │
+│ --output               PATH     where to write it (default: ./.vscode/launch.json)               │
+│ --help                          Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+`miDebuggerPath` names `/usr/local/bin/gdb-podbench`, never `/usr/bin/gdb`:
+cpptools launches gdb inheriting its own extension directory as a working
+directory, which VS Code deletes on extension update, and gdb's libpython then
+dies in `getcwd()` during startup with no signal name. `--source-map /` is
+refused rather than emitted — gdb re-applies a root substitution on display and
+the editor is handed `/proc/<pid>/root/proc/<pid>/root/...`.
+
+Re-running replaces its own entry by name and leaves a hand-written
+configuration beside it untouched. A `launch.json` it cannot parse — VS Code
+permits comments, `json` does not — is refused rather than rewritten. See
+[Debug with gdb](../how-to/debug-with-gdb.md).
 
 ### `dev-bootstrap`
 

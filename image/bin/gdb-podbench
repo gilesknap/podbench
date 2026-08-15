@@ -1,0 +1,27 @@
+#!/bin/sh
+# gdb, started from a directory that is guaranteed to exist.
+#
+# VS Code's cpptools launches gdb as a child and it inherits cpptools' own cwd,
+# which is the extension directory. VS Code replaces that directory wholesale on
+# extension update, so a long-lived cpptools ends up sitting in a *deleted*
+# directory. gdb links libpython, cpptools always sends `-enable-pretty-printing`,
+# CPython's init calls getcwd(), and gdb dies during startup with
+#
+#   gdb: warning: error finding working directory: No such file or directory
+#   Fatal signal:
+#   A fatal error internal to GDB has been detected...
+#
+# — no signal name and no backtrace, because it crashes before it can format
+# either. VS Code surfaces only "Unable to start debugging. GDB exited
+# unexpectedly", which points at the attach rather than at startup.
+#
+# `dbg` never hits this: it does not enable pretty-printing, so gdb's Python is
+# never initialised. That is why the CLI works on a seat where the VS Code
+# debugger cannot start at all, and why this wrapper exists only for the DAP
+# path. See `podbench debug-config`, which points miDebuggerPath here.
+#
+# Reproduce the bug in any seat with:
+#   mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
+#   printf -- "-enable-pretty-printing\n-gdb-exit\n" | gdb --interpreter=mi
+cd /root 2>/dev/null || cd / || exit 1
+exec /usr/bin/gdb "$@"
