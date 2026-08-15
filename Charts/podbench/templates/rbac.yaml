@@ -1,0 +1,77 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "podbench.fullname" . }}
+  labels:
+    {{- include "podbench.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  {{- if .Values.rbac.observe }}
+  # Read the target's spec: the launcher needs the target container's UID and
+  # securityContext before it can pick a rung of the capability ladder, and
+  # never defaults the fallback to root.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Attaching the debug seat. `update` is the one that matters: podbench adds the
+  # container by PUTting the ephemeralcontainers subresource rather than shelling
+  # out to `kubectl debug`, which merges its own profile over the spec afterwards
+  # and can hand back a rung that is invalid by construction.
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["get", "patch", "update"]
+  # The transport. This is the whole network story: ssh is tunnelled over exec,
+  # so no Service, no port-forward and no pod IP reachability is required.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  {{- end }}
+  {{- if .Values.rbac.iterate }}
+  # Iterate mode mints a sacrificial dev pod authored from the target's spec, and
+  # deletes it on teardown.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  # Only needed for `--take-traffic`, which is opt-in: repointing a Service at the
+  # dev pod is how the edit becomes visible through the Service, and it is also
+  # how someone accidentally takes production traffic.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  {{- end }}
+  {{- if .Values.rbac.resize }}
+  # On a live pod podbench shares the workload's memory limit and cannot reserve
+  # its own, so a large editor session can get the workload OOM-killed. In-place
+  # resize is the mitigation; it is granted separately because it changes a
+  # running workload's limits.
+  - apiGroups: [""]
+    resources: ["pods/resize"]
+    verbs: ["patch"]
+  {{- end }}
+{{- if .Values.rbac.subjects }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "podbench.fullname" . }}
+  labels:
+    {{- include "podbench.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "podbench.fullname" . }}
+subjects:
+  {{- toYaml .Values.rbac.subjects | nindent 2 }}
+{{- end }}
+{{- end }}

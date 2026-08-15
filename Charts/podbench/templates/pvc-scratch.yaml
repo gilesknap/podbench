@@ -1,0 +1,24 @@
+{{- if .Values.scratchPvc.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "podbench.scratchPvcName" . }}
+  labels:
+    {{- include "podbench.labels" . | nindent 4 }}
+  annotations:
+    # Deliberately outlives the release: a workspace is a developer's working
+    # state, and helm uninstall should not be able to delete an afternoon's work.
+    helm.sh/resource-policy: keep
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.scratchPvc.accessModes | nindent 4 }}
+  {{- with .Values.scratchPvc.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.scratchPvc.size | quote }}
+{{- end }}

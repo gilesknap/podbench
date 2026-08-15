@@ -1,0 +1,31 @@
+{{- if .Values.patchVenv.enabled }}
+{{- range .Values.patchVenv.claims }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-venv" .name }}
+  labels:
+    {{- include "podbench.labels" $ | nindent 4 }}
+    podbench.dev/patch-target: {{ .name | quote }}
+  annotations:
+    # A patch is an emergency fix that has to survive every restart and reschedule
+    # until the next shutdown. Losing the volume loses the fix and, worse, silently
+    # reverts the running code to the released image.
+    helm.sh/resource-policy: keep
+    {{- with $.Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    # ReadWriteOnce, and therefore single-replica only. A multi-replica deployment
+    # needs RWX or a per-replica story; podbench v1 deliberately scopes to one.
+    - ReadWriteOnce
+  {{- with .storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .size | default "2Gi" | quote }}
+{{- end }}
+{{- end }}

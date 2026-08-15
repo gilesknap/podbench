@@ -1,0 +1,76 @@
+# Default values for podbench.
+#
+# Nothing here is required to *use* podbench: Observe and Iterate mode work
+# against any pod, from any chart, completely unmodified — that is the design
+# principle the tool is built on. This chart exists for the three things that
+# genuinely cannot be done from the client side: granting a team permission to
+# attach at all, giving Iterate mode a workspace that outlives a dev pod, and
+# providing the volume Patch mode needs to have been in the pod spec at creation.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The debug image the launcher attaches. Recorded here so a cluster can pin a
+# digest and reference it from an admission policy; the launcher's --image flag
+# and the chart should agree.
+image:
+  repository: ghcr.io/gilesknap/podbench
+  # Pin a digest in production. An admission policy that allows CAP_SYS_PTRACE
+  # for "this pinned image, as an ephemeral container only" is a far easier ask
+  # of a security team than "privileged", and is only writable against a pinned,
+  # published image.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+rbac:
+  # Create a Role granting the verbs podbench needs. Off by default: a cluster
+  # may prefer to fold these verbs into an existing developer role.
+  create: false
+
+  # Bind the Role to these subjects. Each entry is passed through to the
+  # RoleBinding's subjects list, e.g.
+  #   - kind: Group
+  #     name: developers
+  #     apiGroup: rbac.authorization.k8s.io
+  subjects: []
+
+  # Which capabilities the Role grants. They are separated because they are
+  # genuinely different levels of trust: observing a pod is not the same as
+  # being able to create and delete pods in the namespace.
+  observe: true # read pods, add an ephemeral container, exec into it
+  iterate: false # create and delete dev pods, patch a Service selector
+  resize: false # patch pods/resize, to make memory headroom before attaching
+
+# The scratch workspace PVC (`podbench init`).
+#
+# Without it Iterate mode uses an emptyDir and works with zero setup, at the cost
+# of losing the workspace when the dev pod goes away. With it, a reattach takes
+# seconds. ReadWriteOnce is fine — one dev pod mounts it — at the cost of pinning
+# that pod to the volume's node.
+scratchPvc:
+  enabled: false
+  name: "" # defaults to <release>-scratch
+  size: 20Gi
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+
+# Patch mode (design brief Phase 6).
+#
+# Durable-across-restart code has to sit on a volume that was present in the pod
+# spec at creation: pod volumes are immutable and a container's rootfs is reset on
+# every restart. This chart creates the PVC; the application's own chart must
+# mount it over its venv path. `podbench patch --print-values` emits the snippet.
+#
+# This is the one place podbench asks for deploy-time cooperation, and it is
+# deliberately the last thing in the design for that reason.
+patchVenv:
+  enabled: false
+  # One entry per application whose venv may be patched.
+  #   - name: myapp
+  #     size: 2Gi
+  #     storageClassName: ""
+  claims: []
+
+commonLabels: {}
+commonAnnotations: {}

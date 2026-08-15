@@ -1,0 +1,28 @@
+apiVersion: v2
+name: podbench
+description: >-
+  Cluster-side prerequisites for podbench — the RBAC that lets a team attach a
+  debug seat to their own pods, the optional scratch PVC that makes Iterate-mode
+  workspaces survive dev-pod teardown, and the venv PVC that Patch mode mounts
+  over an application's site-packages.
+
+# A chart can be either an 'application' or a 'library' chart.
+type: application
+
+# Placeholder version/appVersion. CI stamps the real values from the git tag at
+# package time (`helm package -u --version $TAG --app-version $TAG`); these 0.0.0
+# defaults exist only so `helm lint`/`helm template` work locally off a checkout.
+version: 0.0.0
+
+# The version of podbench being deployed. CI overrides this with the release tag.
+appVersion: "0.0.0"
+
+keywords:
+  - debugging
+  - gdb
+  - ephemeral-containers
+  - development
+
+home: https://github.com/gilesknap/podbench
+sources:
+  - https://github.com/gilesknap/podbench
