@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b3.dev2+ga72815de4 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b3.dev8+gddd2f70e8 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=1d640bd7"></script>
+    <script src="../_static/documentation_options.js?v=3734193a"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -513,11 +513,36 @@ heavier than looking belongs in a dev pod
 </div>
 <section id="attach-and-re-attach">
 <h2>Attach, and re-attach<a class="headerlink" href="#attach-and-re-attach" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web -n demo
+&#39;web&#39; matched pod web-6c9d7f4b8b-hq2vn
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> and a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code> are both accepted. Namespace defaults to your
-current context’s.</p>
+<p><strong>You do not have to type the whole name.</strong> <code class="docutils literal notranslate"><span class="pre">POD</span></code> is matched as a substring
+against the pods in the namespace: one hit is used and echoed, as above. An
+exact name — <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> or a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code> — is always taken as typed, even when
+it is also a substring of another pod’s name. Namespace defaults to your current
+context’s.</p>
+<p>When more than one pod matches — or you name none at all and the namespace holds
+more than one — podbench lists what it found and asks:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach -n demo
+3 pods in namespace demo
+      NAME                   READY  STATUS   AGE  PODBENCH
+  1.  web-6c9d7f4b8b-hq2vn   1/1    Running  3h   podbench-1
+  2.  web-6c9d7f4b8b-t4xz9   1/1    Running  3h   -
+  3.  postgres-0             1/1    Running  6d   -
+which one? [number or name, empty to cancel] 2
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">PODBENCH</span></code> column is the seat that is already in the pod, so you can tell
+“reconnect to mine” from “land a new one” before choosing. Answer with the
+number, the name, or a longer substring.</p>
+<p>A namespace holding a single pod is not a choice, so it is not a question:
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">-n</span> <span class="pre">demo</span></code> resolves to that pod and says which, the same echo any
+other single match gets.</p>
+<p>In a script, a CI job or over <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">host</span> <span class="pre">podbench</span> <span class="pre">...</span></code> there is nobody to answer,
+and a prompt would be a hang. podbench detects that stdin is not a tty, prints
+the same listing, and exits <code class="docutils literal notranslate"><span class="pre">2</span></code> instead of waiting. <code class="docutils literal notranslate"><span class="pre">--no-prompt</span></code> asks for the
+same refusal on a terminal.</p>
 <p>Running it again <strong>reconnects</strong> to the running podbench container rather than
 adding a second one. That is not an optimisation: ephemeral containers cannot be
 removed or restarted, every attach appends to the pod spec permanently, and a
@@ -529,7 +554,7 @@ died, not out of habit.</p>
 <h2>Choosing the target container<a class="headerlink" href="#choosing-the-target-container" title="Link to this heading">#</a></h2>
 <p>podbench needs to know <em>which</em> container’s PID namespace to join and whose UID
 to match:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/web-... --target api
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web --target api
 </pre></div>
 </div>
 <p>Without <code class="docutils literal notranslate"><span class="pre">--target</span></code> it picks the pod’s first container. On a multi-container pod,
@@ -567,7 +592,7 @@ already-running process. See <a class="reference internal" href="debug-with-gdb.
 </section>
 <section id="making-memory-headroom-first">
 <h2>Making memory headroom first<a class="headerlink" href="#making-memory-headroom-first" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/web-... --resize 6Gi
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web --resize 6Gi
 </pre></div>
 </div>
 <p>This raises the <strong>target container’s</strong> memory limit in place
@@ -584,8 +609,8 @@ rest.</p>
 </section>
 <section id="getting-the-ssh-stanza-again">
 <h2>Getting the ssh stanza again<a class="headerlink" href="#getting-the-ssh-stanza-again" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench ssh-config pod/web-... -n demo
-$ podbench ssh-config pod/web-... -n demo --print-config
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench ssh-config web -n demo
+$ podbench ssh-config web -n demo --print-config
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> regenerates the stanza for a seat that is already running, without
@@ -619,8 +644,8 @@ re-attach.</p>
 </section>
 <section id="seeing-what-is-out-there">
 <h2>Seeing what is out there<a class="headerlink" href="#seeing-what-is-out-there" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench status pod/web-... -n demo    # every seat in one pod
-$ podbench list -n demo                  # every seat in the namespace
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench status web -n demo  # every seat in one pod
+$ podbench list -n demo        # every pod in the namespace carrying one
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">status</span></code> shows dead containers too, because their names remain burnt.</p>

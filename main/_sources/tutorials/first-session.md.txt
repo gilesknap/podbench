@@ -81,8 +81,14 @@ web-6c9d7f4b8b-hq2vn   1/1     Running   0          25s
 ## 2. Attach
 
 ```
-$ uvx podbench attach pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
+$ uvx podbench attach web -n podbench-demo
+'web' matched pod web-6c9d7f4b8b-hq2vn
 ```
+
+`web` rather than the whole name: podbench matches what you type against the
+pods in the namespace and says what it resolved to. The full name and `pod/NAME`
+still work, and a substring matching several pods gets you a list to choose from
+(see {ref}`Naming the pod <naming-the-pod>`).
 
 Nothing is installed to run that: `uvx` fetches the launcher, runs it against
 your kubeconfig and leaves nothing behind. It does five things:

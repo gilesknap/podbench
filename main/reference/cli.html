@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b3.dev2+ga72815de4 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b3.dev8+gddd2f70e8 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=1d640bd7"></script>
+    <script src="../_static/documentation_options.js?v=3734193a"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -589,6 +589,59 @@ it takes <code class="docutils literal notranslate"><span class="pre">--config-d
 your current context and any exec credential plugin. There is no second
 credential and no client library.</p>
 </section>
+<section id="naming-the-pod">
+<span id="id1"></span><h2>Naming the pod<a class="headerlink" href="#naming-the-pod" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> take a <code class="docutils literal notranslate"><span class="pre">POD</span></code>, and none of them needs the
+whole name. Resolution is the same in all three:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>you type</p></th>
+<th class="head"><p>what happens</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>the full name, or <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code></p></td>
+<td><p>used as typed, in one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">pod</span></code> — an exact name is never ambiguous, even when it is also a substring of another pod’s name</p></td>
+</tr>
+<tr class="row-odd"><td><p>a substring matching <strong>one</strong> pod</p></td>
+<td><p>resolved to that pod, and the name it resolved to is echoed on stderr</p></td>
+</tr>
+<tr class="row-even"><td><p>a substring matching <strong>several</strong></p></td>
+<td><p>the matches are listed and you are asked which</p></td>
+</tr>
+<tr class="row-odd"><td><p>nothing at all</p></td>
+<td><p>every pod in the namespace is listed and you are asked which — unless the namespace holds exactly one, which resolves and is echoed like any other single match</p></td>
+</tr>
+<tr class="row-even"><td><p>a substring matching <strong>none</strong></p></td>
+<td><p>an error naming the namespace searched, with what is in it</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach api -n demo
+&#39;api&#39; matches 2 pods in namespace demo
+      NAME        READY  STATUS   AGE  PODBENCH
+  1.  api-7f9     1/1    Running  3h   podbench-1
+  2.  api-canary  0/1    Pending  3h   -
+which one? [number or name, empty to cancel] 1
+</pre></div>
+</div>
+<p>The listing carries what you choose <em>by</em>: ready containers, status, age, and the
+podbench container already in the pod — which is the difference between landing
+a seat and reconnecting to yours. Answer with the number, the name, or a longer
+substring; an empty line cancels.</p>
+<p>The prompt is only ever offered on a terminal. <strong>When stdin is not a tty — a
+script, a CI job, an <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">host</span> <span class="pre">podbench</span> <span class="pre">...</span></code> — a prompt would be a hang</strong>, so
+podbench prints the same listing, explains that it will not ask, and exits <code class="docutils literal notranslate"><span class="pre">2</span></code>.
+<code class="docutils literal notranslate"><span class="pre">--no-prompt</span></code> asks for that behaviour on a terminal too. Both the listing and
+the “matched” echo go to <strong>stderr</strong>, so a redirected stdout still holds only the
+report.</p>
+<p>Resolution lists every pod in the namespace, which is not what <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">list</span></code>
+does: <code class="docutils literal notranslate"><span class="pre">list</span></code> shows the pods that already carry a podbench container, and
+resolution offers the pods that could. A fully typed name is answered without
+listing at all, so <code class="docutils literal notranslate"><span class="pre">attach</span></code> still works with RBAC that grants <code class="docutils literal notranslate"><span class="pre">get</span></code> on pods but
+not <code class="docutils literal notranslate"><span class="pre">list</span></code>.</p>
+</section>
 <hr class="docutils" />
 <section id="cluster-side-verbs">
 <h2>Cluster-side verbs<a class="headerlink" href="#cluster-side-verbs" title="Link to this heading">#</a></h2>
@@ -597,12 +650,13 @@ credential and no client library.</p>
 <p>Land a debug seat in a <strong>live</strong> pod, walking the capability ladder, and print
 what that seat can actually do.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench attach [OPTIONS] {POD}
+ Usage: podbench attach [OPTIONS] [POD]
 
  add or reconnect a podbench container and print the report
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      &lt;str&gt;  pod/NAME or a bare NAME [required]                                          │
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --target                    NAME             workload container name                             │
@@ -640,6 +694,9 @@ what that seat can actually do.</p>
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
+│                                              refused with the candidates instead. Already        │
+│                                              implied when stdin is not a tty                     │
 │ --namespace         -n      NAMESPACE        namespace (default: the kubeconfig context&#39;s own)   │
 │ --context                   NAME             kubeconfig context                                  │
 │ --kubectl                   BIN              kubectl binary to use [default: kubectl]            │
@@ -651,7 +708,8 @@ what that seat can actually do.</p>
 </div>
 <p>Notes:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> or a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>, a substring of one, or nothing at
+all — see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--image</span></code> has no fixed default to print: the launcher asks for the image
 built from its own version — <code class="docutils literal notranslate"><span class="pre">ghcr.io/gilesknap/podbench:&lt;launcher</span> <span class="pre">version&gt;</span></code>,
 and <code class="docutils literal notranslate"><span class="pre">:main</span></code> when the launcher is a dev build off a checkout. <code class="docutils literal notranslate"><span class="pre">--image</span></code> wins
@@ -748,12 +806,13 @@ real error.</p></li>
 <p>Regenerate the ssh stanza for a seat that is already running, without touching
 the pod.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench ssh-config [OPTIONS] {POD}
+ Usage: podbench ssh-config [OPTIONS] [POD]
 
  regenerate the ssh stanza for an existing session
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      &lt;str&gt;  pod/NAME or a bare NAME [required]                                          │
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
@@ -762,6 +821,9 @@ the pod.</p>
 │ --ssh-user              NAME       login name to put in the stanza                               │
 │ --host-alias            NAME       ssh Host name for the seat                                    │
 │ --print-config                     print the ssh stanza instead of writing it to the config dir  │
+│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
+│                                    with the candidates instead. Already implied when stdin is    │
+│                                    not a tty                                                     │
 │ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)             │
 │ --context               NAME       kubeconfig context                                            │
 │ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
@@ -778,14 +840,18 @@ the pod.</p>
 <p>Every podbench container in one pod, including dead ones whose names remain
 burnt.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench status [OPTIONS] {POD}
+ Usage: podbench status [OPTIONS] [POD]
 
  the podbench containers in one pod and what each supports
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      &lt;str&gt;  pod/NAME or a bare NAME [required]                                          │
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --no-prompt                      never ask which pod: an ambiguous or missing POD is refused     │
+│                                  with the candidates instead. Already implied when stdin is not  │
+│                                  a tty                                                           │
 │ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)               │
 │ --context             NAME       kubeconfig context                                              │
 │ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
@@ -1301,7 +1367,7 @@ stream.</p>
 <td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); or <code class="docutils literal notranslate"><span class="pre">patch</span> <span class="pre">status</span></code> found a pod needing attention</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
-<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
+<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> only: the capability verdict</p></td>
@@ -1360,6 +1426,7 @@ stream.</p>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-options">Common options</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#naming-the-pod">Naming the pod</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cluster-side-verbs">Cluster-side verbs</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#attach"><code class="docutils literal notranslate"><span class="pre">attach</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-config"><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code></a></li>

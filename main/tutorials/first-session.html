@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.1.0b3.dev2+ga72815de4 documentation</title>
+    <title>Your first session &#8212; podbench 0.1.0b3.dev8+gddd2f70e8 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=1d640bd7"></script>
+    <script src="../_static/documentation_options.js?v=3734193a"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -559,9 +559,14 @@ web-6c9d7f4b8b-hq2vn   1/1     Running   0          25s
 </section>
 <section id="attach">
 <h2>2. Attach<a class="headerlink" href="#attach" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench attach pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench attach web -n podbench-demo
+&#39;web&#39; matched pod web-6c9d7f4b8b-hq2vn
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">web</span></code> rather than the whole name: podbench matches what you type against the
+pods in the namespace and says what it resolved to. The full name and <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>
+still work, and a substring matching several pods gets you a list to choose from
+(see <a class="reference internal" href="../reference/cli.html#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>).</p>
 <p>Nothing is installed to run that: <code class="docutils literal notranslate"><span class="pre">uvx</span></code> fetches the launcher, runs it against
 your kubeconfig and leaves nothing behind. It does five things:</p>
 <ol class="arabic simple">
