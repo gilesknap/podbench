@@ -239,7 +239,7 @@ NSS_WAY_OUT = (
     "capreport, pids, dbg --launch, a shell - is unaffected. A seat that reads "
     "this is almost always an ephemeral container, and the way out for one is "
     "GID 0: land it again with "
-    "`kubectl podbench attach <pod> --new --seat-gid-root` and it registers its "
+    "`podbench attach <pod> --new --seat-gid-root` and it registers its "
     f"own record in the image's group-writable {PASSWD_PATH}. Failing that, run "
     "the target as a uid the debug image already has an account for. A "
     f"{SEAT_IDENTITY_VOLUME!r} volume does not help here, however plainly the "

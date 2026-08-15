@@ -1,4 +1,4 @@
-"""``kubectl podbench`` — the launcher that lands a seat and says what it got.
+"""``podbench`` — the launcher that lands a seat and says what it got.
 
 The launcher is the half of podbench that runs on the developer's machine. Its
 whole job is to turn "I have a kubeconfig and a pod name" into "VS Code is
@@ -1446,7 +1446,7 @@ def ssh_unavailable_note(session: Session) -> str:
             *(f"  {line}" for line in _wrap(detail)),
             "  ways out:",
             "    - land a seat that registers one itself, with GID 0:",
-            f"        kubectl podbench attach {seat.pod.name} "
+            f"        podbench attach {seat.pod.name} "
             f"-n {seat.pod.namespace} --new --seat-gid-root",
             f"      the image makes {PASSWD_PATH} group-writable, so a seat with gid 0",
             "      appends its own record. This is the route on a live pod, or",
@@ -1845,7 +1845,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kubectl podbench",
+        prog="podbench",
         description="Land a development seat inside a pod and say what it can do.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1943,7 +1943,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
-    """Entry point for ``kubectl podbench`` / ``podbench launcher``.
+    """Entry point for the cluster-side ``podbench`` verbs.
 
     ``runner`` is the seam the tests use; the CLI passes none and the calls go
     to the real ``kubectl``, which is what makes auth the kubeconfig's problem
@@ -2025,7 +2025,7 @@ def _cmd_ssh_config(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
     if seat is None:
         raise LauncherError(
             f"no running podbench container in {kubectl.namespace}/{pod}; "
-            "run `kubectl podbench attach` first"
+            "run `podbench attach` first"
         )
     reference = ContainerRef(PodRef(kubectl.namespace, pod), seat.name)
     session = Session(

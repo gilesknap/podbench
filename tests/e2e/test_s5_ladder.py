@@ -218,7 +218,7 @@ def test_the_cli_reports_a_degraded_seat_as_success(
     podbench_image: str,
     ssh_identity: tuple[Path, str],
 ) -> None:
-    """``kubectl podbench attach`` exits 0 and prints the rung it got.
+    """``podbench attach`` exits 0 and prints the rung it got.
 
     A non-zero exit for "the cluster would not grant SYS_PTRACE" would make an
     honest capability report look like a tool failure, and the brief asks for

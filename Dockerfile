@@ -105,8 +105,8 @@ RUN mkdir -p /run/sshd /etc/podbench
 # arbitrary uid is OpenShift's: leave /etc/passwd group-writable by GID 0 and
 # let the entrypoint append its own record (podbench agent's ensure_passwd_entry
 # does). It buys nothing unless the seat is landed with GID 0, which is what
-# `kubectl podbench attach --seat-gid-root` asks for; with any other gid the
-# file is unwritable, the agent says so and the seat lands without ssh.
+# `podbench attach --seat-gid-root` asks for; with any other gid the file is
+# unwritable, the agent says so and the seat lands without ssh.
 #
 # This grants no privilege on its own: gid 0 is a group, not root, and every
 # other permission in the image is unchanged. /etc/group gets the same treatment

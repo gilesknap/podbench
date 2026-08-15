@@ -1,8 +1,9 @@
 """Interface for ``python -m podbench``, and the ``podbench`` console script.
 
 One binary serves both halves of the tool. On a developer's machine it is
-reached as ``kubectl podbench <verb>`` and drives the cluster; inside the debug
-container the same binary is PID 1 (``podbench agent``) and backs the helpers on
+reached as ``podbench <verb>`` — canonically ``uvx podbench <verb>``, with nothing
+installed — and drives the cluster; inside the debug container the same binary is
+PID 1 (``podbench agent``) and backs the helpers on
 ``PATH`` (``pids``, ``dbg``, ``capreport``, ...). Keeping it as one package means
 the capability logic that decides what a session can do is the same code in both
 places, rather than a launcher's guess and a helper's separate guess.
@@ -74,7 +75,7 @@ ENTRY_POINTS: dict[str, tuple[Callable[[Sequence[str]], int], bool]] = {
     "dev-bootstrap": (_dev, True),
     "run": (_dev, True),
     "stop": (_dev, True),
-    # Laptop side: `kubectl podbench ...`.
+    # Laptop side: `podbench ...`.
     "attach": (_launcher, True),
     "ssh-config": (_launcher, True),
     "status": (_launcher, True),
@@ -87,12 +88,6 @@ ENTRY_POINTS: dict[str, tuple[Callable[[Sequence[str]], int], bool]] = {
 
 _IN_POD = ("agent", "capreport", "pids", "dbg", "dev-bootstrap", "run", "stop")
 _LAUNCHER = ("attach", "ssh-config", "status", "list", "dev", "patch")
-#: The subset the `kubectl-podbench` plugin routes. `kubectl_plugin` hands argv
-#: to `launcher.main`, whose subparsers are these four and no others, so `dev`
-#: and `patch` are reachable as `podbench <verb>` only. Advertising them as
-#: `kubectl podbench <verb>` would print a verb that exits 2 on `invalid
-#: choice`, which is why this tuple is separate from `_LAUNCHER`.
-_PLUGIN = ("attach", "ssh-config", "status", "list")
 
 
 def _build_parser() -> ArgumentParser:
@@ -105,10 +100,7 @@ def _build_parser() -> ArgumentParser:
         epilog=(
             "cluster-side verbs: "
             + ", ".join(_LAUNCHER)
-            + " (of these, "
-            + ", ".join(_PLUGIN)
-            + " are also reachable as `kubectl podbench <verb>`); "
-            + "in-pod verbs: "
+            + "; in-pod verbs: "
             + ", ".join(_IN_POD)
         ),
     )
@@ -139,18 +131,6 @@ def main(args: Sequence[str] | None = None) -> int:
     handler, keep_verb = ENTRY_POINTS[verb]
     rest: list[str] = list(parsed.args)
     return handler([verb, *rest] if keep_verb else rest)
-
-
-def kubectl_plugin(args: Sequence[str] | None = None) -> int:
-    """Entry point for the ``kubectl-podbench`` plugin.
-
-    kubectl invokes a plugin as ``kubectl-podbench <args>`` after stripping its
-    own name, so this is the launcher's argv with none of the in-pod verbs
-    offered — a plugin advertising `agent` in its help would be confusing.
-    """
-    from .launcher import main as run
-
-    return run(args)
 
 
 if __name__ == "__main__":

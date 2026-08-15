@@ -412,8 +412,8 @@ class PodbenchCli:
     A subprocess rather than calling :func:`podbench.launcher.main` in-process,
     because the CLI's contract includes its exit code and its stdout, and an
     in-process call would let a ``SystemExit`` or a stray ``print`` pass
-    unnoticed. ``python -m podbench`` rather than the ``kubectl-podbench``
-    plugin so the suite does not depend on the package being installed on PATH.
+    unnoticed. ``python -m podbench`` rather than the ``podbench`` console
+    script so the suite does not depend on the package being installed on PATH.
     """
 
     namespace: str

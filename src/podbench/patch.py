@@ -973,7 +973,7 @@ def seat_container(kube: Kubectl, pod: str, requested: str | None) -> str:
         raise PatchError(
             f"no running podbench container in pod {pod}. Patch mode reaches the "
             "claim through the seat, which must mount it at the same mountPath "
-            f"as the application: run `kubectl podbench attach {pod}` first, or "
+            f"as the application: run `podbench attach {pod}` first, or "
             f"pass --seat if it is named something other than {CONTAINER_BASE}-N."
         )
     return seat.name
@@ -1592,7 +1592,7 @@ def values_snippet(
             "  # not use it: landing the two files takes a subPath per mount and",
             "  # the API server forbids subPath on an ephemeral container, so a",
             "  # live-pod seat registers its own record instead —",
-            "  # `kubectl podbench attach ... --new --seat-gid-root`. Leave this",
+            "  # `podbench attach ... --new --seat-gid-root`. Leave this",
             "  # disabled unless you want the ConfigMap in place for that.",
             "  enabled: true",
             "  apps:",
@@ -1734,8 +1734,6 @@ def _add_target(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        # `podbench patch`, not `kubectl podbench patch`: the plugin entry point
-        # hands argv to launcher.main, whose subparsers do not include this verb.
         prog="podbench patch",
         description=(
             "Durable in-place fixes: a venv on a claim, every change a commit, "
