@@ -1984,8 +1984,13 @@ def resolve_pod(
     if len(matches) == 1:
         # Echoed, not assumed: the name is about to appear in a ProxyCommand, in
         # an ssh alias and in the pod's permanent spec, and the user typed four
-        # characters of it.
-        _say(f"{query!r} matched pod {matches[0].name}")
+        # characters of it — or, with no POD at all, none of it, which is the
+        # case that most needs saying out loud.
+        _say(
+            f"the only pod in namespace {kubectl.namespace} is {matches[0].name}"
+            if query is None
+            else f"{query!r} matched pod {matches[0].name}"
+        )
         return matches[0].name
 
     if not prompt or not (

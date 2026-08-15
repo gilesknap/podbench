@@ -1543,6 +1543,19 @@ def test_no_argument_offers_every_pod_in_the_namespace_not_only_seats() -> None:
     assert name == "web-3c1"
 
 
+def test_no_argument_in_a_one_pod_namespace_resolves_without_asking(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # There is nothing to disambiguate, so there is nothing to ask — but the
+    # echo still has to read as English. It used to interpolate the absent
+    # query and say "None matched pod only-pod".
+    cluster = namespace_of("only-pod")
+    assert resolve_pod(kubectl_for(cluster), None, interactive=False) == "only-pod"
+    err = capsys.readouterr().err
+    assert "only-pod" in err
+    assert "None" not in err
+
+
 def test_nothing_matches_names_the_namespace_and_shows_what_is_there() -> None:
     cluster = namespace_of("api-7f9", "web-3c1")
     with pytest.raises(LauncherError) as caught:
