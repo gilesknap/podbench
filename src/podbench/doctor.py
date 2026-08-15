@@ -365,15 +365,22 @@ def write_include(config: Path, line: str) -> str:
     place: a half-written ``~/.ssh/config`` locks the user out of every host
     they have, not only podbench's. The original file's mode is carried over for
     the same reason ssh cares about it at all.
+
+    A symlink is followed rather than replaced. ``~/.ssh/config`` is very often a
+    link into a dotfiles repository, and ``os.replace`` on the link itself would
+    swap it for a regular file — leaving the user's own edits still going to a
+    file ssh has stopped reading, which is the kind of ownership of their config
+    this whole verb refuses to take.
     """
-    config.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    existed = config.is_file()
-    text = config.read_text() if existed else ""
-    mode = stat.S_IMODE(config.stat().st_mode) if existed else 0o600
-    temporary = config.with_name(config.name + ".podbench-new")
+    target = config.resolve() if config.is_symlink() else config
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    existed = target.is_file()
+    text = target.read_text() if existed else ""
+    mode = stat.S_IMODE(target.stat().st_mode) if existed else 0o600
+    temporary = target.with_name(target.name + ".podbench-new")
     temporary.write_text(splice_include(text, line))
     temporary.chmod(mode)
-    os.replace(temporary, config)
+    os.replace(temporary, target)
     return f"inserted `{line}` at the top of {config}"
 
 

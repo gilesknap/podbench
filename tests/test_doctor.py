@@ -323,6 +323,33 @@ def test_fix_creates_an_ssh_config_when_there_is_none(home: Path) -> None:
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
 
 
+def test_fix_follows_a_symlinked_ssh_config_rather_than_replacing_it(
+    home: Path,
+) -> None:
+    # ~/.ssh/config is very often a link into a dotfiles repository. Replacing
+    # the link with a regular file would leave the user's own edits going to a
+    # file ssh has stopped reading - podbench taking ownership of a config it
+    # has always refused to own.
+    dotfiles = home / "dotfiles"
+    dotfiles.mkdir()
+    real = dotfiles / "ssh_config"
+    real.write_text("Host *\n    ForwardAgent yes\n")
+    config = home / ".ssh" / "config"
+    config.symlink_to(real)
+
+    machine = FakeMachine()
+    report = diagnose(runner=machine, which=machine.which, fix=True)
+
+    assert statuses(report)["ssh include"] is Status.OK
+    assert config.is_symlink() and config.readlink() == real
+    text = real.read_text()
+    assert text.endswith("Host *\n    ForwardAgent yes\n")
+    assert include_state(text, ssh_include_line(home / ".podbench")) is (
+        IncludeState.ACTIVE
+    )
+    assert [path.name for path in dotfiles.iterdir() if "podbench" in path.name] == []
+
+
 def test_fix_is_idempotent(home: Path) -> None:
     machine = FakeMachine()
     diagnose(runner=machine, which=machine.which, fix=True)
