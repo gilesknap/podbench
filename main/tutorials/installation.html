@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Installation &#8212; podbench 0.1.0b3.dev8+gddd2f70e8 documentation</title>
+    <title>Installation &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3734193a"></script>
+    <script src="../_static/documentation_options.js?v=653b4031"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -726,6 +726,24 @@ $ helm show chart oci://ghcr.io/gilesknap/charts/podbench --version &quot;$PODBE
 <p><code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> is on by default; <code class="docutils literal notranslate"><span class="pre">rbac.iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">rbac.resize</span></code> and <code class="docutils literal notranslate"><span class="pre">rbac.patch</span></code>
 are separate flags because they are genuinely different levels of trust. The
 chart also carries the optional scratch PVC for Iterate-mode workspaces.</p>
+<p>The chart ships a <code class="docutils literal notranslate"><span class="pre">values.schema.json</span></code>, so a misspelt <code class="docutils literal notranslate"><span class="pre">--set</span></code> is refused by
+<code class="docutils literal notranslate"><span class="pre">helm</span></code> rather than accepted and dropped:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ helm upgrade --install podbench ./Charts/podbench --set rbac.iterat=true
+Error: values don&#39;t meet the specifications of the schema(s) in the following chart(s):
+podbench:
+- at &#39;/rbac&#39;: additional properties &#39;iterat&#39; not allowed
+</pre></div>
+</div>
+<p>Without it that install would have succeeded, granted the observe verbs only,
+and the mistake would have surfaced at <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> as an RBAC error naming a
+verb you thought you had. If you keep your values in a file, the same schema
+drives editor completion — every release attaches <code class="docutils literal notranslate"><span class="pre">values.schema.json</span></code>, so point
+at the one matching the chart version you deploy:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># yaml-language-server: $schema=https://github.com/gilesknap/podbench/releases/download/0.1.0-alpha.6/values.schema.json</span>
+<span class="nt">rbac</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">create</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</pre></div>
+</div>
 <p><strong>Nothing in that chart is required to use podbench.</strong> Observe and Iterate mode
 work against any pod from any chart, unmodified — that is the design principle
 the tool is built on.</p>
