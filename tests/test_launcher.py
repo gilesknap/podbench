@@ -235,12 +235,16 @@ class FakeCluster:
                     f'Error from server (NotFound): pods "{rest[2]}" not found'
                 )
             if any(item.startswith("--subresource=") for item in rest):
+                # Keyed on the pod actually asked for, not the primary fixture:
+                # resolution can settle on one of `others`, and answering that
+                # with the primary's containers would let a test pass while the
+                # code read the wrong pod.
                 return _ok(
                     json.dumps(
                         {
-                            "metadata": self.pod["metadata"],
+                            "metadata": found["metadata"],
                             "spec": {
-                                "ephemeralContainers": self._ephemeral_specs(),
+                                "ephemeralContainers": self._ephemeral_specs(found),
                             },
                         }
                     )
@@ -266,8 +270,11 @@ class FakeCluster:
                 return pod
         return None
 
-    def _ephemeral_specs(self) -> list[dict[str, Any]]:
-        return cast(list[dict[str, Any]], self.pod["spec"]["ephemeralContainers"])
+    def _ephemeral_specs(
+        self, pod: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        target = self.pod if pod is None else pod
+        return cast(list[dict[str, Any]], target["spec"]["ephemeralContainers"])
 
     def _statuses(self) -> list[dict[str, Any]]:
         return cast(
@@ -1472,10 +1479,12 @@ def test_one_substring_hit_resolves_and_says_what_it_resolved_to(
     cluster = namespace_of("web-6c9d7f4b8b-hq2vn", "api-7f9")
     name = resolve_pod(kubectl_for(cluster), "hq2", interactive=False)
     assert name == "web-6c9d7f4b8b-hq2vn"
-    # On stderr, so a redirected stdout still carries only the report.
-    err = capsys.readouterr().err
-    assert "web-6c9d7f4b8b-hq2vn" in err
-    assert capsys.readouterr().out == ""
+    # On stderr, so a redirected stdout still carries only the report. One
+    # readouterr() for both halves: the first call drains the capture, so a
+    # second one reads a fresh empty buffer and asserts nothing.
+    captured = capsys.readouterr()
+    assert "web-6c9d7f4b8b-hq2vn" in captured.err
+    assert captured.out == ""
 
 
 def test_several_hits_are_listed_with_enough_to_choose_by(
