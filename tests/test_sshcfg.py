@@ -289,14 +289,22 @@ def test_session_env_is_named_in_the_config_because_sshd_leaks_nothing() -> None
         SshdLayout.for_uid(0),
         {"PODBENCH_TARGET_CID": "abc", "PODBENCH_NODE_NAME": "n1"},
     )
-    assert "SetEnv PODBENCH_TARGET_CID=abc" in config
-    assert "SetEnv PODBENCH_NODE_NAME=n1" in config
+    # One directive, not one per variable: sshd resolves each keyword
+    # first-match-wins, so a second SetEnv line never takes effect. Found on a
+    # real cluster, where only the alphabetically-first variable arrived.
+    assert config.count("SetEnv ") == 1
+    assert "SetEnv PODBENCH_NODE_NAME=n1 PODBENCH_TARGET_CID=abc" in config
 
 
-def test_a_name_sshd_would_misparse_is_dropped() -> None:
-    config = sshd_config(SshdLayout.for_uid(0), {"BAD NAME": "x", "A=B": "y"})
+def test_a_name_or_value_sshd_would_misparse_is_dropped() -> None:
+    config = sshd_config(
+        SshdLayout.for_uid(0),
+        {"BAD NAME": "x", "A=B": "y", "SPACED": "has space", "OK": "fine"},
+    )
     assert "BAD NAME" not in config
     assert "A=B" not in config
+    assert "has space" not in config
+    assert "SetEnv OK=fine" in config
 
 
 def test_no_session_env_leaves_the_config_as_it_was() -> None:
