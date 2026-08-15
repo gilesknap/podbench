@@ -1,0 +1,7 @@
+#!/bin/sh
+# podbench itself, on PATH for an ssh session.
+#
+# `ssh host 'podbench ...'` runs a non-interactive shell that sources no profile
+# and does not inherit the image's ENV PATH, so the venv has to be named in full
+# here exactly as it is in the other helpers.
+exec /app/.venv/bin/podbench "$@"

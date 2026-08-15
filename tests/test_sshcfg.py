@@ -275,3 +275,29 @@ def test_known_hosts_entry_drops_the_comment() -> None:
 def test_known_hosts_entry_needs_a_key() -> None:
     with pytest.raises(ValueError, match="never observed"):
         known_hosts_entry(HostKeyBinding(HostKeyPolicy.SECRET, "podbench-api", "/kh"))
+
+
+def test_session_env_is_named_in_the_config_because_sshd_leaks_nothing() -> None:
+    """sshd does not pass its own environment to the commands it runs.
+
+    The launcher injects PODBENCH_TARGET_CID into the container spec, but a
+    non-interactive ``ssh host 'pids'`` sources no profile and inherits nothing,
+    so without SetEnv the helpers silently fall back to guessing which processes
+    belong to the target.
+    """
+    config = sshd_config(
+        SshdLayout.for_uid(0),
+        {"PODBENCH_TARGET_CID": "abc", "PODBENCH_NODE_NAME": "n1"},
+    )
+    assert "SetEnv PODBENCH_TARGET_CID=abc" in config
+    assert "SetEnv PODBENCH_NODE_NAME=n1" in config
+
+
+def test_a_name_sshd_would_misparse_is_dropped() -> None:
+    config = sshd_config(SshdLayout.for_uid(0), {"BAD NAME": "x", "A=B": "y"})
+    assert "BAD NAME" not in config
+    assert "A=B" not in config
+
+
+def test_no_session_env_leaves_the_config_as_it_was() -> None:
+    assert sshd_config(SshdLayout.for_uid(0)) == sshd_config(SshdLayout.for_uid(0), {})

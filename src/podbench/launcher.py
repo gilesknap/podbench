@@ -69,6 +69,7 @@ from .sshcfg import (
     KubectlInvocation,
     SshdLayout,
     client_config,
+    ensure_control_dir,
     host_key_alias,
     known_hosts_entry,
 )
@@ -892,6 +893,12 @@ def write_ssh_config(stanza: str, path: Path) -> Path:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(stanza)
     path.chmod(0o600)
+    # The stanza names a ControlPath, and ssh does not create its parent: it
+    # fails the connection with `unix_listener: cannot bind to path ...: No such
+    # file or directory`, which reads like a transport fault rather than a
+    # missing directory. Writing the config is the moment we know the path, so
+    # it is the moment to make it usable.
+    ensure_control_dir()
     return path
 
 

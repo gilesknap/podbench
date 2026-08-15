@@ -314,3 +314,18 @@ def test_main_print_host_key(
 
     assert agent.main(["--print-host-key", "--no-self-check"]) == 0
     assert "ssh-ed25519 AAAAHOST podbench" in capsys.readouterr().out
+
+
+def test_session_env_forwards_podbench_variables_only() -> None:
+    forwarded = agent.session_env(
+        {"PODBENCH_TARGET_CID": "abc", "PATH": "/usr/bin", "HOME": "/root"}
+    )
+    assert forwarded == {"PODBENCH_TARGET_CID": "abc"}
+
+
+def test_the_ssh_public_key_is_never_forwarded_into_a_session() -> None:
+    """It is already installed in authorized_keys; a session has no use for it."""
+    forwarded = agent.session_env(
+        {agent.PUBKEY_ENV: "ssh-ed25519 AAAA", "PODBENCH_NODE_NAME": "nuc2"}
+    )
+    assert forwarded == {"PODBENCH_NODE_NAME": "nuc2"}

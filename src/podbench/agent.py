@@ -144,9 +144,37 @@ def ensure_privsep_dir(layout: SshdLayout) -> bool:
     return True
 
 
-def ensure_sshd_config(layout: SshdLayout) -> bool:
+SESSION_ENV_PREFIX = "PODBENCH_"
+"""Variables forwarded from the container's environment into ssh sessions.
+
+The launcher injects the target's container id and the node name into the
+container spec, and sshd does not pass its own environment to the commands it
+runs — so without this the helpers fall back to guessing which processes belong
+to the target, and say the node is unknown. Only podbench's own variables are
+forwarded, and the ssh public key is excluded: it is already installed in
+authorized_keys and has no business in a session environment.
+"""
+
+_SESSION_ENV_EXCLUDE = frozenset({PUBKEY_ENV, HOST_KEY_ENV})
+
+
+def session_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The PODBENCH_* variables worth forwarding into an ssh session."""
+    source = os.environ if env is None else env
+    return {
+        name: value
+        for name, value in source.items()
+        if name.startswith(SESSION_ENV_PREFIX) and name not in _SESSION_ENV_EXCLUDE
+    }
+
+
+def ensure_sshd_config(
+    layout: SshdLayout, *, env: Mapping[str, str] | None = None
+) -> bool:
     """Write the sshd config the ProxyCommand names with ``-f``."""
-    return _write_if_changed(Path(layout.config_path), sshd_config(layout), 0o644)
+    return _write_if_changed(
+        Path(layout.config_path), sshd_config(layout, session_env(env)), 0o644
+    )
 
 
 def _authorized_keys_from(env: Mapping[str, str]) -> list[str]:
