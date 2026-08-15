@@ -1694,6 +1694,12 @@ def emit_ssh_config(
                 f"ssh config written to {path}",
                 f"add this to ~/.ssh/config once:  Include {directory}/config.d/*.conf",
                 f"then:  ssh {alias}   (or Remote-SSH: Connect to Host -> {alias})",
+                # The VS Code debugger needs a launch.json whose pid,
+                # sysroot-prefixed program and setup ordering are all things
+                # this launcher already knows and a human cannot guess; every
+                # wrong answer fails silently rather than erroring.
+                "to debug in VS Code, run `debug-config` in the seat "
+                "(writes .vscode/launch.json)",
             ]
         ),
         alias=alias,

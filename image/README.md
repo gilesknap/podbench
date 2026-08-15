@@ -122,9 +122,18 @@ tested Python implementation instead of a second one in shell.
 | `pids` | `podbench pids` | processes belonging to the target container |
 | `dbg` | `podbench dbg` | gdb with sysroot/source/auto-load path preset |
 | `capreport` | `podbench capreport` | probe ptrace permissions, name the blocker |
+| `debug-config` | `podbench debug-config` | write VS Code's `launch.json` for this seat |
 | `dev-bootstrap` | `podbench dev-bootstrap` | clone + sync + editable install |
 | `podbench-run` | `podbench run` | relaunch the workload |
 | `podbench-stop` | `podbench stop` | stop it, by recorded PID |
+
+`gdb-podbench` is installed alongside them and is **not** a podbench subcommand:
+it is a two-line shell wrapper that `cd`s somewhere that exists before `exec`ing
+`/usr/bin/gdb`. `debug-config` points `miDebuggerPath` at it because cpptools
+launches gdb inheriting its own extension directory as a cwd, which VS Code
+deletes on update — gdb's libpython then fails `getcwd()` and the process dies
+during startup with no signal name. See the script's own comment, and
+`docs/how-to/debug-with-gdb.md`.
 
 They call podbench by **absolute path** on purpose: `ssh <host> capreport` runs a
 non-login, non-interactive shell that sources nothing, so the image's `ENV PATH`
@@ -157,8 +166,8 @@ sets `UsePAM no` and sshd then supplies its own compiled-in `PATH`.
 
 ## Assumptions this image makes of the rest of podbench
 
-* Subcommand names: `pids`, `dbg`, `capreport`, `dev-bootstrap`, `run`, `stop`,
-  and `--version`. `capreport` must accept `--json` and exit 0/10/20 per
+* Subcommand names: `pids`, `dbg`, `capreport`, `debug-config`, `dev-bootstrap`,
+  `run`, `stop`, and `--version`. `capreport` must accept `--json` and exit 0/10/20 per
   `Verdict`; `pids` must accept `--help`. CI checks both by overriding the
   entrypoint. `podbench --version` must exit 0 — the build runs it as its own
   final step, so a broken CLI fails the build rather than the first attach.
