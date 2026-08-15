@@ -131,7 +131,14 @@ html_theme = "pydata_sphinx_theme"
 github_repo = "podbench"
 github_user = "gilesknap"
 switcher_json = f"https://{github_user}.github.io/{github_repo}/switcher.json"
-switcher_exists = requests.get(switcher_json).ok
+try:
+    switcher_exists = requests.get(switcher_json, timeout=10).ok
+except requests.RequestException:
+    # pytest's testpaths include docs/, and --doctest-modules imports this file
+    # during collection, so an unreachable network here fails the entire test
+    # run before a single test executes. A missing switcher is already a
+    # tolerated state below; being unable to ask is no worse than being told no.
+    switcher_exists = False
 if not switcher_exists:
     print(
         "*** Can't read version switcher, is GitHub pages enabled? \n"
