@@ -89,6 +89,12 @@ def _patch(args: Sequence[str]) -> int:
     return run_verb(args)
 
 
+def _vscode(args: Sequence[str]) -> int:
+    from .vscode import main as run_verb
+
+    return run_verb(args)
+
+
 #: Verb -> everything this level knows about it. Ordered, because that is the
 #: order the two help panels list them in.
 ENTRY_POINTS: dict[str, Verb] = {
@@ -132,6 +138,9 @@ ENTRY_POINTS: dict[str, Verb] = {
     ),
     "pids": Verb(_gdbcmd, True, "list the pod's processes", IN_POD),
     "dbg": Verb(_gdbcmd, True, "debug a process", IN_POD),
+    "debug-config": Verb(
+        _vscode, False, "write VS Code's launch.json for this seat", IN_POD
+    ),
     "dev-bootstrap": Verb(
         _dev, True, "clone, sync and editable-install a checkout", IN_POD
     ),
