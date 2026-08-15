@@ -1,0 +1,1186 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Command-line reference &#8212; podbench 0.1.0a2 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=7e4d6dd2"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'reference/cli';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a2';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="podbench" href="../_api/podbench.html" />
+    <link rel="prev" title="Reference" href="../reference.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0a2" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Command-line reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../_api/podbench.html">API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../genindex.html">Index</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/gilesknap/podbench/releases">Release Notes</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../reference.html" class="nav-link">Reference</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Command-line reference</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="command-line-reference">
+<h1>Command-line reference<a class="headerlink" href="#command-line-reference" title="Link to this heading">#</a></h1>
+<p>One binary serves both halves of podbench. On your machine it is reached as
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> (or <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>); inside the debug container the
+same binary is PID 1 and backs the helpers on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. Keeping it as one package
+means the capability logic that decides what a session can do is the same code
+in both places, rather than a launcher’s guess and a helper’s separate guess.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench --help
+usage: podbench [-h] [-v] [VERB] ...
+
+A development seat inside a Kubernetes pod. Run `podbench &lt;verb&gt; --help` for a
+verb&#39;s own options.
+
+positional arguments:
+  VERB           the subcommand to run
+  args           arguments for the verb
+
+options:
+  -h, --help     show this help message and exit
+  -v, --version  show program&#39;s version number and exit
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Where it runs</p></th>
+<th class="head"><p>Verbs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Your machine</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Inside the debug container</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span></code> plugin currently routes <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>
+and <code class="docutils literal notranslate"><span class="pre">list</span></code>. Reach <code class="docutils literal notranslate"><span class="pre">dev</span></code> and <code class="docutils literal notranslate"><span class="pre">patch</span></code> as <strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code></strong> / <strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span></code></strong>
+— the same binary, the same arguments.</p>
+<p>The in-pod verbs are also reachable as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> from a terminal in the
+seat; several have shorter aliases on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (<code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>,
+<code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>).</p>
+<section id="common-options">
+<h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
+<p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">,</span> <span class="o">--</span><span class="n">namespace</span> <span class="n">NAMESPACE</span>
+  <span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span>
+  <span class="o">--</span><span class="n">kubectl</span> <span class="n">KUBECTL</span>     <span class="n">kubectl</span> <span class="n">binary</span> <span class="n">to</span> <span class="n">use</span>
+  <span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span>
+                        <span class="n">where</span> <span class="n">the</span> <span class="n">generated</span> <span class="n">ssh</span> <span class="n">config</span> <span class="ow">and</span> <span class="n">known_hosts</span> <span class="n">live</span>
+                        <span class="p">(</span><span class="n">default</span> <span class="o">~/.</span><span class="n">podbench</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">dev</span></code> takes only <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code> and <code class="docutils literal notranslate"><span class="pre">--context</span></code>; <code class="docutils literal notranslate"><span class="pre">patch</span></code> takes those plus
+<code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>. Neither writes an ssh config, so neither has <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code>.</p>
+<p>podbench shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> deliberately, so it inherits your kubeconfig,
+your current context and any exec credential plugin. There is no second
+credential and no client library.</p>
+</section>
+<hr class="docutils" />
+<section id="cluster-side-verbs">
+<h2>Cluster-side verbs<a class="headerlink" href="#cluster-side-verbs" title="Link to this heading">#</a></h2>
+<section id="attach">
+<h3><code class="docutils literal notranslate"><span class="pre">attach</span></code><a class="headerlink" href="#attach" title="Link to this heading">#</a></h3>
+<p>Land a debug seat in a <strong>live</strong> pod, walking the capability ladder, and print
+what that seat can actually do.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">kubectl</span> <span class="n">podbench</span> <span class="n">attach</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">target</span> <span class="n">TARGET</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">image</span> <span class="n">IMAGE</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="n">target</span><span class="o">-</span><span class="n">uid</span> <span class="n">TARGET_UID</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="n">mount</span> <span class="n">CLAIM</span><span class="p">:</span><span class="n">MOUNTPATH</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">new</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">probe</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="n">resize</span> <span class="n">MEMORY</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">identity</span> <span class="n">IDENTITY</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="n">ssh</span><span class="o">-</span><span class="n">user</span> <span class="n">SSH_USER</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">host</span><span class="o">-</span><span class="n">alias</span> <span class="n">HOST_ALIAS</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="nb">print</span><span class="o">-</span><span class="n">config</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="n">kubectl</span> <span class="n">KUBECTL</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span><span class="p">]</span>
+                               <span class="n">pod</span>
+
+<span class="n">positional</span> <span class="n">arguments</span><span class="p">:</span>
+  <span class="n">pod</span>
+
+<span class="n">options</span><span class="p">:</span>
+  <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>            <span class="n">show</span> <span class="n">this</span> <span class="n">help</span> <span class="n">message</span> <span class="ow">and</span> <span class="n">exit</span>
+  <span class="o">--</span><span class="n">target</span> <span class="n">TARGET</span>       <span class="n">workload</span> <span class="n">container</span> <span class="n">name</span>
+  <span class="o">--</span><span class="n">image</span> <span class="n">IMAGE</span>
+  <span class="o">--</span><span class="n">target</span><span class="o">-</span><span class="n">uid</span> <span class="n">TARGET_UID</span>
+                        <span class="n">the</span> <span class="n">target</span><span class="s1">&#39;s uid, when its pod spec does not say</span>
+  <span class="o">--</span><span class="n">mount</span> <span class="n">CLAIM</span><span class="p">:</span><span class="n">MOUNTPATH</span>
+                        <span class="n">mount</span> <span class="n">a</span> <span class="n">volume</span> <span class="n">the</span> <span class="n">pod</span> <span class="n">already</span> <span class="n">declares</span> <span class="n">into</span> <span class="n">the</span> <span class="n">seat</span><span class="p">,</span>
+                        <span class="n">named</span> <span class="n">by</span> <span class="n">claim</span> <span class="ow">or</span> <span class="n">by</span> <span class="n">volume</span> <span class="n">name</span><span class="o">.</span> <span class="n">MOUNTPATH</span> <span class="n">defaults</span> <span class="n">to</span>
+                        <span class="n">the</span> <span class="n">application</span> <span class="n">container</span><span class="s1">&#39;s own, which Patch mode</span>
+                        <span class="n">requires</span> <span class="n">it</span> <span class="n">to</span> <span class="n">equal</span><span class="o">.</span> <span class="n">Repeatable</span>
+  <span class="o">--</span><span class="n">new</span>                 <span class="n">add</span> <span class="n">a</span> <span class="n">container</span> <span class="n">even</span> <span class="k">if</span> <span class="n">one</span> <span class="ow">is</span> <span class="n">running</span> <span class="p">(</span><span class="n">its</span> <span class="n">name</span> <span class="ow">is</span>
+                        <span class="n">permanent</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">probe</span>            <span class="n">skip</span> <span class="n">capreport</span><span class="p">;</span> <span class="n">the</span> <span class="n">report</span> <span class="n">then</span> <span class="n">says</span> <span class="n">nothing</span> <span class="n">was</span>
+                        <span class="n">measured</span>
+  <span class="o">--</span><span class="n">resize</span> <span class="n">MEMORY</span>       <span class="k">raise</span> <span class="n">the</span> <span class="n">target</span><span class="s1">&#39;s memory limit in place first, e.g.</span>
+                        <span class="mi">6</span><span class="n">Gi</span>
+  <span class="o">--</span><span class="n">identity</span> <span class="n">IDENTITY</span>
+  <span class="o">--</span><span class="n">ssh</span><span class="o">-</span><span class="n">user</span> <span class="n">SSH_USER</span>
+  <span class="o">--</span><span class="n">host</span><span class="o">-</span><span class="n">alias</span> <span class="n">HOST_ALIAS</span>
+  <span class="o">--</span><span class="nb">print</span><span class="o">-</span><span class="n">config</span>        <span class="nb">print</span> <span class="n">the</span> <span class="n">ssh</span> <span class="n">stanza</span> <span class="n">instead</span> <span class="n">of</span> <span class="n">writing</span> <span class="n">it</span> <span class="n">to</span> <span class="n">the</span>
+                        <span class="n">config</span> <span class="nb">dir</span>
+  <span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span>
+</pre></div>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> or a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>.</p></li>
+<li><p>Re-running <code class="docutils literal notranslate"><span class="pre">attach</span></code> <strong>reconnects</strong> to a running seat. <code class="docutils literal notranslate"><span class="pre">--new</span></code> appends another
+ephemeral container, whose name is then burnt for the pod’s lifetime.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> matters only for the degraded rung, which must match the
+target’s UID exactly and never defaults to root.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> is how a seat reaches a Patch-mode claim. An ephemeral container may
+mount the volumes its pod <strong>already declares</strong> and may not introduce one —
+<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name the pod does not
+carry is refused with that explanation rather than submitted. That immutability
+is the whole reason Patch mode asks for the chart’s cooperation at deploy time;
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
+seeding initContainer that put it there.</p>
+<ul>
+<li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
+resolved to the volume entry that references it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MOUNTPATH</span></code> is optional and usually should be. Where the application
+container mounts that volume, its mountPath (and any <code class="docutils literal notranslate"><span class="pre">subPath</span></code>) is copied,
+because Patch mode only works when the claim resolves at the <em>same</em> path on
+both sides — the venv’s <code class="docutils literal notranslate"><span class="pre">bin/python</span></code> and the checkout’s editable install are
+absolute paths recorded on the volume. An explicit path that disagrees is
+honoured and warned about; a volume the application does not mount has no
+path to copy, so one must be given.</p></li>
+<li><p>Mounts are fixed when a container is created, so <code class="docutils literal notranslate"><span class="pre">--mount</span></code> against a
+reconnect warns and does nothing. Use <code class="docutils literal notranslate"><span class="pre">--new</span></code> for a seat with a new mount.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is opt-in and lightly proven; it prints a warning either way and
+needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>.</p></li>
+<li><p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for any seat that lands, including a degraded one; <code class="docutils literal notranslate"><span class="pre">2</span></code> for a
+real error.</p></li>
+</ul>
+</section>
+<section id="ssh-config">
+<h3><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code><a class="headerlink" href="#ssh-config" title="Link to this heading">#</a></h3>
+<p>Regenerate the ssh stanza for a seat that is already running, without touching
+the pod.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">kubectl</span> <span class="n">podbench</span> <span class="n">ssh</span><span class="o">-</span><span class="n">config</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">identity</span> <span class="n">IDENTITY</span><span class="p">]</span>
+                                   <span class="p">[</span><span class="o">--</span><span class="n">ssh</span><span class="o">-</span><span class="n">user</span> <span class="n">SSH_USER</span><span class="p">]</span>
+                                   <span class="p">[</span><span class="o">--</span><span class="n">host</span><span class="o">-</span><span class="n">alias</span> <span class="n">HOST_ALIAS</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="nb">print</span><span class="o">-</span><span class="n">config</span><span class="p">]</span>
+                                   <span class="p">[</span><span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span><span class="p">]</span>
+                                   <span class="p">[</span><span class="o">--</span><span class="n">kubectl</span> <span class="n">KUBECTL</span><span class="p">]</span>
+                                   <span class="p">[</span><span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span><span class="p">]</span>
+                                   <span class="n">pod</span>
+</pre></div>
+</div>
+<p>Fails if there is no running podbench container in the pod.</p>
+</section>
+<section id="status">
+<h3><code class="docutils literal notranslate"><span class="pre">status</span></code><a class="headerlink" href="#status" title="Link to this heading">#</a></h3>
+<p>Every podbench container in one pod, including dead ones whose names remain
+burnt.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">kubectl</span> <span class="n">podbench</span> <span class="n">status</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span><span class="p">]</span>
+                               <span class="p">[</span><span class="o">--</span><span class="n">kubectl</span> <span class="n">KUBECTL</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span><span class="p">]</span>
+                               <span class="n">pod</span>
+</pre></div>
+</div>
+</section>
+<section id="list">
+<h3><code class="docutils literal notranslate"><span class="pre">list</span></code><a class="headerlink" href="#list" title="Link to this heading">#</a></h3>
+<p>The same, across the namespace.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">kubectl</span> <span class="n">podbench</span> <span class="nb">list</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span><span class="p">]</span>
+                             <span class="p">[</span><span class="o">--</span><span class="n">kubectl</span> <span class="n">KUBECTL</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span><span class="p">]</span>
+</pre></div>
+</div>
+</section>
+<section id="dev">
+<h3><code class="docutils literal notranslate"><span class="pre">dev</span></code><a class="headerlink" href="#dev" title="Link to this heading">#</a></h3>
+<p>Author a sacrificial dev pod from a target’s spec — Iterate mode.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">podbench</span> <span class="n">dev</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span><span class="p">]</span>
+                    <span class="p">[</span><span class="o">--</span><span class="n">container</span> <span class="n">CONTAINER</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">name</span> <span class="n">NAME</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">image</span> <span class="n">IMAGE</span><span class="p">]</span>
+                    <span class="p">[</span><span class="o">--</span><span class="n">port</span> <span class="n">PORT</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">take</span><span class="o">-</span><span class="n">traffic</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">cutover</span> <span class="n">SERVICE</span><span class="p">]</span>
+                    <span class="p">[</span><span class="o">--</span><span class="n">delete</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">dry</span><span class="o">-</span><span class="n">run</span><span class="p">]</span>
+                    <span class="n">pod</span>
+
+<span class="n">positional</span> <span class="n">arguments</span><span class="p">:</span>
+  <span class="n">pod</span>                   <span class="n">the</span> <span class="n">pod</span> <span class="n">to</span> <span class="n">clone</span><span class="p">,</span> <span class="ow">or</span> <span class="n">the</span> <span class="n">dev</span> <span class="n">pod</span> <span class="n">to</span> <span class="n">delete</span>
+
+<span class="n">options</span><span class="p">:</span>
+  <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>            <span class="n">show</span> <span class="n">this</span> <span class="n">help</span> <span class="n">message</span> <span class="ow">and</span> <span class="n">exit</span>
+  <span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">,</span> <span class="o">--</span><span class="n">namespace</span> <span class="n">NAMESPACE</span>
+                        <span class="n">namespace</span> <span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">default</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span>     <span class="n">kubeconfig</span> <span class="n">context</span>
+  <span class="o">--</span><span class="n">container</span> <span class="n">CONTAINER</span>
+                        <span class="n">container</span> <span class="n">to</span> <span class="n">take</span> <span class="n">over</span>
+  <span class="o">--</span><span class="n">name</span> <span class="n">NAME</span>           <span class="n">dev</span> <span class="n">pod</span> <span class="n">name</span> <span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="o">&lt;</span><span class="n">pod</span><span class="o">&gt;-</span><span class="n">podbench</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">image</span> <span class="n">IMAGE</span>         <span class="n">podbench</span> <span class="n">image</span>
+  <span class="o">--</span><span class="n">port</span> <span class="n">PORT</span>           <span class="n">the</span> <span class="n">port</span> <span class="n">your</span> <span class="n">app</span> <span class="n">serves</span>
+  <span class="o">--</span><span class="n">take</span><span class="o">-</span><span class="n">traffic</span>        <span class="n">copy</span> <span class="n">the</span> <span class="n">origin</span><span class="s1">&#39;s labels so the dev pod shares Service</span>
+                        <span class="n">traffic</span> <span class="k">with</span> <span class="n">it</span><span class="o">.</span> <span class="n">Off</span> <span class="n">by</span> <span class="n">default</span><span class="p">:</span> <span class="n">joining</span> <span class="n">a</span> <span class="n">production</span>
+                        <span class="n">Service</span> <span class="n">silently</span> <span class="ow">is</span> <span class="n">a</span> <span class="n">foot</span><span class="o">-</span><span class="n">cannon</span>
+  <span class="o">--</span><span class="n">cutover</span> <span class="n">SERVICE</span>     <span class="n">point</span> <span class="n">SERVICE</span> <span class="n">exclusively</span> <span class="n">at</span> <span class="n">the</span> <span class="n">dev</span> <span class="n">pod</span><span class="p">,</span> <span class="n">recording</span>
+                        <span class="n">its</span> <span class="n">selector</span> <span class="k">for</span> <span class="n">an</span> <span class="n">exact</span> <span class="n">restore</span> <span class="n">at</span> <span class="n">teardown</span>
+  <span class="o">--</span><span class="n">delete</span>              <span class="n">tear</span> <span class="n">the</span> <span class="n">dev</span> <span class="n">pod</span> <span class="n">down</span>
+  <span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span>     <span class="n">seconds</span> <span class="n">to</span> <span class="n">wait</span>
+  <span class="o">--</span><span class="n">dry</span><span class="o">-</span><span class="n">run</span>             <span class="nb">print</span> <span class="n">the</span> <span class="n">authored</span> <span class="n">pod</span> <span class="n">instead</span> <span class="n">of</span> <span class="n">creating</span> <span class="n">it</span>
+</pre></div>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p>Reached as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>; the kubectl plugin does not route this verb yet.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> or a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>, the same as the launcher verbs —
+it is the same helper, so the two halves of the CLI cannot drift apart.</p></li>
+<li><p>The namespace defaults to <code class="docutils literal notranslate"><span class="pre">default</span></code> here, not to your current context’s
+namespace as the launcher verbs do. Pass <code class="docutils literal notranslate"><span class="pre">-n</span></code> explicitly.</p></li>
+<li><p>The origin pod is never modified.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code> and <code class="docutils literal notranslate"><span class="pre">--cutover</span></code> are the only ways the dev pod sees Service
+traffic, and both are explicit. <code class="docutils literal notranslate"><span class="pre">--cutover</span></code> uses a JSON <em>replace</em> patch — a
+merge patch would union the selector maps and quietly leave the original pod
+serving half the requests.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--delete</span></code> restores any borrowed selector before removing the pod.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> is the best available description of what this mode does.</p></li>
+</ul>
+</section>
+<section id="patch">
+<h3><code class="docutils literal notranslate"><span class="pre">patch</span></code><a class="headerlink" href="#patch" title="Link to this heading">#</a></h3>
+<p>Durable in-place fixes: a venv on a ReadWriteOnce claim, every change a git
+commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a patched pod go unnoticed.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Patch mode has never been run against a cluster. It is unit-tested only.</p>
+</div>
+<p>The seat must mount the claim at the application’s own mountPath, since that is
+how <code class="docutils literal notranslate"><span class="pre">patch</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Land it that
+way with <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--mount</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">kubectl</span> <span class="n">podbench</span> <span class="n">attach</span> <span class="n">myapp</span><span class="o">-</span><span class="mi">0</span> <span class="o">--</span><span class="n">mount</span> <span class="n">myapp</span><span class="o">-</span><span class="n">venv</span> <span class="o">--</span><span class="n">new</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">patch</span></code> is run from a terminal inside the
+seat, where the claim is already in this process’s own mount namespace.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">podbench</span> <span class="n">patch</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="nb">print</span><span class="o">-</span><span class="n">values</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">app</span> <span class="n">APP</span><span class="p">]</span>
+                      <span class="p">[</span><span class="o">--</span><span class="n">venv</span><span class="o">-</span><span class="n">path</span> <span class="n">VENV_PATH</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">size</span> <span class="n">SIZE</span><span class="p">]</span>
+                      <span class="p">[</span><span class="o">--</span><span class="n">app</span><span class="o">-</span><span class="n">image</span> <span class="n">APP_IMAGE</span><span class="p">]</span>
+                      <span class="p">{</span><span class="n">init</span><span class="p">,</span><span class="n">apply</span><span class="p">,</span><span class="n">status</span><span class="p">,</span><span class="n">consolidate</span><span class="p">}</span> <span class="o">...</span>
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Sub-verb</p></th>
+<th class="head"><p>Does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">--repo</span> <span class="pre">URL</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>verify the claim was seeded from the image’s venv, clone the source onto it, editable-install, record the base commit</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest, annotate, roll the workload</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
+<td><p>every patched pod in the namespace, its drift, and what is wrong with it</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">consolidate</span> <span class="pre">--branch</span> <span class="pre">B</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>push the checkout as a branch and print the retirement checklist</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">TARGET</span></code> is <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">deployment/NAME</span></code> or <code class="docutils literal notranslate"><span class="pre">statefulset/NAME</span></code>. Shared flags:
+<code class="docutils literal notranslate"><span class="pre">--venv</span></code> (the mountPath the claim is mounted at, which <em>is</em> the application’s
+venv path), <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>, <code class="docutils literal notranslate"><span class="pre">--author</span></code>.</p>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><strong>Single replica only</strong>, refused otherwise: the claim is <code class="docutils literal notranslate"><span class="pre">ReadWriteOnce</span></code>, so a
+second replica either fails to schedule or races on one checkout.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">init</span></code> <strong>verifies</strong> the seed, never performs it. Once the claim is mounted over
+the venv path the image’s own venv is hidden in every container, so the copy
+can only happen in an initContainer — which is what <code class="docutils literal notranslate"><span class="pre">--print-values</span></code> emits.</p></li>
+<li><p>The editable install runs in the <strong>application</strong> container, not the seat: the
+venv is shared but its interpreter is not. <code class="docutils literal notranslate"><span class="pre">--no-install</span></code> skips it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> does not open a PR; it prints the <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> line.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired patches” is
+a testable shutdown assertion.</p></li>
+</ul>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench patch --print-values --app myapp --venv-path /opt/venv
+</pre></div>
+</div>
+<p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">patchVenv</span></code> values for the podbench
+release, and the volume, volumeMount and seeding initContainer for the
+application’s own chart.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="in-pod-verbs">
+<h2>In-pod verbs<a class="headerlink" href="#in-pod-verbs" title="Link to this heading">#</a></h2>
+<section id="capreport">
+<h3><code class="docutils literal notranslate"><span class="pre">capreport</span></code><a class="headerlink" href="#capreport" title="Link to this heading">#</a></h3>
+<p>Name the mechanism that denies ptrace in this container. The launcher runs it
+automatically after every attach; run it yourself when something changes.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>usage: capreport [-h] [--container-id CONTAINER_ID] [--json] [pid]
+
+Name the mechanism that denies ptrace in this container.
+
+positional arguments:
+  pid                   target pid; discovered from the target container id if
+                        omitted
+
+options:
+  -h, --help            show this help message and exit
+  --container-id CONTAINER_ID
+                        target container id (default: $PODBENCH_TARGET_CID)
+  --json                emit the stable JSON form instead of the human report
+</pre></div>
+</div>
+<p><strong>Exit codes are the interface</strong>, so a shell script can branch without parsing:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Code</p></th>
+<th class="head"><p>Verdict</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>live attach available</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">10</span></code></p></td>
+<td><p>read-only debugging available (target rootfs, <code class="docutils literal notranslate"><span class="pre">maps</span></code>, <code class="docutils literal notranslate"><span class="pre">environ</span></code>; gdb-launch works)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<td><p>neither; the seat itself still works</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>It reads <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>/<code class="docutils literal notranslate"><span class="pre">CapBnd</span></code>/<code class="docutils literal notranslate"><span class="pre">CapAmb</span></code>, <code class="docutils literal notranslate"><span class="pre">Seccomp</span></code>, <code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>, the AppArmor
+profile of both itself and the target, and <code class="docutils literal notranslate"><span class="pre">yama/ptrace_scope</span></code>; then runs a
+scratch <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on its own forked child (always permitted by Yama, so a
+failure there is structural) and a live attach on the target; then a six-path
+<code class="docutils literal notranslate"><span class="pre">/proc</span></code> read matrix. Yama is a <strong>node-level</strong> knob that differs by kernel
+flavour, so this must be re-run per pod and never cached cluster-wide.</p>
+</section>
+<section id="pids">
+<h3><code class="docutils literal notranslate"><span class="pre">pids</span></code><a class="headerlink" href="#pids" title="Link to this heading">#</a></h3>
+<p>List the processes in the pod’s shared PID namespace and say which container
+owns each.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>usage: podbench pids [-h] [--container-id CONTAINER_ID] [--targets] [--json]
+
+List the processes in this pod&#39;s shared PID namespace, and say which container
+owns each one.
+
+options:
+  -h, --help            show this help message and exit
+  --container-id CONTAINER_ID
+                        target container id (default: $PODBENCH_TARGET_CID)
+  --targets             list only the target container&#39;s processes
+  --json                emit the stable JSON form instead of the table
+</pre></div>
+</div>
+<p>Attribution substring-matches the target’s container runtime ID against
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span></code>. Without one, every other container’s processes look like
+targets — the JSON carries <code class="docutils literal notranslate"><span class="pre">attribution</span></code> and <code class="docutils literal notranslate"><span class="pre">warning</span></code> fields, and a consumer
+that ignores them is reading a guess as a fact.</p>
+</section>
+<section id="dbg">
+<h3><code class="docutils literal notranslate"><span class="pre">dbg</span></code><a class="headerlink" href="#dbg" title="Link to this heading">#</a></h3>
+<p>gdb, with sysroot, source path and auto-load path set in the one order that
+produces a correct backtrace.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>usage: podbench dbg [-h] [--container-id CONTAINER_ID] [--source-dir DIR]
+                    [--no-debuginfod] [--run] [--dry-run] [--launch ...]
+                    [pid]
+
+Run gdb against a process in another container of this pod, with the sysroot,
+source path and auto-load path set in the order that produces a correct
+backtrace.
+
+positional arguments:
+  pid                   pid to attach to; discovered from the container id if
+                        omitted
+
+options:
+  -h, --help            show this help message and exit
+  --container-id CONTAINER_ID
+                        target container id used to discover the pid (default:
+                        $PODBENCH_TARGET_CID)
+  --source-dir DIR      extra source directory, wired with gdb&#39;s `directory`.
+                        debuginfod serves symbols but no sources on Debian, so
+                        this is how source text outside the target&#39;s rootfs is
+                        found. Repeatable.
+  --no-debuginfod       do not enable debuginfod (it needs ca-certificates and
+                        network)
+  --run                 with --launch, start the program immediately
+  --dry-run, --print-commands
+                        print the generated gdb commands and exit, without
+                        probing or starting gdb
+  --launch ...          debug a program gdb starts itself instead of
+                        attaching. Needs no capability. Consumes the rest of
+                        the command line, so put other flags first.
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> consumes the remainder of the command line, so any other flag must
+come first. See <a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
+</section>
+<section id="dev-bootstrap">
+<h3><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code><a class="headerlink" href="#dev-bootstrap" title="Link to this heading">#</a></h3>
+<p>Populate the dev pod’s workspace: clone, sync, editable install.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">podbench</span> <span class="n">dev</span><span class="o">-</span><span class="n">bootstrap</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="o">--</span><span class="n">repo</span> <span class="n">REPO</span> <span class="p">[</span><span class="o">--</span><span class="n">ref</span> <span class="n">REF</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="nb">dir</span> <span class="n">DIR</span><span class="p">]</span>
+                              <span class="p">[</span><span class="o">--</span><span class="n">python</span> <span class="n">PYTHON</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">sync</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">editable</span><span class="p">]</span>
+
+<span class="n">options</span><span class="p">:</span>
+  <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>       <span class="n">show</span> <span class="n">this</span> <span class="n">help</span> <span class="n">message</span> <span class="ow">and</span> <span class="n">exit</span>
+  <span class="o">--</span><span class="n">repo</span> <span class="n">REPO</span>      <span class="n">git</span> <span class="n">URL</span> <span class="n">to</span> <span class="n">clone</span>
+  <span class="o">--</span><span class="n">ref</span> <span class="n">REF</span>        <span class="n">branch</span><span class="p">,</span> <span class="n">tag</span> <span class="ow">or</span> <span class="n">commit</span> <span class="n">to</span> <span class="n">check</span> <span class="n">out</span>
+  <span class="o">--</span><span class="nb">dir</span> <span class="n">DIR</span>        <span class="n">checkout</span> <span class="n">directory</span> <span class="p">(</span><span class="n">must</span> <span class="n">be</span> <span class="ow">in</span> <span class="n">this</span> <span class="n">container</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">python</span> <span class="n">PYTHON</span>  <span class="n">CPython</span> <span class="n">version</span> <span class="k">for</span> <span class="n">uv</span> <span class="n">to</span> <span class="n">use</span>
+  <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">sync</span>        <span class="n">skip</span> <span class="n">uv</span> <span class="n">sync</span> <span class="o">--</span><span class="n">frozen</span>
+  <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">editable</span>    <span class="n">skip</span> <span class="n">uv</span> <span class="n">pip</span> <span class="n">install</span> <span class="o">-</span><span class="n">e</span> <span class="o">.</span>
+</pre></div>
+</div>
+<p>“must be in this container” is enforced, not advisory: a checkout under
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/...</span></code> is refused, because an editable install whose <code class="docutils literal notranslate"><span class="pre">.pth</span></code>
+names a path in another mount namespace is <strong>silently ignored</strong> by <code class="docutils literal notranslate"><span class="pre">site.py</span></code>.</p>
+</section>
+<section id="run">
+<h3><code class="docutils literal notranslate"><span class="pre">run</span></code><a class="headerlink" href="#run" title="Link to this heading">#</a></h3>
+<p>Relaunch the workload from the debug container and verify that your child owns
+the port.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>usage: podbench run [-h] --port PORT [--workspace WORKSPACE] [--dir DIR]
+                    [--timeout TIMEOUT]
+                    [command ...]
+
+positional arguments:
+  command               the command, after `--`
+
+options:
+  -h, --help            show this help message and exit
+  --port PORT           the port it must serve
+  --workspace WORKSPACE
+                        workspace root
+  --dir DIR             working directory (default: workspace)
+  --timeout TIMEOUT     seconds to verify
+</pre></div>
+</div>
+<p>Installed on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> as <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>. Exits non-zero when the port is not owned
+by the process it started — a socket poll alone gives a false PASS, and
+<code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> will otherwise split traffic between old and new code with
+nothing in any log to say so.</p>
+</section>
+<section id="stop">
+<h3><code class="docutils literal notranslate"><span class="pre">stop</span></code><a class="headerlink" href="#stop" title="Link to this heading">#</a></h3>
+<p>Stop it, by recorded pid.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">podbench</span> <span class="n">stop</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">workspace</span> <span class="n">WORKSPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">grace</span> <span class="n">GRACE</span><span class="p">]</span>
+
+<span class="n">options</span><span class="p">:</span>
+  <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>            <span class="n">show</span> <span class="n">this</span> <span class="n">help</span> <span class="n">message</span> <span class="ow">and</span> <span class="n">exit</span>
+  <span class="o">--</span><span class="n">workspace</span> <span class="n">WORKSPACE</span>
+                        <span class="n">workspace</span> <span class="n">root</span>
+  <span class="o">--</span><span class="n">grace</span> <span class="n">GRACE</span>         <span class="n">seconds</span> <span class="n">before</span> <span class="n">SIGKILL</span>
+</pre></div>
+</div>
+<p>Installed on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> as <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>. Never <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code>: under
+<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> that matches the invoking shell and every other
+container’s processes.</p>
+</section>
+<section id="agent">
+<h3><code class="docutils literal notranslate"><span class="pre">agent</span></code><a class="headerlink" href="#agent" title="Link to this heading">#</a></h3>
+<p>The debug container’s PID 1. The launcher sets it as the container’s command;
+you should not need to run it yourself.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">podbench</span> <span class="n">agent</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">ensure</span><span class="o">-</span><span class="n">only</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="bp">self</span><span class="o">-</span><span class="n">check</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="nb">print</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">key</span><span class="p">]</span>
+                      <span class="p">[</span><span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="bp">self</span><span class="o">-</span><span class="n">check</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">idle</span><span class="o">-</span><span class="n">interval</span> <span class="n">IDLE_INTERVAL</span><span class="p">]</span>
+
+<span class="n">Prepare</span> <span class="n">the</span> <span class="n">debug</span> <span class="n">container</span> <span class="k">for</span> <span class="n">ssh</span> <span class="ow">and</span> <span class="n">idle</span> <span class="k">as</span> <span class="n">its</span> <span class="n">PID</span> <span class="mf">1.</span>
+
+<span class="n">options</span><span class="p">:</span>
+  <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>            <span class="n">show</span> <span class="n">this</span> <span class="n">help</span> <span class="n">message</span> <span class="ow">and</span> <span class="n">exit</span>
+  <span class="o">--</span><span class="n">ensure</span><span class="o">-</span><span class="n">only</span>         <span class="n">prepare</span> <span class="n">the</span> <span class="n">container</span> <span class="ow">and</span> <span class="n">exit</span> <span class="n">instead</span> <span class="n">of</span> <span class="n">idling</span>
+  <span class="o">--</span><span class="bp">self</span><span class="o">-</span><span class="n">check</span>          <span class="n">run</span> <span class="n">the</span> <span class="n">startup</span> <span class="n">checks</span> <span class="ow">and</span> <span class="n">exit</span><span class="p">;</span> <span class="n">non</span><span class="o">-</span><span class="n">zero</span> <span class="k">if</span> <span class="nb">any</span> <span class="n">fails</span>
+  <span class="o">--</span><span class="nb">print</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">key</span>      <span class="nb">print</span> <span class="n">the</span> <span class="n">host</span> <span class="n">public</span> <span class="n">key</span> <span class="k">for</span> <span class="n">the</span> <span class="n">launcher</span><span class="s1">&#39;s</span>
+                        <span class="n">known_hosts</span>
+  <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="bp">self</span><span class="o">-</span><span class="n">check</span>       <span class="n">skip</span> <span class="n">the</span> <span class="n">startup</span> <span class="n">checks</span> <span class="p">(</span><span class="n">they</span> <span class="n">cost</span> <span class="n">a</span> <span class="n">subprocess</span> <span class="ow">and</span>
+                        <span class="o">~</span><span class="mf">0.2</span> <span class="n">s</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">idle</span><span class="o">-</span><span class="n">interval</span> <span class="n">IDLE_INTERVAL</span>
+                        <span class="n">seconds</span> <span class="n">between</span> <span class="n">reap</span> <span class="n">sweeps</span> <span class="k">while</span> <span class="n">idling</span>
+</pre></div>
+</div>
+<p>Every step is <em>ensure</em>, never <em>create</em>: running it twice against the same
+container is normal operation. The host key, the authorized keys and the sshd
+config are rebuilt from the environment or a mounted Secret on each start, which
+is what makes “the ephemeral container is strictly disposable” true rather than
+aspirational.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--self-check</span></code> includes the fd-2 tripwire — a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> round trip with a
+delayed second line, which fails if anything in the path has broken the CRI exec
+stream.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="environment-variables">
+<h2>Environment variables<a class="headerlink" href="#environment-variables" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Read by</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_IMAGE</span></code></p></td>
+<td><p>launcher</p></td>
+<td><p>debug image to attach; <code class="docutils literal notranslate"><span class="pre">--image</span></code> overrides</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_CONFIG_DIR</span></code></p></td>
+<td><p>launcher</p></td>
+<td><p>where the ssh config and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> go; <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> overrides. Default <code class="docutils literal notranslate"><span class="pre">~/.podbench</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code></p></td>
+<td><p>the target container’s runtime ID, injected at attach time</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_PUBKEY</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>authorized key, injected by the launcher</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_PUBKEY_FILE</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>read it from a file instead. Default mount <code class="docutils literal notranslate"><span class="pre">/etc/podbench/ssh/authorized_keys</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_HOST_KEY</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>host private key, rather than minting one</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_HOST_KEY_FILE</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>the same from a file. Default mount <code class="docutils literal notranslate"><span class="pre">/etc/podbench/ssh/ssh_host_ed25519_key</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS</span></code></p></td>
+<td><p>gdb, <code class="docutils literal notranslate"><span class="pre">dbg</span></code></p></td>
+<td><p>symbol server. The image sets <code class="docutils literal notranslate"><span class="pre">https://debuginfod.debian.net</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="exit-codes">
+<h2>Exit codes<a class="headerlink" href="#exit-codes" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Code</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>success — including a degraded seat, which is an honest outcome and not a failure</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); or <code class="docutils literal notranslate"><span class="pre">patch</span> <span class="pre">status</span></code> found a pod needing attention</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> only: the capability verdict</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../reference.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Reference</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../_api/podbench.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title"><code class="docutils literal notranslate"><span class="pre">podbench</span></code></p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-options">Common options</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cluster-side-verbs">Cluster-side verbs</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#attach"><code class="docutils literal notranslate"><span class="pre">attach</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-config"><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#status"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list"><code class="docutils literal notranslate"><span class="pre">list</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev"><code class="docutils literal notranslate"><span class="pre">dev</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#patch"><code class="docutils literal notranslate"><span class="pre">patch</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-pod-verbs">In-pod verbs</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capreport"><code class="docutils literal notranslate"><span class="pre">capreport</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pids"><code class="docutils literal notranslate"><span class="pre">pids</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dbg"><code class="docutils literal notranslate"><span class="pre">dbg</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev-bootstrap"><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run"><code class="docutils literal notranslate"><span class="pre">run</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stop"><code class="docutils literal notranslate"><span class="pre">stop</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#agent"><code class="docutils literal notranslate"><span class="pre">agent</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment-variables">Environment variables</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exit-codes">Exit codes</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a2/docs/reference/cli.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/reference/cli.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

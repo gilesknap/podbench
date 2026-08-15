@@ -6,6 +6,15 @@ html_theme.sidebar_secondary.remove: true
 :end-before: <!-- README only content
 ```
 
+Where to start
+--------------
+
+* Never used it — [Installation](tutorials/installation.md), then
+  [Your first session](tutorials/first-session.md).
+* Here to debug a crash — [Debug with gdb](how-to/debug-with-gdb.md).
+* Here to change code in the cluster — [Iterate on Python](how-to/iterate-on-python.md).
+* Here to decide whether to allow it — [Security model](explanations/security.md).
+* Looking for a flag — [Command-line reference](reference/cli.md).
 
 How the documentation is structured
 -----------------------------------
