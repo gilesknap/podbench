@@ -64,6 +64,7 @@ from .spec import (
     target_uid_gid,
 )
 from .sshcfg import (
+    SEAT_USER,
     HostKeyBinding,
     HostKeyPolicy,
     KubectlInvocation,
@@ -79,12 +80,14 @@ __all__ = [
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
     "HOST_KEY_ARGV",
+    "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
     "OOM_WARNING",
     "RESIZE_WARNING",
     "Feature",
     "LadderStep",
     "LauncherError",
+    "SeatIdentity",
     "SeatInfo",
     "Session",
     "attach",
@@ -96,9 +99,11 @@ __all__ = [
     "main",
     "parse_mount",
     "plan_ladder",
+    "probe_ssh_identity",
     "resolve_mounts",
     "resolve_pod_name",
     "run_capreport",
+    "ssh_unavailable_note",
     "running_seat",
     "seat_layout",
     "seats",
@@ -125,6 +130,13 @@ HOST_KEY_ARGV: tuple[str, ...] = (
 """``--no-self-check`` because this runs against a container that is already up:
 the startup checks cost a subprocess each and have nothing left to prove."""
 
+LOGIN_USER_ARGV: tuple[str, ...] = (*AGENT_COMMAND, "--print-login-user")
+"""Asks the seat which login name sshd will resolve for the uid it runs as.
+
+Measured in the container rather than predicted from the spec, like everything
+else the launcher prints: whether an account exists for the target's uid is a
+fact about the *image*, and podbench can be pointed at any image."""
+
 NON_ROOT_HOME = "/tmp/podbench-home"
 """``$HOME`` for a non-root seat.
 
@@ -138,10 +150,12 @@ DEFAULT_CLIENT_DIR = "~/.podbench"
 CLIENT_DIR_ENV = "PODBENCH_CONFIG_DIR"
 DEFAULT_IDENTITY = "~/.ssh/id_ed25519"
 
-DEFAULT_SEAT_USER = "podbench"
-"""ssh login name for a non-root seat. sshd resolves it through NSS, so the
-debug image must carry an account for the uid the seat runs as; ``--ssh-user``
-overrides it when the image names that account something else."""
+DEFAULT_SEAT_USER = SEAT_USER
+"""ssh login name for a non-root seat. sshd resolves it through NSS, so the seat
+must have an account for the uid it runs as - which for the degraded rung is the
+target's uid, so the agent registers one at start-up when it can (see
+:func:`podbench.agent.ensure_passwd_entry`). ``--ssh-user`` overrides it when
+the image names that account something else."""
 
 OOM_WARNING = (
     "podbench shares this pod's memory and ephemeral-storage limits and cannot "
@@ -535,6 +549,35 @@ def plan_ladder(
 
 
 @dataclass(frozen=True)
+class SeatIdentity:
+    """Whether sshd inside the seat can resolve a login name for its own uid.
+
+    The degraded rung runs as the target's uid, discovered at attach time, so no
+    debug image can carry an account for it in advance. Without one ``getpwuid``
+    fails, which kills ``ssh-keygen`` before a host key exists and would make
+    sshd refuse the login even if one did. Everything ``kubectl exec`` reaches
+    is unaffected, so this is a property of the *transport*, not of the seat.
+    """
+
+    login: str | None
+    detail: str
+    measured: bool = True
+    """False when the seat could not answer the question at all — an image
+    older than this launcher, say. "Unknown" and "no" have to stay apart: the
+    first must not withhold a stanza that would have worked."""
+
+    @property
+    def usable(self) -> bool:
+        """Whether an ssh stanza for this seat could work at all."""
+        return self.login is not None
+
+    @property
+    def refused(self) -> bool:
+        """The seat itself said it has no login identity."""
+        return self.measured and self.login is None
+
+
+@dataclass(frozen=True)
 class Session:
     """A landed seat: where it is, what it is allowed to do, and what it cost."""
 
@@ -549,6 +592,9 @@ class Session:
     steps: tuple[LadderStep, ...] = ()
     report: CapabilityReport | None = None
     warnings: tuple[str, ...] = ()
+    ssh: SeatIdentity | None = None
+    """What the seat answered about its own login identity; ``None`` when it was
+    never asked."""
 
     @property
     def pod(self) -> PodRef:
@@ -565,6 +611,7 @@ def attach(
     target_uid: int | None = None,
     mounts: Sequence[str] = (),
     force_new: bool = False,
+    seat_gid_root: bool = False,
     probe: bool = True,
     timeout: float = 120.0,
     poll_interval: float = 0.5,
@@ -581,6 +628,15 @@ def attach(
     carries; they are resolved before anything is submitted, so a claim the pod
     does not have refuses without burning a container name. See
     :func:`resolve_mounts` for why podbench cannot simply add the volume.
+
+    ``seat_gid_root`` lands the non-root rungs with ``runAsGroup: 0``, which is
+    what allows the seat to give itself the NSS identity sshd insists on. Opt-in
+    because it changes the seat's group, not because a cluster would refuse it.
+
+    The seat is always asked whether it has that identity, ``probe`` or not:
+    ``probe`` governs the capability report, while this decides whether an ssh
+    stanza is worth printing at all, and a stanza that cannot work is the one
+    output worse than none.
     """
     pod = resolve_pod_name(pod_reference)
     pod_json = kubectl.get_pod(pod)
@@ -617,6 +673,12 @@ def attach(
                 "volumeMounts are fixed when it is created and cannot be added "
                 "to, so --mount only takes effect on a seat landed with --new"
             )
+        if seat_gid_root:
+            warnings.append(
+                "reconnected to an existing container: its securityContext is "
+                "fixed for the pod's lifetime, so --seat-gid-root only takes "
+                "effect on a seat landed with --new"
+            )
     else:
         session = _walk_ladder(
             kubectl,
@@ -627,17 +689,17 @@ def attach(
             public_key=public_key,
             target_uid=target_uid,
             volume_mounts=volume_mounts,
+            seat_gid_root=seat_gid_root,
             timeout=timeout,
             poll_interval=poll_interval,
         )
 
     warnings.append(OOM_WARNING)
-    if session.rung is not Rung.FULL:
-        warnings.append(
-            f"the seat runs as uid {session.uid if session.uid is not None else '?'}; "
-            "sshd resolves the login name through NSS, so the debug image needs "
-            "an account for it (override the name with --ssh-user)"
-        )
+    # Not also a warning: `features` reports it under "supports", which is where
+    # "what this seat can do and which mechanism decided" belongs, and
+    # `ssh_unavailable_note` prints the way out in place of the stanza. A third
+    # copy in the warning block would be the only thing said three times.
+    session = replace(session, ssh=probe_ssh_identity(kubectl, session.seat))
 
     if probe:
         report, probe_warnings = run_capreport(kubectl, session.seat)
@@ -657,6 +719,7 @@ def _walk_ladder(
     public_key: str | None,
     target_uid: int | None,
     volume_mounts: Sequence[Mapping[str, Any]],
+    seat_gid_root: bool,
     timeout: float,
     poll_interval: float,
 ) -> Session:
@@ -684,6 +747,7 @@ def _walk_ladder(
                 target_gid=None if rung is Rung.FULL else gid,
                 env=_container_env(pod_json, public_key, rung),
                 volume_mounts=volume_mounts,
+                seat_gid_root=seat_gid_root,
             )
         except InvalidSpecError as error:
             # Refused before the cluster saw it, so no container name is burnt.
@@ -764,6 +828,39 @@ def _container_env(
 
 
 # -- probing the landed seat ------------------------------------------------
+
+
+def probe_ssh_identity(kubectl: Kubectl, seat: ContainerRef) -> SeatIdentity:
+    """Ask the seat which login name sshd will resolve for the uid it runs as.
+
+    ``check=False`` because "there is no account for this uid" is a normal
+    answer on the degraded rung, not a transport fault: the agent exits 1 and
+    puts the mechanism and the way out on stderr, which is what the capability
+    report goes on to print.
+
+    Exit 1 is read strictly, because an image older than this launcher does not
+    know the flag and argparse exits 2. That is "unknown", not "no", and the two
+    must not be merged: withholding a stanza from a root seat that would have
+    worked, on the grounds that the image could not answer a question about it,
+    would be a regression dressed as honesty.
+    """
+    result = kubectl.exec_(
+        seat.pod.name, LOGIN_USER_ARGV, container=seat.container, check=False
+    )
+    login = result.stdout.strip()
+    if result.returncode == 0 and login:
+        return SeatIdentity(login, f"sshd resolves this seat's uid as {login!r}")
+    reason = result.stderr.strip() or result.stdout.strip()
+    if result.returncode == 1:
+        return SeatIdentity(
+            None, reason or "the seat reported no login name and gave no reason"
+        )
+    return SeatIdentity(
+        None,
+        "the seat did not answer whether sshd can resolve a login name for the "
+        f"uid it runs as, so this was not measured: {reason or 'no output'}",
+        measured=False,
+    )
 
 
 def run_capreport(
@@ -869,7 +966,7 @@ def features(session: Session) -> tuple[Feature, ...]:
                 "read-only inspect (/proc/<pid>/root, maps, environ)", False, unknown
             ),
             _iterate_feature(),
-            Feature("seat (editor, shell, git)", True),
+            *_seat_features(session),
         )
     return (
         Feature(
@@ -883,7 +980,32 @@ def features(session: Session) -> tuple[Feature, ...]:
             report.blocker.explanation,
         ),
         _iterate_feature(),
-        Feature("seat (editor, shell, git)", True),
+        *_seat_features(session),
+    )
+
+
+def _seat_features(session: Session) -> tuple[Feature, Feature]:
+    """The seat itself, split by transport.
+
+    One line, "seat (editor, shell, git)", used to be unconditionally true. It
+    is not: the ssh half needs sshd to resolve a login name for the seat's uid,
+    which on the degraded rung is the target's and may exist nowhere. The exec
+    half needs nothing of the sort, and spike S5 found it to be most of that
+    rung's value — so the two are reported separately rather than one of them
+    quietly speaking for both.
+    """
+    identity = session.ssh
+    ssh_seat = Feature(
+        "ssh seat (Remote-SSH: editor, shell, git, sftp)",
+        identity is not None and identity.usable,
+        identity.detail
+        if identity is not None
+        else "the seat was not asked whether sshd can resolve a login name for "
+        "the uid it runs as",
+    )
+    return (
+        ssh_seat,
+        Feature("exec seat (capreport, pids, dbg --launch, kubectl exec)", True),
     )
 
 
@@ -1020,6 +1142,40 @@ def ssh_stanza(
         layout=seat_layout(session),
         user=user,
         kubectl=invocation,
+    )
+
+
+def ssh_unavailable_note(session: Session) -> str:
+    """What to print instead of an ssh stanza that could not work.
+
+    Same shape as :attr:`podbench.model.Blocker.explanation`: name the mechanism,
+    then the way out. A stanza would be worse than this text — the user would
+    spend the failure on ``Permission denied (publickey)``, which points at
+    their key rather than at an image with no account for the uid the cluster
+    made this container run as.
+    """
+    identity = session.ssh
+    detail = (
+        identity.detail
+        if identity is not None
+        else "the seat was never asked for a login name"
+    )
+    seat = session.seat
+    target = f"-n {seat.pod.namespace} {seat.pod.name} -c {seat.container}"
+    return "\n".join(
+        [
+            "no ssh config was written: this seat has no login identity.",
+            *(f"  {line}" for line in _wrap(detail)),
+            "  ways out:",
+            "    - run the target as a uid the debug image has an account for, or",
+            "    - land a seat that can register one itself, with GID 0:",
+            f"        kubectl podbench attach {seat.pod.name} "
+            f"-n {seat.pod.namespace} --new --seat-gid-root",
+            "  the rest of the seat needs no ssh and works now:",
+            f"    kubectl exec {target} -- capreport",
+            f"    kubectl exec {target} -- pids",
+            f"    kubectl exec -it {target} -- bash",
+        ]
     )
 
 
@@ -1253,6 +1409,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="add a container even if one is running (its name is permanent)",
     )
     attach_parser.add_argument(
+        "--seat-gid-root",
+        action="store_true",
+        help="land the seat with runAsGroup: 0 so it can register an "
+        "/etc/passwd entry for the target's uid, which is what sshd needs to "
+        "let anyone log in. Off by default: it drops the target's own group",
+    )
+    attach_parser.add_argument(
         "--no-probe",
         dest="probe",
         action="store_false",
@@ -1361,6 +1524,7 @@ def _cmd_attach(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
         target_uid=cast(int | None, parsed.target_uid),
         mounts=cast(list[str] | None, parsed.mount) or (),
         force_new=cast(bool, parsed.force_new),
+        seat_gid_root=cast(bool, parsed.seat_gid_root),
         probe=cast(bool, parsed.probe),
         timeout=cast(float, parsed.timeout),
     )
@@ -1381,12 +1545,17 @@ def _cmd_ssh_config(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
             f"no running podbench container in {kubectl.namespace}/{pod}; "
             "run `kubectl podbench attach` first"
         )
+    reference = ContainerRef(PodRef(kubectl.namespace, pod), seat.name)
     session = Session(
-        seat=ContainerRef(PodRef(kubectl.namespace, pod), seat.name),
+        seat=reference,
         workload=seat.target or target_container_name(pod_json),
         rung=seat.rung,
         reused=True,
         uid=seat.uid,
+        # Asked again rather than assumed: this command exists to regenerate a
+        # stanza from another machine, where nothing of the original attach is
+        # in hand.
+        ssh=probe_ssh_identity(kubectl, reference),
     )
     print(_emit_ssh_config(kubectl, session, parsed, identity))
     return 0
@@ -1398,6 +1567,12 @@ def _emit_ssh_config(
     parsed: argparse.Namespace,
     identity: str,
 ) -> str:
+    if session.ssh is not None and session.ssh.refused:
+        # Nothing below can help: sshd resolves the login name before it looks
+        # at a key, so a stanza, a known_hosts entry and a minted identity file
+        # would all be spent on a login that is refused at the first step.
+        return ssh_unavailable_note(session)
+
     directory = _client_dir(cast(str | None, parsed.config_dir))
     pod_json = kubectl.get_pod(session.pod.name)
     pod_uid = _as_str(as_dict(pod_json.get("metadata")).get("uid")) or session.pod.name

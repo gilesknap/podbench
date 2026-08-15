@@ -145,6 +145,39 @@ def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
     }
 
 
+def test_seat_gid_root_is_opt_in_and_keeps_everything_else() -> None:
+    """GID 0 is what lets the seat give itself the NSS identity sshd needs.
+
+    The target's uid is discovered at attach time, so no image can carry an
+    account for it; the seat registers one in a group-writable ``/etc/passwd``
+    instead, which needs gid 0 and nothing else. It stays opt-in because it
+    drops the target's own group, and the API server has no objection either
+    way — the restricted Pod Security Standard does not constrain
+    ``runAsGroup`` (measured: uid 1000 / gid 0 admitted under ``restricted``).
+    """
+    for rung in (Rung.DEGRADED, Rung.SEAT):
+        default = ephemeral_container_spec(
+            name="podbench-2",
+            image="podbench:dev",
+            rung=rung,
+            target_uid=1000,
+            target_gid=3000,
+        )["securityContext"]
+        assert default["runAsGroup"] == 3000, "the default must not change silently"
+
+        opted_in = ephemeral_container_spec(
+            name="podbench-2",
+            image="podbench:dev",
+            rung=rung,
+            target_uid=1000,
+            target_gid=3000,
+            seat_gid_root=True,
+        )["securityContext"]
+        assert opted_in["runAsGroup"] == 0
+        # Only the group moves: the uid, and every restricted-PSS field, stay.
+        assert opted_in == {**default, "runAsGroup": 0}
+
+
 def test_degraded_rung_refuses_to_default_to_root() -> None:
     with pytest.raises(InvalidSpecError, match="target's own uid"):
         ephemeral_container_spec(

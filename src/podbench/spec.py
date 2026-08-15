@@ -154,6 +154,7 @@ def ephemeral_container_spec(
     command: Sequence[str] = AGENT_COMMAND,
     env: Mapping[str, str] | None = None,
     volume_mounts: Sequence[Mapping[str, Any]] | None = None,
+    seat_gid_root: bool = False,
 ) -> dict[str, Any]:
     """Author one ephemeral container for a rung of the capability ladder.
 
@@ -171,6 +172,12 @@ def ephemeral_container_spec(
 
     Ephemeral containers carry no ``resources``: the field is rejected, and the
     container is confined by the pod's cgroup regardless (report 3.9).
+
+    ``seat_gid_root`` pins ``runAsGroup: 0`` on the non-root rungs, which is
+    what lets the agent register an ``/etc/passwd`` entry for the target's uid
+    and so is the difference between a seat with ssh and one reachable only by
+    ``kubectl exec``. It is opt-in: see :func:`_rung_security_context` for why
+    the target's own gid stays the default.
     """
     spec: dict[str, Any] = {
         "name": name,
@@ -178,7 +185,9 @@ def ephemeral_container_spec(
         "imagePullPolicy": "IfNotPresent",
         "command": list(command),
         "terminationMessagePolicy": "File",
-        "securityContext": _rung_security_context(rung, target_uid, target_gid),
+        "securityContext": _rung_security_context(
+            rung, target_uid, target_gid, seat_gid_root=seat_gid_root
+        ),
     }
     if target_container is not None:
         spec["targetContainerName"] = target_container
@@ -201,8 +210,27 @@ def ephemeral_container_spec(
     return spec
 
 
+def _seat_gid(context: dict[str, Any], gid_root: bool) -> dict[str, Any]:
+    """Apply the opt-in ``runAsGroup: 0`` override to a non-root rung.
+
+    GID 0 is how a container running as an arbitrary uid registers itself in
+    NSS: the debug image makes ``/etc/passwd`` group-writable (OpenShift's
+    convention) and the agent appends a record for whatever uid it turned out to
+    be, without which sshd refuses every login. Pod Security Admission does not
+    constrain ``runAsGroup`` at any level, so this is admissible wherever the
+    rung itself is - measured on a ``restricted`` namespace, uid 1000 / gid 0.
+    """
+    if gid_root:
+        context["runAsGroup"] = 0
+    return context
+
+
 def _rung_security_context(
-    rung: Rung, target_uid: int | None, target_gid: int | None
+    rung: Rung,
+    target_uid: int | None,
+    target_gid: int | None,
+    *,
+    seat_gid_root: bool = False,
 ) -> dict[str, Any]:
     if rung is Rung.FULL:
         if target_uid not in (None, 0):
@@ -239,7 +267,7 @@ def _rung_security_context(
         # /proc reads a shared gid might buy are gated on the uid anyway.
         if target_uid and target_gid is not None:
             restricted["runAsGroup"] = target_gid
-        return restricted
+        return _seat_gid(restricted, seat_gid_root)
 
     if target_uid is None:
         raise InvalidSpecError(
@@ -255,9 +283,16 @@ def _rung_security_context(
             "namespace admits SYS_PTRACE, otherwise Rung.SEAT."
         )
     restricted["runAsUser"] = target_uid
+    # The target's own gid stays the default even though it is exactly what
+    # stops the seat registering an /etc/passwd entry for itself, and so costs
+    # this rung its ssh transport. Two reasons to leave it: the target's gid is
+    # what buys the group-gated reads under its sysroot that this rung exists
+    # for, and quietly running a debug seat as the *root group* is a privilege
+    # change that belongs to the person attaching. `seat_gid_root` makes it one
+    # flag away rather than unavailable.
     if target_gid is not None:
         restricted["runAsGroup"] = target_gid
-    return restricted
+    return _seat_gid(restricted, seat_gid_root)
 
 
 def dev_pod_spec(

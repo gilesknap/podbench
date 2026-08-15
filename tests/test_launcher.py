@@ -35,6 +35,7 @@ from podbench.launcher import (
     try_resize,
 )
 from podbench.model import Blocker, ContainerRef, PodRef, Rung, Verdict
+from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
 TARGET_CID = "abc123def456"
@@ -49,6 +50,16 @@ PSA_REFUSAL = (
 KUBELET_REFUSAL = (
     "container has runAsNonRoot and image will run as root, or container's "
     "runAsUser breaks non-root policy"
+)
+OLD_IMAGE_REFUSAL = (
+    "usage: podbench agent [-h] [--ensure-only]\n"
+    "podbench agent: error: unrecognized arguments: --print-login-user"
+)
+NO_LOGIN_USER = (
+    "uid 1000 has no NSS entry and this container cannot add one: /etc/passwd "
+    "is not writable by uid 1000 / gid 1000. sshd resolves the login name "
+    "through NSS before it will look at a key, so ssh into this seat cannot "
+    "work."
 )
 
 
@@ -129,6 +140,8 @@ class FakeCluster:
         kubelet_refuses_root_image: bool = False,
         capreport: dict[str, Any] | None = None,
         host_key: str | None = HOST_KEY,
+        login_user: str | None = SEAT_USER,
+        login_user_returncode: int = 1,
         patch_error: str | None = None,
     ) -> None:
         self.pod = pod
@@ -138,6 +151,8 @@ class FakeCluster:
         self.capreport = capreport if capreport is not None else capreport_payload()
         self.capreport_output: str | None = None
         self.host_key = host_key
+        self.login_user = login_user
+        self.login_user_returncode = login_user_returncode
         self.patch_error = patch_error
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
@@ -269,6 +284,15 @@ class FakeCluster:
             if self.host_key is None:
                 return _fail("no host public key available")
             return _ok(self.host_key + "\n")
+        if "--print-login-user" in command:
+            # The agent's contract: the name on stdout, or exit 1 with the
+            # mechanism and the way out on stderr. Exit 2 is argparse in an
+            # image that predates the flag, which means "unknown", not "no".
+            if self.login_user_returncode == 2:
+                return _fail(OLD_IMAGE_REFUSAL, returncode=2)
+            if self.login_user is None:
+                return _fail(NO_LOGIN_USER)
+            return _ok(self.login_user + "\n")
         raise AssertionError(f"unexpected exec: {command}")
 
 
@@ -654,12 +678,13 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert report.verdict is Verdict.READ_ONLY
     assert report.blocker is Blocker.YAMA_SCOPE
 
-    live, read_only, iterate, seat = features(session)
+    live, read_only, iterate, ssh_seat, exec_seat = features(session)
     assert not live.available
     assert "Yama" in live.reason
     assert read_only.available
     assert not iterate.available
-    assert seat.available
+    assert ssh_seat.available
+    assert exec_seat.available
 
     text = format_session(session)
     assert "ptrace_scope" in text
@@ -799,6 +824,136 @@ def test_ssh_config_subcommand_regenerates_for_an_existing_session(
     assert cluster.added == []
 
 
+def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The honest end of the degraded rung.
+
+    The seat runs as the target's uid, no account for it exists in the image
+    and ``/etc/passwd`` is unwritable, so sshd would refuse the login before it
+    ever looked at a key. A stanza printed anyway would spend the user's next
+    hour on ``Permission denied (publickey)`` — pointing at their key rather
+    than at the mechanism. Attach still succeeds: the seat is real, it is just
+    reachable by ``kubectl exec`` alone.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000), psa_denies_ptrace=True, login_user=None
+    )
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0, "a seat without ssh is still a seat"
+    out = capsys.readouterr().out
+
+    assert "no ssh config was written" in out
+    assert "ProxyCommand" not in out, "a stanza that cannot work must not be printed"
+    assert not (tmp_path / "cfg" / "config.d").exists()
+    # Named mechanism, then the way out, then what does work today.
+    assert "not writable" in out
+    assert "--seat-gid-root" in out
+    assert "kubectl exec -n demo target -c podbench-1 -- capreport" in out
+
+
+def test_the_capability_report_marks_the_ssh_seat_unavailable() -> None:
+    cluster = FakeCluster(
+        pod_document(uid=1000), psa_denies_ptrace=True, login_user=None
+    )
+    session = attach(kubectl_for(cluster), "target")
+
+    assert session.ssh is not None and not session.ssh.usable
+    ssh_seat, exec_seat = features(session)[-2:]
+    assert not ssh_seat.available
+    assert "not writable" in ssh_seat.reason
+    # The half that never needed sshd is still claimed, because it still works.
+    assert exec_seat.available
+
+    text = format_session(session)
+    assert "[ ] ssh seat" in text
+    assert "[x] exec seat" in text
+
+
+def test_an_image_that_cannot_answer_still_gets_its_stanza(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "Unknown" is not "no".
+
+    An image older than this launcher exits 2 from argparse rather than 1 from
+    the agent. Withholding the stanza there would break every seat that works
+    today — including root ones, where the login name is ``root`` and always
+    resolves — in the name of a question the image was never asked.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), login_user_returncode=2)
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--print-config",
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ProxyCommand" in out
+    # …but it is not claimed as measured either.
+    assert "[ ] ssh seat" in out
+    assert "not measured" in out
+
+
+def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
+    """Opt-in, and the only difference it makes to the spec is the group."""
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True))
+    session = attach(kubectl_for(cluster), "target", seat_gid_root=True)
+
+    assert session.rung is Rung.DEGRADED
+    assert security_contexts(cluster)[0] == {
+        "capabilities": {"drop": ["ALL"]},
+        "allowPrivilegeEscalation": False,
+        "seccompProfile": {"type": "RuntimeDefault"},
+        "runAsNonRoot": True,
+        "runAsUser": 1000,
+        "runAsGroup": 0,
+    }
+
+
+def test_the_default_seat_keeps_the_targets_group() -> None:
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True))
+    attach(kubectl_for(cluster), "target")
+    assert "runAsGroup" not in security_contexts(cluster)[0]
+
+
+def test_reconnecting_cannot_change_the_seats_group_and_says_so() -> None:
+    existing = {
+        "name": "podbench-1",
+        "securityContext": {"runAsUser": 1000},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(kubectl_for(cluster), "target", seat_gid_root=True)
+    assert session.reused
+    assert any("--seat-gid-root" in warning for warning in session.warnings)
+
+
 def test_ssh_config_without_a_session_says_so(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -900,7 +1055,11 @@ def test_features_without_a_report_claim_nothing() -> None:
         rung=Rung.SEAT,
         reused=False,
     )
-    live, read_only, _iterate, seat = features(session)
+    live, read_only, _iterate, ssh_seat, exec_seat = features(session)
     assert not live.available
     assert not read_only.available
-    assert seat.available
+    # The ssh half is not claimed either: nothing asked the seat whether sshd
+    # can resolve a login name for the uid it ended up running as.
+    assert not ssh_seat.available
+    assert "was not asked" in ssh_seat.reason
+    assert exec_seat.available

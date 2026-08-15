@@ -7,6 +7,7 @@ is already serving a session is the normal reconnection path.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,10 +15,80 @@ from pathlib import Path
 import pytest
 
 from podbench import agent
-from podbench.sshcfg import SshdLayout, sshd_config
+from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config
 
 PUBKEY = "ssh-ed25519 AAAAC3NzaC1FIRST dev@laptop"
 SECOND_PUBKEY = "ssh-ed25519 AAAAC3NzaC1SECOND colleague@laptop"
+
+UNKNOWN_UID = 4242
+"""A uid the fake NSS database has no record of — the shape of the degraded
+rung, where the seat runs as a target uid no image could have an account for."""
+
+
+class FakePasswd:
+    """A stand-in for the NSS ``files`` database: the file *and* ``getpwuid``.
+
+    Both halves are faked because a test that asked the real platform would
+    pass or fail on whichever uid the suite happens to run as, and the bug under
+    test is exactly "this uid has no entry". Seeded with a record for the
+    running uid, so the default state of every test is "identity already
+    resolves" and a test that wants the broken case asks for an unknown uid
+    explicitly.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.write_text(f"someone:x:{os.geteuid()}:{os.getegid()}::/tmp:/bin/sh\n")
+
+    def _records(self) -> list[list[str]]:
+        return [
+            line.split(":")
+            for line in self.path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def name_for(self, uid: int | None = None) -> str | None:
+        wanted = os.geteuid() if uid is None else uid
+        for fields in self._records():
+            if len(fields) > 2 and fields[2] == str(wanted):
+                return fields[0]
+        return None
+
+    def uid_for(self, user: str) -> int | None:
+        for fields in self._records():
+            if len(fields) > 2 and fields[0] == user:
+                return int(fields[2])
+        return None
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(agent, "PASSWD_PATH", str(self.path))
+        monkeypatch.setattr(agent, "login_name", self.name_for)
+        monkeypatch.setattr(agent, "_uid_named", self.uid_for)
+
+
+def make_unwritable(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Model "this file is not writable" for the test process as well.
+
+    A mode is not enough. The suite may run as root, and root's writes ignore
+    file modes entirely (CAP_DAC_OVERRIDE), so a 0444 file would report itself
+    writable here and unwritable in the container this stands in for — the
+    assertion would then pass or fail on who ran pytest.
+    """
+    path.chmod(0o444)
+
+    def denied(_path: object, _mode: int) -> bool:
+        return False
+
+    monkeypatch.setattr(agent.os, "access", denied)
+
+
+@pytest.fixture(autouse=True)
+def passwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakePasswd:
+    """Autouse: the agent registers itself in ``/etc/passwd``, and a unit test
+    must never write to the real one."""
+    fake = FakePasswd(tmp_path / "etc-passwd")
+    fake.install(monkeypatch)
+    return fake
 
 
 def make_layout(tmp_path: Path, *, root: bool = True) -> SshdLayout:
@@ -100,7 +171,8 @@ def test_ensure_all_is_idempotent(tmp_path: Path, env: dict[str, str]) -> None:
     runner = FakeRunner()
 
     first = agent.ensure_all(layout, env=env, runner=runner)
-    assert len(first) == 4
+    assert first.failures == ()
+    assert len(first.changes) == 4
     before = {
         path: Path(path).read_text()
         for path in (
@@ -111,7 +183,7 @@ def test_ensure_all_is_idempotent(tmp_path: Path, env: dict[str, str]) -> None:
     }
 
     # A second attach into the same container must change nothing at all.
-    assert agent.ensure_all(layout, env=env, runner=runner) == []
+    assert agent.ensure_all(layout, env=env, runner=runner) == agent.EnsureReport()
     assert {path: Path(path).read_text() for path in before} == before
     assert len(runner.named("ssh-keygen")) == 1
 
@@ -191,6 +263,159 @@ def test_minted_host_key_is_generated_once(tmp_path: Path, env: dict[str, str]) 
     # -A would mint three keys, only one of which the config names.
     assert "-A" not in keygen[0]
     assert agent.read_host_public_key(layout) == "ssh-ed25519 AAAAHOST podbench"
+
+
+def test_a_uid_with_no_nss_entry_registers_one(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """The degraded rung's uid comes from the target, so no image can pre-bake it."""
+    layout = make_layout(tmp_path, root=False)
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=0) is True
+
+    assert passwd.name_for(UNKNOWN_UID) == SEAT_USER
+    entry = passwd.path.read_text().splitlines()[-1]
+    assert entry == f"{SEAT_USER}:x:{UNKNOWN_UID}:0:{SEAT_USER}:{layout.home}:/bin/bash"
+    # Idempotent like every other ensure step: a second attach adds nothing.
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=0) is False
+    assert len(passwd.path.read_text().splitlines()) == 2
+
+
+def test_registration_is_skipped_with_a_reason_when_passwd_is_read_only(
+    tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The normal degraded rung: uid from the target, gid from the target too.
+
+    ``/etc/passwd`` is then unwritable, and the honest answer is to name the
+    mechanism and the way out rather than to invent an identity.
+    """
+    make_unwritable(monkeypatch, passwd.path)
+    layout = make_layout(tmp_path, root=False)
+    with pytest.raises(RuntimeError) as raised:
+        agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=1000)
+
+    message = str(raised.value)
+    assert "not writable" in message
+    assert "--seat-gid-root" in message, "the way out has to be in the message"
+    assert "kubectl exec" in message
+    assert passwd.name_for(UNKNOWN_UID) is None
+
+
+def test_registration_refuses_to_shadow_an_existing_login_name(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """sshd resolves the name the client offered, so the first record wins."""
+    with passwd.path.open("a") as handle:
+        handle.write(f"{SEAT_USER}:x:999:999::/nonexistent:/bin/sh\n")
+    with pytest.raises(RuntimeError) as raised:
+        agent.ensure_passwd_entry(make_layout(tmp_path, root=False), uid=UNKNOWN_UID)
+    assert "already belongs to uid 999" in str(raised.value)
+
+
+def test_a_failed_ensure_step_is_recorded_rather_than_raised(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    """The crash this whole change exists to stop.
+
+    ``ssh-keygen`` dying ("No user exists for uid 1000") took the agent — PID 1
+    of a container that cannot be restarted — down with it, burning the
+    container's name for the pod's lifetime and losing the exec-reachable half
+    of the seat as well as the ssh half.
+    """
+
+    class BrokenKeygen(FakeRunner):
+        def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            args = list(argv)
+            if args[0] == "ssh-keygen":
+                self.calls.append(args)
+                return subprocess.CompletedProcess(
+                    args, 1, "", "No user exists for uid 1000"
+                )
+            return super().__call__(args)
+
+    layout = make_layout(tmp_path)
+    runner = BrokenKeygen()
+    report = agent.ensure_all(layout, env=env, runner=runner)
+
+    assert [failure.name for failure in report.failures] == ["ensure-host-key"]
+    assert "No user exists for uid 1000" in report.failures[0].detail
+    # The steps after the failed one still ran: the transport is the only thing
+    # a missing host key costs.
+    assert any("authorized_keys" in change for change in report.changes)
+    assert Path(layout.config_path).is_file()
+
+    # …and the failure is what self_check reports, so `--self-check` over
+    # kubectl exec can say why there is no host key.
+    named = {
+        check.name: check
+        for check in agent.self_check(layout, runner=FakeRunner(), ensure=report)
+    }
+    assert not named["ensure-host-key"].ok
+    assert "No user exists" in named["ensure-host-key"].detail
+
+
+def test_the_agent_idles_instead_of_dying_when_a_check_fails(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unrestartable PID 1 stays up: exiting burns the name (report 4.2)."""
+
+    def broken(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            list(argv), 1, "", "No user exists for uid 1000"
+        )
+
+    layout = make_layout(tmp_path)
+    patch_layout(monkeypatch, layout)
+    monkeypatch.setattr(agent, "run_command", broken)
+    monkeypatch.setattr(agent, "time", FakeClock(signal_after=1))
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    # Reached the idle loop and left it on SIGTERM, rather than exiting 1 at
+    # the check.
+    assert agent.main([]) == 0
+
+
+def test_self_check_names_a_missing_nss_identity_and_the_way_out(
+    passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_unwritable(monkeypatch, passwd.path)
+    check = agent.nss_identity_check(uid=UNKNOWN_UID, gid=1000)
+    assert not check.ok
+    assert check.name == "nss-identity"
+    assert "no NSS entry" in check.detail
+    assert "--seat-gid-root" in check.detail
+
+
+def test_print_login_user_reports_the_name_or_the_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    passwd: FakePasswd,
+) -> None:
+    """The launcher's one question about the seat's ssh identity.
+
+    stdout carries the name and nothing else, because the launcher parses it;
+    the reason goes to stderr, where a mechanism-and-way-out sentence belongs.
+    """
+    layout = make_layout(tmp_path, root=False)
+    patch_layout(monkeypatch, layout)
+    monkeypatch.setattr(agent, "run_command", FakeRunner())
+
+    assert agent.main(["--print-login-user"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == passwd.name_for()
+    # Nothing was ensured on the way: this is a read of the state sshd will find.
+    assert not Path(layout.config_path).exists()
+
+    def unresolvable(uid: int | None = None) -> str | None:
+        return None
+
+    monkeypatch.setattr(agent, "login_name", unresolvable)
+    make_unwritable(monkeypatch, passwd.path)
+    assert agent.main(["--print-login-user"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out.strip() == ""
+    assert "--seat-gid-root" in captured.err
 
 
 def test_self_check_passes_on_a_prepared_container(

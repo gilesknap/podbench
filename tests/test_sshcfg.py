@@ -12,10 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from podbench.agent import passwd_line
+from podbench.launcher import DEFAULT_SEAT_USER
 from podbench.model import ContainerRef, PodRef
 from podbench.sshcfg import (
     CONTROL_PATH,
     FALLBACK_HOME_PREFIX,
+    SEAT_USER,
     SUN_PATH_MAX,
     HostKeyBinding,
     HostKeyPolicy,
@@ -93,6 +96,32 @@ def test_an_explicit_home_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     assert SshdLayout.for_uid(1000, home="/home/dev").home == "/home/dev"
     # The root layout never consults a home directory it was not given.
     assert SshdLayout.for_uid(0).home == "/root"
+
+
+def test_both_halves_agree_on_the_seat_login_name() -> None:
+    """The one string the agent and the launcher must spell identically.
+
+    The agent writes an ``/etc/passwd`` record under this name for whatever uid
+    the seat turned out to run as; the client stanza puts the same name in
+    ``User``. sshd resolves what the client offered through NSS *before* it
+    looks at a key, so a disagreement is not a wrong username in a prompt — it
+    is ``Permission denied (publickey)``, pointing at the key.
+    """
+    entry = passwd_line(uid=1000, gid=0, home="/tmp/podbench-home")
+    assert entry.split(":")[0] == SEAT_USER
+    assert DEFAULT_SEAT_USER == SEAT_USER
+
+    stanza = client_config(
+        TARGET,
+        host_alias="podbench-demo-target",
+        identity_file="~/.ssh/id_ed25519",
+        host_key=HostKeyBinding.per_attach(
+            "pod-uid", "/tmp/known_hosts", "ssh-ed25519 AAAA"
+        ),
+        layout=NON_ROOT,
+        user=DEFAULT_SEAT_USER,
+    )
+    assert f"    User {SEAT_USER}\n" in stanza
 
 
 def test_sshd_config_root_variant() -> None:

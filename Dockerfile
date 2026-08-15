@@ -97,6 +97,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (report R9 - host key identity is still an open design question).
 RUN mkdir -p /run/sshd /etc/podbench
 
+# The seat's uid is the *target's* uid, discovered at attach time from a pod
+# podbench did not build, so no account for it can be baked in here. sshd
+# resolves the login name through NSS before it looks at a key, and ssh-keygen
+# calls getpwuid() unconditionally - it dies with "No user exists for uid 1000"
+# and a -C comment does not help. The convention for containers that run as an
+# arbitrary uid is OpenShift's: leave /etc/passwd group-writable by GID 0 and
+# let the entrypoint append its own record (podbench agent's ensure_passwd_entry
+# does). It buys nothing unless the seat is landed with GID 0, which is what
+# `kubectl podbench attach --seat-gid-root` asks for; with any other gid the
+# file is unwritable, the agent says so and the seat lands without ssh.
+#
+# This grants no privilege on its own: gid 0 is a group, not root, and every
+# other permission in the image is unchanged. /etc/group gets the same treatment
+# so an image change that starts needing a group record is not a second fix.
+RUN chmod g=u /etc/passwd /etc/group
+
 # Symbols, but never sources, on Debian targets: S3 got a fully symbolised
 # glibc + coreutils backtrace for 4.7 MB of client cache, and every source fetch
 # 404'd (report 3.2). Debian already falls back to this same URL via

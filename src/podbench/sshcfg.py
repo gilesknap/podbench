@@ -36,6 +36,7 @@ __all__ = [
     "FALLBACK_HOME_PREFIX",
     "PRIVSEP_DIR",
     "QUIET_LOG_LEVELS",
+    "SEAT_USER",
     "SERVER_ALIVE_COUNT_MAX",
     "SERVER_ALIVE_INTERVAL",
     "SUN_PATH_MAX",
@@ -57,6 +58,15 @@ __all__ = [
 
 DEFAULT_SSHD = "/usr/sbin/sshd"
 DEFAULT_SFTP_SERVER = "/usr/lib/openssh/sftp-server"
+
+SEAT_USER = "podbench"
+"""The login name a non-root seat is reached under.
+
+Both halves have to spell it identically and neither owns it: the agent writes
+an ``/etc/passwd`` record under this name for whatever uid the seat turned out
+to run as, and the client stanza puts the same name in ``User``. sshd resolves
+what the client offered through NSS, so a disagreement here is a login refused
+before any key is looked at."""
 
 ROOT_HOME = "/root"
 ROOT_CONFIG = "/etc/podbench/sshd_config"

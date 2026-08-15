@@ -11,12 +11,20 @@ Nothing it writes may be the only copy of anything. The host key, the
 authorized keys and the sshd config are all rebuilt from the environment or a
 mounted Secret on each start, which is what makes "the ephemeral container is
 strictly disposable" true rather than aspirational.
+
+And no ensure step may be fatal. The agent is PID 1 of a container that cannot
+be restarted and whose name is burnt for the pod's lifetime the moment it exits
+(report 4.2), so a step that cannot do its job records the reason and the agent
+idles anyway: ``capreport``, ``pids`` and ``dbg --launch`` are reached by
+``kubectl exec`` and need nothing sshd needs. Spike S5's degraded rung is most
+of a seat without ssh and none of one with a dead container.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import pwd
 import signal
 import subprocess
 import sys
@@ -27,7 +35,7 @@ from pathlib import Path
 from types import FrameType
 
 from .model import ContainerRef, PodRef
-from .sshcfg import SshdLayout, proxy_command, sshd_config
+from .sshcfg import SEAT_USER, SshdLayout, proxy_command, sshd_config
 
 __all__ = [
     "request_stop",
@@ -37,18 +45,26 @@ __all__ = [
     "HOST_KEY_FILE_ENV",
     "HOST_KEY_MOUNT",
     "IDLE_SLICE",
+    "LOGIN_SHELL",
+    "NSS_WAY_OUT",
+    "PASSWD_PATH",
     "PUBKEY_ENV",
     "CheckResult",
     "CommandRunner",
+    "EnsureReport",
     "ReaperStatus",
     "ensure_all",
     "ensure_authorized_keys",
     "ensure_host_key",
+    "ensure_passwd_entry",
     "ensure_privsep_dir",
     "ensure_sshd_config",
     "fd2_check",
     "idle",
+    "login_name",
     "main",
+    "nss_identity_check",
+    "passwd_line",
     "read_host_public_key",
     "reap_children",
     "reaper_status",
@@ -142,6 +158,165 @@ def ensure_privsep_dir(layout: SshdLayout) -> bool:
         return False
     directory.mkdir(mode=0o755, parents=True, exist_ok=True)
     return True
+
+
+PASSWD_PATH = "/etc/passwd"
+"""The NSS ``files`` database sshd resolves a login name in."""
+
+LOGIN_SHELL = "/bin/bash"
+"""Shell recorded in a registered entry. bash is in the image; a passwd entry
+naming a shell that is not would give the user a session that exits at once."""
+
+NSS_WAY_OUT = (
+    "sshd resolves the login name through NSS before it will look at a key, so "
+    "ssh into this seat cannot work. Everything reached by kubectl exec - "
+    "capreport, pids, dbg --launch, a shell - is unaffected. The ways out are "
+    "to run the target as a uid the debug image has an account for, or to land "
+    "the seat with GID 0 so it can register one itself (the image makes "
+    f"{PASSWD_PATH} group-writable for exactly that: kubectl podbench attach "
+    "--seat-gid-root)."
+)
+"""Named mechanism, then the way out - the shape :class:`podbench.model.Blocker`
+uses, because "No user exists for uid 1000" names neither."""
+
+
+def login_name(uid: int | None = None) -> str | None:
+    """The login name NSS resolves for ``uid``, or ``None`` when it resolves none.
+
+    Asked of the platform rather than read out of ``/etc/passwd``: sshd itself
+    calls ``getpwuid``/``getpwnam``, so an image whose identities arrive from
+    some other NSS source is one podbench has to agree with rather than
+    contradict. It is also the exact call that kills ``ssh-keygen`` - "No user
+    exists for uid 1000" is ``getpwuid`` failing, and no ``-C comment`` avoids
+    it, because ssh-keygen asks regardless of whether it needs an answer.
+    """
+    try:
+        return pwd.getpwuid(os.geteuid() if uid is None else uid).pw_name
+    except KeyError:
+        return None
+
+
+def _uid_named(user: str) -> int | None:
+    """The uid NSS resolves ``user`` to, or ``None``."""
+    try:
+        return pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return None
+
+
+def passwd_line(*, uid: int, gid: int, home: str, user: str = SEAT_USER) -> str:
+    """One ``/etc/passwd`` record for the seat's own uid."""
+    return f"{user}:x:{uid}:{gid}:{user}:{home}:{LOGIN_SHELL}\n"
+
+
+def _registration_blocker(uid: int, gid: int, path: Path) -> str | None:
+    """Why this container cannot add its own passwd entry, or ``None``."""
+    if not path.is_file():
+        return f"there is no {path} to add one to"
+    taken = _uid_named(SEAT_USER)
+    if taken is not None:
+        # sshd resolves the *name* the client offered, so a second record for
+        # the same name would never be reached: the first one wins and the login
+        # would be attempted as the wrong uid.
+        return (
+            f"the login name {SEAT_USER!r} already belongs to uid {taken} in "
+            f"{path}, and sshd resolves the name before the uid"
+        )
+    if not os.access(path, os.W_OK):
+        return f"{path} is not writable by uid {uid} / gid {gid}"
+    return None
+
+
+def ensure_passwd_entry(
+    layout: SshdLayout,
+    *,
+    uid: int | None = None,
+    gid: int | None = None,
+    passwd_path: str | None = None,
+) -> bool:
+    """Give the running uid an NSS identity, when the container is able to.
+
+    The degraded rung runs as the *target's* uid, which is discovered at attach
+    time from a pod podbench did not build - so no account for it can exist in
+    the debug image, and none can be pre-baked that would match. Without one,
+    ``ssh-keygen`` dies with "No user exists for uid <n>" before sshd is ever
+    started, and sshd would refuse the login even if it had a host key.
+
+    The registration convention is the one containers running as an arbitrary
+    uid already use (OpenShift's): ``/etc/passwd`` is group-writable by GID 0
+    and the entrypoint appends its own record. That works only when the seat
+    really does run with GID 0, so this step is *allowed to fail* - it raises,
+    :func:`ensure_all` records the reason, and the container lands without ssh
+    rather than not landing at all.
+
+    Idempotent like every other ensure step: a uid NSS already resolves is left
+    alone, which is also the whole of the root case.
+    """
+    own_uid = os.geteuid() if uid is None else uid
+    own_gid = os.getegid() if gid is None else gid
+    if login_name(own_uid) is not None:
+        return False
+
+    path = Path(PASSWD_PATH if passwd_path is None else passwd_path)
+    blocker = _registration_blocker(own_uid, own_gid, path)
+    if blocker is not None:
+        raise RuntimeError(
+            f"uid {own_uid} has no NSS entry and this container cannot add one: "
+            f"{blocker}. {NSS_WAY_OUT}"
+        )
+
+    entry = passwd_line(uid=own_uid, gid=own_gid, home=layout.home)
+    existing = path.read_text()
+    if entry.strip() in existing.splitlines():
+        # Written by a previous run and still not resolving: appending a second
+        # copy would not help, and a second attach must not grow the file.
+        raise RuntimeError(
+            f"{path} already carries {entry.strip()!r} and NSS still does not "
+            f"resolve uid {own_uid}; this image's nsswitch.conf does not appear "
+            f"to consult {path}. {NSS_WAY_OUT}"
+        )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(("" if existing.endswith("\n") or not existing else "\n") + entry)
+    if login_name(own_uid) is None:
+        raise RuntimeError(
+            f"appended {entry.strip()!r} to {path} and NSS still does not "
+            f"resolve uid {own_uid}. {NSS_WAY_OUT}"
+        )
+    return True
+
+
+def nss_identity_check(
+    *, uid: int | None = None, gid: int | None = None, passwd_path: str | None = None
+) -> CheckResult:
+    """Whether sshd can resolve a login name for the uid this container runs as.
+
+    Re-derived from the platform rather than remembered, so it is the same
+    answer whether it is reached through the start-up path or through
+    ``podbench agent --self-check`` over ``kubectl exec`` seconds later.
+    """
+    own_uid = os.geteuid() if uid is None else uid
+    own_gid = os.getegid() if gid is None else gid
+    name = login_name(own_uid)
+    if name is not None:
+        return CheckResult(
+            "nss-identity", True, f"uid {own_uid} resolves to the login name {name!r}"
+        )
+    path = Path(PASSWD_PATH if passwd_path is None else passwd_path)
+    blocker = _registration_blocker(own_uid, own_gid, path)
+    if blocker is None:
+        return CheckResult(
+            "nss-identity",
+            False,
+            f"uid {own_uid} has no NSS entry even though {path} is writable - "
+            "the agent's registration step failed; its reason is in the "
+            "container's start-up output",
+        )
+    return CheckResult(
+        "nss-identity",
+        False,
+        f"uid {own_uid} has no NSS entry and this container cannot add one: "
+        f"{blocker}. {NSS_WAY_OUT}",
+    )
 
 
 SESSION_ENV_PREFIX = "PODBENCH_"
@@ -291,26 +466,87 @@ def read_host_public_key(layout: SshdLayout) -> str | None:
     return path.read_text().strip() if path.is_file() else None
 
 
+@dataclass(frozen=True)
+class EnsureReport:
+    """What start-up changed, and what it could not do.
+
+    Failures are carried rather than raised because the caller is PID 1 of an
+    unrestartable container: the only thing worse than a seat without ssh is a
+    seat that died explaining why it had none.
+    """
+
+    changes: tuple[str, ...] = ()
+    failures: tuple[CheckResult, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures
+
+
 def ensure_all(
     layout: SshdLayout,
     *,
     env: Mapping[str, str] | None = None,
     runner: CommandRunner | None = None,
-) -> list[str]:
-    """Bring the container to a serving state. Returns what actually changed.
+) -> EnsureReport:
+    """Bring the container as close to a serving state as it can get.
 
-    An empty list is the expected result of the second and later runs.
+    No step is fatal. Each one that fails is recorded against its name and the
+    rest still run, because they are independent: ``ssh-keygen`` failing for
+    want of a passwd entry costs the ssh transport and nothing else, and the
+    container has to stay up for the half of the seat that ``kubectl exec``
+    reaches.
+
+    An empty report is the expected result of the second and later runs.
     """
     changes: list[str] = []
-    if ensure_privsep_dir(layout):
-        changes.append(f"created {layout.privsep_dir}")
-    if ensure_host_key(layout, env=env, runner=runner):
-        changes.append(f"installed host key {layout.host_key_path}")
-    if ensure_authorized_keys(layout, env=env):
-        changes.append(f"updated {layout.authorized_keys_path}")
-    if ensure_sshd_config(layout):
-        changes.append(f"wrote {layout.config_path}")
-    return changes
+    failures: list[CheckResult] = []
+
+    def step(name: str, description: str, action: Callable[[], bool]) -> None:
+        try:
+            if action():
+                changes.append(description)
+        except (OSError, RuntimeError) as error:
+            failures.append(CheckResult(f"ensure-{name}", False, str(error)))
+        except Exception as error:
+            # Deliberately broad, and only here: PID 1 of an unrestartable
+            # container must not exit over a bug in a step whose failure costs
+            # the ssh transport at most. The exception type is named so that a
+            # defect stays distinguishable from a refusal we planned for.
+            failures.append(
+                CheckResult(
+                    f"ensure-{name}",
+                    False,
+                    f"unexpected {type(error).__name__}: {error}",
+                )
+            )
+
+    step(
+        "privsep-dir",
+        f"created {layout.privsep_dir}",
+        lambda: ensure_privsep_dir(layout),
+    )
+    # Before the host key, not after: ssh-keygen calls getpwuid() whatever it is
+    # asked to do, so on a uid NSS cannot resolve it fails before writing a byte.
+    step(
+        "nss-identity",
+        f"registered uid {os.geteuid()} as {SEAT_USER!r} in {PASSWD_PATH}",
+        lambda: ensure_passwd_entry(layout),
+    )
+    step(
+        "host-key",
+        f"installed host key {layout.host_key_path}",
+        lambda: ensure_host_key(layout, env=env, runner=runner),
+    )
+    step(
+        "authorized-keys",
+        f"updated {layout.authorized_keys_path}",
+        lambda: ensure_authorized_keys(layout, env=env),
+    )
+    step(
+        "sshd-config", f"wrote {layout.config_path}", lambda: ensure_sshd_config(layout)
+    )
+    return EnsureReport(tuple(changes), tuple(failures))
 
 
 def fd2_check() -> CheckResult:
@@ -402,14 +638,18 @@ def self_check(
     *,
     runner: CommandRunner | None = None,
     roundtrip: bool = True,
+    ensure: EnsureReport | None = None,
 ) -> list[CheckResult]:
     """Everything that must hold before a client is told the pod is ready.
 
     Each of these has a silent failure mode: a missing privsep directory, an
     unparsed config or a torn-down exec stream all surface to the user as a
-    connection error with no cause attached.
+    connection error with no cause attached. A start-up step that gave up is
+    the same kind of thing, so ``ensure``'s failures are reported here too -
+    this is the one place that answers "why is there no host key".
     """
-    results = [proxy_shape_check(layout), fd2_check()]
+    results = [proxy_shape_check(layout), fd2_check(), nss_identity_check()]
+    results.extend(ensure.failures if ensure is not None else ())
     if roundtrip:
         results.append(stdio_roundtrip_check())
 
@@ -594,6 +834,12 @@ def main(args: Sequence[str] | None = None) -> int:
         help="print the host public key for the launcher's known_hosts",
     )
     parser.add_argument(
+        "--print-login-user",
+        action="store_true",
+        help="print the login name sshd will resolve for this uid; non-zero "
+        "with the reason on stderr when there is none",
+    )
+    parser.add_argument(
         "--no-self-check",
         action="store_true",
         help="skip the startup checks (they cost a subprocess and ~0.2 s)",
@@ -607,19 +853,28 @@ def main(args: Sequence[str] | None = None) -> int:
     opts = parser.parse_args(args)
 
     layout = SshdLayout.for_uid(os.geteuid())
+
+    if opts.print_login_user:
+        # A pure read, answered before anything is ensured: the launcher asks
+        # this of a container that has already started, and the answer has to be
+        # the state sshd will find rather than the state a second ensure created.
+        return _print_login_user()
+
+    ensure: EnsureReport | None = None
     if not opts.self_check:
-        for change in ensure_all(layout):
+        ensure = ensure_all(layout)
+        for change in ensure.changes:
             _say(change)
+        for failure in ensure.failures:
+            _say(str(failure))
 
     failures = 0
     if opts.self_check or not opts.no_self_check:
-        for result in self_check(layout):
+        for result in self_check(layout, ensure=ensure):
             _say(str(result))
             failures += 0 if result.ok else 1
         if opts.self_check:
             return 1 if failures else 0
-    if failures:
-        return 1
 
     if opts.print_host_key:
         public = read_host_public_key(layout)
@@ -629,8 +884,32 @@ def main(args: Sequence[str] | None = None) -> int:
         print(public)
         return 0
 
+    if failures:
+        # Reported, never fatal. Exiting here would leave the container in
+        # Error, burn its name for the pod's lifetime (report 4.2) and take the
+        # exec-reachable half of the seat down along with the ssh half - which
+        # is most of what spike S5 found the degraded rung to be worth.
+        _say(
+            f"{failures} start-up check(s) failed, so ssh into this container "
+            "may not work. Staying up: capreport, pids, dbg --launch and a "
+            "shell are reached with kubectl exec and need none of sshd."
+        )
+
     status = reaper_status()
     _say(status.note)
     if opts.ensure_only:
-        return 0
+        return 1 if failures else 0
     return idle(status, interval=opts.idle_interval)
+
+
+def _print_login_user() -> int:
+    """``--print-login-user``: stdout is the name, stderr is why there is none."""
+    result = nss_identity_check()
+    if not result.ok:
+        print(result.detail, file=sys.stderr)
+        return 1
+    name = login_name()
+    if name is None:  # pragma: no cover - nss_identity_check just resolved it
+        return 1
+    print(name)
+    return 0
