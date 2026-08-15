@@ -1576,8 +1576,20 @@ def ssh_include_line(directory: Path) -> str:
 
     >>> ssh_include_line(Path("/home/dev/.podbench"))
     'Include /home/dev/.podbench/config.d/*.conf'
+    >>> ssh_include_line(Path("/Users/Jo Smith/.podbench"))
+    'Include "/Users/Jo Smith/.podbench/config.d/*.conf"'
     """
-    return f"Include {directory / CONFIG_D / '*.conf'}"
+    glob = str(directory / CONFIG_D / "*.conf")
+    # ssh_config splits a directive's arguments on whitespace, so an unquoted
+    # `/Users/Jo Smith/...` reaches OpenSSH as two paths and neither exists -
+    # and `doctor` reads it back with the same split, so the check would report
+    # MISSING for ever and `--fix` would prepend the line again on every run.
+    # Double quotes are the quoting ssh_config understands; shlex.quote's single
+    # quotes are not. Only quoted when needed, so the line a reader is asked to
+    # paste stays the plain one everywhere it can.
+    if any(character.isspace() for character in glob):
+        return f'Include "{glob}"'
+    return f"Include {glob}"
 
 
 def forget_ssh_config(

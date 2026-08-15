@@ -367,6 +367,26 @@ def test_the_config_directory_is_a_warning_and_fix_creates_it(home: Path) -> Non
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700
 
 
+def test_a_client_dir_with_a_space_in_it_is_quoted_and_still_settles(
+    home: Path,
+) -> None:
+    # ssh_config splits a directive's arguments on whitespace and so does the
+    # parser here, so an unquoted `/Users/Jo Smith/...` would read back as
+    # MISSING every time - and --fix would prepend the line again on every run
+    # instead of settling, which is the one thing this fix must never do.
+    elsewhere = str(home / "Jo Smith" / ".podbench")
+    machine = FakeMachine()
+    report = diagnose(
+        runner=machine, which=machine.which, config_dir=elsewhere, fix=True
+    )
+    once = (home / ".ssh" / "config").read_text()
+    assert statuses(report)["ssh include"] is Status.OK
+    assert f'Include "{Path(elsewhere) / "config.d" / "*.conf"}"' in once
+
+    diagnose(runner=machine, which=machine.which, config_dir=elsewhere, fix=True)
+    assert (home / ".ssh" / "config").read_text() == once
+
+
 def test_the_config_dir_flag_moves_both_the_directory_and_the_include(
     home: Path,
 ) -> None:
