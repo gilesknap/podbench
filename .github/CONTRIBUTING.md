@@ -22,6 +22,14 @@ same or is improved by a pull request!
 
 It is recommended that developers use a [vscode devcontainer](https://code.visualstudio.com/docs/devcontainers/containers). This repository contains configuration to set up a containerized development environment that suits its own needs.
 
+`Charts/podbench/values.schema.json` is **generated, never hand-edited**: a
+pre-commit hook regenerates it from `values.yaml` and `example.values.yaml`. That
+hook is a shim around a helm plugin, so a checkout outside the devcontainer needs
+`helm plugin install https://github.com/losisin/helm-values-schema-json` before
+`pre-commit run --all-files` will pass. Add a value by editing `values.yaml` —
+including the `# @schema` comment if it needs an enum or an item shape — and
+letting the hook rewrite the JSON.
+
 This project was created using the [Diamond Light Source Copier Template](https://github.com/DiamondLightSource/python-copier-template) for Python projects.
 
 For more information on common tasks like setting up a developer environment, running the tests, and setting a pre-commit hook, see the template's [How-to guides](https://diamondlightsource.github.io/python-copier-template/5.4.0/how-to.html).

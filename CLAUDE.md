@@ -33,6 +33,12 @@ silent.
   labels takes production traffic. Opt-in, behind an explicit flag, always.
 - **Never mutate a cluster outside a scratch namespace.** Cluster testing happens
   in `podbench-*` namespaces created for the purpose and deleted afterwards.
+- **`Charts/podbench/values.schema.json` is generated.** A pre-commit hook
+  (`helm schema`, driven by `Charts/podbench/.schema.config.yaml`) rewrites it
+  from `values.yaml` plus `example.values.yaml`. Edit those; hand-edits are
+  reverted on the next commit. A new value with no `# @schema` hint and no
+  example entry still lands in the schema, but a list defaulting to `[]` gets no
+  item shape, so a typo inside an entry goes back to being accepted silently.
 - **One runtime dependency, and it is the CLI.** typer (with click and rich) is
   the whole list, asserted by `tests/test_packaging.py`; the dev group is for
   test-only additions. Adding a second has to be argued for in that test first.

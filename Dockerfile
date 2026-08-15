@@ -7,6 +7,15 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     graphviz \
     && apt-get dist-clean
 
+# The helm-schema pre-commit hook regenerates Charts/podbench/values.schema.json
+# and is a shim around a helm *plugin*: with the plugin missing it fails the
+# commit outright rather than skipping, so it belongs in the image next to helm
+# itself. Keep the version pinned to the hook's `rev` in
+# .pre-commit-config.yaml — a different plugin generates a different schema, and
+# the disagreement surfaces in CI as a diff nobody wrote.
+RUN helm plugin install https://github.com/losisin/helm-values-schema-json \
+    --version v2.5.0
+
 # The build stage installs the context into the venv
 FROM developer AS build
 

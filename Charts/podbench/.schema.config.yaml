@@ -1,0 +1,38 @@
+# Config for `helm schema` (github.com/losisin/helm-values-schema-json), which
+# regenerates values.schema.json from values.yaml on every commit. The paths are
+# relative to the repository root, because pre-commit runs the hook from there.
+#
+# Never edit values.schema.json by hand: it is generated, and the pre-commit hook
+# rewrites it.
+
+values:
+  # example.values.yaml exists only to give the three lists that default to `[]`
+  # an item shape. A schema inferred from `subjects: []` alone constrains
+  # nothing, which is the one case this schema is most worth having.
+  - Charts/podbench/values.yaml
+  - Charts/podbench/example.values.yaml
+
+output: Charts/podbench/values.schema.json
+
+# The whole point of the file: helm validates values.schema.json on install, so
+# `--set rbac.iterat=true` becomes a refusal at the point of the typo instead of
+# a release that silently grants nothing and an attach that fails much later
+# with an RBAC error naming a verb the user thought they had.
+noAdditionalProperties: true
+
+schemaRoot:
+  title: podbench Helm chart
+  description: RBAC, workspace claims and seat identity for podbench
+  # Tighter than noAdditionalProperties alone, which the tool would otherwise
+  # relax at the root.
+  additionalProperties: false
+
+# Nothing here `$ref`s the Kubernetes schemas, and that is deliberate: helm's
+# validator resolves a remote `$ref` over the network at install time, so a
+# `$k8s/...` reference would make every `helm install` of this chart depend on
+# raw.githubusercontent.com. Every property below is spelled out locally
+# instead. bundle stays false so that a `$ref` added later is a visible URL
+# rather than a silent 500 kB of inlined Kubernetes definitions, and the pinned
+# version is what such a reference would resolve against.
+bundle: false
+k8sSchemaVersion: v1.34.10

@@ -14,6 +14,9 @@ jobs:
     uses: ./.github/workflows/_tox.yml
     with:
       tox: pre-commit,type-checking
+      # pre-commit regenerates Charts/podbench/values.schema.json, which needs
+      # helm and the schema plugin on the runner.
+      helm: true
 
   test:
     strategy:
