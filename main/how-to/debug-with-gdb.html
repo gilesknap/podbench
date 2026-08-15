@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b3.dev2+ga72815de4 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4624ee37"></script>
+    <script src="../_static/documentation_options.js?v=1d640bd7"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -748,14 +748,24 @@ open problem, not a solved one.</p>
 <p>These go in <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> <strong>in the remote window</strong> — the debug adapter
 runs inside the debug container, next to gdb, so every path below is a path in
 that container.</p>
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>gdb’s DAP/MI mode has not been tested against podbench. The gdb command
-sequence above was verified from the CLI. The VS Code C++ extension consumes
-<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code>’s <code class="docutils literal notranslate"><span class="pre">fullname</span></code>, which is exactly the field the wrong source-mapping
-approach corrupts, so if paths come out doubled (<code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root/…</span></code>)
-that is the failure to look for.</p>
+<section id="let-podbench-write-it">
+<h3>Let podbench write it<a class="headerlink" href="#let-podbench-write-it" title="Link to this heading">#</a></h3>
+<p>Do not hand-copy the templates below unless you have to. In the seat:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># debug-config</span>
+<span class="n">debug</span><span class="o">-</span><span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">/</span><span class="n">root</span><span class="o">/.</span><span class="n">vscode</span><span class="o">/</span><span class="n">launch</span><span class="o">.</span><span class="n">json</span>
+<span class="n">then</span><span class="p">:</span> <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim&quot;</span>
+</pre></div>
 </div>
+<p>It fills in the pid, the sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code>, the setup ordering, the
+architecture and <code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> from what it can already see, which is the
+whole point: every one of those fails <em>silently</em> when wrong. <code class="docutils literal notranslate"><span class="pre">--print-config</span></code>
+emits it instead of writing it, <code class="docutils literal notranslate"><span class="pre">--output</span></code> puts it beside the folder you
+actually opened, and <code class="docutils literal notranslate"><span class="pre">--lldb</span></code> emits the CodeLLDB form. Re-running it replaces
+its own entry and leaves any hand-written configuration alone.</p>
+<p>VS Code reads <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> from the folder that is <strong>open</strong>, not from
+<code class="docutils literal notranslate"><span class="pre">$HOME</span></code>. A config written to <code class="docutils literal notranslate"><span class="pre">~</span></code> when you opened <code class="docutils literal notranslate"><span class="pre">/</span></code> never appears in the Run
+and Debug list, and nothing reports an error.</p>
+</section>
 <section id="c-c-with-ms-vscode-cpptools-gdb">
 <h3>C/C++ with <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> (gdb)<a class="headerlink" href="#c-c-with-ms-vscode-cpptools-gdb" title="Link to this heading">#</a></h3>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
@@ -767,8 +777,10 @@ that is the failure to look for.</p>
 <span class="w">      </span><span class="nt">&quot;request&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;attach&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;processId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;program&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/victim&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;cwd&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/root&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;MIMode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gdb&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;miDebuggerPath&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/usr/bin/gdb&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;miDebuggerPath&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/usr/local/bin/gdb-podbench&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;targetArchitecture&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;arm64&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;setupCommands&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;set sysroot /proc/1/root&quot;</span><span class="w"> </span><span class="p">},</span>
 <span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;directory /proc/1/root&quot;</span><span class="w"> </span><span class="p">},</span>
@@ -776,18 +788,56 @@ that is the failure to look for.</p>
 <span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;set debuginfod enabled on&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">      </span><span class="p">],</span>
 <span class="w">      </span><span class="nt">&quot;sourceFileMap&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;/app/src&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/src&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="nt">&quot;/workspace/build&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/workspace/src&quot;</span>
+<span class="w">        </span><span class="nt">&quot;/app/src&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/src&quot;</span>
 <span class="w">      </span><span class="p">}</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">]</span>
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>Two things are load-bearing. <code class="docutils literal notranslate"><span class="pre">program</span></code> must be the <strong>sysroot-prefixed</strong> path, or
-gdb reads the debug image’s idea of the binary. And <code class="docutils literal notranslate"><span class="pre">setupCommands</span></code> run before
-the attach, which is the ordering the CLI sequence depends on — do not move the
-sysroot line into a post-attach hook.</p>
+<p>Four things are load-bearing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">program</span></code> must be the <strong>sysroot-prefixed</strong> path, or gdb reads the debug image’s
+idea of the binary. <code class="docutils literal notranslate"><span class="pre">setupCommands</span></code> run before the attach, which is the ordering
+the CLI sequence depends on — do not move the sysroot line into a post-attach
+hook.</p>
+<p><code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> must be <strong><code class="docutils literal notranslate"><span class="pre">/usr/local/bin/gdb-podbench</span></code></strong>, the image’s wrapper,
+and never <code class="docutils literal notranslate"><span class="pre">/usr/bin/gdb</span></code>. cpptools launches gdb as a child, so gdb inherits
+cpptools’ own working directory — its extension directory, which VS Code
+replaces wholesale on extension update. gdb links libpython;
+<code class="docutils literal notranslate"><span class="pre">-enable-pretty-printing</span></code> (which cpptools always sends) initialises CPython;
+CPython calls <code class="docutils literal notranslate"><span class="pre">getcwd()</span></code>; and gdb dies during startup:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">gdb</span><span class="p">:</span> <span class="n">warning</span><span class="p">:</span> <span class="n">error</span> <span class="n">finding</span> <span class="n">working</span> <span class="n">directory</span><span class="p">:</span> <span class="n">No</span> <span class="n">such</span> <span class="n">file</span> <span class="ow">or</span> <span class="n">directory</span>
+<span class="n">Fatal</span> <span class="n">signal</span><span class="p">:</span>
+<span class="n">A</span> <span class="n">fatal</span> <span class="n">error</span> <span class="n">internal</span> <span class="n">to</span> <span class="n">GDB</span> <span class="n">has</span> <span class="n">been</span> <span class="n">detected</span><span class="p">,</span> <span class="n">further</span>
+<span class="n">debugging</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">possible</span><span class="o">.</span>  <span class="n">GDB</span> <span class="n">will</span> <span class="n">now</span> <span class="n">terminate</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>No signal name, no backtrace — it crashes before it can format either — and
+VS Code surfaces only <code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">start</span> <span class="pre">debugging.</span> <span class="pre">GDB</span> <span class="pre">exited</span> <span class="pre">unexpectedly</span></code>, which points at the attach rather than at startup. <code class="docutils literal notranslate"><span class="pre">dbg</span></code> never
+hits this because it never enables pretty-printing, so the CLI works perfectly
+on a seat where the VS Code debugger cannot start at all. Reproduce it in any
+seat with:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">mkdir</span> <span class="o">-</span><span class="n">p</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">gone</span> <span class="o">&amp;&amp;</span> <span class="n">cd</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">gone</span> <span class="o">&amp;&amp;</span> <span class="n">rmdir</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">gone</span>
+<span class="n">printf</span> <span class="o">--</span> <span class="s2">&quot;-enable-pretty-printing</span><span class="se">\n</span><span class="s2">-gdb-exit</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">|</span> <span class="n">gdb</span> <span class="o">--</span><span class="n">interpreter</span><span class="o">=</span><span class="n">mi</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">cwd</span></code> must be set. On a developer’s machine <code class="docutils literal notranslate"><span class="pre">${workspaceFolder}</span></code> always exists
+so nobody sets it; in a seat it can resolve to nothing, and the result is that
+same unformattable crash.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">targetArchitecture</span></code> is worth setting on arm64 — without it cpptools logs
+<code class="docutils literal notranslate"><span class="pre">Debuggee</span> <span class="pre">TargetArchitecture</span> <span class="pre">not</span> <span class="pre">detected,</span> <span class="pre">assuming</span> <span class="pre">x86_64</span></code> — but it is <strong>not</strong>
+what causes the crash above. It is a plausible-looking red herring that sits
+directly next to the real symptom in the log.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The VS Code C++ extension consumes <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code>’s <code class="docutils literal notranslate"><span class="pre">fullname</span></code>, which is exactly
+the field the wrong source-mapping approach corrupts, so if paths come out
+doubled (<code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root/…</span></code>) that is the failure to look for. Map the
+compilation directory, never <code class="docutils literal notranslate"><span class="pre">/</span></code>.</p>
+</div>
 <p><code class="docutils literal notranslate"><span class="pre">sourceFileMap</span></code> keys are the compilation directories recorded in the DWARF
 (<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code> prints them as <em>Compilation directory</em>); values are where those
 directories can be read from <em>in the debug container</em>.</p>
@@ -968,6 +1018,7 @@ was never tried. Nor was a target in a user namespace.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakpoint-source-step">5. Breakpoint, source, step</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-source-text-actually-comes-from">Where source text actually comes from</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#vs-code-attach-templates">VS Code attach templates</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#let-podbench-write-it">Let podbench write it</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#c-c-with-ms-vscode-cpptools-gdb">C/C++ with <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> (gdb)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rust-with-vadimcn-vscode-lldb-codelldb">Rust with <code class="docutils literal notranslate"><span class="pre">vadimcn.vscode-lldb</span></code> (CodeLLDB)</a></li>
 </ul>

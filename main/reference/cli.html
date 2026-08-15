@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b3.dev2+ga72815de4 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4624ee37"></script>
+    <script src="../_static/documentation_options.js?v=1d640bd7"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -518,6 +518,7 @@ launcher’s guess and a helper’s separate guess.</p>
 │ capreport      name the mechanism that denies ptrace in this container                           │
 │ pids           list the pod&#39;s processes                                                          │
 │ dbg            debug a process                                                                   │
+│ debug-config   write VS Code&#39;s launch.json for this seat                                         │
 │ dev-bootstrap  clone, sync and editable-install a checkout                                       │
 │ run            relaunch the app and verify it                                                    │
 │ stop           stop the recorded child                                                           │
@@ -535,7 +536,7 @@ launcher’s guess and a helper’s separate guess.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Inside the debug container</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -566,7 +567,7 @@ choice, and all three run the same code:</p>
 to run it before the first PyPI release.</p>
 <p>The in-pod verbs are also reachable as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> from a terminal in the
 seat; several have shorter aliases on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (<code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>,
-<code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>).</p>
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>).</p>
 <section id="common-options">
 <h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
 <p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these:</p>
@@ -1074,6 +1075,49 @@ produces a correct backtrace.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> consumes the remainder of the command line, so any other flag must
 come first. See <a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
 </section>
+<section id="debug-config">
+<h3><code class="docutils literal notranslate"><span class="pre">debug-config</span></code><a class="headerlink" href="#debug-config" title="Link to this heading">#</a></h3>
+<p>The VS Code debug configuration for this seat, written the way <code class="docutils literal notranslate"><span class="pre">attach</span></code> writes
+the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code> or a
+setup ordering, each of which fails <em>silently</em> when wrong.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
+ Usage: debug-config [OPTIONS] [PID]                                                                
+                                                                                                    
+ Write the VS Code debug configuration for this seat, with the pid, the sysroot-prefixed program    
+ path and the gdb setup order already filled in.                                                    
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      &lt;int&gt;  pid to attach to; discovered from the container id if omitted                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id         ID       target container id used to discover the pid (default:           │
+│                                 $PODBENCH_TARGET_CID)                                            │
+│ --program              PATH     the target&#39;s binary as its own rootfs spells it, when            │
+│                                 /proc/&lt;pid&gt;/exe cannot be read. It is prefixed with the sysroot  │
+│                                 here, so do not prefix it yourself                               │
+│ --source-dir           DIR      extra source directory in *this* container, wired with gdb&#39;s     │
+│                                 `directory`. Repeatable                                          │
+│ --source-map           FROM=TO  map a DWARF compilation directory (`info source` prints it) onto │
+│                                 a readable path. Repeatable                                      │
+│ --no-debuginfod                 do not enable debuginfod (it needs ca-certificates and network)  │
+│ --lldb                          emit a CodeLLDB configuration instead of cpptools&#39; cppdbg        │
+│ --print-config                  print the configuration instead of writing it                    │
+│ --output               PATH     where to write it (default: ./.vscode/launch.json)               │
+│ --help                          Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> names <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/gdb-podbench</span></code>, never <code class="docutils literal notranslate"><span class="pre">/usr/bin/gdb</span></code>:
+cpptools launches gdb inheriting its own extension directory as a working
+directory, which VS Code deletes on extension update, and gdb’s libpython then
+dies in <code class="docutils literal notranslate"><span class="pre">getcwd()</span></code> during startup with no signal name. <code class="docutils literal notranslate"><span class="pre">--source-map</span> <span class="pre">/</span></code> is
+refused rather than emitted — gdb re-applies a root substitution on display and
+the editor is handed <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/proc/&lt;pid&gt;/root/...</span></code>.</p>
+<p>Re-running replaces its own entry by name and leaves a hand-written
+configuration beside it untouched. A <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> it cannot parse — VS Code
+permits comments, <code class="docutils literal notranslate"><span class="pre">json</span></code> does not — is refused rather than rewritten. See
+<a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
+</section>
 <section id="dev-bootstrap">
 <h3><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code><a class="headerlink" href="#dev-bootstrap" title="Link to this heading">#</a></h3>
 <p>Populate the dev pod’s workspace: clone, sync, editable install.</p>
@@ -1329,6 +1373,7 @@ stream.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capreport"><code class="docutils literal notranslate"><span class="pre">capreport</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pids"><code class="docutils literal notranslate"><span class="pre">pids</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dbg"><code class="docutils literal notranslate"><span class="pre">dbg</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#debug-config"><code class="docutils literal notranslate"><span class="pre">debug-config</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev-bootstrap"><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run"><code class="docutils literal notranslate"><span class="pre">run</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stop"><code class="docutils literal notranslate"><span class="pre">stop</span></code></a></li>
