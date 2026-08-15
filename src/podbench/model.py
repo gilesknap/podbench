@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 __all__ = [
+    "DEFAULT_IMAGE",
+    "IMAGE_ENV",
+    "TARGET_CID_ENV",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
@@ -19,7 +23,49 @@ __all__ = [
     "ProcInfo",
     "Rung",
     "Verdict",
+    "as_dict",
 ]
+
+DEFAULT_IMAGE = "ghcr.io/gilesknap/podbench:latest"
+"""The debug image the launcher attaches when nothing else is specified.
+
+Both halves of the launcher — `attach` on a live pod and `dev` on an authored
+one — put this into a container spec, and a release that bumped one and not the
+other would leave the two modes silently running different builds.
+"""
+
+IMAGE_ENV = "PODBENCH_IMAGE"
+"""Environment override for :data:`DEFAULT_IMAGE`, so a site can point every
+podbench command at its own mirror or a pinned digest without a flag on each.
+"""
+
+TARGET_CID_ENV = "PODBENCH_TARGET_CID"
+"""Env var carrying the target's container id into the debug container.
+
+This is the one string the two halves must spell identically: the launcher
+writes it into the container spec, the in-pod side reads it to attribute
+processes, and a rename on one side alone degrades attribution to the cgroup
+fallback silently (report 3.15). It is a name, not a type, but it is an
+agreement, so it lives with the rest of them.
+"""
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    """Coerce a value out of decoded API-server JSON into a mapping.
+
+    Every consumer of a pod's JSON walks a tree that is typed ``Any`` and that
+    the server may legitimately have omitted, so "a dict, or an empty one" is
+    the shape each of them needs. Defined once here because both halves parse
+    the same documents, and three private copies of it drift.
+
+    >>> as_dict({"a": 1})
+    {'a': 1}
+    >>> as_dict(None)
+    {}
+    """
+    if isinstance(value, dict):
+        return cast(dict[str, Any], value)
+    return {}
 
 
 class Verdict(enum.Enum):
@@ -78,6 +124,10 @@ class Blocker(enum.Enum):
     UID_MISMATCH = "uid-mismatch"
     """The debug container runs as a different UID than the target."""
 
+    ALREADY_TRACED = "already-traced"
+    """Another process is already tracing the target. A tracee has exactly one
+    tracer, so this refusal is indistinguishable from a policy one by errno."""
+
     UNKNOWN = "unknown"
     """Attach failed and none of the known mechanisms explains it."""
 
@@ -107,6 +157,13 @@ class Blocker(enum.Enum):
             Blocker.UID_MISMATCH: (
                 "this container's UID differs from the target's and it has no "
                 "CAP_SYS_PTRACE. Relaunch with runAsUser matching the target."
+            ),
+            Blocker.ALREADY_TRACED: (
+                "the target already has a tracer, and a process can have only "
+                "one: PTRACE_ATTACH returns the same EPERM a policy refusal "
+                "does. Nothing about this container's privileges is at fault. "
+                "Detach the debugger holding it — its pid is named in the "
+                "report — and attach again."
             ),
             Blocker.UNKNOWN: (
                 "ptrace was denied and none of the known mechanisms accounts "
@@ -174,10 +231,16 @@ class ProcInfo:
     own, and matching the target's container id against ``/proc/<pid>/cgroup``
     is the only attribution that stays correct when a second podbench session
     is attached to the same pod.
+
+    ``uid`` is optional because an unreadable ``/proc/<pid>/status`` is a real
+    outcome and must stay distinguishable from uid 0. Root is the one value the
+    degraded rung may never be handed: it costs the sysroot, maps, environ and
+    exe that are the whole point of that rung, and the launcher picks
+    ``runAsUser`` from here (report 3.11).
     """
 
     pid: int
-    uid: int
+    uid: int | None
     comm: str
     cmdline: str
     container_id: str | None = None
