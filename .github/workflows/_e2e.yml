@@ -1,0 +1,73 @@
+name: End-to-end tests
+
+# The e2e suite is the Phase 0 spikes turned into regression tests. The spikes
+# proved podbench's load-bearing mechanisms once, by hand, against a real
+# cluster; this job is what makes a refactor that breaks one of them fail loudly
+# instead of silently. Several of those mechanisms fail *quietly* when broken —
+# a truncated stdio stream with rc=0, a debug container that guesses which
+# processes belong to the target — so unit tests cannot stand in for it.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  e2e:
+    runs-on: ${{ inputs.runs-on }}
+    # The suite creates namespaces, waits on image pulls and compiles a
+    # distroless target from source in an initContainer.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Built and side-loaded rather than pulled, so the job needs no registry
+      # credentials and tests the image from *this* commit rather than the last
+      # published tag.
+      - name: Build the podbench image
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: .
+          load: true
+          tags: podbench:e2e
+          cache-from: type=gha
+
+      - name: Create the kind cluster
+        uses: helm/kind-action@v1
+        with:
+          config: kind.yaml
+          cluster_name: podbench-e2e
+
+      - name: Load the image into the cluster
+        run: kind load docker-image podbench:e2e --name podbench-e2e
+
+      - name: Run the e2e suite
+        env:
+          PODBENCH_E2E: "1"
+          # Side-loaded; the imagePullPolicy must never send kind to a registry
+          # for a tag that exists nowhere else.
+          PODBENCH_IMAGE: docker.io/library/podbench:e2e
+        run: uv run --no-sync pytest tests/e2e -v -rs
+
+      - name: Cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -50 || true

@@ -46,6 +46,10 @@ jobs:
       contents: read
       packages: write
 
+  e2e:
+    needs: container
+    uses: ./.github/workflows/_e2e.yml
+
   docs:
     uses: ./.github/workflows/_docs.yml
     permissions:
