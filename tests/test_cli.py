@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
@@ -61,3 +63,26 @@ def test_a_verbs_own_flags_are_never_claimed_here(
     # not a flag this level or dbg knows. Both have to arrive intact.
     assert main(["dbg", "--dry-run", "--launch", "./victim", "--fast"]) == 0
     assert "set args --fast" in capsys.readouterr().out
+
+
+def test_a_verbs_pass_through_command_survives_the_separator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The sibling above passes for `dbg` because --launch swallows the rest by
+    # its own design. `run` instead relies on `--`, and this level eats it:
+    # forwarding argv verbatim is done with ignore_unknown_options, and click
+    # consumes the separator on the way through, so dev's parser never sees
+    # one. `podbench run --port 8080 -- python -m api` — the relaunch loop's
+    # documented form — then died on `No such option: -m`, having started
+    # nothing. Order matters as much as arrival: this is an argv, not a set.
+    from podbench import dev
+
+    seen: list[list[str]] = []
+
+    def capture(command: Sequence[str], **_: Any) -> dev.LaunchResult:
+        seen.append(list(command))
+        return dev.LaunchResult(ok=True, detail="")
+
+    monkeypatch.setattr(dev, "start", capture)
+    assert main(["run", "--port", "8080", "--", "python", "-m", "api", "-c", "x"]) == 0
+    assert seen == [["python", "-m", "api", "-c", "x"]]

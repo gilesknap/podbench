@@ -1755,7 +1755,21 @@ def _build_app() -> typer.Typer:
     # Named explicitly: the function cannot be called `run`, which this
     # module already imports from .cli, nor `stop`, which is the relaunch
     # loop's own.
-    @app.command(name="run", help="relaunch the app and verify it (runs in the pod)")
+    # `ignore_unknown_options` is what lets the app's own flags through, and it
+    # is needed because by the time argv reaches here the `--` is gone: the
+    # top-level dispatcher forwards a verb's arguments verbatim by declaring it
+    # with that same setting, and click consumes the separator doing so. Without
+    # it the relaunch loop's documented form — `podbench run --port 8080 --
+    # python -m api` — exits 2 on `No such option: -m`, having started nothing.
+    # The cost is that a mistyped flag of podbench's own joins the command
+    # rather than being refused; that is the right way round here, because
+    # everything after `--` belongs to the app and `start()` verifies what it
+    # actually launched.
+    @app.command(
+        name="run",
+        help="relaunch the app and verify it (runs in the pod)",
+        context_settings={"ignore_unknown_options": True},
+    )
     def run_app(
         port: Annotated[
             int, typer.Option("--port", metavar="PORT", help="the port it must serve")
