@@ -1,0 +1,793 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Attach to a pod &#8212; podbench 0.1.0a5 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=b5c4fd1f"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'how-to/attach-to-a-pod';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a5';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Contribute to the project" href="contribute.html" />
+    <link rel="prev" title="How-to Guides" href="../how-to.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0a5" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Attach to a pod</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contribute.html">Contribute to the project</a></li>
+<li class="toctree-l1"><a class="reference internal" href="debug-with-gdb.html">Debug with gdb</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iterate-on-python.html">Iterate on Python</a></li>
+<li class="toctree-l1"><a class="reference internal" href="run-container.html">The container image</a></li>
+<li class="toctree-l1"><a class="reference internal" href="vscode-remote-ssh.html">VS Code Remote-SSH</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../how-to.html" class="nav-link">How-to Guides</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Attach to a pod</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="attach-to-a-pod">
+<h1>Attach to a pod<a class="headerlink" href="#attach-to-a-pod" title="Link to this heading">#</a></h1>
+<p>Observe mode: put a debug seat into a <strong>live</strong> pod without disturbing it, and
+find out what that seat can actually do. For the guided version, see
+<a class="reference internal" href="../tutorials/first-session.html"><span class="std std-doc">Your first session</span></a>; this page is the recipes.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>On a live pod podbench shares the workload’s memory and ephemeral-storage limits
+and <strong>cannot reserve its own</strong> — an ephemeral container may not declare
+<code class="docutils literal notranslate"><span class="pre">resources</span></code> at all. A VS Code session is a 1.1–1.3 GB working set, so attaching
+to a tightly limited pod can get the workload OOM-killed or the whole pod
+evicted, and an OOM inside an ephemeral container is unrecoverable. Anything
+heavier than looking belongs in a dev pod
+(<a class="reference internal" href="iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>).</p>
+</div>
+<section id="attach-and-re-attach">
+<h2>Attach, and re-attach<a class="headerlink" href="#attach-and-re-attach" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> and a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code> are both accepted. Namespace defaults to your
+current context’s.</p>
+<p>Running it again <strong>reconnects</strong> to the running podbench container rather than
+adding a second one. That is not an optimisation: ephemeral containers cannot be
+removed or restarted, every attach appends to the pod spec permanently, and a
+container name once used is burnt for the pod’s lifetime. <code class="docutils literal notranslate"><span class="pre">--new</span></code> forces a fresh
+container with the next free <code class="docutils literal notranslate"><span class="pre">podbench-&lt;n&gt;</span></code> name — use it when the previous one
+died, not out of habit.</p>
+</section>
+<section id="choosing-the-target-container">
+<h2>Choosing the target container<a class="headerlink" href="#choosing-the-target-container" title="Link to this heading">#</a></h2>
+<p>podbench needs to know <em>which</em> container’s PID namespace to join and whose UID
+to match:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-... --target api
+</pre></div>
+</div>
+<p>Without <code class="docutils literal notranslate"><span class="pre">--target</span></code> it picks the pod’s first container. On a multi-container pod,
+name it — the target choice determines the sysroot, the UID of the degraded
+rung, and what <code class="docutils literal notranslate"><span class="pre">pids</span></code> calls a target process.</p>
+<p>If the pod spec does not state a <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> for the target (so the UID comes
+from the image), tell podbench with <code class="docutils literal notranslate"><span class="pre">--target-uid</span> <span class="pre">1000</span></code>. The degraded rung must
+match the target’s UID exactly; it never defaults to root, because root without
+<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> is strictly <em>worse</em> than the target’s own UID — it cannot even
+read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>.</p>
+</section>
+<section id="when-the-cluster-refuses-sys-ptrace">
+<h2>When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code><a class="headerlink" href="#when-the-cluster-refuses-sys-ptrace" title="Link to this heading">#</a></h2>
+<p>Nothing to do — that is the normal path. podbench catches the refusal and falls
+to the next rung automatically, and still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">degraded</span> <span class="o">-</span> <span class="n">target</span> <span class="n">UID</span><span class="p">,</span> <span class="n">no</span> <span class="n">capabilities</span> <span class="p">(</span><span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspection</span><span class="p">)</span>
+<span class="n">ladder</span>
+  <span class="n">full</span>      <span class="n">refused</span>  <span class="n">Pod</span> <span class="n">Security</span> <span class="n">Admission</span><span class="p">:</span> <span class="n">must</span> <span class="ow">not</span> <span class="n">include</span> <span class="s2">&quot;SYS_PTRACE&quot;</span> <span class="ow">in</span>
+                     <span class="n">securityContext</span><span class="o">.</span><span class="n">capabilities</span><span class="o">.</span><span class="n">add</span>
+  <span class="n">degraded</span>  <span class="n">landed</span>   <span class="n">admitted</span> <span class="n">by</span> <span class="n">the</span> <span class="n">API</span> <span class="n">server</span> <span class="ow">and</span> <span class="n">the</span> <span class="n">kubelet</span>
+<span class="n">supports</span>
+  <span class="p">[</span> <span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
+      <span class="n">CAP_SYS_PTRACE</span> <span class="ow">is</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">this</span> <span class="n">container</span><span class="s1">&#39;s effective set...</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspect</span> <span class="p">(</span><span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span><span class="p">,</span> <span class="n">maps</span><span class="p">,</span> <span class="n">environ</span><span class="p">)</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">seat</span> <span class="p">(</span><span class="n">editor</span><span class="p">,</span> <span class="n">shell</span><span class="p">,</span> <span class="n">git</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The degraded rung is genuinely useful. It reads the target’s rootfs, <code class="docutils literal notranslate"><span class="pre">maps</span></code>,
+<code class="docutils literal notranslate"><span class="pre">environ</span></code>, <code class="docutils literal notranslate"><span class="pre">exe</span></code> and <code class="docutils literal notranslate"><span class="pre">cwd</span></code>, and it gives you <strong>full source-level debugging of
+programs gdb starts itself</strong> — breakpoints, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">continue</span></code>, backtraces,
+locals — with <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>. What you lose is attach to an
+already-running process. See <a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
+<p>Two things it cannot do, so do not plan on them: <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/mem</span></code> and
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/syscall</span></code> use <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_ATTACH</span></code> and are denied.</p>
+</section>
+<section id="making-memory-headroom-first">
+<h2>Making memory headroom first<a class="headerlink" href="#making-memory-headroom-first" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-... --resize 6Gi
+</pre></div>
+</div>
+<p>This raises the <strong>target container’s</strong> memory limit in place
+(<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">pod</span> <span class="pre">--subresource</span> <span class="pre">resize</span></code>) before the seat lands, because the
+headroom has to exist before vscode-server starts allocating into a limit
+podbench cannot reserve.</p>
+<p>It is opt-in and it prints a warning either way, because it is only lightly
+proven: one Kubernetes version, one pod, never against a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>, a
+<code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code>, or a controller that would fight the change. Failure is
+reported, not fatal — a seat that lands with a loud warning beats one that does
+not land.</p>
+<p>It also needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>, which the chart grants separately from the
+rest.</p>
+</section>
+<section id="getting-the-ssh-stanza-again">
+<h2>Getting the ssh stanza again<a class="headerlink" href="#getting-the-ssh-stanza-again" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench ssh-config pod/web-... -n demo
+$ kubectl podbench ssh-config pod/web-... -n demo --print-config
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> regenerates the stanza for a seat that is already running, without
+touching the pod. <code class="docutils literal notranslate"><span class="pre">--print-config</span></code> writes it to stdout instead of to
+<code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/</span></code>, for piping somewhere else.</p>
+<p>Useful flags:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--host-alias</span> <span class="pre">myseat</span></code> — the ssh <code class="docutils literal notranslate"><span class="pre">Host</span></code> name. Defaults to
+<code class="docutils literal notranslate"><span class="pre">podbench-&lt;namespace&gt;-&lt;pod&gt;</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ssh-user</span></code> — the login name. <code class="docutils literal notranslate"><span class="pre">root</span></code> on the full rung; on a degraded rung
+sshd resolves the name through NSS, so the image needs an account for that
+UID and you may need to say which.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--identity</span> <span class="pre">~/.ssh/id_work</span></code> — the key to offer, and the one whose public half
+is injected into the container.</p></li>
+</ul>
+</section>
+<section id="host-keys-and-known-hosts">
+<h2>Host keys and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code><a class="headerlink" href="#host-keys-and-known-hosts" title="Link to this heading">#</a></h2>
+<p>podbench mints a host key per attach and manages its own <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> at
+<code class="docutils literal notranslate"><span class="pre">~/.podbench/known_hosts</span></code>, keyed on an alias derived from the <strong>pod UID</strong>. It
+deliberately does not ship <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code>: a debugging tool that
+teaches you to skip host verification has taught you something you will apply
+elsewhere.</p>
+<p>A consequence: a pod that restarts is a new pod UID and therefore a new host,
+not a man-in-the-middle warning. A container that restarts <em>within</em> the same pod
+gets a fresh rootfs and a fresh host key, and podbench replaces the entry on
+re-attach.</p>
+<p>To make host keys survive, deliver one from a Secret via
+<code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_HOST_KEY_FILE</span></code> (default mount
+<code class="docutils literal notranslate"><span class="pre">/etc/podbench/ssh/ssh_host_ed25519_key</span></code>).</p>
+</section>
+<section id="seeing-what-is-out-there">
+<h2>Seeing what is out there<a class="headerlink" href="#seeing-what-is-out-there" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench status pod/web-... -n demo    # every seat in one pod
+$ kubectl podbench list -n demo                  # every seat in the namespace
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">status</span></code> shows dead containers too, because their names remain burnt.</p>
+</section>
+<section id="removing-a-seat">
+<h2>Removing a seat<a class="headerlink" href="#removing-a-seat" title="Link to this heading">#</a></h2>
+<p>You cannot. An ephemeral container lives until its pod dies. Delete the pod (a
+controller will replace it) or leave it — an idle podbench container is
+<code class="docutils literal notranslate"><span class="pre">sleep</span></code>-cheap, but it still counts against the pod’s ephemeral-storage budget
+for whatever it has written.</p>
+</section>
+<section id="when-it-goes-wrong">
+<h2>When it goes wrong<a class="headerlink" href="#when-it-goes-wrong" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Symptom</p></th>
+<th class="head"><p>Cause</p></th>
+<th class="head"><p>Fix</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ssh_dispatch_run_fatal:</span> <span class="pre">...</span> <span class="pre">Broken</span> <span class="pre">pipe</span></code>, <code class="docutils literal notranslate"><span class="pre">command</span> <span class="pre">terminated</span> <span class="pre">with</span> <span class="pre">exit</span> <span class="pre">code</span> <span class="pre">255</span></code></p></td>
+<td><p>something closed or redirected sshd’s stderr; closing fd 2 in a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>’d process tears down the whole CRI exec stream</p></td>
+<td><p>do not hand-edit the generated <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code>. <code class="docutils literal notranslate"><span class="pre">-i</span></code> and <code class="docutils literal notranslate"><span class="pre">-e</span></code> are both mandatory and <code class="docutils literal notranslate"><span class="pre">2&gt;&amp;1</span></code> breaks it</p></td>
+</tr>
+<tr class="row-odd"><td><p>ssh hangs forever with no output</p></td>
+<td><p>a <em>stalled</em> transport (apiserver or konnectivity hiccup)</p></td>
+<td><p>the generated config sets <code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span> <span class="pre">15</span></code>/<code class="docutils literal notranslate"><span class="pre">CountMax</span> <span class="pre">3</span></code>, which fails in ~19 s instead. Do not remove them</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span> <span class="pre">('...'</span> <span class="pre">&gt;=</span> <span class="pre">108</span> <span class="pre">bytes)</span></code></p></td>
+<td><p>the control socket is not under <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-cm</span></code></p></td>
+<td><p>keep the generated <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code>; <code class="docutils literal notranslate"><span class="pre">sun_path</span></code> is 108 bytes</p></td>
+</tr>
+<tr class="row-odd"><td><p>container status <code class="docutils literal notranslate"><span class="pre">CreateContainerConfigError</span></code>, <code class="docutils literal notranslate"><span class="pre">container's</span> <span class="pre">runAsUser</span> <span class="pre">breaks</span> <span class="pre">non-root</span> <span class="pre">policy</span></code></p></td>
+<td><p>the kubelet refused a root container <em>after</em> the API server accepted it</p></td>
+<td><p>podbench pre-empts this by reading <code class="docutils literal notranslate"><span class="pre">runAsNonRoot</span></code> and skips the full rung; if you forced it, do not</p></td>
+</tr>
+<tr class="row-even"><td><p>attach lands but <code class="docutils literal notranslate"><span class="pre">blocker:</span> <span class="pre">yama-scope</span></code></p></td>
+<td><p>Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span> <span class="pre">&gt;=</span> <span class="pre">1</span></code> on <strong>that node</strong> forbids attaching to non-descendants</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span></code>, or have the target call <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>every library reports <code class="docutils literal notranslate"><span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> absent, so <code class="docutils literal notranslate"><span class="pre">libdebuginfod</span></code> fails the TLS handshake silently</p></td>
+<td><p>use the published image; it is mandatory there for exactly this reason</p></td>
+</tr>
+<tr class="row-even"><td><p>attach works on one pod, is denied on the next</p></td>
+<td><p>Yama differs <strong>per node</strong>, by kernel flavour, not by architecture</p></td>
+<td><p>nothing to fix. The report prints the node name and Yama state for this reason</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span> <span class="pre">attach</span></code> returns <code class="docutils literal notranslate"><span class="pre">2</span></code> only for a real error. A degraded seat is
+a success: returning non-zero for “the cluster would not grant <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>”
+would make an honest report look like a failure.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../how-to.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">How-to Guides</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="contribute.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Contribute to the project</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-and-re-attach">Attach, and re-attach</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-target-container">Choosing the target container</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-refuses-sys-ptrace">When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-headroom-first">Making memory headroom first</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-the-ssh-stanza-again">Getting the ssh stanza again</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#host-keys-and-known-hosts">Host keys and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seeing-what-is-out-there">Seeing what is out there</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#removing-a-seat">Removing a seat</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-it-goes-wrong">When it goes wrong</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a5/docs/how-to/attach-to-a-pod.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/how-to/attach-to-a-pod.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
