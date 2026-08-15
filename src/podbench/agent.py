@@ -223,10 +223,10 @@ PASSWD_PATH = "/etc/passwd"
 GROUP_PATH = "/etc/group"
 """The NSS ``files`` database ``getgrgid`` answers from.
 
-Named here beside :data:`PASSWD_PATH` because the launcher mounts both from
-:data:`podbench.model.SEAT_IDENTITY_VOLUME` and the two halves have to spell the
-paths identically. A missing group record is not fatal the way a missing passwd
-record is - it costs ``id`` and ``ls -l`` a name, not the login.
+Named here beside :data:`PASSWD_PATH` because a ``podbench dev`` sidecar mounts
+both from :data:`podbench.model.SEAT_IDENTITY_VOLUME` and the two halves have to
+spell the paths identically. A missing group record is not fatal the way a
+missing passwd record is - it costs ``id`` and ``ls -l`` a name, not the login.
 """
 
 LOGIN_SHELL = "/bin/bash"
@@ -236,17 +236,26 @@ naming a shell that is not would give the user a session that exits at once."""
 NSS_WAY_OUT = (
     "sshd resolves the login name through NSS before it will look at a key, so "
     "ssh into this seat cannot work. Everything reached by kubectl exec - "
-    "capreport, pids, dbg --launch, a shell - is unaffected. The ways out are "
-    f"to deploy the workload with a {SEAT_IDENTITY_VOLUME!r} volume carrying a "
-    f"passwd record for its uid, which the seat mounts read-only over "
-    f"{PASSWD_PATH} (a pod's volumes are immutable, so this has to be in the "
-    "spec at deploy time), to run the target as a uid the debug image has an "
-    "account for, or to land the seat with GID 0 so it can register one itself "
-    f"(the image makes {PASSWD_PATH} group-writable for exactly that: kubectl "
-    "podbench attach --seat-gid-root)."
+    "capreport, pids, dbg --launch, a shell - is unaffected. A seat that reads "
+    "this is almost always an ephemeral container, and the way out for one is "
+    "GID 0: land it again with "
+    "`kubectl podbench attach <pod> --new --seat-gid-root` and it registers its "
+    f"own record in the image's group-writable {PASSWD_PATH}. Failing that, run "
+    "the target as a uid the debug image already has an account for. A "
+    f"{SEAT_IDENTITY_VOLUME!r} volume does not help here, however plainly the "
+    "pod declares one: projecting a passwd file takes a subPath per mount and "
+    "an ephemeral container may not have one. That volume is the identity a "
+    "`podbench dev` sidecar gets, which is an ordinary container."
 )
 """Named mechanism, then the way out - the shape :class:`podbench.model.Blocker`
-uses, because "No user exists for uid 1000" names neither."""
+uses, because "No user exists for uid 1000" names neither.
+
+Written for the container it is *read* in. Every path that quotes it - the
+registration failure, ``nss-identity``, and the launcher, which prints it
+verbatim under the missing ssh stanza - is reached from a seat that got here by
+running as a uid it has no account for, and on a live pod that seat is an
+ephemeral container. So the ephemeral route leads and the volume is named only
+to stop somebody deploying it in the hope it fixes this."""
 
 HOME_WAY_OUT = (
     f"The usual cause is a missing fsGroup. A {SEAT_HOME_VOLUME!r} volume is "
@@ -327,13 +336,23 @@ def ensure_passwd_entry(
     ``ssh-keygen`` dies with "No user exists for uid <n>" before sshd is ever
     started, and sshd would refuse the login even if it had a host key.
 
-    Registering one here is the *fallback*, not the preferred route. Where the
-    pod declares :data:`podbench.model.SEAT_IDENTITY_VOLUME` the launcher mounts
-    a passwd file read-only over ``/etc/passwd`` and NSS resolves the uid before
-    this step ever runs, which is why the ``login_name`` check comes first and
-    returns without looking at the file's mode: a read-only ``/etc/passwd`` that
-    already carries the identity is the *success* case, and treating it as a
-    refusal would report the one shape that works as the one that does not.
+    Which of the two mechanisms applies is decided by the kind of container this
+    is, not by anything measured here:
+
+    * an **ephemeral** seat - ``attach``, and so the common case - can be given
+      no passwd file at all: projecting one takes a ``subPath`` per mount and the
+      API server forbids ``subPath`` on an ephemeral container. Registration
+      here is its *only* route, and it needs GID 0
+      (``attach --new --seat-gid-root``);
+    * a **``podbench dev``** sidecar is an ordinary container, so
+      :func:`podbench.spec.dev_pod_spec` mounts
+      :data:`podbench.model.SEAT_IDENTITY_VOLUME` read-only over ``/etc/passwd``
+      and NSS resolves the uid before this step ever runs.
+
+    That second shape is why the ``login_name`` check comes first and returns
+    without looking at the file's mode: a read-only ``/etc/passwd`` that already
+    carries the identity is the *success* case, and treating it as a refusal
+    would report the one shape that works as the one that does not.
 
     The registration convention is the one containers running as an arbitrary
     uid already use (OpenShift's): ``/etc/passwd`` is group-writable by GID 0

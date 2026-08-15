@@ -50,15 +50,40 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from . import spec
+from .agent import PUBKEY_ENV
 from .kubectl import Kubectl, KubectlError, Runner, run_subprocess
-from .launcher import LauncherError, resolve_pod_name
-from .model import DEFAULT_IMAGE, TARGET_CID_ENV, PodRef, as_dict
+from .launcher import (
+    DEFAULT_CLIENT_DIR,
+    DEFAULT_IDENTITY,
+    LauncherError,
+    Session,
+    SshSeat,
+    client_dir,
+    declared_volumes,
+    emit_ssh_config,
+    forget_ssh_config,
+    probe_ssh_identity,
+    read_public_key,
+    resolve_pod_name,
+    rung_of_spec,
+    spec_env,
+)
+from .model import (
+    DEFAULT_IMAGE,
+    SEAT_IDENTITY_VOLUME,
+    TARGET_CID_ENV,
+    ContainerRef,
+    PodRef,
+    Rung,
+    as_dict,
+)
 from .proc import DEFAULT_PROC, read_cgroup, read_cmdline, read_comm
+from .sshcfg import host_key_alias
 
 __all__ = [
     "CUTOVER_SELECTOR_ANNOTATION",
@@ -101,6 +126,8 @@ __all__ = [
     "read_process",
     "recorded_cutover",
     "save_state",
+    "seat_ssh_config",
+    "sidecar_session",
     "socket_inodes",
     "sole_container",
     "spawn_detached",
@@ -1054,6 +1081,11 @@ class DevPod:
     target_port: int
     take_traffic: bool
     cutover: Cutover | None = None
+    seat_identity: tuple[int, int] | None = None
+    """The uid/gid the sidecar was authored at because the origin declares
+    :data:`podbench.model.SEAT_IDENTITY_VOLUME`, or ``None`` for the root
+    sidecar. It changes what the user is logged in as and whether the seat has
+    ``SYS_PTRACE``, so it is reported rather than left to be discovered."""
 
 
 def dev_pod_name(origin: str, *, suffix: str = DEV_POD_SUFFIX) -> str:
@@ -1150,6 +1182,7 @@ def create_dev_pod(
     container: str | None = None,
     image: str = DEFAULT_IMAGE,
     port: int | None = None,
+    public_key: str | None = None,
     take_traffic: bool = False,
     cutover_service: str | None = None,
     timeout: float = 120.0,
@@ -1162,6 +1195,13 @@ def create_dev_pod(
     follows the inner loop, and nothing is listening until the first
     ``podbench run``. Waiting for Ready here would hang until the user did
     something they have not been told how to do yet.
+
+    ``public_key`` is authorised inside the sidecar by the agent at start-up,
+    from the environment variable authored here. It has to go in at *authoring*
+    time and there is no second chance: an ordinary container's ``env`` is
+    immutable once the pod exists, so a dev pod created without a key is a dev
+    pod that has to be deleted and made again to get one. That is why ``dev``
+    reads the key before it creates anything, exactly as ``attach`` does.
     """
     origin_json = kube.get_pod(origin)
     target = container or sole_container(origin_json)
@@ -1173,6 +1213,17 @@ def create_dev_pod(
         )
     pod_name = name or dev_pod_name(origin)
 
+    identity = spec.dev_seat_identity(origin_json, target)
+    if identity is None and SEAT_IDENTITY_VOLUME in declared_volumes(origin_json):
+        # Declared and unusable is worth a line: somebody prepared this pod for
+        # podbench and the sidecar is about to ignore what they prepared.
+        _say(
+            f"note: {origin} declares the {SEAT_IDENTITY_VOLUME!r} volume, and "
+            f"the sidecar cannot use it: container {target!r} pins no non-root "
+            "uid *and* gid, so the uid the identity was written for is not "
+            "knowable from the manifest. The sidecar runs as root instead."
+        )
+
     manifest = spec.dev_pod_spec(
         origin_json,
         name=pod_name,
@@ -1180,6 +1231,7 @@ def create_dev_pod(
         image=image,
         target_port=target_port,
         take_traffic=take_traffic,
+        env={PUBKEY_ENV: public_key} if public_key else None,
     )
 
     cutover: Cutover | None = None
@@ -1199,6 +1251,7 @@ def create_dev_pod(
         target_port=target_port,
         take_traffic=take_traffic,
         cutover=cutover,
+        seat_identity=identity,
     )
     if dry_run:
         return result, manifest
@@ -1212,7 +1265,112 @@ def create_dev_pod(
     return result, manifest
 
 
-def delete_dev_pod(kube: Kubectl, name: str, *, timeout: float = 120.0) -> list[str]:
+def sidecar_session(pod: DevPod, manifest: Mapping[str, Any]) -> Session:
+    """The dev pod's sidecar, described the way the launcher describes a seat.
+
+    A dev pod's sidecar *is* a seat — it runs the same agent, writes the same
+    sshd config and answers the same ``--print-login-user`` — so the client
+    wiring is the launcher's :func:`podbench.launcher.emit_ssh_config` and not a
+    second implementation of it. All that is needed here is the translation, and
+    it is read back out of the authored manifest rather than remembered, so the
+    stanza describes the container that was actually submitted.
+
+    ``$HOME`` is the one field with a real decision in it. Two homes are in play
+    and they are not the same path:
+
+    * the sidecar's ``HOME`` env is the workspace volume (``/workspace``), where
+      uv's caches, toolchains and venvs belong;
+    * a projected ``podbench-identity`` passwd record names ``/home/podbench``,
+      and an *ssh session* lands there, because sshd puts the session in the home
+      NSS gives it.
+
+    The agent settles it inside the container with
+    ``SshdLayout.for_uid(os.geteuid())``, which consults ``$HOME`` for a non-root
+    seat and ignores it entirely for a root one — root's files live in ``/root``
+    and ``/etc/podbench`` whatever ``HOME`` says. **So the env wins for a
+    non-root sidecar and nothing wins for a root one**, and that is what is
+    reproduced here: the ProxyCommand names sshd's config file by absolute path,
+    and ``authorized_keys`` has to be looked for where the agent actually wrote
+    it. Disagreeing costs the whole transport at the first connection, with
+    ``sshd: no such file`` or ``Permission denied (publickey)`` to explain it.
+
+    The passwd home is left to be what it is for — the session's landing
+    directory, which is why :func:`podbench.spec.dev_pod_spec` mounts the
+    ``podbench-home`` volume there. ``AuthorizedKeysFile`` in the generated sshd
+    config is absolute, so the two homes differing is not a problem for key auth;
+    it would only become one if this function guessed at the wrong one.
+    """
+    sidecar = _sidecar_container(manifest, pod.sidecar)
+    rung = rung_of_spec(sidecar)
+    return Session(
+        seat=ContainerRef(pod.ref, pod.sidecar),
+        workload=pod.target_container,
+        rung=rung,
+        reused=False,
+        uid=_as_int(as_dict(sidecar.get("securityContext")).get("runAsUser")),
+        home=None if rung is Rung.FULL else spec_env(sidecar).get("HOME"),
+        # Mounted and declared are different questions, and for a dev pod they
+        # can differ: the clone carries the origin's volumes wholesale, but the
+        # sidecar only mounts the identity when the manifest said which uid it
+        # was written for.
+        identity_mounted=pod.seat_identity is not None,
+        identity_declared=SEAT_IDENTITY_VOLUME in declared_volumes(manifest),
+    )
+
+
+def seat_ssh_config(
+    kube: Kubectl,
+    pod: DevPod,
+    manifest: Mapping[str, Any],
+    *,
+    identity: str,
+    config_dir: str | None = None,
+    host_alias: str | None = None,
+) -> SshSeat:
+    """Give the dev pod's sidecar the same seat ``attach`` gives an ephemeral one.
+
+    Iterate mode's whole premise is that the editor is inside the cluster, so a
+    dev pod reachable only by ``kubectl exec`` is the mode with its point
+    removed. The sidecar already runs the agent; this is the other half — the
+    client stanza, the ``known_hosts`` entry and the alias to type.
+
+    The login name is *measured* rather than derived from the rung, because on a
+    dev pod it is neither of the launcher's two answers: it comes from the passwd
+    record the ``podbench-identity`` ConfigMap carries, and that names whatever
+    the chart called the application's uid.
+    """
+    session = sidecar_session(pod, manifest)
+    identified = probe_ssh_identity(kube, session.seat)
+    return emit_ssh_config(
+        kube,
+        replace(session, ssh=identified),
+        identity=identity,
+        config_dir=config_dir,
+        host_alias=host_alias,
+        user=identified.login,
+    )
+
+
+def _sidecar_container(manifest: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    for container in _containers(manifest):
+        if container.get("name") == name:
+            return container
+    raise DevError(f"the authored pod has no container named {name!r}")
+
+
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def delete_dev_pod(
+    kube: Kubectl,
+    name: str,
+    *,
+    timeout: float = 120.0,
+    config_dir: str | None = None,
+) -> list[str]:
     """Tear the dev pod down, leaving the cluster as it was found.
 
     Order matters: the Service selector goes back *before* the pod is deleted,
@@ -1220,6 +1378,12 @@ def delete_dev_pod(kube: Kubectl, name: str, *, timeout: float = 120.0) -> list[
     fails. The origin pod is never touched — and this refuses to run against
     anything that is not a podbench dev pod, because ``dev --delete`` typed with
     the origin's name would otherwise delete production.
+
+    "Leaving nothing behind" includes the laptop: the ssh stanza and the
+    ``known_hosts`` entry ``dev`` wrote go too. Unlike an ``attach`` seat, which
+    is reconnectable for its pod's lifetime and whose stanza is regenerated, this
+    pod is gone — and its ``HostKeyAlias`` is keyed on a pod UID no pod will ever
+    have again, so a stanza left behind can only ever fail.
     """
     actions: list[str] = []
     try:
@@ -1246,11 +1410,29 @@ def delete_dev_pod(kube: Kubectl, name: str, *, timeout: float = 120.0) -> list[
 
     kube.delete_pod(name, wait=True)
     actions.append(f"deleted pod/{name}")
+
+    # After the delete, not before: a teardown that failed half way through
+    # should leave the user with a working stanza for the pod that is still
+    # there.
+    pod_uid = as_dict(pod_json.get("metadata")).get("uid")
+    actions.extend(
+        forget_ssh_config(
+            PodRef(kube.namespace, name),
+            directory=client_dir(config_dir),
+            alias=host_key_alias(pod_uid) if isinstance(pod_uid, str) else None,
+        )
+    )
     return actions
 
 
-def connection_summary(pod: DevPod) -> str:
-    """What to type next. Printed once, after the dev pod comes up."""
+def connection_summary(pod: DevPod, seat: SshSeat | None = None) -> str:
+    """What to type next. Printed once, after the dev pod comes up.
+
+    ``seat`` is the ssh wiring :func:`seat_ssh_config` produced. Both routes in
+    are listed when there is one, and in this order: ssh is what Iterate mode is
+    *for* — the editor lives in the cluster — and ``kubectl exec`` is what still
+    works when ssh does not, which is the reason it is not dropped.
+    """
     lines = [
         f"dev pod {pod.ref} is running (clone of {pod.origin}; "
         f"{pod.origin} itself is untouched)",
@@ -1259,6 +1441,13 @@ def connection_summary(pod: DevPod) -> str:
         f"  workspace        : {DEFAULT_WORKSPACE} (emptyDir, also $HOME)",
         f"  app port         : {pod.target_port} (readiness follows your process)",
     ]
+    if pod.seat_identity is not None:
+        uid, gid = pod.seat_identity
+        lines.append(
+            f"  seat identity    : {SEAT_IDENTITY_VOLUME} projected over "
+            f"/etc/passwd and /etc/group, so the sidecar runs as {uid}:{gid} "
+            "(the app's own) with no SYS_PTRACE"
+        )
     if pod.cutover is not None:
         lines.append(
             f"  service          : {pod.cutover.service} cut over to this pod; "
@@ -1274,15 +1463,22 @@ def connection_summary(pod: DevPod) -> str:
             "  service          : none — this pod receives no traffic until you "
             "pass --take-traffic or --cutover"
         )
+    if seat is not None:
+        lines += ["", *seat.note.splitlines()]
+    lines += ["", "next:"]
+    if seat is not None and seat.alias is not None:
+        lines.append(
+            f"  ssh {seat.alias}   (or Remote-SSH: Connect to Host -> {seat.alias})"
+        )
     lines += [
-        "",
-        "next:",
         f"  kubectl -n {pod.ref.namespace} exec -it {pod.ref.name} "
-        f"-c {pod.sidecar} -- bash",
+        f"-c {pod.sidecar} -- bash"
+        + ("   # works when ssh does not" if seat is not None else ""),
         "  podbench dev-bootstrap --repo <url> [--ref <ref>]",
         f"  podbench run --port {pod.target_port} -- <your command>",
         "",
-        "teardown (restores any borrowed Service selector, then removes the pod):",
+        "teardown (restores any borrowed Service selector, removes the pod, and "
+        "takes the ssh config with it):",
         f"  podbench dev --delete {pod.ref.name} -n {pod.ref.namespace}",
     ]
     return "\n".join(lines)
@@ -1341,15 +1537,36 @@ def _pod_argument(reference: str) -> str:
         raise DevError(str(error)) from error
 
 
+def _identity_argument(identity: str) -> tuple[str, str]:
+    """The launcher's own key discovery, refusing in this CLI's voice.
+
+    One implementation, so ``dev`` and ``attach`` authorise the same key from
+    the same flag and refuse a missing one with the same sentence — the message
+    names ``ssh-keygen`` and ``--identity``, and it would be worth nothing if
+    each verb had its own version of it.
+    """
+    try:
+        return read_public_key(identity)
+    except LauncherError as error:
+        raise DevError(str(error)) from error
+
+
 def _cmd_dev(opts: argparse.Namespace) -> int:
     kube = Kubectl(opts.namespace, context=opts.context)
     pod_reference = _pod_argument(opts.pod)
     if opts.delete:
         for action in delete_dev_pod(
-            kube, dev_pod_name(pod_reference), timeout=opts.timeout
+            kube,
+            dev_pod_name(pod_reference),
+            timeout=opts.timeout,
+            config_dir=opts.config_dir,
         ):
             print(action)
         return 0
+    # Before anything is created: the key is authored into the sidecar's env,
+    # which cannot be changed afterwards, so a missing key must refuse here
+    # rather than after a pod exists that can never be ssh'd into.
+    identity, public_key = _identity_argument(opts.identity)
     pod, manifest = create_dev_pod(
         kube,
         pod_reference,
@@ -1357,6 +1574,7 @@ def _cmd_dev(opts: argparse.Namespace) -> int:
         container=opts.container,
         image=opts.image,
         port=opts.port,
+        public_key=public_key,
         take_traffic=opts.take_traffic,
         cutover_service=opts.cutover,
         timeout=opts.timeout,
@@ -1365,7 +1583,15 @@ def _cmd_dev(opts: argparse.Namespace) -> int:
     if opts.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
-    print(connection_summary(pod))
+    seat = seat_ssh_config(
+        kube,
+        pod,
+        manifest,
+        identity=identity,
+        config_dir=opts.config_dir,
+        host_alias=opts.host_alias,
+    )
+    print(connection_summary(pod, seat))
     return 0
 
 
@@ -1435,6 +1661,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="point SERVICE exclusively at the dev pod, recording its selector "
         "for an exact restore at teardown",
     )
+    dev.add_argument(
+        "--identity",
+        default=DEFAULT_IDENTITY,
+        help="ssh key to authorise in the sidecar and name in the generated "
+        f"stanza (default {DEFAULT_IDENTITY})",
+    )
+    dev.add_argument(
+        "--config-dir",
+        default=None,
+        help="where the generated ssh config and known_hosts live "
+        f"(default {DEFAULT_CLIENT_DIR})",
+    )
+    dev.add_argument("--host-alias", default=None, help="ssh Host name for the sidecar")
     dev.add_argument("--delete", action="store_true", help="tear the dev pod down")
     dev.add_argument("--timeout", type=float, default=120.0, help="seconds to wait")
     dev.add_argument(
@@ -1488,7 +1727,7 @@ def main(args: Sequence[str] | None = None) -> int:
     handler = cast(_Handler, opts.handler)
     try:
         return handler(opts)
-    except (DevError, KubectlError, spec.InvalidSpecError) as exc:
+    except (DevError, KubectlError, LauncherError, spec.InvalidSpecError) as exc:
         print(f"podbench: {exc}", file=sys.stderr)
         return 1
 

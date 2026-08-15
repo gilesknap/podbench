@@ -241,6 +241,19 @@ automatically and prints why.
 * **The target's filesystem is never written.** `readOnlyRootFilesystem` is
   common in production and podbench does not depend on writing into the target.
   `/proc/<pid>/root` is a read path in every standard workflow.
+* **An ssh-able seat on a live pod runs with `runAsGroup: 0`**, and that is a
+  deliberate opt-in (`attach --seat-gid-root`). The degraded rung runs as the
+  *target's* uid, discovered at attach time, and sshd will not authenticate a
+  user NSS cannot resolve; the debug image makes its own `/etc/passwd`
+  group-writable so the agent can append a record for that uid, which needs GID
+  0. Projecting the file instead — a ConfigMap over `/etc/passwd` — is not
+  available here: a `volumeMount` on an *ephemeral* container may not carry a
+  `subPath`, and the API server refuses the whole request if one does. So the
+  choice on a live pod is a seat in group 0 or a seat reachable only by
+  `kubectl exec`. Group 0 is a group, not a capability: it grants nothing in the
+  target container, whose files it does not own, and `restricted` PSA admits it
+  (measured: uid 1000 / gid 0). `podbench dev`'s seat is an ordinary container
+  and takes the projected identity instead, needing no group change.
 * **Ephemeral containers are an audit trail.** They cannot be removed, so an
   attach is permanently visible in the pod spec, with the image, the
   securityContext and the container name. `kubectl podbench list` reads the same

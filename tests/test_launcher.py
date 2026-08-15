@@ -25,13 +25,17 @@ from podbench.launcher import (
     attach,
     capability_report_from_json,
     current_namespace,
+    emit_ssh_config,
     features,
+    forget_known_hosts,
+    forget_ssh_config,
     format_session,
     main,
     parse_mount,
     plan_ladder,
     resolve_pod_name,
     seats,
+    ssh_config_path,
     try_resize,
 )
 from podbench.model import (
@@ -546,7 +550,15 @@ def test_a_mount_named_by_claim_lands_at_the_applications_own_path() -> None:
     assert not [w for w in session.warnings if "mountPath" in w]
 
 
-def test_a_mount_named_by_volume_carries_the_applications_sub_path() -> None:
+def test_an_application_sub_path_is_refused_rather_than_copied_or_dropped() -> None:
+    """Neither half of "copy it or drop it" is available to an ephemeral seat.
+
+    Copying is forbidden — the API server refuses ``subPath`` on an ephemeral
+    container for the whole request — and dropping it would point the seat at
+    the volume root where the application sees one directory inside it, so every
+    path Patch mode recorded would resolve to the wrong thing. So it refuses,
+    before a container name is burnt.
+    """
     cluster = FakeCluster(
         patch_pod(
             volume_mounts=[
@@ -558,14 +570,13 @@ def test_a_mount_named_by_volume_carries_the_applications_sub_path() -> None:
             ]
         )
     )
-    attach(kubectl_for(cluster), "target", mounts=["podbench-patch-venv"])
+    with pytest.raises(LauncherError) as raised:
+        attach(kubectl_for(cluster), "target", mounts=["podbench-patch-venv"])
 
-    # Without the subPath the seat would see the volume root where the
-    # application sees one directory inside it, and every path the manifest
-    # records would resolve to the wrong thing.
-    assert cluster.added[0]["volumeMounts"] == [
-        {"name": "podbench-patch-venv", "mountPath": "/opt/venv", "subPath": "venv"}
-    ]
+    message = str(raised.value)
+    assert "subPath" in message
+    assert "Ephemeral Container" in message
+    assert cluster.added == []
 
 
 def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created() -> (
@@ -665,7 +676,7 @@ def test_attach_mount_is_repeatable_on_the_command_line(tmp_path: Path) -> None:
     ]
 
 
-# -- the seat's identity, mounted from the pod (the degraded rung's ssh) -----
+# -- the seat's identity, and the volume attach cannot use for it -----------
 
 IDENTITY_VOLUME: dict[str, Any] = {
     "name": SEAT_IDENTITY_VOLUME,
@@ -676,11 +687,19 @@ HOME_VOLUME: dict[str, Any] = {
     "persistentVolumeClaim": {"claimName": "myapp-podbench-home"},
 }
 
-# The literal paths and keys, spelled out once. Everything else in this file
-# uses the constants, but the whole point of these two mounts is that the
-# launcher, the chart's ConfigMap and the image's NSS agree on exact strings —
-# so the contract is worth one assertion that would fail if any of them moved.
-EXPECTED_IDENTITY_MOUNTS: list[dict[str, Any]] = [
+# The literal path, spelled out once. Everything else in this file uses the
+# constants, but the point of this mount is that the launcher, the chart's
+# ConfigMap and the image's NSS agree on exact strings — so the contract is
+# worth one assertion that would fail if any of them moved.
+EXPECTED_SEAT_MOUNTS: list[dict[str, Any]] = [
+    {"name": "podbench-home", "mountPath": "/home/podbench"},
+]
+
+# What an *ordinary* container's identity mounts look like, and what an
+# ephemeral one may never carry: subPath is refused by the API server there.
+# Kept as a fixture because a seat can still be found carrying them — a
+# `podbench dev` sidecar, or one landed by a launcher old enough to have tried.
+IDENTITY_MOUNTS: list[dict[str, Any]] = [
     {
         "name": "podbench-identity",
         "mountPath": "/etc/passwd",
@@ -693,7 +712,6 @@ EXPECTED_IDENTITY_MOUNTS: list[dict[str, Any]] = [
         "subPath": "group",
         "readOnly": True,
     },
-    {"name": "podbench-home", "mountPath": "/home/podbench"},
 ]
 
 
@@ -708,26 +726,44 @@ def identity_pod(**overrides: Any) -> dict[str, Any]:
     return pod_document(**settings)
 
 
-def test_the_identity_volumes_are_mounted_by_convention_not_by_flag() -> None:
-    """No flag, because the volumes cannot be there by accident.
+def test_the_home_volume_is_mounted_by_convention_not_by_flag() -> None:
+    """No flag, because the volume cannot be there by accident.
 
-    ``spec.volumes`` is immutable, so anything named ``podbench-identity`` was
-    put in the pod at deploy time on purpose. Making the user repeat that intent
-    on every attach would waste the only cooperation that makes ssh possible on
-    a PSA-restricted namespace.
+    ``spec.volumes`` is immutable, so anything named ``podbench-home`` was put
+    in the pod at deploy time on purpose. Making the user repeat that intent on
+    every attach would waste the cooperation.
     """
     cluster = FakeCluster(identity_pod())
     session = attach(kubectl_for(cluster), "target")
 
     assert session.rung is Rung.DEGRADED
-    # subPath on each: mounting the volume at /etc would replace the directory,
-    # taking nsswitch.conf — and so the very lookup this exists to satisfy.
-    assert cluster.added[0]["volumeMounts"] == EXPECTED_IDENTITY_MOUNTS
-    assert session.identity_mounted
+    assert cluster.added[0]["volumeMounts"] == EXPECTED_SEAT_MOUNTS
     env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
     # The home volume is only worth mounting if the seat is pointed at it: it is
     # what keeps vscode-server off the pod's ephemeral-storage budget.
     assert env["HOME"] == SEAT_HOME_PATH
+
+
+def test_the_identity_volume_is_never_mounted_into_an_ephemeral_seat() -> None:
+    """The regression: a subPath mount fails the whole attach, not just itself.
+
+    ``kubectl ... replace --raw .../ephemeralcontainers`` comes back with
+    ``spec.ephemeralContainers[0].volumeMounts[0].subPath: Forbidden: cannot be
+    set for an Ephemeral Container`` and no seat lands at all — so authoring the
+    identity here does not degrade an attach against a prepared pod, it breaks
+    the headline command against precisely the pod the chart teaches people to
+    produce.
+    """
+    cluster = FakeCluster(identity_pod())
+    session = attach(kubectl_for(cluster), "target")
+
+    mounts = cast(list[dict[str, Any]], cluster.added[0]["volumeMounts"])
+    assert not [mount for mount in mounts if mount["name"] == SEAT_IDENTITY_VOLUME]
+    assert not [mount for mount in mounts if "subPath" in mount]
+    assert not session.identity_mounted
+    # The pod's half of the cooperation is still recorded: the report needs it
+    # to explain why the volume the user deployed is doing nothing here.
+    assert session.identity_declared
 
 
 def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
@@ -737,6 +773,7 @@ def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
 
     assert "volumeMounts" not in cluster.added[0]
     assert not session.identity_mounted
+    assert not session.identity_declared
     assert session.rung is Rung.FULL
 
 
@@ -768,51 +805,115 @@ def test_an_explicit_mount_of_the_same_path_wins_over_the_convention() -> None:
     attach(
         kubectl_for(cluster),
         "target",
+        mounts=[f"{SEAT_HOME_VOLUME}:{SEAT_HOME_PATH}"],
+    )
+
+    mounts = cast(list[dict[str, Any]], cluster.added[0]["volumeMounts"])
+    assert mounts == [{"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}]
+
+
+def test_an_explicit_mount_of_the_identity_volume_gets_no_subpath_from_podbench() -> (
+    None
+):
+    """A user may still mount the volume whole; podbench never adds a subPath.
+
+    Mounting a ConfigMap over ``/etc/passwd`` puts a *directory* there and is
+    almost certainly not what anyone wants — but it is admissible, it is what
+    was typed, and the alternative is podbench quietly authoring the one field
+    the API server refuses on an ephemeral container.
+    """
+    cluster = FakeCluster(identity_pod())
+    attach(
+        kubectl_for(cluster),
+        "target",
         mounts=[f"{SEAT_IDENTITY_VOLUME}:/etc/passwd"],
     )
 
     mounts = cast(list[dict[str, Any]], cluster.added[0]["volumeMounts"])
-    passwd = [mount for mount in mounts if mount["mountPath"] == "/etc/passwd"]
-    assert len(passwd) == 1
-    # The user's, verbatim: no subPath and no readOnly were asked for.
-    assert passwd[0] == {"name": SEAT_IDENTITY_VOLUME, "mountPath": "/etc/passwd"}
-    # The rest of the convention is unaffected.
-    assert [mount["mountPath"] for mount in mounts] == [
-        "/etc/passwd",
-        "/etc/group",
-        SEAT_HOME_PATH,
+    assert mounts == [
+        {"name": SEAT_IDENTITY_VOLUME, "mountPath": "/etc/passwd"},
+        *EXPECTED_SEAT_MOUNTS,
     ]
 
 
-def test_an_identity_without_a_home_volume_is_warned_about() -> None:
-    """The passwd record names /home/podbench, and nothing else can create it."""
+def test_a_pod_with_only_the_identity_volume_still_lands_a_seat() -> None:
+    """Nothing to mount, and the attach is unaffected by the volume being there."""
     cluster = FakeCluster(identity_pod(volumes=[IDENTITY_VOLUME]))
     session = attach(kubectl_for(cluster), "target")
 
-    assert [mount["mountPath"] for mount in cluster.added[0]["volumeMounts"]] == [
-        "/etc/passwd",
-        "/etc/group",
-    ]
-    warning = next(w for w in session.warnings if SEAT_HOME_VOLUME in w)
-    assert SEAT_HOME_PATH in warning
+    assert "volumeMounts" not in cluster.added[0]
+    assert session.identity_declared
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["HOME"] == "/tmp/podbench-home", "the fallback home, not the volume's"
 
 
-def test_the_report_says_the_identity_mount_is_why_ssh_works() -> None:
-    """One line, so two pods that differ only in this can be told apart."""
+def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
+    """Where the user is looking, on the line the volume was meant to decide.
+
+    A pod that declares ``podbench-identity`` is one somebody prepared for
+    podbench, so silence here reads as "the preparation failed". It did not: the
+    projection is impossible for an ephemeral container, and the live-pod route
+    to the same identity is ``--seat-gid-root``.
+    """
+    cluster = FakeCluster(identity_pod(), login_user=None)
+    session = attach(kubectl_for(cluster), "target")
+
+    ssh_seat = features(session)[-2]
+    assert not ssh_seat.available
+    assert SEAT_IDENTITY_VOLUME in ssh_seat.note
+    assert "subPath" in ssh_seat.note
+    assert "--seat-gid-root" in ssh_seat.note
+
+    text = format_session(session)
+    assert SEAT_IDENTITY_VOLUME in text
+    assert "--seat-gid-root" in text
+
+    # …and a pod without the volume says nothing of the sort.
+    plain = attach(kubectl_for(FakeCluster(pod_document(uid=1000))), "target")
+    assert SEAT_IDENTITY_VOLUME not in format_session(plain)
+
+
+def test_a_seat_that_already_has_a_login_is_not_told_to_re_attach() -> None:
+    """The same fact, without a remedy under a ticked box.
+
+    ``--seat-gid-root`` printed beside a working ssh seat reads as an
+    instruction to fix something that is not broken - and the seat cannot pick
+    the volume up on a re-attach anyway.
+    """
     cluster = FakeCluster(identity_pod())
     session = attach(kubectl_for(cluster), "target")
 
     ssh_seat = features(session)[-2]
     assert ssh_seat.available
     assert SEAT_IDENTITY_VOLUME in ssh_seat.note
+    assert "re-attach" not in ssh_seat.note
 
-    text = format_session(session)
-    assert "[x] ssh seat" in text
-    assert SEAT_IDENTITY_VOLUME in text
 
-    # …and a pod without the volume says nothing of the sort.
-    plain = attach(kubectl_for(FakeCluster(pod_document(uid=1000))), "target")
-    assert SEAT_IDENTITY_VOLUME not in format_session(plain)
+def test_a_seat_that_does_carry_the_identity_is_still_credited_with_it() -> None:
+    """An ordinary container may subPath, so such a seat can exist - via `dev`.
+
+    Read back from the spec rather than assumed from the pod's volumes, which is
+    what keeps "this seat has the identity" and "the pod declares the volume"
+    two separate answers.
+    """
+    existing = {
+        "name": "podbench-1",
+        "securityContext": {"runAsUser": 1000},
+        "env": [{"name": "HOME", "value": SEAT_HOME_PATH}],
+        "volumeMounts": [*IDENTITY_MOUNTS, *EXPECTED_SEAT_MOUNTS],
+    }
+    cluster = FakeCluster(
+        identity_pod(
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(kubectl_for(cluster), "target")
+
+    assert session.identity_mounted
+    note = features(session)[-2].note
+    assert "mounted read-only" in note
+    assert "--seat-gid-root" not in note
 
 
 def test_the_proxy_command_follows_the_mounted_home(
@@ -844,8 +945,14 @@ def test_the_proxy_command_follows_the_mounted_home(
     assert f"{SEAT_HOME_PATH}/.podbench/sshd_config" in capsys.readouterr().out
 
 
-def test_a_seat_landed_before_the_volumes_existed_says_to_relaunch() -> None:
-    """An ephemeral container's mounts are fixed at creation, like its name."""
+def test_a_reconnect_is_not_told_to_relaunch_for_the_identity_volume() -> None:
+    """``--new`` would pick nothing up: no seat of any age can mount it.
+
+    This used to be a warning telling the user to land a fresh seat, which was
+    advice that could not work - a new ephemeral container is refused the
+    subPath just as the old one would have been. The report carries the real
+    explanation instead, once, for reconnects and new seats alike.
+    """
     existing = {"name": "podbench-1", "securityContext": {"runAsUser": 1000}}
     cluster = FakeCluster(
         identity_pod(
@@ -858,16 +965,17 @@ def test_a_seat_landed_before_the_volumes_existed_says_to_relaunch() -> None:
     assert session.reused
     assert not session.identity_mounted
     assert cluster.added == []
-    warning = next(w for w in session.warnings if SEAT_IDENTITY_VOLUME in w)
-    assert "--new" in warning
+    assert not [w for w in session.warnings if "--new" in w]
+    assert session.identity_declared
+    assert SEAT_IDENTITY_VOLUME in features(session)[-2].note
 
 
-def test_reconnecting_to_a_seat_that_has_them_reports_it() -> None:
+def test_reconnecting_to_a_seat_reads_its_home_back_from_the_spec() -> None:
     existing = {
         "name": "podbench-1",
         "securityContext": {"runAsUser": 1000},
         "env": [{"name": "HOME", "value": SEAT_HOME_PATH}],
-        "volumeMounts": EXPECTED_IDENTITY_MOUNTS,
+        "volumeMounts": EXPECTED_SEAT_MOUNTS,
     }
     cluster = FakeCluster(
         identity_pod(
@@ -880,7 +988,6 @@ def test_reconnecting_to_a_seat_that_has_them_reports_it() -> None:
     assert session.reused
     # Read back from the spec, so a reconnect from another machine — which
     # remembers nothing of the original attach — describes the seat correctly.
-    assert session.identity_mounted
     assert session.home == SEAT_HOME_PATH
     assert not [w for w in session.warnings if "--new" in w]
 
@@ -1205,6 +1312,74 @@ def test_a_missing_public_key_is_a_message_not_a_traceback(
     )
     assert code == 2
     assert "ssh-keygen" in capsys.readouterr().err
+
+
+def test_the_stanza_generator_is_shared_and_takes_a_measured_login_name(
+    tmp_path: Path,
+) -> None:
+    """One generator, two callers.
+
+    ``podbench dev``'s sidecar is an ordinary container whose login name comes
+    from a projected passwd record, so it names the user explicitly rather than
+    taking the rung's default. Everything else — the host-key probe, the
+    ``known_hosts`` entry, the ProxyCommand, the ``Include`` advice — is the
+    same code as ``attach``, which is the point of it being a function.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    kubectl = kubectl_for(cluster)
+    session = attach(kubectl, "target")
+
+    seat = emit_ssh_config(
+        kubectl,
+        session,
+        identity=identity(tmp_path),
+        config_dir=str(tmp_path / "cfg"),
+        user="somebody-else",
+    )
+
+    assert seat.alias == "podbench-demo-target"
+    assert seat.path is not None
+    stanza = seat.path.read_text()
+    assert "User somebody-else" in stanza
+    assert "ProxyCommand" in stanza
+    assert f"then:  ssh {seat.alias}" in seat.note
+    assert seat.path == ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"))
+
+
+def test_forgetting_a_seat_takes_its_stanza_and_its_pinned_key(
+    tmp_path: Path,
+) -> None:
+    """What ``dev --delete`` calls, and what ``attach`` deliberately does not.
+
+    An attach seat is reconnectable for its pod's lifetime; a deleted dev pod is
+    not, and its alias is keyed on a UID no pod will ever have again.
+    """
+    directory = tmp_path / "cfg"
+    pod = PodRef("demo", "target")
+    path = ssh_config_path(directory, pod)
+    path.parent.mkdir(parents=True)
+    path.write_text("Host podbench-demo-target\n")
+    known_hosts = directory / "known_hosts"
+    known_hosts.write_text(f"podbench-{POD_UID} ssh-ed25519 AAAA\nother ssh-rsa BBBB\n")
+
+    removed = forget_ssh_config(pod, directory=directory, alias=f"podbench-{POD_UID}")
+
+    assert not path.exists()
+    assert known_hosts.read_text() == "other ssh-rsa BBBB\n"
+    assert len(removed) == 2
+    # Idempotent: a second teardown of the same pod says nothing and fails at
+    # nothing.
+    assert (
+        forget_ssh_config(pod, directory=directory, alias=f"podbench-{POD_UID}") == []
+    )
+
+
+def test_forgetting_the_last_pinned_key_removes_the_file(tmp_path: Path) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("podbench-abc ssh-ed25519 AAAA\n")
+    assert forget_known_hosts("podbench-abc", known_hosts)
+    assert not known_hosts.exists()
+    assert not forget_known_hosts("podbench-abc", known_hosts)
 
 
 # -- status, list, resize, namespace ----------------------------------------

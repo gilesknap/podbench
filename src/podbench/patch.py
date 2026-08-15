@@ -1557,11 +1557,19 @@ def values_snippet(
     The seat's own two volumes ride along here for one reason: they are subject
     to the identical constraint. An ephemeral container may only mount volumes
     the pod already declares, and pod volumes are immutable after creation, so
-    the identity file that makes a non-root seat resolvable — and the writable
-    home that makes it usable — have to be in the spec at deploy time or not at
-    all. ``uid``/``gid`` default to placeholders rather than to plausible
-    numbers: a wrong uid pasted unread is a seat that authenticates as nobody,
-    and a snippet that fails at ``helm install`` beats one that fails at 3am.
+    the writable home that keeps a seat's disk use off the workload's
+    ephemeral-storage budget has to be in the spec at deploy time or not at all.
+
+    The identity volume is emitted beside it and is **not** what gives a live-pod
+    seat its login: projecting a passwd *file* takes a ``subPath`` per mount and
+    an ephemeral container may not have one, so ``attach`` never mounts it and
+    uses ``--seat-gid-root`` instead. It is emitted because it is the identity a
+    seat that is an *ordinary* container can be given, which is what ``podbench
+    dev`` authors — and the comments say exactly that, so nobody deploys it
+    expecting it to fix an ssh they cannot get. ``uid``/``gid`` default to
+    placeholders rather than to plausible numbers: a wrong uid pasted unread is
+    a seat that authenticates as nobody, and a snippet that fails at ``helm
+    install`` beats one that fails at 3am.
     """
     claim = f"{app}-venv"
     configmap = identity_configmap(app)
@@ -1575,10 +1583,17 @@ def values_snippet(
             f"    - name: {app}",
             f"      size: {size}",
             "seatIdentity:",
-            "  # uid/gid must be the application container's own: in a",
-            "  # PSA-restricted namespace the seat can only run as the target's",
-            f"  # uid, and sshd cannot log in a {SEAT_USER!r} that NSS — i.e. this",
-            "  # file — does not resolve at that uid.",
+            "  # An /etc/passwd + /etc/group for a seat that runs as this",
+            f"  # application's uid. sshd cannot log in a {SEAT_USER!r} that NSS —",
+            "  # i.e. this file — does not resolve at that uid, so uid/gid must",
+            "  # be the application container's own.",
+            "  #",
+            "  # It serves a seat that is an *ordinary* container. `attach` does",
+            "  # not use it: landing the two files takes a subPath per mount and",
+            "  # the API server forbids subPath on an ephemeral container, so a",
+            "  # live-pod seat registers its own record instead —",
+            "  # `kubectl podbench attach ... --new --seat-gid-root`. Leave this",
+            "  # disabled unless you want the ConfigMap in place for that.",
             "  enabled: true",
             "  apps:",
             f"    - name: {app}",
@@ -1599,12 +1614,19 @@ def values_snippet(
             "  # container may only mount volumes its pod already has, and pod",
             "  # volumes cannot be added later. Mounting them into the",
             "  # application as well would change its filesystem for no gain.",
+            f"  # {SEAT_IDENTITY_VOLUME} is the one `attach` cannot use — it needs a",
+            "  # subPath per file, which an ephemeral container may not have. It",
+            "  # is here for a seat that is an ordinary container; drop it if you",
+            "  # only ever attach to live pods (and use --seat-gid-root there).",
             f"  - name: {SEAT_IDENTITY_VOLUME}",
             "    configMap:",
             f"      name: {configmap}",
             "      # Read-only to everybody: this is the seat's /etc/passwd, and",
             "      # nothing in the pod has any business rewriting it.",
             "      defaultMode: 0444",
+            f"  # {SEAT_HOME_VOLUME} *is* mounted by `attach`, by convention, and is",
+            "  # worth having on its own: it keeps everything the seat writes off",
+            "  # the workload's ephemeral-storage budget.",
             f"  - name: {SEAT_HOME_VOLUME}",
             "    emptyDir:",
             "      # vscode-server unpacks to ~700 MiB and a real session reaches",
@@ -1640,10 +1662,10 @@ def values_snippet(
             "# Single replica only: the claim is ReadWriteOnce and one checkout",
             "# cannot serve two writers. Take patchVenv off again — and delete the",
             "# claim — once `patch consolidate` has been through the pipeline.",
-            "# seatIdentity has no such lifetime: it is deployment furniture, it",
-            "# costs one ConfigMap and two volumes nothing else mounts, and it is",
-            "# what the seat needs on the day the namespace refuses the ptrace",
-            "# rung.",
+            f"# {SEAT_HOME_VOLUME} has no such lifetime: it is deployment",
+            "# furniture, it costs one volume the application does not mount, and",
+            "# it is what keeps a seat's disk use off the workload's budget on",
+            "# the day the namespace refuses the ptrace rung.",
         ]
     )
 

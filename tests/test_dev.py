@@ -15,11 +15,11 @@ import json
 import signal
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from podbench import dev, spec
+from podbench import dev, launcher, model, spec
 from podbench.kubectl import CommandResult, Kubectl
 
 # ``ss -lntpe`` on the sidecar: three listeners, one of them the app we are
@@ -698,6 +698,23 @@ ORIGIN_POD: dict[str, Any] = {
     "status": {"phase": "Running"},
 }
 
+
+def origin_with_identity(**container_context: Any) -> dict[str, Any]:
+    """``ORIGIN_POD`` as somebody who deployed the identity ConfigMap wrote it."""
+    pod = json.loads(json.dumps(ORIGIN_POD))
+    pod["spec"]["volumes"] = [
+        {
+            "name": model.SEAT_IDENTITY_VOLUME,
+            "configMap": {"name": "demo-podbench-identity"},
+        }
+    ]
+    pod["spec"]["containers"][0]["securityContext"] = container_context or {
+        "runAsUser": 1000,
+        "runAsGroup": 1000,
+    }
+    return cast(dict[str, Any], pod)
+
+
 SERVICE: dict[str, Any] = {
     "apiVersion": "v1",
     "kind": "Service",
@@ -706,8 +723,25 @@ SERVICE: dict[str, Any] = {
 }
 
 
+HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostKey podbench"
+CLIENT_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIClientKey me@laptop"
+
+
 class FakeKubectl(Kubectl):
-    """A Kubectl whose runner answers from a table of objects."""
+    """A Kubectl whose runner answers from a table of objects.
+
+    ``exec`` is answered too, because the sidecar is now asked two questions
+    after it comes up — its login name and its host public key — and both go
+    through ``kubectl exec`` exactly as they do for an ``attach`` seat.
+    """
+
+    login_user: str | None = "podbench"
+    """What the sidecar answers ``--print-login-user`` with; ``None`` for a
+    seat that has no NSS identity, which is the case worth a stanza-free
+    refusal. Set on the instance, not passed, because ``**objects`` is the pod
+    table and a keyword argument here would be ambiguous with it."""
+
+    host_key: str | None = HOST_KEY
 
     def __init__(self, **objects: dict[str, Any]) -> None:
         self.objects = objects
@@ -732,7 +766,18 @@ class FakeKubectl(Kubectl):
             stdout = json.dumps(self.objects.get(f"service/{args[5]}", {}))
         elif args[3] == "create":
             stdout = stdin or "{}"
+        elif args[3] == "exec":
+            return self._exec(tuple(argv))
         return CommandResult(tuple(argv), 0, stdout, "")
+
+    def _exec(self, argv: tuple[str, ...]) -> CommandResult:
+        if "--print-login-user" in argv:
+            if self.login_user is None:
+                return CommandResult(argv, 1, "", "/etc/passwd is not writable")
+            return CommandResult(argv, 0, self.login_user + "\n", "")
+        if "--print-host-key" in argv:
+            return CommandResult(argv, 0, (self.host_key or "") + "\n", "")
+        return CommandResult(argv, 0, "", "")
 
     def patches(self) -> list[list[dict[str, Any]]]:
         """Every JSON patch body sent, decoded."""
@@ -771,6 +816,56 @@ def test_dev_pod_takes_no_traffic_by_default():
     assert "app" not in manifest["metadata"]["labels"]
     assert not any("patch" in argv for argv in kube.commands)
     assert "receives no traffic" in dev.connection_summary(pod)
+
+
+def test_a_prepared_origin_gets_a_seat_with_the_identity_it_declared():
+    """The volume is the request; the sidecar is the only container that can use it."""
+    kube = FakeKubectl(**{"pod/demo": origin_with_identity()})
+    pod, manifest = dev.create_dev_pod(kube, "demo", image="img:1")
+
+    assert pod.seat_identity == (1000, 1000)
+    sidecar = next(c for c in manifest["spec"]["containers"] if c["name"] == "podbench")
+    assert sidecar["securityContext"]["runAsUser"] == 1000
+    assert [
+        mount["mountPath"]
+        for mount in sidecar["volumeMounts"]
+        if mount["name"] == model.SEAT_IDENTITY_VOLUME
+    ] == ["/etc/passwd", "/etc/group"]
+
+    summary = dev.connection_summary(pod)
+    assert "seat identity" in summary
+    assert "1000:1000" in summary
+
+
+def test_a_declared_identity_the_sidecar_cannot_use_is_said_out_loud(
+    capsys: pytest.CaptureFixture[str],
+):
+    """Prepared and ignored is the shape that looks like a podbench bug.
+
+    Without a uid in the manifest podbench cannot know who the record was
+    written for, so it authors the root sidecar it always did — and says so,
+    because the user did put the volume there on purpose.
+    """
+    kube = FakeKubectl(**{"pod/demo": origin_with_identity(runAsNonRoot=True)})
+    pod, manifest = dev.create_dev_pod(kube, "demo", image="img:1")
+
+    assert pod.seat_identity is None
+    note = capsys.readouterr().err
+    assert model.SEAT_IDENTITY_VOLUME in note
+    assert "runs as root" in note
+    sidecar = next(c for c in manifest["spec"]["containers"] if c["name"] == "podbench")
+    assert sidecar["securityContext"]["runAsUser"] == 0
+    assert model.SEAT_IDENTITY_VOLUME not in dev.connection_summary(pod)
+
+
+def test_an_ordinary_origin_says_nothing_about_identity(
+    capsys: pytest.CaptureFixture[str],
+):
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    pod, _ = dev.create_dev_pod(kube, "demo", image="img:1")
+    assert pod.seat_identity is None
+    assert model.SEAT_IDENTITY_VOLUME not in capsys.readouterr().err
+    assert "seat identity" not in dev.connection_summary(pod)
 
 
 def test_dev_pod_waits_for_running_not_ready():
@@ -855,6 +950,172 @@ def test_recorded_cutover_is_none_without_annotations():
     assert dev.recorded_cutover({"metadata": {}}) is None
 
 
+# -- the seat the dev pod's sidecar is ------------------------------------
+
+
+def identity_file(tmp_path: Path) -> str:
+    key = tmp_path / "id_ed25519"
+    key.write_text("PRIVATE")
+    key.with_suffix(".pub").write_text(CLIENT_KEY + "\n")
+    return str(key)
+
+
+def dev_pod_document(name: str = "demo-podbench") -> dict[str, Any]:
+    """The created dev pod as the API server reports it back.
+
+    Only the UID matters: it is what the ``HostKeyAlias`` is keyed on, so a
+    re-created pod is a new host rather than a man-in-the-middle warning.
+    """
+    return {
+        "metadata": {"name": name, "namespace": "podbench-test", "uid": "pod-uid-1"},
+        "spec": {"containers": [{"name": "app"}, {"name": "podbench"}]},
+        "status": {"phase": "Running"},
+    }
+
+
+def test_the_users_key_is_authorised_in_the_sidecar_at_authoring_time():
+    """An ordinary container's env is immutable, so this is the only chance.
+
+    Without it the sidecar's own start-up check ends `[FAIL] authorized-keys`
+    and the dev pod is reachable by `kubectl exec` alone — which is Iterate mode
+    with its point removed, since the editor is meant to be inside the cluster.
+    """
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    _, manifest = dev.create_dev_pod(kube, "demo", image="img:1", public_key=CLIENT_KEY)
+
+    sidecar = next(c for c in manifest["spec"]["containers"] if c["name"] == "podbench")
+    env = {entry["name"]: entry["value"] for entry in sidecar["env"]}
+    assert env[dev.PUBKEY_ENV] == CLIENT_KEY
+
+
+def test_a_sidecar_with_a_projected_identity_is_reached_at_the_env_home(
+    tmp_path: Path,
+):
+    """The two homes have to agree, and $HOME is the one that decides.
+
+    The agent inside the container picks its layout with
+    ``SshdLayout.for_uid(geteuid())``, which reads ``$HOME`` — ``/workspace`` —
+    for a non-root seat. The projected passwd record names ``/home/podbench``,
+    which is where an ssh *session* lands and nothing else. A ProxyCommand
+    naming sshd's config in the passwd home would fail at the first connection.
+    """
+    kube = FakeKubectl(**{"pod/demo": origin_with_identity()})
+    pod, manifest = dev.create_dev_pod(kube, "demo", image="img:1")
+
+    session = dev.sidecar_session(pod, manifest)
+    assert session.uid == 1000
+    assert session.home == "/workspace"
+    layout = launcher.seat_layout(session)
+    assert layout.config_path == "/workspace/.podbench/sshd_config"
+    assert layout.authorized_keys_path == "/workspace/.ssh/authorized_keys"
+
+
+def test_a_root_sidecar_is_reached_at_the_root_layout_whatever_home_says():
+    """The other half of the same decision.
+
+    ``SshdLayout.for_uid(0)`` ignores ``$HOME`` entirely — root's files live in
+    ``/root`` and ``/etc/podbench`` — so reading the sidecar's ``HOME`` env here
+    would point the ProxyCommand at a config file the agent never wrote.
+    """
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    pod, manifest = dev.create_dev_pod(kube, "demo", image="img:1")
+
+    session = dev.sidecar_session(pod, manifest)
+    sidecar = next(c for c in manifest["spec"]["containers"] if c["name"] == "podbench")
+    assert {e["name"]: e["value"] for e in sidecar["env"]}["HOME"] == "/workspace"
+    assert session.home is None, "the root layout does not consult $HOME"
+    assert launcher.seat_layout(session).config_path == "/etc/podbench/sshd_config"
+
+
+def test_dev_writes_the_client_stanza_the_launcher_would(tmp_path: Path):
+    """Same generator, same file, same advice — for an ordinary container."""
+    kube = FakeKubectl(
+        **{"pod/demo": origin_with_identity(), "pod/demo-podbench": dev_pod_document()}
+    )
+    pod, manifest = dev.create_dev_pod(kube, "demo", image="img:1")
+
+    seat = dev.seat_ssh_config(
+        kube,
+        pod,
+        manifest,
+        identity=identity_file(tmp_path),
+        config_dir=str(tmp_path / "cfg"),
+    )
+
+    assert seat.alias == "podbench-podbench-test-demo-podbench"
+    assert seat.path is not None
+    stanza = seat.path.read_text()
+    assert "Host podbench-podbench-test-demo-podbench" in stanza
+    # Measured, not derived from the rung: the login name is whatever the
+    # projected passwd record calls the application's uid.
+    assert "User podbench" in stanza
+    assert (
+        "ProxyCommand kubectl -n podbench-test exec -i demo-podbench -c podbench "
+        "-- /usr/sbin/sshd -i -e -f /workspace/.podbench/sshd_config "
+        "-o LogLevel=ERROR"
+    ) in stanza
+    assert "HostKeyAlias podbench-pod-uid-1" in stanza
+    known_hosts = (tmp_path / "cfg" / "known_hosts").read_text()
+    assert known_hosts.startswith("podbench-pod-uid-1 ssh-ed25519 ")
+
+    summary = dev.connection_summary(pod, seat)
+    assert f"then:  ssh {seat.alias}" in summary
+    # The exec line stays: it works when ssh does not.
+    assert "kubectl -n podbench-test exec -it demo-podbench -c podbench -- bash" in (
+        summary
+    )
+
+
+def test_a_sidecar_with_no_login_gets_the_reason_not_a_stanza(tmp_path: Path):
+    """A stanza that cannot work is the one output worse than none."""
+    kube = FakeKubectl(
+        **{"pod/demo": origin_with_identity(), "pod/demo-podbench": dev_pod_document()}
+    )
+    kube.login_user = None
+    pod, manifest = dev.create_dev_pod(kube, "demo", image="img:1")
+
+    seat = dev.seat_ssh_config(
+        kube,
+        pod,
+        manifest,
+        identity=identity_file(tmp_path),
+        config_dir=str(tmp_path / "cfg"),
+    )
+
+    assert seat.alias is None and seat.path is None
+    assert "no ssh config was written" in seat.note
+    assert not (tmp_path / "cfg" / "config.d").exists()
+    summary = dev.connection_summary(pod, seat)
+    assert "ProxyCommand" not in summary
+    # …and the route that still works is still offered.
+    assert "exec -it demo-podbench -c podbench -- bash" in summary
+
+
+def test_teardown_takes_the_client_config_with_it(tmp_path: Path):
+    """The pod UID is gone for good, so a stanza left behind can only fail."""
+    dev_pod = dev_pod_document()
+    dev_pod["metadata"]["labels"] = {spec.DEVPOD_LABEL: "true"}
+    kube = FakeKubectl(**{"pod/demo-podbench": dev_pod})
+    config = tmp_path / "cfg"
+    stanza = launcher.ssh_config_path(
+        config, model.PodRef("podbench-test", "demo-podbench")
+    )
+    stanza.parent.mkdir(parents=True)
+    stanza.write_text("Host podbench-podbench-test-demo-podbench\n")
+    (config / "known_hosts").write_text(
+        "podbench-pod-uid-1 ssh-ed25519 AAAA\npodbench-other ssh-ed25519 BBBB\n"
+    )
+
+    actions = dev.delete_dev_pod(kube, "demo-podbench", config_dir=str(config))
+
+    assert not stanza.exists()
+    assert (config / "known_hosts").read_text() == "podbench-other ssh-ed25519 BBBB\n"
+    assert any("removed" in action for action in actions)
+    # Order: the pod goes first, so a teardown that fails half way through
+    # leaves a working stanza for the pod that is still there.
+    assert actions.index("deleted pod/demo-podbench") < len(actions) - 1
+
+
 def test_connection_summary_tells_the_user_how_to_tear_down():
     kube = FakeKubectl(**{"pod/demo": ORIGIN_POD, "service/demo": SERVICE})
     pod, _ = dev.create_dev_pod(kube, "demo", image="img:1", cutover_service="demo")
@@ -867,12 +1128,25 @@ def test_connection_summary_tells_the_user_how_to_tear_down():
 
 
 def test_cli_dry_run_prints_the_pod_it_would_create(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
     monkeypatch.setattr(dev, "Kubectl", always(kube))
 
-    assert dev.main(["dev", "demo", "-n", "podbench-test", "--dry-run"]) == 0
+    assert (
+        dev.main(
+            [
+                "dev",
+                "demo",
+                "-n",
+                "podbench-test",
+                "--identity",
+                identity_file(tmp_path),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
 
     manifest = json.loads(capsys.readouterr().out)
     assert manifest["metadata"]["name"] == "demo-podbench"
@@ -880,8 +1154,62 @@ def test_cli_dry_run_prints_the_pod_it_would_create(
     assert not any("create" in argv for argv in kube.commands)
 
 
+def test_cli_refuses_before_creating_anything_when_there_is_no_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """The key cannot be added later, so the refusal has to come first.
+
+    A sidecar's ``env`` is fixed when the pod is created. A dev pod made without
+    a key would have to be deleted and re-made to get one, so this refuses in
+    the same words ``attach`` does, before a pod exists.
+    """
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    monkeypatch.setattr(dev, "Kubectl", always(kube))
+
+    code = dev.main(
+        ["dev", "demo", "-n", "podbench-test", "--identity", str(tmp_path / "absent")]
+    )
+
+    assert code == 1
+    error = capsys.readouterr().err
+    assert "no ssh public key" in error and "ssh-keygen" in error
+    assert not any("create" in argv for argv in kube.commands)
+
+
+def test_cli_prints_the_ssh_route_and_the_exec_route(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    kube = FakeKubectl(
+        **{"pod/demo": origin_with_identity(), "pod/demo-podbench": dev_pod_document()}
+    )
+    monkeypatch.setattr(dev, "Kubectl", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "demo",
+            "-n",
+            "podbench-test",
+            "--identity",
+            identity_file(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ssh config written to" in out
+    assert "then:  ssh podbench-podbench-test-demo-podbench" in out
+    assert "Include" in out
+    assert "exec -it demo-podbench -c podbench -- bash" in out
+    assert (
+        tmp_path / "cfg" / "config.d" / "podbench-test-demo-podbench.conf"
+    ).is_file()
+
+
 def test_cli_accepts_pod_slash_name_exactly_as_attach_does(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     # One CLI, one pod syntax. `pod/demo` used to fail twice over here: kubectl
     # refused the argument, and dev_pod_name derived `pod/demo-podbench`, which
@@ -889,7 +1217,20 @@ def test_cli_accepts_pod_slash_name_exactly_as_attach_does(
     kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
     monkeypatch.setattr(dev, "Kubectl", always(kube))
 
-    assert dev.main(["dev", "pod/demo", "-n", "podbench-test", "--dry-run"]) == 0
+    assert (
+        dev.main(
+            [
+                "dev",
+                "pod/demo",
+                "-n",
+                "podbench-test",
+                "--identity",
+                identity_file(tmp_path),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
 
     manifest = json.loads(capsys.readouterr().out)
     assert manifest["metadata"]["name"] == "demo-podbench"
@@ -897,7 +1238,7 @@ def test_cli_accepts_pod_slash_name_exactly_as_attach_does(
 
 
 def test_cli_delete_accepts_pod_slash_name_too(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     dev_pod = {
         "metadata": {
@@ -909,7 +1250,20 @@ def test_cli_delete_accepts_pod_slash_name_too(
     kube = FakeKubectl(**{"pod/demo-podbench": dev_pod})
     monkeypatch.setattr(dev, "Kubectl", always(kube))
 
-    assert dev.main(["dev", "pod/demo", "-n", "podbench-test", "--delete"]) == 0
+    assert (
+        dev.main(
+            [
+                "dev",
+                "pod/demo",
+                "-n",
+                "podbench-test",
+                "--delete",
+                "--config-dir",
+                str(tmp_path / "cfg"),
+            ]
+        )
+        == 0
+    )
     assert "deleted pod/demo-podbench" in capsys.readouterr().out
 
 
@@ -925,14 +1279,19 @@ def test_cli_refuses_a_reference_that_is_not_a_pod(
 
 
 def test_cli_reports_a_refusal_without_a_traceback(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     # A pod occupying the dev pod's name that podbench did not author: the
     # guard fires rather than deleting somebody else's workload.
     kube = FakeKubectl(**{"pod/demo-podbench": ORIGIN_POD})
     monkeypatch.setattr(dev, "Kubectl", always(kube))
 
-    assert dev.main(["dev", "demo-podbench", "--delete"]) == 1
+    assert (
+        dev.main(
+            ["dev", "demo-podbench", "--delete", "--config-dir", str(tmp_path / "cfg")]
+        )
+        == 1
+    )
     assert "not a podbench dev pod" in capsys.readouterr().err
 
 

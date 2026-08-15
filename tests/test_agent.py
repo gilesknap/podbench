@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from podbench import agent
+from podbench.model import SEAT_IDENTITY_VOLUME
 from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config
 
 PUBKEY = "ssh-ed25519 AAAAC3NzaC1FIRST dev@laptop"
@@ -327,6 +328,27 @@ def test_a_mounted_identity_is_used_as_it_stands_and_is_not_a_failure(
     assert SEAT_USER in check.detail
     # …and the launcher's question gets the same answer, so a stanza is printed.
     assert agent.login_name(UNKNOWN_UID) == SEAT_USER
+
+
+def test_the_way_out_is_the_one_the_container_reading_it_can_take() -> None:
+    """This text ships inside the image and the launcher prints it verbatim.
+
+    It is read from a seat whose ssh has just failed, and on a live pod that
+    seat is an *ephemeral* container: it cannot be given a passwd file at all,
+    because projecting one takes a ``subPath`` per mount and the API server
+    forbids ``subPath`` there. So the GID 0 route has to lead, and the identity
+    volume has to be named as what it is — the identity a ``podbench dev``
+    sidecar gets — rather than as something to deploy in the hope it fixes this.
+    """
+    text = agent.NSS_WAY_OUT
+    assert "--seat-gid-root" in text
+    assert "kubectl exec" in text, "what still works belongs in the message"
+    assert "subPath" in text, "the reason the volume cannot help has to be given"
+    assert "podbench dev" in text, "and where the volume *is* used"
+    # The advice this replaced: it told an ephemeral seat to mount the volume
+    # over /etc/passwd, which is the one thing that container may not do.
+    assert "which the seat mounts read-only" not in text
+    assert text.index("--seat-gid-root") < text.index(SEAT_IDENTITY_VOLUME)
 
 
 def test_registration_refuses_to_shadow_an_existing_login_name(

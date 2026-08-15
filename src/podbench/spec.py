@@ -4,15 +4,24 @@ Nothing here touches the cluster: every function takes JSON in and gives JSON
 out, so the rules that the phase-0 spikes paid for can be asserted in unit
 tests rather than discovered in a namespace.
 
-Two of those rules are hard invariants rather than defaults:
+Three of those rules are hard invariants rather than defaults:
 
 * ``CAP_SYS_PTRACE`` on a container whose ``runAsUser`` is not 0 is a **silent
   no-op** — the capability lands in the bounding set only and ``CapEff`` stays
   zero, so the container looks privileged and behaves unprivileged (report
   3.10). Authoring that combination raises instead.
+* A ``volumeMount`` on an *ephemeral* container may not carry ``subPath``: the
+  API server refuses the whole request with ``Forbidden: cannot be set for an
+  Ephemeral Container``. Authoring one raises here, where the reason can be
+  given, rather than at a ``replace --raw`` that has already been composed.
 * A dev pod does **not** carry its origin's Service-selector labels unless the
   caller asks. Silently joining a production Service is a foot-cannon (report
   4.4).
+* A dev pod's sidecar is an *ordinary* container, so it may have the ``subPath``
+  an ephemeral one may not — which is the only way a passwd *file* reaches a
+  seat. Where the origin declares the identity volume the sidecar is authored to
+  mount it, and to run as the uid that identity names: a record for uid N in a
+  container running as uid 0 is a login for somebody else.
 """
 
 from __future__ import annotations
@@ -21,7 +30,14 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from .model import TARGET_CID_ENV, Rung, as_dict
+from .model import (
+    SEAT_HOME_PATH,
+    SEAT_HOME_VOLUME,
+    SEAT_IDENTITY_VOLUME,
+    TARGET_CID_ENV,
+    Rung,
+    as_dict,
+)
 
 __all__ = [
     "AGENT_COMMAND",
@@ -35,11 +51,14 @@ __all__ = [
     "container_id",
     "cutover_selector_patch",
     "dev_pod_spec",
+    "dev_seat_identity",
     "devpod_selector",
     "ephemeral_container_spec",
     "runs_as_non_root",
+    "seat_identity_volume_mounts",
     "service_selector_patch",
     "target_uid_gid",
+    "validate_ephemeral_volume_mounts",
     "validate_security_context",
 ]
 
@@ -142,6 +161,56 @@ def validate_security_context(security_context: Mapping[str, Any]) -> None:
         )
 
 
+_SUBPATH_FIELDS: tuple[str, ...] = ("subPath", "subPathExpr")
+
+
+def validate_ephemeral_volume_mounts(
+    volume_mounts: Sequence[Mapping[str, Any]],
+) -> None:
+    """Reject a ``volumeMount`` an ephemeral container is not allowed to have.
+
+    ``subPath`` — and ``subPathExpr`` with it — is refused by the API server for
+    an ephemeral container, and refused for the whole request rather than for
+    the mount:
+
+    .. code-block:: text
+
+       The Pod "demo" is invalid:
+       * spec.ephemeralContainers[0].volumeMounts[0].subPath: Forbidden: cannot
+         be set for an Ephemeral Container
+
+    So a single mount authored this way costs the entire attach, and the error
+    the user sees names a field they never typed. It is refused here for the
+    same reason the ``SYS_PTRACE`` combination is: the spec would not do what it
+    says, and this is the only layer that can say why.
+
+    The consequence is the one worth stating out loud: a *file* cannot be
+    projected into an ephemeral container at all. Mounting the volume without
+    the ``subPath`` mounts a directory over the mountPath, which for
+    ``/etc/passwd`` means replacing the file with a directory, and for ``/etc``
+    means losing ``nsswitch.conf`` and with it the lookup the identity exists to
+    satisfy. A live-pod seat gets its NSS identity from ``--seat-gid-root``
+    instead: with ``runAsGroup: 0`` the agent appends its own record to the
+    image's group-writable ``/etc/passwd``.
+    """
+    for index, entry in enumerate(volume_mounts):
+        for field in _SUBPATH_FIELDS:
+            if entry.get(field) in (None, ""):
+                continue
+            mount = entry.get("name")
+            path = entry.get("mountPath")
+            raise InvalidSpecError(
+                f"volumeMounts[{index}] ({mount!r} at {path!r}) sets {field}, "
+                "which an ephemeral container may not have: the API server "
+                f"refuses the request with `volumeMounts[{index}].{field}: "
+                "Forbidden: cannot be set for an Ephemeral Container`, so the "
+                "seat never lands. Mount the whole volume at a path of its own, "
+                "or - if this was an identity file for the seat's uid - land "
+                "the seat with --seat-gid-root, which lets the agent register "
+                "its own /etc/passwd record instead."
+            )
+
+
 def ephemeral_container_spec(
     *,
     name: str,
@@ -171,7 +240,10 @@ def ephemeral_container_spec(
     a substring match of that id against ``/proc/<pid>/cgroup`` (report 3.15).
 
     Ephemeral containers carry no ``resources``: the field is rejected, and the
-    container is confined by the pod's cgroup regardless (report 3.9).
+    container is confined by the pod's cgroup regardless (report 3.9). For the
+    same "the API server refuses the whole request" reason, a ``volume_mounts``
+    entry carrying ``subPath`` is refused here — see
+    :func:`validate_ephemeral_volume_mounts`.
 
     ``seat_gid_root`` pins ``runAsGroup: 0`` on the non-root rungs, which is
     what lets the agent register an ``/etc/passwd`` entry for the target's uid
@@ -203,7 +275,10 @@ def ephemeral_container_spec(
     if volume_mounts:
         # Ephemeral containers may mount the pod's *existing* volumes, which is
         # the only practical way to hand a toolchain to a non-root debug
-        # container that cannot apt-get (report 3.19).
+        # container that cannot apt-get (report 3.19). They may not subPath any
+        # of them, which is checked before the mounts are copied in so that a
+        # refused attach burns no container name.
+        validate_ephemeral_volume_mounts(volume_mounts)
         spec["volumeMounts"] = [dict(mount) for mount in volume_mounts]
 
     validate_security_context(as_dict(spec["securityContext"]))
@@ -295,6 +370,74 @@ def _rung_security_context(
     return _seat_gid(restricted, seat_gid_root)
 
 
+def seat_identity_volume_mounts() -> list[dict[str, Any]]:
+    """Project :data:`podbench.model.SEAT_IDENTITY_VOLUME` as two files.
+
+    The layout — which key lands at which path — is
+    :data:`podbench.launcher.SEAT_IDENTITY_MOUNTS`, imported rather than
+    restated so that the paths the chart contract is checked against and the
+    paths a dev pod actually mounts cannot drift apart. The import is deferred
+    to the call because :mod:`podbench.launcher` imports this module.
+
+    Read-only, and one ``subPath`` per file: mounting the volume at ``/etc``
+    would replace the directory and take ``nsswitch.conf`` with it, which is the
+    lookup the identity exists to satisfy. Only an *ordinary* container may
+    carry this — see :func:`validate_ephemeral_volume_mounts` for what happens
+    when an ephemeral one is asked to.
+
+    >>> [mount["mountPath"] for mount in seat_identity_volume_mounts()]
+    ['/etc/passwd', '/etc/group']
+    """
+    from .launcher import SEAT_IDENTITY_MOUNTS
+
+    return [
+        {
+            "name": SEAT_IDENTITY_VOLUME,
+            "mountPath": path,
+            "subPath": key,
+            "readOnly": True,
+        }
+        for path, key in SEAT_IDENTITY_MOUNTS
+    ]
+
+
+def dev_seat_identity(
+    origin_pod_json: Mapping[str, Any], target_container: str
+) -> tuple[int, int] | None:
+    """The uid/gid a dev pod's sidecar must run as to own the projected identity.
+
+    The record the chart writes is for the *application's* uid, because that is
+    the uid a seat beside a PSA-restricted workload is forced to take. A sidecar
+    mounting that file while running as anything else has an ``/etc/passwd``
+    describing somebody it is not: sshd resolves the login name, finds uid N,
+    and refuses the keys the agent wrote as uid 0 with ``Permission denied
+    (publickey)`` — a message naming nothing about identity. So the mount and
+    the ``runAsUser`` are decided together, here.
+
+    ``None`` means "author the sidecar as before":
+
+    * the origin declares no :data:`podbench.model.SEAT_IDENTITY_VOLUME`, so
+      there is nothing to project, or
+    * it declares one but the manifest does not say which uid *and* gid the
+      application runs as, so the number in the file is unknowable from here and
+      a guess would be a login for the wrong user, or
+    * the application runs as root, which every image already resolves — mounting
+      a file to reach uid 0 would buy nothing and cost the sidecar SYS_PTRACE.
+    """
+    volumes = as_dict(origin_pod_json.get("spec")).get("volumes")
+    declared = [
+        cast(dict[str, Any], entry)
+        for entry in (cast(list[Any], volumes) if isinstance(volumes, list) else [])
+        if isinstance(entry, dict)
+    ]
+    if not any(entry.get("name") == SEAT_IDENTITY_VOLUME for entry in declared):
+        return None
+    uid, gid = target_uid_gid(origin_pod_json, target_container)
+    if uid is None or uid == 0 or gid is None:
+        return None
+    return uid, gid
+
+
 def dev_pod_spec(
     origin_pod_json: Mapping[str, Any],
     *,
@@ -308,6 +451,7 @@ def dev_pod_spec(
     workspace_size: str = "4Gi",
     resources: Mapping[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
+    seat_identity: bool = True,
 ) -> dict[str, Any]:
     """Author Iterate mode's sacrificial clone of ``origin_pod_json``.
 
@@ -320,6 +464,18 @@ def dev_pod_spec(
 
     ``take_traffic`` is off by default. With it off the dev pod carries only its
     podbench label and receives nothing until a cutover is made explicitly.
+
+    ``seat_identity`` is the convention this mode's sidecar can honour and
+    ``attach`` cannot: where the origin declares the identity volume, the clone
+    carries it (its ``spec.volumes`` are copied wholesale) and the sidecar
+    mounts it as ``/etc/passwd`` and ``/etc/group``. The sidecar then runs as the
+    uid that identity names rather than as root — see :func:`dev_seat_identity`
+    — and gives up ``SYS_PTRACE`` with the root it no longer has. That trade is
+    the point of the volume: nothing is written at runtime, the seat needs no
+    GID 0, and the pod is admissible under the restricted Pod Security Standard,
+    which refuses the root sidecar outright. A declared
+    :data:`podbench.model.SEAT_HOME_VOLUME` is mounted with it, at the path the
+    identity's own passwd record names.
 
     The readiness probe on the *podbench* container is not optional. Without it
     a probe-less dev pod is Ready the instant its containers start and joins the
@@ -359,6 +515,12 @@ def dev_pod_spec(
     pod["metadata"] = metadata
 
     spec.pop("nodeName", None)
+    # The origin's seats are not copyable and not wanted: the API server refuses
+    # the create outright with `spec.ephemeralContainers: Forbidden: cannot be
+    # set on create`, so cloning any pod somebody has ever attached to fails on
+    # a field the user never typed. They are also spent — an ephemeral
+    # container's name is burnt for its pod's lifetime, and this is a new pod.
+    spec.pop("ephemeralContainers", None)
     # A crashed dev pod must leave a corpse to inspect rather than looping.
     spec["restartPolicy"] = "Never"
     # gdb, ss -lntp and /proc/<pid>/root all depend on it.
@@ -412,6 +574,22 @@ def dev_pod_spec(
     )
     spec["volumes"] = volume_list
 
+    identity = (
+        dev_seat_identity(origin_pod_json, target_container) if seat_identity else None
+    )
+    if identity is not None:
+        # The pod-level securityContext came over with the deepcopy, fsGroup
+        # included, so an origin that already sets one is inherited and nothing
+        # is second-guessed. A pod that sets none needs one invented here: the
+        # workspace emptyDir is created root:root, the sidecar is about to stop
+        # being root, and a seat whose $HOME is present and unwritable fails
+        # later and further away than one with no home at all. The identity's
+        # own gid is the number to use — it is what the chart tells the
+        # application's chart to set for exactly this reason.
+        pod_security = as_dict(spec.get("securityContext"))
+        pod_security.setdefault("fsGroup", identity[1])
+        spec["securityContext"] = pod_security
+
     container_list.append(
         _sidecar(
             name=sidecar_name,
@@ -421,6 +599,19 @@ def dev_pod_spec(
             ptrace=sidecar_ptrace,
             resources=resources,
             env=env,
+            identity=identity,
+            # The home the identity's passwd record *names*, mounted when the
+            # pod declares a volume for it. sshd puts a session in the home NSS
+            # gives it, and an ssh login that lands on `Could not chdir to home
+            # directory /home/podbench` is one whose vscode-server has nowhere
+            # to unpack. The sidecar's own $HOME stays the workspace: uv's
+            # caches and venvs belong on the volume sized for them.
+            seat_home=identity is not None
+            and any(
+                isinstance(v, dict)
+                and cast(dict[str, Any], v).get("name") == SEAT_HOME_VOLUME
+                for v in volume_list
+            ),
         )
     )
     spec["containers"] = container_list
@@ -437,15 +628,33 @@ def _sidecar(
     ptrace: bool,
     resources: Mapping[str, Any] | None,
     env: Mapping[str, str] | None,
+    identity: tuple[int, int] | None = None,
+    seat_home: bool = False,
 ) -> dict[str, Any]:
-    if ptrace:
+    if identity is not None:
+        # The identity wins over the capability, and cannot be reconciled with
+        # it: SYS_PTRACE needs runAsUser 0 (anywhere else it reaches the
+        # bounding set only), and the projected passwd record names the
+        # application's uid. Running as root with that file mounted would leave
+        # sshd resolving the login name to a uid this container is not, and the
+        # authorized_keys the agent wrote unreadable by it.
+        seat_uid, seat_gid = identity
+        security_context: dict[str, Any] = {
+            "capabilities": {"drop": ["ALL"]},
+            "allowPrivilegeEscalation": False,
+            "seccompProfile": {"type": "RuntimeDefault"},
+            "runAsNonRoot": True,
+            "runAsUser": seat_uid,
+            "runAsGroup": seat_gid,
+        }
+    elif ptrace:
         # runAsUser must be explicit even though this is a normal container: the
         # origin pod's pod-level securityContext may pin a non-root uid, which
         # would apply here too and silently void the capability. runAsNonRoot is
         # overridden at container level for the same reason — a pod-level
         # runAsNonRoot: true otherwise makes the kubelet reject this container
         # asynchronously with CreateContainerConfigError (report 3.18).
-        security_context: dict[str, Any] = {
+        security_context = {
             "runAsUser": 0,
             "runAsNonRoot": False,
             "capabilities": {"add": ["SYS_PTRACE"]},
@@ -478,7 +687,17 @@ def _sidecar(
         "env": [
             {"name": key, "value": value} for key, value in sorted(environment.items())
         ],
-        "volumeMounts": [{"name": WORKSPACE_VOLUME, "mountPath": WORKSPACE_MOUNT_PATH}],
+        "volumeMounts": [
+            {"name": WORKSPACE_VOLUME, "mountPath": WORKSPACE_MOUNT_PATH},
+            *(
+                [{"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}]
+                if seat_home
+                else []
+            ),
+            # An ordinary container may subPath, so this seat gets the passwd
+            # file an ephemeral one cannot be given at all.
+            *(seat_identity_volume_mounts() if identity is not None else []),
+        ],
         "resources": copy.deepcopy(dict(resources or _DEFAULT_SIDECAR_RESOURCES)),
         "securityContext": security_context,
         "readinessProbe": {

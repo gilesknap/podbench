@@ -48,17 +48,39 @@ SEAT_IDENTITY_VOLUME = "podbench-identity"
 """Pod volume holding a passwd/group file for the seat, mounted read-only.
 
 A debug seat runs as the *target's* uid, which a stock image has no account
-for — and ssh cannot authenticate a user NSS cannot resolve. The seat cannot
-write ``/etc/passwd`` either, and an ephemeral container may only mount volumes
-the pod already declares. So the identity has to be put in the pod spec at
-deploy time, by the same chart cooperation Patch mode already needs, and the
-launcher mounts it by convention rather than by flag.
+for — and ssh cannot authenticate a user NSS cannot resolve. A pod's volumes are
+immutable, so the identity has to be put in the pod spec at deploy time, by the
+same chart cooperation Patch mode already needs; from there it is mounted by
+convention rather than by flag.
+
+Which seat can *use* it is decided by :data:`SEAT_PASSWD_KEY`'s ``subPath``: a
+``podbench dev`` sidecar can, an ephemeral ``attach`` seat cannot and registers
+its own record instead.
 """
 
 SEAT_PASSWD_KEY = "passwd"
 SEAT_GROUP_KEY = "group"
 """Keys inside :data:`SEAT_IDENTITY_VOLUME`, mounted with ``subPath`` so they
-land as files rather than replacing all of ``/etc``."""
+land as files rather than replacing all of ``/etc``.
+
+That ``subPath`` is the rule both halves have to know, and it is the whole of
+why this volume serves one kind of seat and not the other:
+
+* in an **ordinary** container - a ``podbench dev`` sidecar - it is legal, so
+  the two files land and NSS resolves the seat's uid with nothing written at
+  runtime and no GID 0 needed;
+* in an **ephemeral** container - every ``attach`` seat - it is forbidden, and
+  refused for the *whole* request: ``spec.ephemeralContainers[0].
+  volumeMounts[0].subPath: Forbidden: cannot be set for an Ephemeral
+  Container``. So the seat does not land at all, and there is no whole-volume
+  alternative either - a directory mount over ``/etc/passwd`` replaces the file,
+  and over ``/etc`` it takes ``nsswitch.conf`` with it. Such a seat registers
+  its own record instead, which is what ``attach --seat-gid-root`` is for.
+
+Both statements are checked against a rendered chart in
+``tests/test_chart_contract.py``; the refusal is
+:func:`podbench.spec.validate_ephemeral_volume_mounts`.
+"""
 
 SEAT_HOME_VOLUME = "podbench-home"
 """Pod volume for the seat's home directory.

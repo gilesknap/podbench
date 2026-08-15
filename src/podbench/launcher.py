@@ -96,16 +96,24 @@ __all__ = [
     "SeatIdentity",
     "SeatInfo",
     "Session",
+    "SshSeat",
     "attach",
     "capability_report_from_json",
+    "client_dir",
     "current_namespace",
+    "declared_volumes",
+    "default_host_alias",
+    "emit_ssh_config",
     "features",
+    "forget_known_hosts",
+    "forget_ssh_config",
     "format_session",
     "list_seats",
     "main",
     "parse_mount",
     "plan_ladder",
     "probe_ssh_identity",
+    "read_public_key",
     "resolve_mounts",
     "resolve_pod_name",
     "run_capreport",
@@ -114,6 +122,8 @@ __all__ = [
     "seat_identity_mounts",
     "seat_layout",
     "seats",
+    "spec_env",
+    "ssh_config_path",
     "ssh_stanza",
     "target_container_name",
     "try_resize",
@@ -288,6 +298,11 @@ def resolve_mounts(
     default, and an explicit ``--mount`` that disagrees with it is honoured but
     warned about.
 
+    An application mount that uses ``subPath`` is refused for the same reason
+    from the other direction: the seat cannot copy it (an ephemeral container's
+    volumeMounts may not carry one) and must not silently drop it (the seat
+    would then resolve a different tree at the same path).
+
     A claim name is accepted as well as a volume name because that is what the
     user has in hand (``patch --print-values`` names the claim), while a mount
     refers to the pod's volume *entry*.
@@ -335,9 +350,24 @@ def resolve_mounts(
         # A subPath the application uses is part of "the same path": without it
         # the seat would see the volume root where the application sees one
         # directory inside it, and every path in the manifest would be wrong.
+        # Copying it is not open to podbench either — an ephemeral container may
+        # not carry one — so this is refused rather than quietly resolved to a
+        # different tree.
         sub_path = _as_str(application.get("subPath"))
         if sub_path is not None:
-            mount["subPath"] = sub_path
+            raise LauncherError(
+                f"container {workload!r} mounts volume {volume_name!r} at "
+                f"{app_path} with subPath {sub_path!r}, and a seat cannot "
+                "reproduce that: an ephemeral container's volumeMounts may not "
+                "set subPath, which the API server refuses outright "
+                "(`Forbidden: cannot be set for an Ephemeral Container`). "
+                "Mounting the volume whole at the same path instead would give "
+                "the seat a different tree from the application's, and Patch "
+                "mode is only true while the two resolve identically. Redeploy "
+                "the workload with the claim mounted whole over that path, or "
+                "debug it in a dev pod (`podbench dev`), whose seat is an "
+                "ordinary container and may subPath."
+            )
         mounts.append(mount)
     return mounts, warnings
 
@@ -353,53 +383,62 @@ One mount per file, each with its own ``subPath``, and never the volume at
 ``nsswitch.conf``, ``hosts``, the CA bundle and everything else the image put
 there — and NSS would then have no ``files`` line telling it to read the passwd
 file we just supplied.
+
+Which is why this layout is only ever authored onto an **ordinary** container.
+``subPath`` is forbidden on an ephemeral container's volumeMounts
+(:func:`podbench.spec.validate_ephemeral_volume_mounts`), and the two ways of
+putting a passwd *file* into a seat are the two described above, so a live-pod
+attach cannot use this volume at all. It keeps its shape here because it is the
+contract the chart's ConfigMap keys are checked against.
 """
 
 
 def seat_identity_mounts(
     pod_json: Mapping[str, Any], workload: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """The identity and home mounts, for whichever of them the pod declares.
+    """The seat's home mount, when the pod declares the volume for it.
 
-    A convention rather than a flag. The volumes can only be there because
-    someone deployed the workload with them — an ephemeral container may mount
-    only volumes the pod already has, and ``spec.volumes`` is immutable — so
-    their presence *is* the request, and asking the user to also remember
-    ``--mount podbench-identity:/etc/passwd`` on every attach would make the
+    A convention rather than a flag. The volume can only be there because
+    someone deployed the workload with it — an ephemeral container may mount
+    only volumes the pod already has, and ``spec.volumes`` is immutable — so its
+    presence *is* the request, and asking the user to also remember
+    ``--mount podbench-home:/home/podbench`` on every attach would make the
     chart's cooperation useless twice over.
+
+    :data:`podbench.model.SEAT_IDENTITY_VOLUME` is deliberately **not** mounted,
+    even where the pod declares it. The identity has to land as two files, which
+    takes a ``subPath`` per mount, and the API server refuses ``subPath`` on an
+    ephemeral container outright — it fails the whole ``replace --raw``, so
+    authoring it here does not degrade the attach, it destroys it. The home
+    volume is kept because it is subject to no such rule and is worth having on
+    its own: it moves everything the seat writes off the workload's
+    ephemeral-storage budget. A live-pod seat gets its NSS identity from
+    ``--seat-gid-root`` instead, and :func:`features` says so where the user is
+    looking.
 
     Absence is not an error: a bare ``attach`` against a pod that knows nothing
     about podbench must still land a seat and degrade honestly, which is the
     whole reason :func:`resolve_mounts` refuses an undeclared volume while this
     quietly authors nothing.
     """
-    declared = {
-        name
-        for entry in _as_list(as_dict(pod_json.get("spec")).get("volumes"))
-        if (name := _entry_name(entry)) is not None
-    }
+    declared = declared_volumes(pod_json)
     requests: list[str] = []
-    if SEAT_IDENTITY_VOLUME in declared:
-        requests += [
-            f"{SEAT_IDENTITY_VOLUME}:{path}" for path, _ in SEAT_IDENTITY_MOUNTS
-        ]
     if SEAT_HOME_VOLUME in declared:
         requests.append(f"{SEAT_HOME_VOLUME}:{SEAT_HOME_PATH}")
 
     # Through resolve_mounts rather than beside it: the volume lookup, the
     # refusal text and the application's own subPath are one behaviour, and a
     # second path through them is a second thing to keep true.
-    mounts, warnings = resolve_mounts(pod_json, workload, requests)
-    keys = dict(SEAT_IDENTITY_MOUNTS)
-    for mount in mounts:
-        if mount.get("name") != SEAT_IDENTITY_VOLUME:
-            continue
-        mount["subPath"] = keys[str(mount["mountPath"])]
-        # Read-only because the seat has no business rewriting the identity it
-        # was handed, and because a ConfigMap projection is read-only anyway:
-        # asking for write access would fail the mount rather than the write.
-        mount["readOnly"] = True
-    return mounts, warnings
+    return resolve_mounts(pod_json, workload, requests)
+
+
+def declared_volumes(pod_json: Mapping[str, Any]) -> set[str]:
+    """The names of the volumes the pod carries in its spec."""
+    return {
+        name
+        for entry in _as_list(as_dict(pod_json.get("spec")).get("volumes"))
+        if (name := _entry_name(entry)) is not None
+    }
 
 
 def _merge_mounts(
@@ -539,7 +578,7 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
                 uid=_as_int(as_dict(container.get("securityContext")).get("runAsUser")),
                 image=_as_str(container.get("image")),
                 target=_as_str(container.get("targetContainerName")),
-                home=_spec_env(container).get("HOME"),
+                home=spec_env(container).get("HOME"),
                 identity_mounted=_mounts_volume(container, SEAT_IDENTITY_VOLUME),
             )
         )
@@ -699,9 +738,20 @@ class Session:
     :func:`seat_layout` derives every path the ProxyCommand names from it."""
 
     identity_mounted: bool = False
-    """Whether the seat mounts :data:`podbench.model.SEAT_IDENTITY_VOLUME` —
-    which is usually the difference between sshd resolving a login name for the
-    target's uid and there being no ssh into this seat at all."""
+    """Whether the seat mounts :data:`podbench.model.SEAT_IDENTITY_VOLUME`.
+
+    Only ever true of a seat some *other* container spec put it there — a
+    ``podbench dev`` sidecar, or a seat landed by a podbench old enough to have
+    authored the mount onto an ephemeral container, which the API server has
+    refused since always. Read back from the spec rather than remembered."""
+
+    identity_declared: bool = False
+    """Whether the *pod* declares :data:`podbench.model.SEAT_IDENTITY_VOLUME`.
+
+    Which is not the same question, and after the ``subPath`` refusal it is the
+    interesting one: the volume is there, the user deployed it on purpose, and
+    ``attach`` still cannot project it. :func:`features` says so rather than
+    leaving them to wonder why ssh is unavailable on a pod they prepared."""
 
     steps: tuple[LadderStep, ...] = ()
     report: CapabilityReport | None = None
@@ -748,12 +798,17 @@ def attach(
     what allows the seat to give itself the NSS identity sshd insists on. Opt-in
     because it changes the seat's group, not because a cluster would refuse it.
 
-    ``seat_identity`` mounts the pod's identity and home volumes when it has
-    them (:func:`seat_identity_mounts`). It is on by default and has no effect
-    on a pod that declares neither, which is the point: the volumes can only be
-    there deliberately, so their presence is the request and there is nothing
-    for the user to remember. ``--no-seat-identity`` turns it off for the case
-    where the pod's ``/etc/passwd`` is wanted as the image left it.
+    ``seat_identity`` mounts the pod's home volume when it has one
+    (:func:`seat_identity_mounts`). It is on by default and has no effect on a
+    pod that declares none, which is the point: the volume can only be there
+    deliberately, so its presence is the request and there is nothing for the
+    user to remember. ``--no-seat-identity`` turns it off for the case where the
+    seat is wanted with nothing of the pod's mounted into it.
+
+    The pod's identity volume is *never* mounted here, however deliberately it
+    was declared: it takes a ``subPath`` per file and an ephemeral container may
+    not have one. Where the pod declares it, the capability report says so and
+    names ``--seat-gid-root`` as the live-pod route to the same identity.
 
     The seat is always asked whether it has that identity, ``probe`` or not:
     ``probe`` governs the capability report, while this decides whether an ssh
@@ -770,20 +825,7 @@ def attach(
         convention, convention_warnings = seat_identity_mounts(pod_json, workload)
         warnings.extend(convention_warnings)
         volume_mounts = _merge_mounts(volume_mounts, convention)
-    wants_identity = any(
-        mount.get("name") == SEAT_IDENTITY_VOLUME for mount in volume_mounts
-    )
-    if wants_identity and not any(
-        mount.get("name") == SEAT_HOME_VOLUME for mount in volume_mounts
-    ):
-        warnings.append(
-            f"the pod declares {SEAT_IDENTITY_VOLUME!r} but no "
-            f"{SEAT_HOME_VOLUME!r}, and the passwd record it supplies names "
-            f"{SEAT_HOME_PATH} as the login's home. That directory will not "
-            "exist in the seat and cannot be created there (its parent belongs "
-            "to root), so the session starts in / and vscode-server has nowhere "
-            "to install. Declare both volumes on the workload."
-        )
+    identity_declared = SEAT_IDENTITY_VOLUME in declared_volumes(pod_json)
 
     existing = running_seat(pod_json)
     if existing is not None and not force_new:
@@ -815,14 +857,6 @@ def attach(
                 "volumeMounts are fixed when it is created and cannot be added "
                 "to, so --mount only takes effect on a seat landed with --new"
             )
-        if wants_identity and not existing.identity_mounted:
-            warnings.append(
-                f"this pod declares {SEAT_IDENTITY_VOLUME!r} but the running "
-                "seat was landed before it did, and an ephemeral container's "
-                "volumeMounts are fixed at creation. So this seat still has no "
-                "NSS identity for the target's uid, and ssh into it still "
-                "cannot work: land a new one with --new to pick the volume up"
-            )
         if seat_gid_root:
             warnings.append(
                 "reconnected to an existing container: its securityContext is "
@@ -848,8 +882,14 @@ def attach(
     # Not also a warning: `features` reports it under "supports", which is where
     # "what this seat can do and which mechanism decided" belongs, and
     # `ssh_unavailable_note` prints the way out in place of the stanza. A third
-    # copy in the warning block would be the only thing said three times.
-    session = replace(session, ssh=probe_ssh_identity(kubectl, session.seat))
+    # copy in the warning block would be the only thing said three times. The
+    # same goes for the declared-but-unusable identity volume, which the ssh
+    # seat's line carries for exactly this reason.
+    session = replace(
+        session,
+        identity_declared=identity_declared,
+        ssh=probe_ssh_identity(kubectl, session.seat),
+    )
 
     if probe:
         report, probe_warnings = run_capreport(kubectl, session.seat)
@@ -952,7 +992,7 @@ def _walk_ladder(
             # whatever the target is, and the seat rung drops a root target's
             # uid rather than pair it with runAsNonRoot.
             uid=_as_int(as_dict(spec.get("securityContext")).get("runAsUser")),
-            home=_spec_env(spec).get("HOME"),
+            home=spec_env(spec).get("HOME"),
             identity_mounted=_mounts_volume(spec, SEAT_IDENTITY_VOLUME),
             steps=tuple(steps),
         )
@@ -1176,24 +1216,64 @@ def _seat_features(session: Session) -> tuple[Feature, Feature]:
     quietly speaking for both.
     """
     identity = session.ssh
+    usable = identity is not None and identity.usable
     ssh_seat = Feature(
         "ssh seat (Remote-SSH: editor, shell, git, sftp)",
-        identity is not None and identity.usable,
+        usable,
         identity.detail
         if identity is not None
         else "the seat was not asked whether sshd can resolve a login name for "
         "the uid it runs as",
-        note=(
-            f"identity from the pod's {SEAT_IDENTITY_VOLUME!r} volume, mounted "
-            f"read-only over {PASSWD_PATH} - which is why sshd can resolve a "
-            "login name for this uid here, and cannot on a pod without it"
-        )
-        if session.identity_mounted
-        else "",
+        note=_identity_note(session, usable=usable),
     )
     return (
         ssh_seat,
         Feature("exec seat (capreport, pids, dbg --launch, kubectl exec)", True),
+    )
+
+
+def _identity_note(session: Session, *, usable: bool) -> str:
+    """Which mechanism gave this seat an NSS identity, or why none could.
+
+    A pod that declares the identity volume is a pod somebody prepared for
+    podbench, so a seat with no login on it looks like the preparation failed.
+    It did not: ``attach`` cannot project a file into an ephemeral container at
+    all, and this line is where that is said - beside the feature it decides,
+    with the flag that does work on a live pod.
+
+    ``usable`` decides how much of that to say. A seat that already has its
+    login needs the fact and not the remedy: printing "re-attach with
+    --seat-gid-root" under a ticked box would read as an instruction to fix
+    something that is working.
+    """
+    if session.identity_mounted:
+        return (
+            f"identity from the pod's {SEAT_IDENTITY_VOLUME!r} volume, mounted "
+            f"read-only over {PASSWD_PATH} - which is why sshd can resolve a "
+            "login name for this uid here, and cannot on a pod without it"
+        )
+    if not session.identity_declared:
+        return ""
+    cannot = (
+        f"this pod declares the {SEAT_IDENTITY_VOLUME!r} volume and attach "
+        "cannot use it: projecting it takes a subPath per file, which an "
+        "ephemeral container may not have - the API server refuses the whole "
+        f"request. Over {PASSWD_PATH} there is no whole-volume alternative "
+        "either, because a directory mount replaces the path"
+    )
+    if usable:
+        return (
+            f"{cannot}. This seat's login came from somewhere else, so nothing "
+            "here needs fixing: a seat landed with --seat-gid-root registers "
+            "its own record. The volume is for a seat that is an ordinary "
+            "container, which is what `podbench dev` authors"
+        )
+    return (
+        f"{cannot}. On a live pod the seat registers its own record instead: "
+        "re-attach with --new --seat-gid-root, which runs it with runAsGroup: "
+        f"0 against the image's group-writable {PASSWD_PATH}. The volume is "
+        "for a seat that is an ordinary container, which is what `podbench "
+        "dev` authors"
     )
 
 
@@ -1365,14 +1445,23 @@ def ssh_unavailable_note(session: Session) -> str:
             "no ssh config was written: this seat has no login identity.",
             *(f"  {line}" for line in _wrap(detail)),
             "  ways out:",
-            f"    - redeploy the workload with a {SEAT_IDENTITY_VOLUME!r} volume "
-            f"(and {SEAT_HOME_VOLUME!r} with it), which podbench then mounts",
-            f"      over {PASSWD_PATH} without being asked. A pod's volumes are "
-            "immutable, so this cannot be done to the running pod, or",
-            "    - run the target as a uid the debug image has an account for, or",
-            "    - land a seat that can register one itself, with GID 0:",
+            "    - land a seat that registers one itself, with GID 0:",
             f"        kubectl podbench attach {seat.pod.name} "
             f"-n {seat.pod.namespace} --new --seat-gid-root",
+            f"      the image makes {PASSWD_PATH} group-writable, so a seat with gid 0",
+            "      appends its own record. This is the route on a live pod, or",
+            "    - run the target as a uid the debug image has an account for, or",
+            "    - debug in a dev pod (`podbench dev`), whose seat is an ordinary",
+            "      container and can be given files.",
+            *(
+                f"  {line}"
+                for line in _wrap(
+                    f"a {SEAT_IDENTITY_VOLUME!r} volume does not help here, "
+                    "declared or not: projecting a passwd file takes a subPath "
+                    "per file, and the API server forbids subPath on an "
+                    "ephemeral container."
+                )
+            ),
             "  the rest of the seat needs no ssh and works now:",
             f"    kubectl exec {target} -- capreport",
             f"    kubectl exec {target} -- pids",
@@ -1398,14 +1487,42 @@ def write_known_hosts(binding: HostKeyBinding, path: Path) -> Path:
     """
     entry = known_hosts_entry(binding)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    kept = [
-        line
-        for line in (path.read_text().splitlines() if path.is_file() else [])
-        if line.strip() and not line.startswith(f"{binding.alias} ")
-    ]
-    path.write_text("\n".join([*kept, entry.strip()]) + "\n")
+    path.write_text(
+        "\n".join([*_known_hosts_without(path, binding.alias), entry.strip()]) + "\n"
+    )
     path.chmod(0o600)
     return path
+
+
+def _known_hosts_without(path: Path, alias: str) -> list[str]:
+    """``path``'s lines, minus the entry pinning ``alias`` and minus blanks."""
+    return [
+        line
+        for line in (path.read_text().splitlines() if path.is_file() else [])
+        if line.strip() and not line.startswith(f"{alias} ")
+    ]
+
+
+def forget_known_hosts(alias: str, path: Path) -> bool:
+    """Drop ``alias``'s pinned key, and say whether there was one.
+
+    The counterpart of :func:`write_known_hosts`, for a seat that is going away
+    for good. An alias is keyed on the pod UID, so leaving it behind is not a
+    correctness problem — nothing will ever present that alias again — but a
+    ``known_hosts`` that only grows is a file the user eventually has to reason
+    about, and podbench said it manages this one.
+    """
+    if not path.is_file():
+        return False
+    kept = _known_hosts_without(path, alias)
+    if len(kept) == len(path.read_text().splitlines()):
+        return False
+    if kept:
+        path.write_text("\n".join(kept) + "\n")
+        path.chmod(0o600)
+    else:
+        path.unlink()
+    return True
 
 
 def write_ssh_config(stanza: str, path: Path) -> Path:
@@ -1424,6 +1541,162 @@ def write_ssh_config(stanza: str, path: Path) -> Path:
     # it is the moment to make it usable.
     ensure_control_dir()
     return path
+
+
+def ssh_config_path(directory: Path, pod: PodRef) -> Path:
+    """The file :func:`write_ssh_config` writes for ``pod``.
+
+    One place, because two commands now have to agree on it: ``attach`` and
+    ``dev`` write it, and ``dev --delete`` removes it. A teardown that guessed
+    the name would silently leave a stanza behind pointing at a pod that no
+    longer exists.
+    """
+    return directory / "config.d" / f"{pod.namespace}-{pod.name}.conf"
+
+
+def forget_ssh_config(
+    pod: PodRef, *, directory: Path, alias: str | None = None
+) -> list[str]:
+    """Remove the client wiring podbench wrote for ``pod``; say what went.
+
+    Only ever called for a seat that cannot come back — a deleted dev pod. An
+    ``attach`` seat is reconnectable for the pod's lifetime, so its stanza is
+    regenerated rather than removed.
+    """
+    removed: list[str] = []
+    path = ssh_config_path(directory, pod)
+    if path.is_file():
+        path.unlink()
+        removed.append(f"removed {path}")
+    if alias is not None and forget_known_hosts(alias, directory / "known_hosts"):
+        removed.append(f"dropped {alias} from {directory / 'known_hosts'}")
+    return removed
+
+
+def _identity_paths(identity: str) -> tuple[Path, Path]:
+    private = Path(identity).expanduser()
+    return private, private.with_name(private.name + ".pub")
+
+
+def read_public_key(identity: str) -> tuple[str, str]:
+    """The private key's path and the public key's text, or a refusal naming both.
+
+    Both halves are wanted at once: podbench authorises the public key inside
+    the container and names the private one in the stanza's ``IdentityFile``,
+    and a mismatch between them is a login refused for reasons neither file
+    explains.
+    """
+    private, public = _identity_paths(identity)
+    if not public.is_file():
+        raise LauncherError(
+            f"no ssh public key at {public}. podbench authorises this key inside "
+            "the container, so generate one (ssh-keygen -t ed25519) or point "
+            "--identity at an existing key."
+        )
+    return str(private), public.read_text().strip()
+
+
+def client_dir(explicit: str | None) -> Path:
+    """Where the generated stanza and ``known_hosts`` live."""
+    chosen = explicit or os.environ.get(CLIENT_DIR_ENV) or DEFAULT_CLIENT_DIR
+    return Path(chosen).expanduser()
+
+
+@dataclass(frozen=True)
+class SshSeat:
+    """The ssh wiring a landed seat got, and what the user is told about it."""
+
+    note: str
+    """The block printed under the report: where the stanza went and what to
+    type, or — when the seat has no login identity — why there is no stanza."""
+
+    alias: str | None = None
+    """The ssh ``Host`` name, ``None`` when no stanza could be written."""
+
+    path: Path | None = None
+    """Where the stanza was written, ``None`` for ``--print-config`` and for a
+    seat that got none."""
+
+
+def emit_ssh_config(
+    kubectl: Kubectl,
+    session: Session,
+    *,
+    identity: str,
+    config_dir: str | None = None,
+    host_alias: str | None = None,
+    user: str | None = None,
+    print_config: bool = False,
+) -> SshSeat:
+    """Generate the client stanza for a landed seat, and write it.
+
+    Every seat podbench lands goes through here, whatever authored it: an
+    ephemeral container from ``attach`` and the ordinary sidecar of a
+    ``podbench dev`` pod differ in how they were created and in nothing this
+    function does. Which is the point — the host-key probe, the ``known_hosts``
+    entry, the ProxyCommand and the ``Include`` advice were written once and a
+    second copy of them would be a second thing to keep true.
+
+    ``user`` overrides the login name. It is measured for a dev sidecar, whose
+    identity comes from a projected passwd record naming whatever the chart
+    chose; the default is the one ``attach`` has always used, where the seat's
+    rung decides.
+    """
+    if session.ssh is not None and session.ssh.refused:
+        # Nothing below can help: sshd resolves the login name before it looks
+        # at a key, so a stanza, a known_hosts entry and a minted identity file
+        # would all be spent on a login that is refused at the first step.
+        return SshSeat(ssh_unavailable_note(session))
+
+    directory = client_dir(config_dir)
+    pod_json = kubectl.get_pod(session.pod.name)
+    pod_uid = _as_str(as_dict(pod_json.get("metadata")).get("uid")) or session.pod.name
+    known_hosts = directory / "known_hosts"
+    public_key = read_host_public_key(kubectl, session.seat)
+    # Always PER_ATTACH: the launcher cannot tell a minted host key from a
+    # mounted one, and the weaker assumption is the safe one — an alias keyed on
+    # the pod UID means a re-created pod shows up as a new host rather than as a
+    # man-in-the-middle warning (report R9/R10).
+    binding = HostKeyBinding(
+        policy=HostKeyPolicy.PER_ATTACH,
+        alias=host_key_alias(pod_uid),
+        known_hosts=str(known_hosts),
+        public_key=public_key,
+    )
+    notes: list[str] = []
+    if public_key is None:
+        notes.append(
+            "# the agent did not return a host public key, so known_hosts was "
+            "not written; the first connection will be refused until it does"
+        )
+    else:
+        write_known_hosts(binding, known_hosts)
+
+    alias = host_alias or default_host_alias(session.pod)
+    login = user or ("root" if session.rung is Rung.FULL else DEFAULT_SEAT_USER)
+    stanza = ssh_stanza(
+        session,
+        identity_file=identity,
+        host_key=binding,
+        host_alias=alias,
+        user=login,
+        invocation=KubectlInvocation(binary=kubectl.binary, context=kubectl.context),
+    )
+    if print_config:
+        return SshSeat("\n".join([*notes, stanza]), alias=alias)
+    path = write_ssh_config(stanza, ssh_config_path(directory, session.pod))
+    return SshSeat(
+        "\n".join(
+            [
+                *notes,
+                f"ssh config written to {path}",
+                f"add this to ~/.ssh/config once:  Include {directory}/config.d/*.conf",
+                f"then:  ssh {alias}   (or Remote-SSH: Connect to Host -> {alias})",
+            ]
+        ),
+        alias=alias,
+        path=path,
+    )
 
 
 # -- in-place resize --------------------------------------------------------
@@ -1540,7 +1813,7 @@ def _entry_name(entry: Any) -> str | None:
     return _as_str(as_dict(entry).get("name"))
 
 
-def _spec_env(container: Mapping[str, Any]) -> dict[str, str]:
+def spec_env(container: Mapping[str, Any]) -> dict[str, str]:
     """A container spec's ``env`` list as a mapping, literal values only.
 
     A ``valueFrom`` entry is skipped rather than guessed at: podbench only ever
@@ -1556,27 +1829,6 @@ def _spec_env(container: Mapping[str, Any]) -> dict[str, str]:
 
 
 # -- CLI --------------------------------------------------------------------
-
-
-def _identity_paths(identity: str) -> tuple[Path, Path]:
-    private = Path(identity).expanduser()
-    return private, private.with_name(private.name + ".pub")
-
-
-def _read_public_key(identity: str) -> tuple[str, str]:
-    private, public = _identity_paths(identity)
-    if not public.is_file():
-        raise LauncherError(
-            f"no ssh public key at {public}. podbench authorises this key inside "
-            "the container, so generate one (ssh-keygen -t ed25519) or point "
-            "--identity at an existing key."
-        )
-    return str(private), public.read_text().strip()
-
-
-def _client_dir(explicit: str | None) -> Path:
-    chosen = explicit or os.environ.get(CLIENT_DIR_ENV) or DEFAULT_CLIENT_DIR
-    return Path(chosen).expanduser()
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -1630,16 +1882,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="land the seat with runAsGroup: 0 so it can register an "
         "/etc/passwd entry for the target's uid, which is what sshd needs to "
-        "let anyone log in. Off by default: it drops the target's own group",
+        "let anyone log in, and the only way to get one on a live pod. Off by "
+        "default: it drops the target's own group",
     )
     attach_parser.add_argument(
         "--no-seat-identity",
         dest="seat_identity",
         action="store_false",
-        help="do not mount the pod's podbench-identity and podbench-home "
-        "volumes. They are mounted by convention when the pod declares them, "
-        "because that is the only way an ephemeral container can have an "
-        "/etc/passwd entry for the target's uid - and sshd needs one",
+        help="do not mount the pod's podbench-home volume, which is otherwise "
+        "mounted by convention when the pod declares it and keeps everything "
+        "the seat writes off the workload's ephemeral-storage budget. The "
+        "podbench-identity volume is never mounted by attach: it needs a "
+        "subPath per file, which an ephemeral container may not have - use "
+        "--seat-gid-root for the seat's /etc/passwd entry",
     )
     attach_parser.add_argument(
         "--no-probe",
@@ -1726,7 +1981,7 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
 
 
 def _cmd_attach(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
-    identity, public_key = _read_public_key(cast(str, parsed.identity))
+    identity, public_key = read_public_key(cast(str, parsed.identity))
     pod = resolve_pod_name(cast(str, parsed.pod))
     image = cast(str | None, parsed.image) or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
 
@@ -1758,12 +2013,12 @@ def _cmd_attach(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
     session = replace(session, warnings=(*session.warnings, resize_note))
     print(format_session(session))
     print()
-    print(_emit_ssh_config(kubectl, session, parsed, identity))
+    print(_emit(kubectl, session, parsed, identity).note)
     return 0
 
 
 def _cmd_ssh_config(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
-    identity, _ = _read_public_key(cast(str, parsed.identity))
+    identity, _ = read_public_key(cast(str, parsed.identity))
     pod = resolve_pod_name(cast(str, parsed.pod))
     pod_json = kubectl.get_pod(pod)
     seat = running_seat(pod_json)
@@ -1786,71 +2041,25 @@ def _cmd_ssh_config(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
         # in hand.
         ssh=probe_ssh_identity(kubectl, reference),
     )
-    print(_emit_ssh_config(kubectl, session, parsed, identity))
+    print(_emit(kubectl, session, parsed, identity).note)
     return 0
 
 
-def _emit_ssh_config(
+def _emit(
     kubectl: Kubectl,
     session: Session,
     parsed: argparse.Namespace,
     identity: str,
-) -> str:
-    if session.ssh is not None and session.ssh.refused:
-        # Nothing below can help: sshd resolves the login name before it looks
-        # at a key, so a stanza, a known_hosts entry and a minted identity file
-        # would all be spent on a login that is refused at the first step.
-        return ssh_unavailable_note(session)
-
-    directory = _client_dir(cast(str | None, parsed.config_dir))
-    pod_json = kubectl.get_pod(session.pod.name)
-    pod_uid = _as_str(as_dict(pod_json.get("metadata")).get("uid")) or session.pod.name
-    known_hosts = directory / "known_hosts"
-    public_key = read_host_public_key(kubectl, session.seat)
-    # Always PER_ATTACH: the launcher cannot tell a minted host key from a
-    # mounted one, and the weaker assumption is the safe one — an alias keyed on
-    # the pod UID means a re-created pod shows up as a new host rather than as a
-    # man-in-the-middle warning (report R9/R10).
-    binding = HostKeyBinding(
-        policy=HostKeyPolicy.PER_ATTACH,
-        alias=host_key_alias(pod_uid),
-        known_hosts=str(known_hosts),
-        public_key=public_key,
-    )
-    notes: list[str] = []
-    if public_key is None:
-        notes.append(
-            "# the agent did not return a host public key, so known_hosts was "
-            "not written; the first connection will be refused until it does"
-        )
-    else:
-        write_known_hosts(binding, known_hosts)
-
-    alias = cast(str | None, parsed.host_alias) or default_host_alias(session.pod)
-    user = cast(str | None, parsed.ssh_user) or (
-        "root" if session.rung is Rung.FULL else DEFAULT_SEAT_USER
-    )
-    stanza = ssh_stanza(
+) -> SshSeat:
+    """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
+    return emit_ssh_config(
+        kubectl,
         session,
-        identity_file=identity,
-        host_key=binding,
-        host_alias=alias,
-        user=user,
-        invocation=KubectlInvocation(binary=kubectl.binary, context=kubectl.context),
-    )
-    if cast(bool, parsed.print_config):
-        return "\n".join([*notes, stanza])
-    path = write_ssh_config(
-        stanza,
-        directory / "config.d" / f"{session.pod.namespace}-{session.pod.name}.conf",
-    )
-    return "\n".join(
-        [
-            *notes,
-            f"ssh config written to {path}",
-            f"add this to ~/.ssh/config once:  Include {directory}/config.d/*.conf",
-            f"then:  ssh {alias}   (or Remote-SSH: Connect to Host -> {alias})",
-        ]
+        identity=identity,
+        config_dir=cast(str | None, parsed.config_dir),
+        host_alias=cast(str | None, parsed.host_alias),
+        user=cast(str | None, parsed.ssh_user),
+        print_config=cast(bool, parsed.print_config),
     )
 
 

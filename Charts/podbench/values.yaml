@@ -80,29 +80,42 @@ patchVenv:
   #     storageClassName: ""
   claims: []
 
-# The seat's identity, for the degraded rung of the capability ladder.
+# The seat's identity, for a seat that is an ordinary container.
 #
-# A PSA-`restricted` namespace forbids the ptrace rung, so the seat is attached
-# as the *target's* own uid instead — and a stock image has no /etc/passwd entry
-# for that uid. sshd will not authenticate a user NSS cannot resolve, and
-# ssh-keygen will not even mint a host key without one (it calls getpwuid()
-# regardless of -C). /etc/passwd is 644 root:root, so the seat cannot write one
-# for itself either. The identity therefore has to arrive as a volume, which
-# means it has to have been in the pod spec at creation: an ephemeral container
-# may only mount volumes the pod already declares.
+# A PSA-`restricted` namespace forbids the ptrace rung, so the seat runs as the
+# *target's* own uid instead — and a stock image has no /etc/passwd entry for
+# that uid. sshd will not authenticate a user NSS cannot resolve, and ssh-keygen
+# will not even mint a host key without one (it calls getpwuid() regardless of
+# -C). /etc/passwd is 644 root:root, so the seat cannot write one for itself
+# either. This ConfigMap is that identity, projected as two files.
+#
+# Which command it serves is the thing to get right:
+#
+# * `podbench dev` authors an ordinary pod, where a volumeMount may carry a
+#   subPath and so a single file can be landed at /etc/passwd. That is where a
+#   projected identity belongs — nothing is written at runtime and the seat
+#   needs no group-0. (The dev sidecar does not mount it yet; until it does,
+#   this ConfigMap is deployment furniture that nothing consumes.)
+# * `podbench attach` authors an *ephemeral* container, where subPath is
+#   forbidden outright — the API server refuses the whole request with
+#   `Forbidden: cannot be set for an Ephemeral Container`. A live-pod seat
+#   therefore gets its identity the other way: `attach --new --seat-gid-root`
+#   runs it with runAsGroup: 0 and the agent appends its own record to the
+#   image's group-writable /etc/passwd. Declaring the volume does not help an
+#   attach, and podbench will not mount it into one.
 #
 # This chart emits the ConfigMap. It cannot put it into anybody's pod — the
-# application's own chart must declare the volume, and a home volume with it,
-# the same cooperation patchVenv already needs. `podbench patch --print-values`
-# emits both halves. Enabling this on its own therefore changes nothing about
-# any running pod: it creates a ConfigMap that nothing yet mounts.
+# application's own chart must declare the volume, the same cooperation
+# patchVenv already needs; `podbench patch --print-values` emits both halves.
+# Enabling this on its own therefore changes nothing about any running pod: it
+# creates a ConfigMap that nothing yet mounts.
 seatIdentity:
   enabled: false
-  # One entry per application whose pods should be attachable in the degraded
-  # rung. uid and gid must be the application container's *own* (its
-  # runAsUser/runAsGroup, or whatever its image's USER resolves to): the whole
-  # point is an account that resolves at the uid the seat is forced to run as,
-  # so a wrong number here is a seat that authenticates as nobody.
+  # One entry per application whose pods should carry the identity. uid and gid
+  # must be the application container's *own* (its runAsUser/runAsGroup, or
+  # whatever its image's USER resolves to): the whole point is an account that
+  # resolves at the uid the seat is forced to run as, so a wrong number here is
+  # a seat that authenticates as nobody.
   #   - name: myapp
   #     uid: 1000
   #     gid: 1000

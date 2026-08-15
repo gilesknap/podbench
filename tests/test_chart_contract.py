@@ -24,7 +24,7 @@ import pytest
 import yaml
 
 from podbench.agent import GROUP_PATH, PASSWD_PATH
-from podbench.launcher import seat_identity_mounts
+from podbench.launcher import SEAT_IDENTITY_MOUNTS, seat_identity_mounts
 from podbench.model import (
     SEAT_GROUP_KEY,
     SEAT_HOME_PATH,
@@ -33,6 +33,7 @@ from podbench.model import (
     SEAT_PASSWD_KEY,
 )
 from podbench.patch import identity_configmap, values_snippet
+from podbench.spec import dev_pod_spec
 from podbench.sshcfg import SEAT_USER
 
 CHART = Path(__file__).resolve().parent.parent / "Charts" / "podbench"
@@ -137,15 +138,33 @@ def test_the_group_record_carries_the_same_gid_as_the_snippets_fsgroup(
     assert snippet["podSecurityContext"]["fsGroup"] == GID
 
 
-def test_the_launcher_mounts_what_the_chart_and_snippet_between_them_produce(
-    configmap: dict[str, Any], snippet: dict[str, Any]
+def test_the_identity_layout_names_the_keys_the_chart_emits(
+    configmap: dict[str, Any],
+) -> None:
+    """The layout an *ordinary* container would mount, against the rendered keys.
+
+    ``SEAT_IDENTITY_MOUNTS`` is one mount per file, each with its own
+    ``subPath``, because mounting the volume at ``/etc`` would replace the
+    directory and take ``nsswitch.conf`` with it. Every ``subPath`` has to be a
+    key of the ConfigMap the chart rendered, or the seat gets an empty file
+    where its identity should be. No ephemeral container may carry this - see
+    the mount test below - so this is the contract for a ``podbench dev``
+    sidecar, and the reason the chart's keys are still checked.
+    """
+    assert [path for path, _ in SEAT_IDENTITY_MOUNTS] == [PASSWD_PATH, GROUP_PATH]
+    assert {key for _, key in SEAT_IDENTITY_MOUNTS} == set(configmap["data"])
+
+
+def test_the_launcher_mounts_what_the_snippet_declares_and_attach_may_carry(
+    snippet: dict[str, Any],
 ) -> None:
     """The join: a pod written as the snippet says, mounted as the launcher does.
 
-    The identity is read-only and lands one file at a time by ``subPath``; the
-    home is writable and whole. Both ``subPath`` values have to be keys of the
-    ConfigMap the chart rendered, or the seat gets an empty file where its
-    identity should be.
+    The home volume, whole and writable, and nothing else. The identity is left
+    unmounted however plainly the pod declares it: it needs a ``subPath`` per
+    file, and the API server refuses ``subPath`` on an ephemeral container for
+    the whole request - so authoring it here would cost the attach the seat
+    rather than the identity.
     """
     pod = {
         "spec": {
@@ -155,17 +174,76 @@ def test_the_launcher_mounts_what_the_chart_and_snippet_between_them_produce(
     }
     mounts, warnings = seat_identity_mounts(pod, APP)
     assert warnings == []
-    by_path = {mount["mountPath"]: mount for mount in mounts}
-    assert set(by_path) == {PASSWD_PATH, GROUP_PATH, SEAT_HOME_PATH}
+    assert mounts == [{"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}]
+    assert not [mount for mount in mounts if mount["name"] == SEAT_IDENTITY_VOLUME]
 
-    passwd = by_path[PASSWD_PATH]
-    group = by_path[GROUP_PATH]
-    assert passwd["name"] == group["name"] == SEAT_IDENTITY_VOLUME
-    assert passwd["readOnly"] is True
-    assert group["readOnly"] is True
-    assert {passwd["subPath"], group["subPath"]} == set(configmap["data"])
 
-    home = by_path[SEAT_HOME_PATH]
-    assert home["name"] == SEAT_HOME_VOLUME
-    assert "readOnly" not in home
-    assert "subPath" not in home
+def origin_from_snippet(snippet: dict[str, Any]) -> dict[str, Any]:
+    """A pod deployed as ``patch --print-values`` says, in one place.
+
+    The application's own uid and gid are on the container because that is what
+    the snippet's comments *require* of whoever pastes it: the numbers in
+    ``seatIdentity.apps[]`` have to be the application container's own, or the
+    record resolves to a user nothing runs as.
+    """
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": APP, "namespace": "demo"},
+        "spec": {
+            "securityContext": snippet["podSecurityContext"],
+            "volumes": snippet["extraVolumes"],
+            "containers": [
+                {
+                    "name": APP,
+                    "image": f"{APP}:1",
+                    "securityContext": {"runAsUser": UID, "runAsGroup": GID},
+                    "volumeMounts": snippet["extraVolumeMounts"],
+                }
+            ],
+        },
+    }
+
+
+def test_a_dev_pods_sidecar_logs_in_as_the_uid_the_chart_wrote(
+    configmap: dict[str, Any], snippet: dict[str, Any]
+) -> None:
+    """The other join, and the one that fails as ``Permission denied (publickey)``.
+
+    A dev pod's sidecar is an ordinary container, so it *can* be given the two
+    files — and must then run as the uid the passwd record names. If the chart
+    writes 1000 and podbench authors a root sidecar, sshd resolves the login
+    name to 1000, cannot read the ``authorized_keys`` root wrote, and refuses
+    the key without mentioning identity at all. Both numbers are read back from
+    the rendered ConfigMap rather than from :data:`UID`, so a chart that starts
+    emitting a different record fails here.
+    """
+    pod = dev_pod_spec(
+        origin_from_snippet(snippet),
+        name=f"{APP}-podbench",
+        target_container=APP,
+        image="podbench:test",
+        target_port=8080,
+    )
+    sidecar = next(
+        entry for entry in pod["spec"]["containers"] if entry["name"] == "podbench"
+    )
+    projected = {
+        mount["mountPath"]: mount["subPath"]
+        for mount in sidecar["volumeMounts"]
+        if mount["name"] == SEAT_IDENTITY_VOLUME
+    }
+    assert projected == dict(SEAT_IDENTITY_MOUNTS)
+    assert set(projected.values()) <= set(configmap["data"])
+
+    assert sidecar["securityContext"]["runAsUser"] == int(
+        seat_line(configmap["data"][SEAT_PASSWD_KEY])[2]
+    )
+    assert sidecar["securityContext"]["runAsGroup"] == int(
+        seat_line(configmap["data"][SEAT_GROUP_KEY])[2]
+    )
+    # And the home that gid owns is the one the snippet's fsGroup hands over.
+    assert (
+        pod["spec"]["securityContext"]["fsGroup"]
+        == snippet["podSecurityContext"]["fsGroup"]
+    )

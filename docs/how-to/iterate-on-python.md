@@ -26,14 +26,36 @@ api-5f6c9b7d8-qz4tn itself is untouched)
   service          : none — this pod receives no traffic until you pass
                      --take-traffic or --cutover
 
+ssh config written to ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-podbench.conf
+add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+then:  ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench   (or Remote-SSH: Connect
+       to Host -> podbench-demo-api-5f6c9b7d8-qz4tn-podbench)
+
 next:
-  kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
+  ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench
+  kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash   # works when ssh does not
   podbench dev-bootstrap --repo <url> [--ref <ref>]
   podbench run --port 8080 -- <your command>
 
-teardown (restores any borrowed Service selector, then removes the pod):
+teardown (restores any borrowed Service selector, removes the pod, and takes the
+ssh config with it):
   podbench dev --delete api-5f6c9b7d8-qz4tn-podbench -n demo
 ```
+
+Two routes in, and the first one is the point of the mode: the editor lives in
+the cluster. `dev` authorises your public key inside the sidecar
+(`--identity`, default `~/.ssh/id_ed25519`) and writes the client stanza that
+reaches it (`--config-dir`, `--host-alias`) — the same generator `attach` uses,
+so [VS Code Remote-SSH](vscode-remote-ssh.md) applies unchanged. `kubectl exec`
+stays listed because it works when ssh does not.
+
+The key goes in when the pod is **authored**, and there is no second chance: an
+ordinary container's environment is fixed once the pod exists. So `dev` refuses
+before it creates anything if there is no key to authorise, and a dev pod made
+with the wrong `--identity` has to be deleted and made again.
+
+Do not reach a dev pod with `podbench attach`. That lands a *second*, ephemeral
+container inside it and ignores the sidecar that already runs the agent.
 
 `--dry-run` prints the authored pod instead of creating it. Read it once; it is
 the clearest statement of what this mode does.
@@ -63,12 +85,68 @@ invisible to the Service and the headline demo simply cannot work), gives the
 added container `resources: {}` with no way to set them, has no `--dry-run`, and
 prints nothing at all on success.
 
+### If the origin declares `podbench-identity`, the sidecar is not root
+
+A dev pod's sidecar is an **ordinary** container, so — unlike an `attach` seat —
+it may mount a file with `subPath`. Where the origin pod declares the
+`podbench-identity` volume (the ConfigMap the podbench chart emits; see
+[Attach to a pod](attach-to-a-pod.md)), the clone carries it and the sidecar is
+authored differently:
+
+* `passwd` is mounted read-only over `/etc/passwd` and `group` over `/etc/group`;
+* the sidecar runs as the **application's own uid and gid** — the pair that
+  record names — because sshd resolves the login name `podbench` to that uid, and
+  a root sidecar would be logging in as somebody else. That failure surfaces as
+  `Permission denied (publickey)`, so the two are decided together;
+* `SYS_PTRACE` goes with the root it no longer has. A capability added to a
+  non-root uid reaches the bounding set only, so it could not have worked anyway.
+  For Python this costs nothing: use `debugpy` (below), which never needed it;
+* a declared `podbench-home` volume is mounted at `/home/podbench`, the home that
+  same record names, so an ssh session lands somewhere writable. `$HOME` for the
+  sidecar's own tooling stays `/workspace`;
+* `fsGroup` is inherited from the origin, and set to the identity's gid if the
+  origin sets none — an `emptyDir` is `root:root` until it is not, and the
+  sidecar has just stopped being root.
+
+The line is printed when the pod comes up:
+
+```
+  seat identity    : podbench-identity projected over /etc/passwd and
+                     /etc/group, so the sidecar runs as 1000:1000 (the app's
+                     own) with no SYS_PTRACE
+```
+
+This is also what makes a dev pod admissible in a namespace enforcing the
+**restricted** Pod Security Standard, which refuses the root sidecar outright.
+The prompts further down this page read `root@…` because they were captured
+without an identity; with one they read `podbench@…`, and everything else on the
+page is the same.
+
+If the origin declares the volume but pins no uid and gid in its manifest,
+podbench cannot know which uid the record was written for, says so on stderr, and
+authors the root sidecar it always did. Nothing changes for an origin that does
+not declare the volume at all.
+
 ## 2. Get in and populate the workspace
+
+```
+$ ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench
+root@api-...-podbench:~# dev-bootstrap --repo https://github.com/you/api --ref my-branch
+```
+
+or, when ssh is not what you want:
 
 ```
 $ kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
 root@api-...-podbench:/workspace# dev-bootstrap --repo https://github.com/you/api --ref my-branch
 ```
+
+The two land in different directories, which is a fact about sshd rather than
+about podbench: an ssh session gets the home the *passwd record* names (`/root`,
+or `/home/podbench` with the identity volume), while `kubectl exec` inherits the
+container's environment, where `$HOME` is `/workspace`. `dev-bootstrap` takes
+absolute paths and defaults to `/workspace/src`, so it does not care either way
+— but `~` means different things in the two shells.
 
 `dev-bootstrap` does three things, in order: `git clone` into
 `/workspace/src`, `uv sync --frozen` from the project's own lockfile, and
@@ -164,10 +242,18 @@ point of the mode.
 
 ```
 $ podbench dev --delete api-5f6c9b7d8-qz4tn-podbench -n demo
+restored selector {"app": "api"} on service/api
+deleted pod/api-5f6c9b7d8-qz4tn-podbench
+removed ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-podbench.conf
+dropped podbench-3edcc84e-… from ~/.podbench/known_hosts
 ```
 
 This restores any borrowed Service selector *before* removing the pod, and
-leaves nothing behind. The origin pod was never modified.
+leaves nothing behind — on the laptop either. The stanza and its pinned host key
+go with the pod, because the `HostKeyAlias` is keyed on a pod UID no pod will
+ever have again, so a stanza left behind could only ever fail. (An `attach`
+seat's stanza is kept instead: that seat is reconnectable for as long as its pod
+lives.) The origin pod was never modified.
 
 ## Alternative: `PYTHONPATH` shadowing
 

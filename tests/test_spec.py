@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 
-from podbench.model import Rung
+from podbench.model import (
+    SEAT_HOME_PATH,
+    SEAT_HOME_VOLUME,
+    SEAT_IDENTITY_VOLUME,
+    Rung,
+)
 from podbench.spec import (
     AGENT_COMMAND,
     DEVPOD_LABEL,
@@ -21,10 +26,13 @@ from podbench.spec import (
     container_id,
     cutover_selector_patch,
     dev_pod_spec,
+    dev_seat_identity,
     ephemeral_container_spec,
     runs_as_non_root,
+    seat_identity_volume_mounts,
     service_selector_patch,
     target_uid_gid,
+    validate_ephemeral_volume_mounts,
     validate_security_context,
 )
 
@@ -93,6 +101,39 @@ def devpod(**kwargs: Any) -> dict[str, Any]:
     }
     defaults.update(kwargs)
     return dev_pod_spec(origin_pod(), **defaults)
+
+
+def origin_with_identity(**spec_overrides: Any) -> dict[str, Any]:
+    """The same origin, deployed by somebody who prepared it for podbench.
+
+    The volume is *declared and not mounted* by the application container, which
+    is what the chart's snippet tells them to write: nothing in the pod but a
+    seat has any use for it.
+    """
+    pod = origin_pod()
+    pod["spec"]["volumes"].append(
+        {
+            "name": SEAT_IDENTITY_VOLUME,
+            "configMap": {"name": "app-podbench-identity", "defaultMode": 0o444},
+        }
+    )
+    pod["spec"].update(spec_overrides)
+    return pod
+
+
+def dev_pod_spec_with_identity(
+    origin: dict[str, Any] | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    """A dev pod authored from an origin that declares the identity volume."""
+    defaults: dict[str, Any] = {
+        "name": "devpod",
+        "target_container": "app",
+        "image": "podbench:dev",
+        "target_port": 8080,
+    }
+    defaults.update(kwargs)
+    prepared = origin_with_identity() if origin is None else origin
+    return dev_pod_spec(prepared, **defaults)
 
 
 def container(pod: dict[str, Any], name: str) -> dict[str, Any]:
@@ -257,6 +298,101 @@ def test_a_dropped_capability_is_not_mistaken_for_an_added_one() -> None:
     validate_security_context({"capabilities": {"drop": ["ALL"]}, "runAsUser": 1000})
 
 
+# -- what an ephemeral container's volumeMounts may not carry --------------
+
+
+def test_a_sub_path_mount_is_refused_before_the_api_server_sees_it() -> None:
+    """Measured against a real cluster, and it costs the whole attach.
+
+    ``kubectl ... replace --raw .../pods/demo/ephemeralcontainers`` comes back
+    with ``The Pod "demo" is invalid: * spec.ephemeralContainers[0].
+    volumeMounts[0].subPath: Forbidden: cannot be set for an Ephemeral
+    Container`` — a request-level refusal, so a single such mount means no seat
+    lands at all. The seat-identity mounts were exactly that shape, which broke
+    `attach` against every pod prepared with the identity volume.
+    """
+    with pytest.raises(InvalidSpecError, match="Ephemeral Container") as raised:
+        ephemeral_container_spec(
+            name="podbench-1",
+            image="podbench:dev",
+            rung=Rung.SEAT,
+            volume_mounts=[
+                {
+                    "name": "podbench-identity",
+                    "mountPath": "/etc/passwd",
+                    "subPath": "passwd",
+                    "readOnly": True,
+                }
+            ],
+        )
+    # The way out on a live pod, named where the refusal is read.
+    assert "--seat-gid-root" in str(raised.value)
+
+
+def test_a_sub_path_expr_mount_is_refused_too() -> None:
+    """The API server forbids both fields, so both are refused here."""
+    with pytest.raises(InvalidSpecError, match="subPathExpr"):
+        ephemeral_container_spec(
+            name="podbench-1",
+            image="podbench:dev",
+            rung=Rung.SEAT,
+            volume_mounts=[
+                {
+                    "name": "config",
+                    "mountPath": "/etc/app.conf",
+                    "subPathExpr": "$(POD_NAME)",
+                }
+            ],
+        )
+
+
+def test_the_refusal_names_the_offending_mount_by_index() -> None:
+    """The API server's message is positional, so this one is too."""
+    with pytest.raises(InvalidSpecError, match=r"volumeMounts\[1\]"):
+        ephemeral_container_spec(
+            name="podbench-1",
+            image="podbench:dev",
+            rung=Rung.SEAT,
+            volume_mounts=[
+                {"name": "workspace", "mountPath": "/workspace"},
+                {"name": "venv", "mountPath": "/opt/venv", "subPath": "venv"},
+            ],
+        )
+
+
+def test_whole_volume_mounts_are_authored_unchanged() -> None:
+    """The rule is about ``subPath``, not about mounting: that stays supported.
+
+    Handing a toolchain to a non-root seat that cannot apt-get is the whole
+    point of ``--mount`` (report 3.19), and a refusal that swept up ordinary
+    mounts would take Patch mode with it.
+    """
+    mounts = [
+        {"name": "podbench-patch-venv", "mountPath": "/opt/venv"},
+        {"name": "podbench-home", "mountPath": "/home/podbench"},
+    ]
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="podbench:dev",
+        rung=Rung.SEAT,
+        volume_mounts=mounts,
+    )
+    assert spec["volumeMounts"] == mounts
+
+
+def test_an_empty_sub_path_is_not_a_sub_path() -> None:
+    """``subPath: ""`` is what the API server itself treats as unset."""
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="podbench:dev",
+        rung=Rung.SEAT,
+        volume_mounts=[{"name": "logs", "mountPath": "/var/log", "subPath": ""}],
+    )
+    assert spec["volumeMounts"] == [
+        {"name": "logs", "mountPath": "/var/log", "subPath": ""}
+    ]
+
+
 def test_the_target_container_id_is_injected_without_its_scheme() -> None:
     spec = ephemeral_container_spec(
         name="podbench-1",
@@ -372,6 +508,214 @@ def test_the_sidecar_can_be_authored_without_the_capability() -> None:
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
     }
+
+
+# -- the identity a dev pod's sidecar can be given ------------------------
+
+
+def test_a_declared_identity_is_projected_over_passwd_and_group() -> None:
+    """The mounts an ephemeral seat cannot have, on the container that can.
+
+    One ``subPath`` per file and read-only: the volume at ``/etc`` would replace
+    the directory and take ``nsswitch.conf`` with it, and nothing in the pod has
+    any business rewriting the seat's ``/etc/passwd``.
+    """
+    sidecar = container(dev_pod_spec_with_identity(), "podbench")
+    assert sidecar["volumeMounts"] == [
+        {"name": WORKSPACE_VOLUME, "mountPath": "/workspace"},
+        {
+            "name": SEAT_IDENTITY_VOLUME,
+            "mountPath": "/etc/passwd",
+            "subPath": "passwd",
+            "readOnly": True,
+        },
+        {
+            "name": SEAT_IDENTITY_VOLUME,
+            "mountPath": "/etc/group",
+            "subPath": "group",
+            "readOnly": True,
+        },
+    ]
+
+
+def test_the_projected_identity_and_the_sidecar_are_the_same_user() -> None:
+    """The mismatch this feature exists to prevent, asserted as an equality.
+
+    The ConfigMap's record is for the *application's* uid. A sidecar mounting it
+    while running as root would have an ``/etc/passwd`` describing somebody it
+    is not: sshd resolves the login name to that uid, cannot read the
+    ``authorized_keys`` the agent wrote as root, and answers ``Permission denied
+    (publickey)`` — which names nothing about identity and would be debugged
+    anywhere but here.
+    """
+    origin = origin_with_identity()
+    seat_uid, seat_gid = target_uid_gid(origin, "app")
+    sidecar = container(dev_pod_spec_with_identity(origin), "podbench")
+
+    assert sidecar["securityContext"]["runAsUser"] == seat_uid
+    assert sidecar["securityContext"]["runAsGroup"] == seat_gid
+    assert sidecar["securityContext"]["runAsUser"] != 0
+    # SYS_PTRACE is the price: a capability added to a non-root uid reaches the
+    # bounding set only, so it cannot be kept beside the identity's uid.
+    assert "add" not in sidecar["securityContext"]["capabilities"]
+    assert sidecar["securityContext"]["runAsNonRoot"] is True
+
+
+def test_the_home_the_identity_names_is_mounted_when_the_pod_has_one() -> None:
+    """The passwd record says ``/home/podbench``; sshd believes it.
+
+    A session lands in the home NSS gives it, so without the volume the login
+    works and arrives at ``Could not chdir to home directory``, in a container
+    whose vscode-server then has nowhere to unpack. ``$HOME`` for the sidecar
+    itself stays the workspace, which is the volume sized for uv's caches.
+    """
+    origin = origin_with_identity()
+    origin["spec"]["volumes"].append(
+        {"name": SEAT_HOME_VOLUME, "emptyDir": {"sizeLimit": "2Gi"}}
+    )
+    sidecar = container(dev_pod_spec_with_identity(origin), "podbench")
+    assert {
+        "name": SEAT_HOME_VOLUME,
+        "mountPath": SEAT_HOME_PATH,
+    } in sidecar["volumeMounts"]
+    assert {"name": "HOME", "value": "/workspace"} in sidecar["env"]
+
+
+def test_a_home_volume_without_an_identity_is_left_to_attach() -> None:
+    """No projected record means no ``/home/podbench`` in the record either.
+
+    The root sidecar resolves as ``root``, whose home is ``/root``; mounting the
+    seat's home over a path nothing names would be a volume for nobody. The
+    convention that *does* use it is ``attach``'s, on a live pod.
+    """
+    origin = origin_pod()
+    origin["spec"]["volumes"].append(
+        {"name": SEAT_HOME_VOLUME, "emptyDir": {"sizeLimit": "2Gi"}}
+    )
+    sidecar = container(
+        dev_pod_spec(
+            origin,
+            name="devpod",
+            target_container="app",
+            image="podbench:dev",
+            target_port=8080,
+        ),
+        "podbench",
+    )
+    assert [mount["name"] for mount in sidecar["volumeMounts"]] == [WORKSPACE_VOLUME]
+
+
+def test_the_identity_volume_is_carried_onto_the_clone() -> None:
+    """A mount is worth nothing if the clone drops the volume it names."""
+    pod = dev_pod_spec_with_identity()
+    assert [volume["name"] for volume in pod["spec"]["volumes"]] == [
+        "src",
+        SEAT_IDENTITY_VOLUME,
+        WORKSPACE_VOLUME,
+    ]
+    mounted = {mount["name"] for mount in container(pod, "podbench")["volumeMounts"]}
+    declared = {volume["name"] for volume in pod["spec"]["volumes"]}
+    assert mounted <= declared
+
+
+def test_a_pod_with_no_fsgroup_is_given_the_identitys_gid() -> None:
+    """The sidecar has just stopped being root, and the workspace is root:root.
+
+    An emptyDir is created ``root:root`` and stays that way until ``fsGroup``
+    makes the kubelet chgrp it. Without one the seat's ``$HOME`` is present and
+    unwritable, which fails later and further away than no home at all.
+    """
+    origin = origin_with_identity()
+    assert "fsGroup" not in origin["spec"]["securityContext"]
+    pod = dev_pod_spec_with_identity(origin)
+    assert pod["spec"]["securityContext"]["fsGroup"] == 3000
+    # The rest of the origin's pod-level context comes over untouched.
+    assert pod["spec"]["securityContext"]["runAsUser"] == 1000
+
+
+def test_an_fsgroup_the_origin_sets_is_inherited_rather_than_replaced() -> None:
+    """The application's chart chose that number; podbench does not know better."""
+    origin = origin_with_identity(
+        securityContext={"runAsUser": 1000, "runAsGroup": 3000, "fsGroup": 2000}
+    )
+    pod = dev_pod_spec_with_identity(origin)
+    assert pod["spec"]["securityContext"]["fsGroup"] == 2000
+
+
+def test_an_identity_whose_uid_the_manifest_does_not_pin_is_not_projected() -> None:
+    """A guessed uid is a login for the wrong user, so nothing is guessed.
+
+    The effective uid then comes from the image, which only the running process
+    knows — and the record in the ConfigMap was written for a number this
+    manifest does not carry.
+    """
+    origin = origin_with_identity(securityContext={})
+    assert dev_seat_identity(origin, "app") is None
+    sidecar = container(dev_pod_spec_with_identity(origin), "podbench")
+    assert sidecar["securityContext"]["runAsUser"] == 0
+    assert [mount["name"] for mount in sidecar["volumeMounts"]] == [WORKSPACE_VOLUME]
+
+
+def test_a_root_application_is_not_given_a_projected_identity() -> None:
+    """uid 0 resolves in every image already; the file would cost SYS_PTRACE."""
+    origin = origin_with_identity(securityContext={"runAsUser": 0, "runAsGroup": 0})
+    assert dev_seat_identity(origin, "app") is None
+
+
+def test_the_identity_convention_can_be_turned_off() -> None:
+    origin = origin_with_identity()
+    sidecar = container(
+        dev_pod_spec(
+            origin,
+            name="devpod",
+            target_container="app",
+            image="podbench:dev",
+            target_port=8080,
+            seat_identity=False,
+        ),
+        "podbench",
+    )
+    assert sidecar["securityContext"]["capabilities"]["add"] == ["SYS_PTRACE"]
+    assert [mount["name"] for mount in sidecar["volumeMounts"]] == [WORKSPACE_VOLUME]
+
+
+def test_an_origin_without_the_volume_is_authored_exactly_as_before() -> None:
+    """The regression that matters most: nothing changes for everybody else."""
+    pod = devpod()
+    sidecar = container(pod, "podbench")
+    assert sidecar["volumeMounts"] == [
+        {"name": WORKSPACE_VOLUME, "mountPath": "/workspace"}
+    ]
+    assert sidecar["securityContext"]["runAsUser"] == 0
+    assert sidecar["securityContext"]["capabilities"]["add"] == ["SYS_PTRACE"]
+    assert "fsGroup" not in pod["spec"]["securityContext"]
+
+
+def test_the_projected_mounts_are_exactly_what_an_ephemeral_seat_is_refused() -> None:
+    """One layout, and the two containers it means opposite things to.
+
+    The same mounts an ordinary sidecar is authored with are the ones
+    :func:`validate_ephemeral_volume_mounts` refuses, so this file cannot end up
+    asserting a layout that only one half believes in.
+    """
+    with pytest.raises(InvalidSpecError, match="Ephemeral Container"):
+        validate_ephemeral_volume_mounts(seat_identity_volume_mounts())
+
+
+def test_the_origins_ephemeral_containers_are_not_cloned() -> None:
+    """A pod that has been attached to must still be clonable.
+
+    ``spec.ephemeralContainers`` is refused on create — ``Forbidden: cannot be
+    set on create`` — so copying the origin's seats fails the whole ``dev`` on a
+    field the user never typed, and does it only for the pods most likely to be
+    debugged twice. Measured against a real cluster: an origin carrying
+    ``podbench-1..3``.
+    """
+    origin = origin_with_identity()
+    origin["spec"]["ephemeralContainers"] = [
+        {"name": "podbench-1", "image": "podbench:dev"}
+    ]
+    assert "ephemeralContainers" not in dev_pod_spec_with_identity(origin)["spec"]
 
 
 def test_the_origin_json_is_not_mutated() -> None:
