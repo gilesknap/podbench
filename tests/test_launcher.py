@@ -34,7 +34,16 @@ from podbench.launcher import (
     seats,
     try_resize,
 )
-from podbench.model import Blocker, ContainerRef, PodRef, Rung, Verdict
+from podbench.model import (
+    SEAT_HOME_PATH,
+    SEAT_HOME_VOLUME,
+    SEAT_IDENTITY_VOLUME,
+    Blocker,
+    ContainerRef,
+    PodRef,
+    Rung,
+    Verdict,
+)
 from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
@@ -654,6 +663,226 @@ def test_attach_mount_is_repeatable_on_the_command_line(tmp_path: Path) -> None:
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"},
         {"name": "logs", "mountPath": "/var/log/app"},
     ]
+
+
+# -- the seat's identity, mounted from the pod (the degraded rung's ssh) -----
+
+IDENTITY_VOLUME: dict[str, Any] = {
+    "name": SEAT_IDENTITY_VOLUME,
+    "configMap": {"name": "myapp-podbench-identity"},
+}
+HOME_VOLUME: dict[str, Any] = {
+    "name": SEAT_HOME_VOLUME,
+    "persistentVolumeClaim": {"claimName": "myapp-podbench-home"},
+}
+
+# The literal paths and keys, spelled out once. Everything else in this file
+# uses the constants, but the whole point of these two mounts is that the
+# launcher, the chart's ConfigMap and the image's NSS agree on exact strings —
+# so the contract is worth one assertion that would fail if any of them moved.
+EXPECTED_IDENTITY_MOUNTS: list[dict[str, Any]] = [
+    {
+        "name": "podbench-identity",
+        "mountPath": "/etc/passwd",
+        "subPath": "passwd",
+        "readOnly": True,
+    },
+    {
+        "name": "podbench-identity",
+        "mountPath": "/etc/group",
+        "subPath": "group",
+        "readOnly": True,
+    },
+    {"name": "podbench-home", "mountPath": "/home/podbench"},
+]
+
+
+def identity_pod(**overrides: Any) -> dict[str, Any]:
+    """A pod deployed with the seat-identity cooperation: uid 1000, both volumes."""
+    settings: dict[str, Any] = {
+        "uid": 1000,
+        "non_root": True,
+        "volumes": [IDENTITY_VOLUME, HOME_VOLUME],
+    }
+    settings.update(overrides)
+    return pod_document(**settings)
+
+
+def test_the_identity_volumes_are_mounted_by_convention_not_by_flag() -> None:
+    """No flag, because the volumes cannot be there by accident.
+
+    ``spec.volumes`` is immutable, so anything named ``podbench-identity`` was
+    put in the pod at deploy time on purpose. Making the user repeat that intent
+    on every attach would waste the only cooperation that makes ssh possible on
+    a PSA-restricted namespace.
+    """
+    cluster = FakeCluster(identity_pod())
+    session = attach(kubectl_for(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    # subPath on each: mounting the volume at /etc would replace the directory,
+    # taking nsswitch.conf — and so the very lookup this exists to satisfy.
+    assert cluster.added[0]["volumeMounts"] == EXPECTED_IDENTITY_MOUNTS
+    assert session.identity_mounted
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    # The home volume is only worth mounting if the seat is pointed at it: it is
+    # what keeps vscode-server off the pod's ephemeral-storage budget.
+    assert env["HOME"] == SEAT_HOME_PATH
+
+
+def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
+    """A bare attach against an uncooperative pod degrades, it does not fail."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(kubectl_for(cluster), "target")
+
+    assert "volumeMounts" not in cluster.added[0]
+    assert not session.identity_mounted
+    assert session.rung is Rung.FULL
+
+
+def test_no_seat_identity_opts_out(tmp_path: Path) -> None:
+    cluster = FakeCluster(identity_pod())
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--no-seat-identity",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    assert "volumeMounts" not in cluster.added[0]
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["HOME"] == "/tmp/podbench-home", "the fallback home, not the volume's"
+
+
+def test_an_explicit_mount_of_the_same_path_wins_over_the_convention() -> None:
+    """Two mounts of one mountPath is not a tie the kubelet breaks sensibly."""
+    cluster = FakeCluster(identity_pod())
+    attach(
+        kubectl_for(cluster),
+        "target",
+        mounts=[f"{SEAT_IDENTITY_VOLUME}:/etc/passwd"],
+    )
+
+    mounts = cast(list[dict[str, Any]], cluster.added[0]["volumeMounts"])
+    passwd = [mount for mount in mounts if mount["mountPath"] == "/etc/passwd"]
+    assert len(passwd) == 1
+    # The user's, verbatim: no subPath and no readOnly were asked for.
+    assert passwd[0] == {"name": SEAT_IDENTITY_VOLUME, "mountPath": "/etc/passwd"}
+    # The rest of the convention is unaffected.
+    assert [mount["mountPath"] for mount in mounts] == [
+        "/etc/passwd",
+        "/etc/group",
+        SEAT_HOME_PATH,
+    ]
+
+
+def test_an_identity_without_a_home_volume_is_warned_about() -> None:
+    """The passwd record names /home/podbench, and nothing else can create it."""
+    cluster = FakeCluster(identity_pod(volumes=[IDENTITY_VOLUME]))
+    session = attach(kubectl_for(cluster), "target")
+
+    assert [mount["mountPath"] for mount in cluster.added[0]["volumeMounts"]] == [
+        "/etc/passwd",
+        "/etc/group",
+    ]
+    warning = next(w for w in session.warnings if SEAT_HOME_VOLUME in w)
+    assert SEAT_HOME_PATH in warning
+
+
+def test_the_report_says_the_identity_mount_is_why_ssh_works() -> None:
+    """One line, so two pods that differ only in this can be told apart."""
+    cluster = FakeCluster(identity_pod())
+    session = attach(kubectl_for(cluster), "target")
+
+    ssh_seat = features(session)[-2]
+    assert ssh_seat.available
+    assert SEAT_IDENTITY_VOLUME in ssh_seat.note
+
+    text = format_session(session)
+    assert "[x] ssh seat" in text
+    assert SEAT_IDENTITY_VOLUME in text
+
+    # …and a pod without the volume says nothing of the sort.
+    plain = attach(kubectl_for(FakeCluster(pod_document(uid=1000))), "target")
+    assert SEAT_IDENTITY_VOLUME not in format_session(plain)
+
+
+def test_the_proxy_command_follows_the_mounted_home(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """sshd's config path is derived from $HOME, and the volume moves it.
+
+    A ProxyCommand naming the config file in the home the seat *would* have had
+    fails at the first connection with nothing in the error to say why.
+    """
+    cluster = FakeCluster(identity_pod())
+    assert (
+        main(
+            [
+                "attach",
+                "target",
+                "-n",
+                "demo",
+                "--identity",
+                identity(tmp_path),
+                "--config-dir",
+                str(tmp_path / "cfg"),
+                "--print-config",
+            ],
+            runner=cluster,
+        )
+        == 0
+    )
+    assert f"{SEAT_HOME_PATH}/.podbench/sshd_config" in capsys.readouterr().out
+
+
+def test_a_seat_landed_before_the_volumes_existed_says_to_relaunch() -> None:
+    """An ephemeral container's mounts are fixed at creation, like its name."""
+    existing = {"name": "podbench-1", "securityContext": {"runAsUser": 1000}}
+    cluster = FakeCluster(
+        identity_pod(
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(kubectl_for(cluster), "target")
+
+    assert session.reused
+    assert not session.identity_mounted
+    assert cluster.added == []
+    warning = next(w for w in session.warnings if SEAT_IDENTITY_VOLUME in w)
+    assert "--new" in warning
+
+
+def test_reconnecting_to_a_seat_that_has_them_reports_it() -> None:
+    existing = {
+        "name": "podbench-1",
+        "securityContext": {"runAsUser": 1000},
+        "env": [{"name": "HOME", "value": SEAT_HOME_PATH}],
+        "volumeMounts": EXPECTED_IDENTITY_MOUNTS,
+    }
+    cluster = FakeCluster(
+        identity_pod(
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(kubectl_for(cluster), "target")
+
+    assert session.reused
+    # Read back from the spec, so a reconnect from another machine — which
+    # remembers nothing of the original attach — describes the seat correctly.
+    assert session.identity_mounted
+    assert session.home == SEAT_HOME_PATH
+    assert not [w for w in session.warnings if "--new" in w]
 
 
 # -- the capability report --------------------------------------------------

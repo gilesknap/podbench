@@ -1,0 +1,41 @@
+{{- if .Values.seatIdentity.enabled }}
+{{- range .Values.seatIdentity.apps }}
+{{- $uid := int (required "seatIdentity.apps[].uid is required: the seat runs as the application's own uid, so a guessed one produces an account that resolves to the wrong user" .uid) }}
+{{- $gid := int (required "seatIdentity.apps[].gid is required: it is also the fsGroup the application's chart must set, or the seat's home volume is unwritable" .gid) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "podbench.seatIdentityName" . }}
+  labels:
+    {{- include "podbench.labels" $ | nindent 4 }}
+    podbench.dev/seat-identity: {{ .name | quote }}
+  {{- with $.Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  # The two key names, the login name and the home path are a contract with
+  # src/podbench/model.py (SEAT_PASSWD_KEY, SEAT_GROUP_KEY, SEAT_HOME_PATH) and
+  # src/podbench/sshcfg.py (SEAT_USER): the launcher mounts them by convention
+  # rather than by flag, so a rename on one side alone is a login refused before
+  # any key is looked at. They are hard-coded here for that reason.
+  #
+  # Seven colon-separated fields: name:passwd:uid:gid:gecos:home:shell. The root
+  # entry is here because plenty of tooling still expects uid 0 to resolve; the
+  # seat itself logs in as the second one, at the application's own uid, which
+  # is the only uid a PSA-restricted namespace lets the debug container take.
+  passwd: |
+    root:x:0:0:root:/root:/bin/bash
+    podbench:x:{{ $uid }}:{{ $gid }}:podbench seat:/home/podbench:/bin/bash
+  # Four fields: name:passwd:gid:members. Present so that getgrgid() answers at
+  # all — `id` and friends print a bare number otherwise. A gid of 0 gets no
+  # second line: root already owns it, and two names for one gid is a lookup
+  # whose answer depends on file order.
+  group: |
+    root:x:0:
+    {{- if ne $gid 0 }}
+    podbench:x:{{ $gid }}:
+    {{- end }}
+{{- end }}
+{{- end }}

@@ -15,13 +15,14 @@ written by a schema version that predates half its fields.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+import yaml
 
-from podbench import patch
+from podbench import model, patch
 from podbench.kubectl import CommandResult, Kubectl
 
 VENV = "/opt/venv"
@@ -979,6 +980,72 @@ def test_values_snippet_key_names_are_the_charts_business() -> None:
     assert "\nvolumeMounts:" in snippet
 
 
+def parsed_snippet(**kwargs: str) -> dict[str, Any]:
+    """The snippet as data. It is pasted into a values file, so it has to parse."""
+    loaded: object = yaml.safe_load(patch.values_snippet("api", VENV, **kwargs))
+    assert isinstance(loaded, dict)
+    return cast(dict[str, Any], loaded)
+
+
+def volume_names(values: Mapping[str, Any], key: str) -> list[str]:
+    return [str(entry["name"]) for entry in cast(list[Any], values.get(key, []))]
+
+
+def test_values_snippet_declares_the_seat_volumes_but_does_not_mount_them() -> None:
+    """The seat's volumes only have to be *declared* on the pod.
+
+    An ephemeral container may mount any volume the pod already has, and pod
+    volumes are immutable after creation — so declaring is both necessary and
+    sufficient, and mounting them into the application as well would change its
+    filesystem for nothing. It reads as an omission, so it is asserted.
+    """
+    values = parsed_snippet(uid="1000", gid="1000")
+    declared = volume_names(values, "extraVolumes")
+    assert model.SEAT_IDENTITY_VOLUME in declared
+    assert model.SEAT_HOME_VOLUME in declared
+    mounted = volume_names(values, "extraVolumeMounts")
+    assert model.SEAT_IDENTITY_VOLUME not in mounted
+    assert model.SEAT_HOME_VOLUME not in mounted
+
+
+def test_values_snippet_identity_volume_is_the_chart_configmap_read_only() -> None:
+    values = parsed_snippet(uid="1000", gid="1000")
+    volumes = {
+        str(entry["name"]): entry for entry in cast(list[Any], values["extraVolumes"])
+    }
+    identity = cast(dict[str, Any], volumes[model.SEAT_IDENTITY_VOLUME]["configMap"])
+    assert identity["name"] == patch.identity_configmap("api")
+    assert values["seatIdentity"]["apps"][0]["name"] == "api"
+    # 0444 in YAML 1.1 octal, which is what Kubernetes reads it as: nothing in
+    # the pod should be able to rewrite the seat's /etc/passwd.
+    assert identity["defaultMode"] == 0o444
+    home = cast(dict[str, Any], volumes[model.SEAT_HOME_VOLUME]["emptyDir"])
+    assert home["sizeLimit"] == patch.SEAT_HOME_SIZE
+
+
+def test_values_snippet_sets_fsgroup_to_the_apps_gid() -> None:
+    """Without it the home volume is present and unwritable, which is worse.
+
+    An emptyDir arrives root:root and the seat runs as the application's uid;
+    fsGroup is what makes the kubelet hand the volume to that gid.
+    """
+    values = parsed_snippet(uid="1000", gid="65532")
+    assert values["podSecurityContext"]["fsGroup"] == 65532
+    assert values["seatIdentity"]["apps"][0]["gid"] == 65532
+
+
+def test_values_snippet_uid_defaults_to_a_placeholder_not_a_plausible_number() -> None:
+    """A snippet pasted unread must fail at install time, not at 3am.
+
+    An identity built for the wrong uid produces a seat that authenticates as
+    nobody — the same silent refusal as having no identity at all — so the
+    default is deliberately not a number.
+    """
+    values = parsed_snippet()
+    assert not isinstance(values["seatIdentity"]["apps"][0]["uid"], int)
+    assert not isinstance(values["podSecurityContext"]["fsGroup"], int)
+
+
 # -- CLI -------------------------------------------------------------------
 
 
@@ -993,6 +1060,31 @@ def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> 
     code = patch.main(["patch", "--print-values", "--app", "api", "--venv-path", VENV])
     assert code == 0
     assert "claimName: api-venv" in capsys.readouterr().out
+
+
+def test_print_values_takes_the_apps_uid_and_gid(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = patch.main(
+        # fmt: off
+        [
+            "patch",
+            "--print-values",
+            "--app",
+            "api",
+            "--venv-path",
+            VENV,
+            "--uid",
+            "65532",
+            "--gid",
+            "65532",
+        ],
+        # fmt: on
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "uid: 65532" in out
+    assert "fsGroup: 65532" in out
 
 
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:

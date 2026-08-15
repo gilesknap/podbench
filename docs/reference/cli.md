@@ -67,12 +67,14 @@ what that seat can actually do.
 ```
 usage: kubectl podbench attach [-h] [--target TARGET] [--image IMAGE]
                                [--target-uid TARGET_UID]
-                               [--mount CLAIM:MOUNTPATH] [--new] [--no-probe]
-                               [--resize MEMORY] [--identity IDENTITY]
-                               [--ssh-user SSH_USER] [--host-alias HOST_ALIAS]
-                               [--print-config] [--timeout TIMEOUT]
-                               [-n NAMESPACE] [--context CONTEXT]
-                               [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
+                               [--mount CLAIM:MOUNTPATH] [--new]
+                               [--seat-gid-root] [--no-seat-identity]
+                               [--no-probe] [--resize MEMORY]
+                               [--identity IDENTITY] [--ssh-user SSH_USER]
+                               [--host-alias HOST_ALIAS] [--print-config]
+                               [--timeout TIMEOUT] [-n NAMESPACE]
+                               [--context CONTEXT] [--kubectl KUBECTL]
+                               [--config-dir CONFIG_DIR]
                                pod
 
 positional arguments:
@@ -86,11 +88,20 @@ options:
                         the target's uid, when its pod spec does not say
   --mount CLAIM:MOUNTPATH
                         mount a volume the pod already declares into the seat,
-                        named by claim or by volume name. MOUNTPATH defaults to
-                        the application container's own, which Patch mode
+                        named by claim or by volume name. MOUNTPATH defaults
+                        to the application container's own, which Patch mode
                         requires it to equal. Repeatable
   --new                 add a container even if one is running (its name is
                         permanent)
+  --seat-gid-root       land the seat with runAsGroup: 0 so it can register an
+                        /etc/passwd entry for the target's uid, which is what
+                        sshd needs to let anyone log in. Off by default: it
+                        drops the target's own group
+  --no-seat-identity    do not mount the pod's podbench-identity and podbench-
+                        home volumes. They are mounted by convention when the
+                        pod declares them, because that is the only way an
+                        ephemeral container can have an /etc/passwd entry for
+                        the target's uid - and sshd needs one
   --no-probe            skip capreport; the report then says nothing was
                         measured
   --resize MEMORY       raise the target's memory limit in place first, e.g.
@@ -128,8 +139,36 @@ Notes:
     path to copy, so one must be given.
   * Mounts are fixed when a container is created, so `--mount` against a
     reconnect warns and does nothing. Use `--new` for a seat with a new mount.
+* **The seat's identity is mounted by convention, not by flag.** If the pod
+  declares a volume named `podbench-identity`, `attach` mounts its `passwd` key
+  read-only over `/etc/passwd` and its `group` key over `/etc/group` — each with
+  a `subPath`, because mounting the volume at `/etc` would replace the whole
+  directory. If the pod declares `podbench-home`, that is mounted read-write at
+  `/home/podbench` and becomes the seat's `$HOME`.
+  * This is what makes ssh work on the degraded rung. That rung runs as the
+    *target's* uid, which no debug image can have an account for, and sshd will
+    not authenticate a user NSS cannot resolve. `/etc/passwd` is `644 root:root`,
+    so the seat cannot write one either.
+  * It is a convention because the volumes cannot be there by accident: an
+    ephemeral container may only mount volumes the pod already declares and
+    `spec.volumes` is immutable, so anything called `podbench-identity` was put
+    in the pod at deploy time on purpose. The chart emits the ConfigMap
+    (`seatIdentity` in `Charts/podbench/values.yaml`); the application's own
+    chart declares the volumes. An `attach` against a pod without them still
+    lands a seat and reports honestly that ssh is unavailable.
+  * An explicit `--mount` for the same mountPath **wins** over the convention.
+    `--no-seat-identity` turns it off entirely.
+  * The home volume needs the pod to set `fsGroup` to the application's gid, or
+    it arrives owned by `root:root` and the seat cannot write to it. The agent
+    reports that by name at start-up.
+  * The capability report says which of these applied: the `ssh seat` line names
+    the identity volume when that is what made the login resolvable.
 * `--resize` is opt-in and lightly proven; it prints a warning either way and
   needs `pods/resize` `patch`.
+* `--seat-gid-root` is the fallback where the pod has no identity volume and
+  cannot be redeployed with one: GID 0 lets the agent append its own
+  `/etc/passwd` record (the image makes the file group-writable for it), at the
+  cost of the target's own group.
 * Exit code is `0` for any seat that lands, including a degraded one; `2` for a
   real error.
 
@@ -457,7 +496,8 @@ you should not need to run it yourself.
 
 ```
 usage: podbench agent [-h] [--ensure-only] [--self-check] [--print-host-key]
-                      [--no-self-check] [--idle-interval IDLE_INTERVAL]
+                      [--print-login-user] [--no-self-check]
+                      [--idle-interval IDLE_INTERVAL]
 
 Prepare the debug container for ssh and idle as its PID 1.
 
@@ -467,6 +507,8 @@ options:
   --self-check          run the startup checks and exit; non-zero if any fails
   --print-host-key      print the host public key for the launcher's
                         known_hosts
+  --print-login-user    print the login name sshd will resolve for this uid;
+                        non-zero with the reason on stderr when there is none
   --no-self-check       skip the startup checks (they cost a subprocess and
                         ~0.2 s)
   --idle-interval IDLE_INTERVAL
@@ -478,6 +520,27 @@ container is normal operation. The host key, the authorized keys and the sshd
 config are rebuilt from the environment or a mounted Secret on each start, which
 is what makes "the ephemeral container is strictly disposable" true rather than
 aspirational.
+
+No step is fatal either. PID 1 of an unrestartable container that exits burns its
+name for the pod's lifetime, so a step that cannot do its job records the reason
+and the agent idles anyway — `kubectl exec` needs none of sshd. Two steps are
+worth knowing by name:
+
+* **home-dir** creates `$HOME` and the `.ssh` / `.podbench` directories in it. A
+  mounted `podbench-home` arrives *empty*, and sshd creates nothing. If the
+  directory is not writable the failure names `fsGroup`, which is almost always
+  the cause: a projected volume is `root:root` until the pod's `fsGroup` hands it
+  to the seat's group, and a seat running as the target's uid can chown nothing.
+* **nss-identity** is a no-op when NSS already resolves the seat's uid — which is
+  exactly what a mounted `podbench-identity` achieves, and it stays a no-op even
+  though the projected `/etc/passwd` is read-only. Only where no identity was
+  supplied does it try to append one, which needs GID 0
+  (`attach --seat-gid-root`).
+
+`--print-login-user` is how the launcher decides whether an ssh stanza is worth
+writing: the name on stdout, or exit 1 with the mechanism and the way out on
+stderr. It is a pure read and ensures nothing, so it reports the state sshd will
+actually find.
 
 `--self-check` includes the fd-2 tripwire — a `kubectl exec` round trip with a
 delayed second line, which fails if anything in the path has broken the CRI exec

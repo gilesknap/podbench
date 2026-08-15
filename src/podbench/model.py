@@ -14,6 +14,11 @@ from typing import Any, cast
 
 __all__ = [
     "DEFAULT_IMAGE",
+    "SEAT_GROUP_KEY",
+    "SEAT_HOME_PATH",
+    "SEAT_HOME_VOLUME",
+    "SEAT_IDENTITY_VOLUME",
+    "SEAT_PASSWD_KEY",
     "IMAGE_ENV",
     "TARGET_CID_ENV",
     "Blocker",
@@ -38,6 +43,35 @@ IMAGE_ENV = "PODBENCH_IMAGE"
 """Environment override for :data:`DEFAULT_IMAGE`, so a site can point every
 podbench command at its own mirror or a pinned digest without a flag on each.
 """
+
+SEAT_IDENTITY_VOLUME = "podbench-identity"
+"""Pod volume holding a passwd/group file for the seat, mounted read-only.
+
+A debug seat runs as the *target's* uid, which a stock image has no account
+for — and ssh cannot authenticate a user NSS cannot resolve. The seat cannot
+write ``/etc/passwd`` either, and an ephemeral container may only mount volumes
+the pod already declares. So the identity has to be put in the pod spec at
+deploy time, by the same chart cooperation Patch mode already needs, and the
+launcher mounts it by convention rather than by flag.
+"""
+
+SEAT_PASSWD_KEY = "passwd"
+SEAT_GROUP_KEY = "group"
+"""Keys inside :data:`SEAT_IDENTITY_VOLUME`, mounted with ``subPath`` so they
+land as files rather than replacing all of ``/etc``."""
+
+SEAT_HOME_VOLUME = "podbench-home"
+"""Pod volume for the seat's home directory.
+
+vscode-server wants a few hundred MB of writable space and, on a live pod,
+everything the seat writes counts against the workload's ephemeral-storage
+limit — exceed it and the kubelet evicts the pod, workload included. A volume
+moves that weight off the pod's budget, and survives the seat.
+"""
+
+SEAT_HOME_PATH = "/home/podbench"
+"""Where :data:`SEAT_HOME_VOLUME` is mounted, and the home the passwd record
+names. Both halves must agree: sshd puts the user in the home NSS gives it."""
 
 TARGET_CID_ENV = "PODBENCH_TARGET_CID"
 """Env var carrying the target's container id into the debug container.

@@ -58,7 +58,14 @@ from typing import Any, Protocol, cast
 
 from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
 from .launcher import CONTAINER_BASE, current_namespace, running_seat
-from .model import PodRef, as_dict
+from .model import (
+    SEAT_HOME_PATH,
+    SEAT_HOME_VOLUME,
+    SEAT_IDENTITY_VOLUME,
+    PodRef,
+    as_dict,
+)
+from .sshcfg import SEAT_USER
 
 __all__ = [
     "APPLIED_ANNOTATION",
@@ -68,6 +75,7 @@ __all__ = [
     "MAX_RECORDED_COMMITS",
     "METADATA_FILES",
     "PATCHED_ANNOTATION",
+    "SEAT_HOME_SIZE",
     "InterpreterProbe",
     "LocalStore",
     "ManifestVersionError",
@@ -88,6 +96,7 @@ __all__ = [
     "consolidate",
     "drift_commits",
     "format_status",
+    "identity_configmap",
     "init",
     "install_argv",
     "interpreter_warning",
@@ -168,6 +177,15 @@ With a venv-based image this usually resolves to the venv's own ``bin/python3``
 — which is on the PVC, and whose symlink into the image is exactly the thing an
 interpreter bump breaks. Either outcome is informative: a version, or a failure
 to execute at all.
+"""
+
+SEAT_HOME_SIZE = "2Gi"
+"""Default ``sizeLimit`` for the seat's home emptyDir.
+
+Measured rather than guessed: vscode-server unpacks to roughly 700 MiB and a
+realistic session — extensions, a language server's index, build output — sits
+at 1.1-1.3 GB. An emptyDir with no limit draws silently on the node's ephemeral
+storage, and blowing the pod's budget evicts the *pod*, application included.
 """
 
 LOG_SEPARATOR = "\x1f"
@@ -1494,17 +1512,36 @@ def _retirement_checklist(
 # -- helm values -----------------------------------------------------------
 
 
+def identity_configmap(app: str) -> str:
+    """The ConfigMap ``seatIdentity`` emits for one application.
+
+    Derived, not configured, so that the chart and this snippet cannot drift:
+    ``Charts/podbench/templates/_helpers.tpl`` builds the same name from the
+    same field. It is keyed on the application rather than on the podbench
+    release because the volume that references it lives in the *application's*
+    pod spec.
+
+    >>> identity_configmap("api")
+    'api-podbench-identity'
+    """
+    return f"{app}-podbench-identity"
+
+
 def values_snippet(
     app: str,
     venv: str,
     *,
     image: str = "<the application's own image>",
     size: str = "2Gi",
+    uid: str = "<the application's runAsUser>",
+    gid: str = "<the application's runAsGroup>",
+    home_size: str = SEAT_HOME_SIZE,
     volumes_key: str = "extraVolumes",
     mounts_key: str = "extraVolumeMounts",
     init_key: str = "initContainers",
+    security_key: str = "podSecurityContext",
 ) -> str:
-    """The two values snippets Patch mode needs, ready to paste.
+    """The values an application's chart needs, ready to paste.
 
     Kept as small as it can be, because this is the *only* deploy-time
     cooperation podbench ever asks for and every line of it is a line somebody
@@ -1516,27 +1553,74 @@ def values_snippet(
     redundant. It mounts the claim at a *staging* path, which is the only moment
     the image's own venv is still visible: once the claim is mounted over the
     venv path, the thing that has to be copied is behind the mount.
+
+    The seat's own two volumes ride along here for one reason: they are subject
+    to the identical constraint. An ephemeral container may only mount volumes
+    the pod already declares, and pod volumes are immutable after creation, so
+    the identity file that makes a non-root seat resolvable — and the writable
+    home that makes it usable — have to be in the spec at deploy time or not at
+    all. ``uid``/``gid`` default to placeholders rather than to plausible
+    numbers: a wrong uid pasted unread is a seat that authenticates as nobody,
+    and a snippet that fails at ``helm install`` beats one that fails at 3am.
     """
     claim = f"{app}-venv"
+    configmap = identity_configmap(app)
     return "\n".join(
         [
             f"# 1. values for the podbench release — creates the claim {claim}",
+            f"#    and the identity ConfigMap {configmap}",
             "patchVenv:",
             "  enabled: true",
             "  claims:",
             f"    - name: {app}",
             f"      size: {size}",
+            "seatIdentity:",
+            "  # uid/gid must be the application container's own: in a",
+            "  # PSA-restricted namespace the seat can only run as the target's",
+            f"  # uid, and sshd cannot log in a {SEAT_USER!r} that NSS — i.e. this",
+            "  # file — does not resolve at that uid.",
+            "  enabled: true",
+            "  apps:",
+            f"    - name: {app}",
+            f"      uid: {uid}",
+            f"      gid: {gid}",
             "",
             f"# 2. values for {app}'s own chart — mounts it over {venv}",
-            "#    Add the flag your chart already has for these three lists; the",
-            "#    names below are the common convention, not a requirement.",
+            "#    Use whatever passthrough your chart already has for these four",
+            "#    keys; the names below are the common convention, not a",
+            "#    requirement. The shapes underneath them are plain Kubernetes.",
             f"{volumes_key}:",
             "  - name: podbench-patch-venv",
             "    persistentVolumeClaim:",
             f"      claimName: {claim}",
+            "  # The next two are the seat's, and they are deliberately *declared",
+            "  # and not mounted* by the application container — which looks like",
+            "  # a mistake and is not. Declaring them is enough: an ephemeral",
+            "  # container may only mount volumes its pod already has, and pod",
+            "  # volumes cannot be added later. Mounting them into the",
+            "  # application as well would change its filesystem for no gain.",
+            f"  - name: {SEAT_IDENTITY_VOLUME}",
+            "    configMap:",
+            f"      name: {configmap}",
+            "      # Read-only to everybody: this is the seat's /etc/passwd, and",
+            "      # nothing in the pod has any business rewriting it.",
+            "      defaultMode: 0444",
+            f"  - name: {SEAT_HOME_VOLUME}",
+            "    emptyDir:",
+            "      # vscode-server unpacks to ~700 MiB and a real session reaches",
+            "      # 1.1-1.3 GB. Unbounded, that comes out of the node's ephemeral",
+            "      # storage and an overrun evicts the pod — application included.",
+            f"      sizeLimit: {home_size}",
             f"{mounts_key}:",
             "  - name: podbench-patch-venv",
             f"    mountPath: {venv}",
+            f"{security_key}:",
+            "  # Not optional if the seat is to be able to write its own home: an",
+            "  # emptyDir is created root:root, and the seat runs as the",
+            "  # application's uid, not as root. Without fsGroup the kubelet never",
+            f"  # chgrps the volume and {SEAT_HOME_PATH} is present and unwritable,",
+            "  # which is worse than absent — everything starts, then fails.",
+            f"  fsGroup: {gid}",
             f"{init_key}:",
             "  # Seeds an empty claim from the image's venv. It mounts the claim",
             "  # somewhere else on purpose: at this point the image's venv is",
@@ -1554,8 +1638,12 @@ def values_snippet(
             "        mountPath: /podbench-seed",
             "",
             "# Single replica only: the claim is ReadWriteOnce and one checkout",
-            "# cannot serve two writers. Take the flag off again — and delete the",
+            "# cannot serve two writers. Take patchVenv off again — and delete the",
             "# claim — once `patch consolidate` has been through the pipeline.",
+            "# seatIdentity has no such lifetime: it is deployment furniture, it",
+            "# costs one ConfigMap and two volumes nothing else mounts, and it is",
+            "# what the seat needs on the day the namespace refuses the ptrace",
+            "# rung.",
         ]
     )
 
@@ -1650,6 +1738,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--app-image",
         default="<the application's own image>",
         help="image the seeding initContainer runs, for --print-values",
+    )
+    # Left as placeholders when unset, so that a snippet pasted without reading
+    # it fails at `helm install` rather than deploying an identity for the wrong
+    # uid — which fails later, in the dark, as a login that is simply refused.
+    parser.add_argument(
+        "--uid",
+        default="<the application's runAsUser>",
+        help="the application container's uid, for --print-values",
+    )
+    parser.add_argument(
+        "--gid",
+        default="<the application's runAsGroup>",
+        help="the application container's gid, for --print-values",
     )
     # Not required: `patch --print-values` is a legitimate whole command line.
     sub = parser.add_subparsers(dest="command", required=False)
@@ -1821,6 +1922,8 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
                 venv,
                 image=cast(str, parsed.app_image),
                 size=cast(str, parsed.size),
+                uid=cast(str, parsed.uid),
+                gid=cast(str, parsed.gid),
             )
         )
         return 0

@@ -34,13 +34,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 
-from .model import ContainerRef, PodRef
+from .model import SEAT_HOME_VOLUME, SEAT_IDENTITY_VOLUME, ContainerRef, PodRef
 from .sshcfg import SEAT_USER, SshdLayout, proxy_command, sshd_config
 
 __all__ = [
     "request_stop",
     "AUTHORIZED_KEYS_FILE_ENV",
     "AUTHORIZED_KEYS_MOUNT",
+    "GROUP_PATH",
+    "HOME_WAY_OUT",
     "HOST_KEY_ENV",
     "HOST_KEY_FILE_ENV",
     "HOST_KEY_MOUNT",
@@ -55,6 +57,7 @@ __all__ = [
     "ReaperStatus",
     "ensure_all",
     "ensure_authorized_keys",
+    "ensure_home_dir",
     "ensure_host_key",
     "ensure_passwd_entry",
     "ensure_privsep_dir",
@@ -160,8 +163,71 @@ def ensure_privsep_dir(layout: SshdLayout) -> bool:
     return True
 
 
+def _home_directories(layout: SshdLayout) -> list[Path]:
+    """The directories under ``$HOME`` the layout expects to already exist.
+
+    Only the ones *under* home: the root layout keeps its config in ``/etc``,
+    which the image owns and this step has no business creating.
+    """
+    home = Path(layout.home)
+    wanted = (
+        Path(layout.authorized_keys_path).parent,
+        Path(layout.config_path).parent,
+        Path(layout.host_key_path).parent,
+    )
+    return [path for path in dict.fromkeys(wanted) if home in path.parents]
+
+
+def ensure_home_dir(layout: SshdLayout) -> bool:
+    """Make ``$HOME`` exist, be writable, and carry the layout's directories.
+
+    A seat pointed at :data:`podbench.model.SEAT_HOME_VOLUME` gets an *empty*
+    volume: the kubelet creates the mount point and nothing else, so the
+    ``.ssh`` and ``.podbench`` directories the host key, the authorized keys and
+    the sshd config live in are simply not there. sshd is not told to create
+    them - it refuses the login instead - so this is the step that makes a
+    mounted home usable rather than merely present.
+
+    Writability is checked rather than assumed because the interesting failure
+    is not ours: an empty volume is owned by root:root until the pod's
+    ``fsGroup`` hands it to the seat's group, and a seat running as the target's
+    uid cannot chown its way out. See :data:`HOME_WAY_OUT`.
+    """
+    home = Path(layout.home)
+    created = False
+    try:
+        if not home.is_dir():
+            home.mkdir(mode=0o755, parents=True, exist_ok=True)
+            created = True
+        if not os.access(home, os.W_OK):
+            raise RuntimeError(
+                f"{home} is not writable by uid {os.geteuid()} / gid "
+                f"{os.getegid()}, so this seat has no home to keep sshd's files "
+                f"in. {HOME_WAY_OUT}"
+            )
+        for directory in _home_directories(layout):
+            if directory.is_dir():
+                continue
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            created = True
+    except OSError as error:
+        raise RuntimeError(
+            f"{home} could not be prepared: {error}. {HOME_WAY_OUT}"
+        ) from error
+    return created
+
+
 PASSWD_PATH = "/etc/passwd"
 """The NSS ``files`` database sshd resolves a login name in."""
+
+GROUP_PATH = "/etc/group"
+"""The NSS ``files`` database ``getgrgid`` answers from.
+
+Named here beside :data:`PASSWD_PATH` because the launcher mounts both from
+:data:`podbench.model.SEAT_IDENTITY_VOLUME` and the two halves have to spell the
+paths identically. A missing group record is not fatal the way a missing passwd
+record is - it costs ``id`` and ``ls -l`` a name, not the login.
+"""
 
 LOGIN_SHELL = "/bin/bash"
 """Shell recorded in a registered entry. bash is in the image; a passwd entry
@@ -171,13 +237,32 @@ NSS_WAY_OUT = (
     "sshd resolves the login name through NSS before it will look at a key, so "
     "ssh into this seat cannot work. Everything reached by kubectl exec - "
     "capreport, pids, dbg --launch, a shell - is unaffected. The ways out are "
-    "to run the target as a uid the debug image has an account for, or to land "
-    "the seat with GID 0 so it can register one itself (the image makes "
-    f"{PASSWD_PATH} group-writable for exactly that: kubectl podbench attach "
-    "--seat-gid-root)."
+    f"to deploy the workload with a {SEAT_IDENTITY_VOLUME!r} volume carrying a "
+    f"passwd record for its uid, which the seat mounts read-only over "
+    f"{PASSWD_PATH} (a pod's volumes are immutable, so this has to be in the "
+    "spec at deploy time), to run the target as a uid the debug image has an "
+    "account for, or to land the seat with GID 0 so it can register one itself "
+    f"(the image makes {PASSWD_PATH} group-writable for exactly that: kubectl "
+    "podbench attach --seat-gid-root)."
 )
 """Named mechanism, then the way out - the shape :class:`podbench.model.Blocker`
 uses, because "No user exists for uid 1000" names neither."""
+
+HOME_WAY_OUT = (
+    f"The usual cause is a missing fsGroup. A {SEAT_HOME_VOLUME!r} volume is "
+    "created root:root and stays that way until the pod's securityContext."
+    "fsGroup makes the kubelet chgrp it to that group - and a seat running as "
+    "the target's uid can chown nothing. Set fsGroup to the application's gid in "
+    "workload's pod spec, the same number the seat identity's group record "
+    "carries. Until then ssh has nowhere to keep a host key; everything kubectl "
+    "exec reaches is unaffected."
+)
+"""Why an unwritable ``$HOME`` happens, and what fixes it.
+
+The seat cannot fix this itself, and the message is the only place the cause is
+named: an empty volume with no ``fsGroup`` looks exactly like a permissions bug
+in podbench from inside the container.
+"""
 
 
 def login_name(uid: int | None = None) -> str | None:
@@ -241,6 +326,14 @@ def ensure_passwd_entry(
     the debug image, and none can be pre-baked that would match. Without one,
     ``ssh-keygen`` dies with "No user exists for uid <n>" before sshd is ever
     started, and sshd would refuse the login even if it had a host key.
+
+    Registering one here is the *fallback*, not the preferred route. Where the
+    pod declares :data:`podbench.model.SEAT_IDENTITY_VOLUME` the launcher mounts
+    a passwd file read-only over ``/etc/passwd`` and NSS resolves the uid before
+    this step ever runs, which is why the ``login_name`` check comes first and
+    returns without looking at the file's mode: a read-only ``/etc/passwd`` that
+    already carries the identity is the *success* case, and treating it as a
+    refusal would report the one shape that works as the one that does not.
 
     The registration convention is the one containers running as an arbitrary
     uid already use (OpenShift's): ``/etc/passwd`` is group-writable by GID 0
@@ -521,6 +614,13 @@ def ensure_all(
                 )
             )
 
+    # First: every other step writes under it, and a home that arrived as an
+    # empty volume has none of the directories they expect.
+    step(
+        "home-dir",
+        f"prepared {layout.home}",
+        lambda: ensure_home_dir(layout),
+    )
     step(
         "privsep-dir",
         f"created {layout.privsep_dir}",

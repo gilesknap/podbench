@@ -172,7 +172,8 @@ def test_ensure_all_is_idempotent(tmp_path: Path, env: dict[str, str]) -> None:
 
     first = agent.ensure_all(layout, env=env, runner=runner)
     assert first.failures == ()
-    assert len(first.changes) == 4
+    assert len(first.changes) == 5
+    assert first.changes[0] == f"prepared {layout.home}"
     before = {
         path: Path(path).read_text()
         for path in (
@@ -300,6 +301,34 @@ def test_registration_is_skipped_with_a_reason_when_passwd_is_read_only(
     assert passwd.name_for(UNKNOWN_UID) is None
 
 
+def test_a_mounted_identity_is_used_as_it_stands_and_is_not_a_failure(
+    tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape the identity volume produces, which is the good outcome.
+
+    ``/etc/passwd`` is a read-only projection of a pod volume and already
+    carries a record for the seat's uid. The registration step must recognise
+    that as *done* rather than as an unwritable file: the one arrangement that
+    makes ssh work on a PSA-restricted namespace is also the one arrangement
+    where the file cannot be appended to.
+    """
+    with passwd.path.open("a") as handle:
+        handle.write(
+            f"{SEAT_USER}:x:{UNKNOWN_UID}:{UNKNOWN_UID}::/home/podbench:/bin/bash\n"
+        )
+    make_unwritable(monkeypatch, passwd.path)
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID) is False
+    assert len(passwd.path.read_text().splitlines()) == 2, "nothing was appended"
+
+    check = agent.nss_identity_check(uid=UNKNOWN_UID, gid=UNKNOWN_UID)
+    assert check.ok
+    assert SEAT_USER in check.detail
+    # …and the launcher's question gets the same answer, so a stanza is printed.
+    assert agent.login_name(UNKNOWN_UID) == SEAT_USER
+
+
 def test_registration_refuses_to_shadow_an_existing_login_name(
     tmp_path: Path, passwd: FakePasswd
 ) -> None:
@@ -309,6 +338,69 @@ def test_registration_refuses_to_shadow_an_existing_login_name(
     with pytest.raises(RuntimeError) as raised:
         agent.ensure_passwd_entry(make_layout(tmp_path, root=False), uid=UNKNOWN_UID)
     assert "already belongs to uid 999" in str(raised.value)
+
+
+def test_an_empty_home_volume_gets_the_directories_the_layout_needs(
+    tmp_path: Path,
+) -> None:
+    """A mounted home arrives empty: the kubelet makes the mount point, not the
+    layout. Nothing else creates ``.podbench``, and sshd will not create either."""
+    home = tmp_path / "home" / "podbench"
+    home.mkdir(parents=True)
+    layout = SshdLayout.for_uid(UNKNOWN_UID, home=str(home))
+
+    assert agent.ensure_home_dir(layout) is True
+    ssh_dir = Path(layout.authorized_keys_path).parent
+    podbench_dir = Path(layout.config_path).parent
+    assert ssh_dir.is_dir()
+    assert podbench_dir.is_dir()
+    assert ssh_dir.stat().st_mode & 0o777 == 0o700
+    # Idempotent like every other ensure step: a reconnect changes nothing.
+    assert agent.ensure_home_dir(layout) is False
+
+
+def test_a_missing_home_directory_is_created(tmp_path: Path) -> None:
+    home = tmp_path / "absent" / "podbench"
+    assert (
+        agent.ensure_home_dir(SshdLayout.for_uid(UNKNOWN_UID, home=str(home))) is True
+    )
+    assert home.is_dir()
+
+
+def test_an_unwritable_home_names_fsgroup_as_the_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The volume is there and the seat cannot write to it — say why.
+
+    An emptyDir or a PVC is root:root until the pod's ``fsGroup`` hands it to
+    the seat's group, and a seat running as the target's uid can chown nothing.
+    From inside the container that is indistinguishable from a podbench bug
+    unless the message names the mechanism.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    make_unwritable(monkeypatch, home)
+
+    with pytest.raises(RuntimeError) as raised:
+        agent.ensure_home_dir(SshdLayout.for_uid(UNKNOWN_UID, home=str(home)))
+    message = str(raised.value)
+    assert "not writable" in message
+    assert "fsGroup" in message
+    assert "kubectl exec" in message, "what still works belongs in the message"
+
+
+def test_an_unwritable_home_is_recorded_rather_than_raised(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PID 1 of an unrestartable container lands anyway (report 4.2)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    layout = SshdLayout.for_uid(UNKNOWN_UID, home=str(home))
+    make_unwritable(monkeypatch, home)
+
+    report = agent.ensure_all(layout, env=env, runner=FakeRunner())
+    failure = next(f for f in report.failures if f.name == "ensure-home-dir")
+    assert "fsGroup" in failure.detail
 
 
 def test_a_failed_ensure_step_is_recorded_rather_than_raised(
