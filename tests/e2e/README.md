@@ -35,6 +35,7 @@ uv run --no-sync pytest tests/e2e -v
 |---|---|
 | `PODBENCH_E2E` | the opt-in. `1`/`true`/`yes`/`on` |
 | `PODBENCH_IMAGE` | image under test. Defaults to `podbench.model.DEFAULT_IMAGE` |
+| `PODBENCH_E2E_NODE_SELECTOR` | `key=value[,key=value]` pinned onto every pod the suite creates. Needed on a mixed-architecture cluster when the image under test is single-arch: without it the probe pod lands on a node that cannot run the image and the whole suite skips with `no match for platform in manifest`. E.g. `kubernetes.io/arch=amd64` |
 | `PODBENCH_E2E_CONTEXT` | kubeconfig context. Deliberately *not* `current-context`: a developer's default is usually a real cluster, and these tests create containers with `CAP_SYS_PTRACE` |
 | `PODBENCH_E2E_KUBECTL` | kubectl binary, if it is not on `PATH` as `kubectl` |
 

@@ -27,6 +27,7 @@ dev = [
     "pyright",
     "pytest",
     "pytest-cov",
+    "pyyaml",
     "ruff",
     "sphinx-autobuild",
     "sphinx-copybutton",

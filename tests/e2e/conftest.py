@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import pytest
+import yaml
 
 from podbench.kubectl import Kubectl
 from podbench.model import DEFAULT_IMAGE, IMAGE_ENV, as_dict
@@ -60,11 +61,74 @@ CONTEXT_ENV = "PODBENCH_E2E_CONTEXT"
 current-context`` on purpose: a developer's default context is usually a real
 cluster, and these tests create pods with ``CAP_SYS_PTRACE``."""
 
+NODE_SELECTOR_ENV = "PODBENCH_E2E_NODE_SELECTOR"
+"""``key=value[,key=value]`` pinned onto every pod this suite creates.
+
+podbench's own use case is a mixed-architecture cluster, which is exactly where
+a single-arch podbench image gets scheduled onto a node that cannot run it and
+the suite skips with `no match for platform in manifest`. Pinning here keeps the
+suite usable against a single-arch build without teaching every manifest about
+the cluster it happens to be running on.
+"""
+
 NAMESPACE_PREFIX = "podbench-e2e-"
 """Every namespace this suite creates starts with it, so a crashed run can be
 cleaned up with one glob and nothing else can be caught by it."""
 
 TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def node_selector() -> dict[str, str]:
+    """The pin from :data:`NODE_SELECTOR_ENV`, or nothing."""
+    raw = os.environ.get(NODE_SELECTOR_ENV, "").strip()
+    if not raw:
+        return {}
+    pairs: dict[str, str] = {}
+    for item in raw.split(","):
+        key, separator, value = item.partition("=")
+        if not separator:
+            raise ValueError(f"{NODE_SELECTOR_ENV} wants key=value, got {item!r}")
+        pairs[key.strip()] = value.strip()
+    return pairs
+
+
+def pin_node_selector(document: str) -> str:
+    """Add the configured nodeSelector to every pod spec in a manifest.
+
+    Both shapes are handled, since the suite's fixtures apply bare pods and
+    Deployments alike: ``spec.nodeSelector`` and ``spec.template.spec``.
+    Returns the document unchanged when nothing is configured, so the common
+    case neither reformats the manifest nor depends on the YAML round-trip.
+    """
+    pin = node_selector()
+    if not pin:
+        return document
+    loaded = cast("list[object]", list(yaml.safe_load_all(document)))
+    documents: list[dict[str, Any]] = [
+        cast("dict[str, Any]", d) for d in loaded if isinstance(d, dict)
+    ]
+    for parsed in documents:
+        spec = parsed.get("spec")
+        if not isinstance(spec, dict):
+            continue
+        pod_spec = cast(dict[str, Any], spec)
+        template = pod_spec.get("template")
+        if isinstance(template, dict):
+            nested = cast(dict[str, Any], template).get("spec")
+            if isinstance(nested, dict):
+                pod_spec = cast(dict[str, Any], nested)
+            else:
+                continue
+        elif "containers" not in pod_spec:
+            continue
+        existing = pod_spec.get("nodeSelector")
+        merged = (
+            dict(cast(dict[str, Any], existing)) if isinstance(existing, dict) else {}
+        )
+        merged.update(pin)
+        pod_spec["nodeSelector"] = merged
+    return yaml.safe_dump_all(documents)
+
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
@@ -229,6 +293,12 @@ class KubectlCli:
         namespaced: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         argv = self.argv(*args, namespaced=namespaced)
+        # Pinned here rather than at each call site so no creation path can
+        # escape it: a probe pod that lands on a node the image cannot run on
+        # skips the whole suite, and a target pod that lands somewhere the seat
+        # cannot follow fails as something else entirely.
+        if stdin is not None and args and args[0] in ("create", "apply", "replace"):
+            stdin = pin_node_selector(stdin)
         completed = subprocess.run(
             argv,
             input=stdin,
@@ -278,10 +348,8 @@ class KubectlCli:
 
     def apply(self, manifest: Path | str) -> None:
         """Apply a manifest file, or a literal document, into this namespace."""
-        if isinstance(manifest, Path):
-            self.run("apply", "-f", str(manifest))
-        else:
-            self.run("apply", "-f", "-", stdin=manifest)
+        document = manifest.read_text() if isinstance(manifest, Path) else manifest
+        self.run("apply", "-f", "-", stdin=document)
 
     def exec(
         self,
