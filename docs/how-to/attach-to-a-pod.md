@@ -169,6 +169,7 @@ for whatever it has written.
 | attach lands but `blocker: yama-scope` | Yama's `ptrace_scope >= 1` on **that node** forbids attaching to non-descendants | `dbg --launch`, or have the target call `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` |
 | every library reports `missing debugging information` | `ca-certificates` absent, so `libdebuginfod` fails the TLS handshake silently | use the published image; it is mandatory there for exactly this reason |
 | attach works on one pod, is denied on the next | Yama differs **per node**, by kernel flavour, not by architecture | nothing to fix. The report prints the node name and Yama state for this reason |
+| `pods "web-..." is forbidden: User cannot update resource "pods/ephemeralcontainers"` | your kubeconfig lacks a verb podbench needs, discovered mid-attach | `podbench doctor -n demo` asks for every verb up front and names the chart flag that grants it |
 
 `podbench attach` returns `2` only for a real error. A degraded seat is
 a success: returning non-zero for "the cluster would not grant `SYS_PTRACE`"

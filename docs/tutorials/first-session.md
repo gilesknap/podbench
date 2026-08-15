@@ -12,6 +12,9 @@ You need `uv` and `kubectl` on your machine, the one-time
 pods in. A local [kind](https://kind.sigs.k8s.io) cluster is ideal. The launcher
 itself is not installed — `uvx` fetches and runs it.
 
+`uvx podbench doctor --fix` checks all of that and adds the `Include` for you;
+it exits `0` when nothing is in the way.
+
 :::{important}
 **Before the first PyPI release** there is nothing for `uvx podbench` to
 resolve. Until then, run every `uvx podbench` on this page as:
@@ -150,11 +153,13 @@ The last lines of the attach output tell you the alias:
 ```
 ssh config written to ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn.conf
 add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+or let podbench check and add it:  podbench doctor --fix
 then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
 ```
 
-If you have not added the `Include` line yet, do it now (see
-[Installation](installation.md)). Then:
+If you have not added the `Include` line yet, run `uvx podbench doctor --fix`
+now — it adds the line above any `Host *` block, which is where it has to be
+(see [Installation](installation.md)). Then:
 
 ```
 $ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn

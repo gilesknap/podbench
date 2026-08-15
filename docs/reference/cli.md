@@ -20,6 +20,7 @@ $ podbench --help
 │ --help               Show this message and exit.                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
+│ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
@@ -40,7 +41,7 @@ $ podbench --help
 
 | Where it runs | Verbs |
 |---|---|
-| Your machine | `attach`, `ssh-config`, `status`, `list`, `dev`, `patch` |
+| Your machine | `doctor`, `attach`, `ssh-config`, `status`, `list`, `dev`, `patch` |
 | Inside the debug container | `agent`, `capreport`, `pids`, `dbg`, `dev-bootstrap`, `run`, `stop` |
 
 Every verb below is written as `podbench <verb>`, which is the only spelling
@@ -62,7 +63,8 @@ seat; several have shorter aliases on `PATH` (`pids`, `dbg`, `capreport`,
 
 ## Common options
 
-The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take these:
+The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take these,
+and so does `doctor`:
 
 ```
 --namespace  -n  NAMESPACE  namespace (default: the kubeconfig context's own)
@@ -87,6 +89,102 @@ credential and no client library.
 ---
 
 ## Cluster-side verbs
+
+### `doctor`
+
+Everything that has to be true of **this machine** before the first attach, and
+the name of whatever is not. `status` is about pods; `doctor` is about your
+laptop.
+
+```
+
+ Usage: podbench doctor [OPTIONS]
+
+ Name what will block the first attach from this machine.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --fix                            make the two changes podbench can make safely: create the       │
+│                                  config directory, and add the ssh Include above any Host *      │
+│                                  block. Never creates an ssh key                                 │
+│ --identity            KEY        the ssh key attach would use [default: ~/.ssh/id_ed25519]       │
+│ --namespace   -n      NAMESPACE  namespace to test RBAC in (default: the context's own)          │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+```
+$ uvx podbench doctor -n demo
+============================= podbench doctor ==============================
+THIS MACHINE
+  launcher       1.0.0b1
+  image          ghcr.io/gilesknap/podbench:1.0.0b1
+  context        prod-eu
+  namespace      demo
+CHECKS
+  [ok]    kubectl        v1.31 at /usr/local/bin/kubectl
+  [ok]    kubeconfig     context prod-eu
+  [ok]    ssh client     /usr/bin/ssh
+  [ok]    ssh identity   /home/dev/.ssh/id_ed25519 and /home/dev/.ssh/id_ed25519.pub
+  [ok]    config dir     /home/dev/.podbench/config.d
+  [FAIL]  ssh include    /home/dev/.ssh/config does not include the generated stanzas
+          add this line above any Host * block:  Include /home/dev/.podbench/config.d/*.conf
+          or run:  podbench doctor --fix
+RBAC in demo (kubectl auth can-i, as your kubeconfig's user)
+  [ok]    attach         all 5 verbs allowed
+  [warn]  iterate        missing: create pods, delete pods
+          grant it with the chart's rbac.iterate=true, or the equivalent Role
+  [warn]  resize         missing: patch pods/resize
+          grant it with the chart's rbac.resize=true, or the equivalent Role
+  [ok]    patch          all 5 verbs allowed
+----------------------------------------------------------------------------
+VERDICT: 1 blocker before `podbench attach` can work (exit 1)
+BLOCKERS: ssh include
+============================================================================
+```
+
+What it checks:
+
+| Check | `FAIL` when | `warn` when |
+|---|---|---|
+| `kubectl` | not on `PATH`, or older than **1.25** | it printed no version to read |
+| `kubeconfig` | there is no current context | — |
+| `ssh client` | `ssh` is not on `PATH` | — |
+| `ssh identity` | either half of the key is missing | — |
+| `config dir` | — | `~/.podbench/config.d` does not exist yet |
+| `ssh include` | `~/.ssh/config` does not include the generated stanzas | it includes them **below** a `Host`/`Match` block |
+| RBAC `attach` | any of its verbs is denied | kubectl could not answer |
+| RBAC `iterate`, `resize`, `patch` | — | any of its verbs is denied, or kubectl could not answer |
+
+Notes:
+
+* **Exit code is `0` when nothing blocks the headline attach path and `1` when
+  something does**; a warning never changes it. A cluster that will not grant
+  Iterate mode is a fact about that cluster, not a failure — the same call
+  `attach` makes when it lands a degraded seat. `2` remains a usage error.
+* The RBAC verbs are asked one `kubectl auth can-i` at a time, in the namespace
+  in play, as your kubeconfig's user. The table lives in
+  `podbench.doctor.FEATURES` and names the `rbac.<flag>` of
+  [the chart](../explanations/security.md) that grants each feature;
+  `tests/test_chart_contract.py` renders the chart and asserts they are the same
+  list, so the flag a report tells you to set really is the one that fixes it.
+* Only two things are ever written, and only with `--fix`: `~/.podbench/config.d`
+  is created, and the `Include` line is prepended to `~/.ssh/config` above any
+  `Host *` block. Your file is not rewritten — the line is added at the top and
+  everything you had stays where it was — and the write goes through a temporary
+  file, because a half-written `~/.ssh/config` locks you out of every host you
+  have, not only podbench's. Running `--fix` twice changes nothing the second
+  time.
+* **`--fix` never creates an ssh key.** A missing identity is named, with the
+  `ssh-keygen` line to run, because a key podbench minted would be a credential
+  you never chose and `attach` would then authorise it inside your cluster.
+* An `Include` below a `Host *` block is a warning rather than a blocker: the
+  stanza is still read, but ssh takes the **first** value it sees for each
+  keyword, so anything that block also sets — a `ControlPath`, a `ProxyCommand` —
+  has already won.
 
 ### `attach`
 

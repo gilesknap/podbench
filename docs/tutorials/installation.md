@@ -25,6 +25,9 @@ $ helm version --short
 $ ls ~/.ssh/id_ed25519 || ssh-keygen -t ed25519
 ```
 
+Or let podbench check them, along with everything else on this page, once you
+have `uv`: `uvx podbench doctor`. See *Check the machine*, below.
+
 ## Run the launcher
 
 Every laptop-side verb is spelled `podbench <verb>`, and the canonical way to
@@ -121,26 +124,53 @@ The current release string is on the
 [releases page](https://github.com/gilesknap/podbench/releases); you need it
 below for `helm --version`.
 
-## Add the ssh include, once
+## Check the machine, and add the ssh include
 
-This is the one setup step that outlives the command, and it is why it is worth
-doing before your first attach.
-
-podbench writes a generated stanza per pod into `~/.podbench/config.d/` rather
-than editing `~/.ssh/config`, so it can regenerate wholesale on every attach
-without ever owning a file you also edit. Point ssh at that directory once:
+There is no install step under `uvx`, so there is nowhere for first-run setup to
+happen by itself. `podbench doctor` is that step: it says whether this machine
+can attach at all, and names whatever cannot.
 
 ```
-$ mkdir -p ~/.podbench/config.d
-$ printf 'Include ~/.podbench/config.d/*.conf\n' | cat - ~/.ssh/config > ~/.ssh/config.new
-$ mv ~/.ssh/config.new ~/.ssh/config
+$ uvx podbench doctor -n demo
 ```
 
-The `Include` must come **before** any `Host *` block in `~/.ssh/config`;
-OpenSSH takes the first value it sees for each keyword.
+It checks `kubectl` and its version, the context and namespace in play, the ssh
+client and both halves of your key, the `Include` below, and — one
+`kubectl auth can-i` at a time — the RBAC each podbench feature needs, reported
+as `attach OK / iterate missing / resize missing`. It exits `0` only when
+nothing blocks an attach. See the
+[command-line reference](../reference/cli.md) for the full list.
+
+One of those checks is the only setup step that outlives the command. podbench
+writes a generated stanza per pod into `~/.podbench/config.d/` rather than
+editing `~/.ssh/config`, so it can regenerate wholesale on every attach without
+ever owning a file you also edit — and ssh has to be pointed at that directory
+once. `--fix` does it:
+
+```
+$ uvx podbench doctor --fix
+```
+
+That creates `~/.podbench/config.d` and adds one line at the **top** of
+`~/.ssh/config`:
+
+```
+Include ~/.podbench/config.d/*.conf
+```
+
+At the top because the `Include` must come **before** any `Host *` block:
+OpenSSH takes the first value it sees for each keyword, so a `ControlPath` or
+`ProxyCommand` in a block above it would silently replace podbench's. `--fix`
+adds nothing else, moves nothing you wrote, and is safe to run twice. If you
+would rather make the edit yourself — a managed dotfile, say — `doctor` prints
+the exact line and changes nothing without `--fix`.
+
+`--fix` will **not** generate an ssh key. A missing one is named, with the
+`ssh-keygen` command to run, because podbench authorises that key inside your
+containers and it should be one you chose.
 
 Change the directory with `--config-dir` or `PODBENCH_CONFIG_DIR` if
-`~/.podbench` does not suit you.
+`~/.podbench` does not suit you; `doctor` follows the same flag.
 
 ## The image
 
@@ -179,6 +209,9 @@ Read the whole list, with the reasoning for each, in
 | `pods` | `create`, `delete` | Iterate mode only |
 | `services` | `get`, `list`, `patch` | Iterate mode with `--take-traffic`/`--cutover` only |
 | `pods/resize` | `patch` | `attach --resize` only |
+
+`podbench doctor` asks the cluster this table one verb at a time and reports it
+per feature, so you find out before the attach rather than during it.
 
 A chart is provided for clusters that would rather grant these through Helm than
 by hand. It is published to an OCI registry on every release, so this needs no
