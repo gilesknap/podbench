@@ -5,6 +5,9 @@ repos:
       - id: check-added-large-files
         exclude: ^uv.lock
       - id: check-yaml
+        # Kubernetes manifests routinely carry several objects separated by
+        # `---`, which is valid YAML but not a single document.
+        args: [--allow-multiple-documents]
         # Helm templates are Go templates that happen to produce YAML; a file
         # beginning `{{- if .Values… }}` is not parseable as YAML and never will
         # be. `helm lint` in the helm workflow is what actually validates them.
