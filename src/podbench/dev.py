@@ -56,6 +56,7 @@ from typing import Any, Protocol, cast
 
 from . import spec
 from .kubectl import Kubectl, KubectlError, Runner, run_subprocess
+from .launcher import LauncherError, resolve_pod_name
 from .model import DEFAULT_IMAGE, TARGET_CID_ENV, PodRef, as_dict
 from .proc import DEFAULT_PROC, read_cgroup, read_cmdline, read_comm
 
@@ -1324,17 +1325,34 @@ def _say(message: str) -> None:
 _Handler = Callable[[argparse.Namespace], int]
 
 
+def _pod_argument(reference: str) -> str:
+    """``pod/NAME`` or a bare ``NAME``, exactly as the launcher verbs take it.
+
+    The launcher's own helper rather than a second copy of it: the two halves of
+    one CLI disagreeing about pod syntax made ``podbench dev pod/api`` fail
+    twice over — kubectl refused the argument, and :func:`dev_pod_name` derived
+    a pod name containing a slash, which is not an RFC 1123 label. Its refusal
+    is re-raised as a :class:`DevError` so it exits like every other iterate
+    mode error rather than as a traceback.
+    """
+    try:
+        return resolve_pod_name(reference)
+    except LauncherError as error:
+        raise DevError(str(error)) from error
+
+
 def _cmd_dev(opts: argparse.Namespace) -> int:
     kube = Kubectl(opts.namespace, context=opts.context)
+    pod_reference = _pod_argument(opts.pod)
     if opts.delete:
         for action in delete_dev_pod(
-            kube, dev_pod_name(opts.pod), timeout=opts.timeout
+            kube, dev_pod_name(pod_reference), timeout=opts.timeout
         ):
             print(action)
         return 0
     pod, manifest = create_dev_pod(
         kube,
-        opts.pod,
+        pod_reference,
         name=opts.name,
         container=opts.container,
         image=opts.image,

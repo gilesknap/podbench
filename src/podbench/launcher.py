@@ -94,7 +94,9 @@ __all__ = [
     "format_session",
     "list_seats",
     "main",
+    "parse_mount",
     "plan_ladder",
+    "resolve_mounts",
     "resolve_pod_name",
     "run_capreport",
     "running_seat",
@@ -216,6 +218,153 @@ def target_container_name(
     if requested not in names:
         raise LauncherError(f"container {requested!r} not in pod (has {names})")
     return requested
+
+
+def parse_mount(text: str) -> tuple[str, str | None]:
+    """Split one ``--mount CLAIM:MOUNTPATH`` into its two halves.
+
+    The mountPath is optional because it is usually not the user's to choose:
+    where the application container already mounts that volume, podbench copies
+    *its* mountPath rather than making the user repeat it (see
+    :func:`resolve_mounts`). A volume name is an RFC 1123 label and a mountPath
+    is absolute, so the first colon is the separator and nothing else can be.
+
+    >>> parse_mount("myapp-venv:/opt/venv")
+    ('myapp-venv', '/opt/venv')
+    >>> parse_mount("myapp-venv")
+    ('myapp-venv', None)
+    """
+    name, separator, path = text.partition(":")
+    if not name:
+        raise LauncherError(f"--mount {text!r} names no claim or volume")
+    if not separator:
+        return name, None
+    if not path.startswith("/"):
+        raise LauncherError(
+            f"--mount {text!r} needs an absolute mountPath, as in {name}:/opt/venv"
+        )
+    return name, path
+
+
+def resolve_mounts(
+    pod_json: Mapping[str, Any],
+    workload: str,
+    requests: Sequence[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Author the seat's ``volumeMounts`` from ``--mount``, or refuse and say why.
+
+    An ephemeral container may mount the volumes its pod **already declares**
+    and may not introduce one: ``spec.volumes`` is immutable after the pod is
+    created, so nothing an attach does can add a claim to a running pod. That is
+    the whole reason Patch mode asks for deploy-time cooperation, and it is why
+    an unknown name is refused here rather than turned into a mount the API
+    server would reject with a message about a volume podbench invented.
+
+    The mountPath is not a free choice either. Patch mode's premise is that the
+    claim resolves at the *same* path in the seat as in the application — the
+    venv's ``bin/python`` and the checkout's editable install are absolute paths
+    recorded on the volume — so the application container's own mountPath is the
+    default, and an explicit ``--mount`` that disagrees with it is honoured but
+    warned about.
+
+    A claim name is accepted as well as a volume name because that is what the
+    user has in hand (``patch --print-values`` names the claim), while a mount
+    refers to the pod's volume *entry*.
+    """
+    volumes = [
+        as_dict(entry)
+        for entry in _as_list(as_dict(pod_json.get("spec")).get("volumes"))
+    ]
+    mounts: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for request in requests:
+        name, requested_path = parse_mount(request)
+        volume = _find_volume(volumes, name)
+        if volume is None:
+            raise LauncherError(_no_such_volume(name, volumes))
+        volume_name = _entry_name(volume) or name
+
+        application = _application_mount(pod_json, workload, volume_name)
+        app_path = _as_str(application.get("mountPath"))
+        if requested_path is None and app_path is None:
+            raise LauncherError(
+                f"container {workload!r} does not mount volume {volume_name!r}, "
+                "so there is no mountPath to copy: give one explicitly as "
+                f"--mount {name}:/path. In Patch mode it must be the path the "
+                "application's venv lives at, because that is what the manifest "
+                "on the claim records."
+            )
+        if (
+            requested_path is not None
+            and app_path is not None
+            and requested_path.rstrip("/") != app_path.rstrip("/")
+        ):
+            warnings.append(
+                f"--mount asks for {volume_name!r} at {requested_path}, but "
+                f"container {workload!r} mounts it at {app_path}. Patch mode "
+                "needs the two identical: the venv's bin/python and the "
+                "checkout's editable install are absolute paths on the volume, "
+                "so a seat that mounts the claim elsewhere resolves a different "
+                "venv and a different checkout."
+            )
+        mount: dict[str, Any] = {
+            "name": volume_name,
+            "mountPath": requested_path if requested_path is not None else app_path,
+        }
+        # A subPath the application uses is part of "the same path": without it
+        # the seat would see the volume root where the application sees one
+        # directory inside it, and every path in the manifest would be wrong.
+        sub_path = _as_str(application.get("subPath"))
+        if sub_path is not None:
+            mount["subPath"] = sub_path
+        mounts.append(mount)
+    return mounts, warnings
+
+
+def _find_volume(
+    volumes: Sequence[Mapping[str, Any]], name: str
+) -> Mapping[str, Any] | None:
+    """The pod's volume entry called ``name``, or the one backed by that claim."""
+    for volume in volumes:
+        if _entry_name(volume) == name:
+            return volume
+    for volume in volumes:
+        claim = as_dict(volume.get("persistentVolumeClaim")).get("claimName")
+        if _as_str(claim) == name:
+            return volume
+    return None
+
+
+def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
+    declared = [
+        _entry_name(volume) for volume in volumes if _entry_name(volume) is not None
+    ]
+    return (
+        f"the pod declares no volume named {name!r} and no volume backed by a "
+        f"claim called {name!r}, and an ephemeral container may only mount "
+        "volumes the pod already has: spec.volumes is immutable once the pod "
+        "exists, so podbench cannot add one now. This is exactly why Patch mode "
+        "needs the chart's cooperation at deploy time - redeploy the workload "
+        f"with a volume bound to claim {name!r}, mounted over the application's "
+        "venv path (`podbench patch --print-values` emits the volume, the "
+        "volumeMount and the seeding initContainer). The pod currently declares: "
+        + (", ".join(str(entry) for entry in declared) or "no volumes")
+    )
+
+
+def _application_mount(
+    pod_json: Mapping[str, Any], workload: str, volume_name: str
+) -> Mapping[str, Any]:
+    """The workload container's own mount of ``volume_name``, or ``{}``."""
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        container = as_dict(entry)
+        if _entry_name(container) != workload:
+            continue
+        for candidate in _as_list(container.get("volumeMounts")):
+            mount = as_dict(candidate)
+            if _entry_name(mount) == volume_name:
+                return mount
+    return {}
 
 
 @dataclass(frozen=True)
@@ -414,6 +563,7 @@ def attach(
     image: str = DEFAULT_IMAGE,
     public_key: str | None = None,
     target_uid: int | None = None,
+    mounts: Sequence[str] = (),
     force_new: bool = False,
     probe: bool = True,
     timeout: float = 120.0,
@@ -426,11 +576,18 @@ def attach(
     one per attach would grow the pod spec until the API server refused it
     (report 4.2). ``force_new`` is the deliberate override, and it takes the
     next free name rather than the idle-looking one.
+
+    ``mounts`` are ``CLAIM:MOUNTPATH`` requests for volumes the pod already
+    carries; they are resolved before anything is submitted, so a claim the pod
+    does not have refuses without burning a container name. See
+    :func:`resolve_mounts` for why podbench cannot simply add the volume.
     """
     pod = resolve_pod_name(pod_reference)
     pod_json = kubectl.get_pod(pod)
     workload = target_container_name(pod_json, target)
     warnings: list[str] = []
+    volume_mounts, mount_warnings = resolve_mounts(pod_json, workload, mounts)
+    warnings.extend(mount_warnings)
 
     existing = running_seat(pod_json)
     if existing is not None and not force_new:
@@ -454,6 +611,12 @@ def attach(
                 "reconnected to an existing container: its authorized_keys was "
                 "written when it started, so a new ssh key needs --new"
             )
+        if volume_mounts:
+            warnings.append(
+                "reconnected to an existing container: an ephemeral container's "
+                "volumeMounts are fixed when it is created and cannot be added "
+                "to, so --mount only takes effect on a seat landed with --new"
+            )
     else:
         session = _walk_ladder(
             kubectl,
@@ -463,6 +626,7 @@ def attach(
             image=image,
             public_key=public_key,
             target_uid=target_uid,
+            volume_mounts=volume_mounts,
             timeout=timeout,
             poll_interval=poll_interval,
         )
@@ -492,6 +656,7 @@ def _walk_ladder(
     image: str,
     public_key: str | None,
     target_uid: int | None,
+    volume_mounts: Sequence[Mapping[str, Any]],
     timeout: float,
     poll_interval: float,
 ) -> Session:
@@ -518,6 +683,7 @@ def _walk_ladder(
                 target_uid=None if rung is Rung.FULL else uid,
                 target_gid=None if rung is Rung.FULL else gid,
                 env=_container_env(pod_json, public_key, rung),
+                volume_mounts=volume_mounts,
             )
         except InvalidSpecError as error:
             # Refused before the cluster saw it, so no container name is burnt.
@@ -1072,6 +1238,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the target's uid, when its pod spec does not say",
     )
     attach_parser.add_argument(
+        "--mount",
+        action="append",
+        default=None,
+        metavar="CLAIM:MOUNTPATH",
+        help="mount a volume the pod already declares into the seat, named by "
+        "claim or by volume name. MOUNTPATH defaults to the application "
+        "container's own, which Patch mode requires it to equal. Repeatable",
+    )
+    attach_parser.add_argument(
         "--new",
         dest="force_new",
         action="store_true",
@@ -1184,6 +1359,7 @@ def _cmd_attach(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
         image=image,
         public_key=public_key,
         target_uid=cast(int | None, parsed.target_uid),
+        mounts=cast(list[str] | None, parsed.mount) or (),
         force_new=cast(bool, parsed.force_new),
         probe=cast(bool, parsed.probe),
         timeout=cast(float, parsed.timeout),

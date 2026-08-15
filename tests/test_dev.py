@@ -880,6 +880,50 @@ def test_cli_dry_run_prints_the_pod_it_would_create(
     assert not any("create" in argv for argv in kube.commands)
 
 
+def test_cli_accepts_pod_slash_name_exactly_as_attach_does(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    # One CLI, one pod syntax. `pod/demo` used to fail twice over here: kubectl
+    # refused the argument, and dev_pod_name derived `pod/demo-podbench`, which
+    # is not an RFC 1123 label.
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    monkeypatch.setattr(dev, "Kubectl", always(kube))
+
+    assert dev.main(["dev", "pod/demo", "-n", "podbench-test", "--dry-run"]) == 0
+
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["metadata"]["name"] == "demo-podbench"
+    assert manifest["metadata"]["annotations"][spec.ORIGIN_ANNOTATION] == "demo"
+
+
+def test_cli_delete_accepts_pod_slash_name_too(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    dev_pod = {
+        "metadata": {
+            "name": "demo-podbench",
+            "labels": {spec.DEVPOD_LABEL: "true"},
+        },
+        "spec": {"containers": [{"name": "app"}]},
+    }
+    kube = FakeKubectl(**{"pod/demo-podbench": dev_pod})
+    monkeypatch.setattr(dev, "Kubectl", always(kube))
+
+    assert dev.main(["dev", "pod/demo", "-n", "podbench-test", "--delete"]) == 0
+    assert "deleted pod/demo-podbench" in capsys.readouterr().out
+
+
+def test_cli_refuses_a_reference_that_is_not_a_pod(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    kube = FakeKubectl()
+    monkeypatch.setattr(dev, "Kubectl", always(kube))
+
+    assert dev.main(["dev", "deployment/api", "-n", "podbench-test"]) == 1
+    assert "works on pods" in capsys.readouterr().err
+    assert not kube.commands
+
+
 def test_cli_reports_a_refusal_without_a_traceback(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):

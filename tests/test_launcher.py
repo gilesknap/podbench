@@ -28,6 +28,7 @@ from podbench.launcher import (
     features,
     format_session,
     main,
+    parse_mount,
     plan_ladder,
     resolve_pod_name,
     seats,
@@ -59,19 +60,25 @@ def pod_document(
     non_root: bool = False,
     ephemeral: Sequence[dict[str, Any]] = (),
     ephemeral_statuses: Sequence[dict[str, Any]] = (),
+    volumes: Sequence[dict[str, Any]] = (),
+    volume_mounts: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
         security["runAsUser"] = uid
     if non_root:
         security["runAsNonRoot"] = True
+    workload: dict[str, Any] = {"name": container, "securityContext": security}
+    if volume_mounts:
+        workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
     return {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {"name": name, "namespace": "demo", "uid": POD_UID},
         "spec": {
             "nodeName": "node02",
-            "containers": [{"name": container, "securityContext": security}],
+            "containers": [workload],
+            "volumes": [dict(volume) for volume in volumes],
             "ephemeralContainers": [dict(entry) for entry in ephemeral],
         },
         "status": {
@@ -470,6 +477,159 @@ def test_a_dead_container_is_not_reconnected_to() -> None:
     listed = {seat.name: seat for seat in seats(cluster.pod)}
     assert listed["podbench-1"].phase == "terminated"
     assert "burnt" in listed["podbench-1"].detail
+
+
+# -- mounting the pod's own volumes (Patch mode) ----------------------------
+
+PATCH_VOLUME: dict[str, Any] = {
+    "name": "podbench-patch-venv",
+    "persistentVolumeClaim": {"claimName": "myapp-venv"},
+}
+APP_MOUNT: dict[str, Any] = {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
+
+
+def patch_pod(**overrides: Any) -> dict[str, Any]:
+    """A pod wired for Patch mode: the claim is a volume, the app mounts it."""
+    settings: dict[str, Any] = {
+        "uid": 1000,
+        "volumes": [PATCH_VOLUME],
+        "volume_mounts": [APP_MOUNT],
+    }
+    settings.update(overrides)
+    return pod_document(**settings)
+
+
+def test_a_mount_named_by_claim_lands_at_the_applications_own_path() -> None:
+    cluster = FakeCluster(patch_pod())
+    session = attach(kubectl_for(cluster), "target", mounts=["myapp-venv"])
+
+    # The mount refers to the pod's *volume* entry, but the user has the claim
+    # name in hand, so both are accepted.
+    assert cluster.added[0]["volumeMounts"] == [
+        {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
+    ]
+    # Patch mode needs the seat and the application to agree on the path, so it
+    # is copied rather than asked for again.
+    assert not [w for w in session.warnings if "mountPath" in w]
+
+
+def test_a_mount_named_by_volume_carries_the_applications_sub_path() -> None:
+    cluster = FakeCluster(
+        patch_pod(
+            volume_mounts=[
+                {
+                    "name": "podbench-patch-venv",
+                    "mountPath": "/opt/venv",
+                    "subPath": "venv",
+                }
+            ]
+        )
+    )
+    attach(kubectl_for(cluster), "target", mounts=["podbench-patch-venv"])
+
+    # Without the subPath the seat would see the volume root where the
+    # application sees one directory inside it, and every path the manifest
+    # records would resolve to the wrong thing.
+    assert cluster.added[0]["volumeMounts"] == [
+        {"name": "podbench-patch-venv", "mountPath": "/opt/venv", "subPath": "venv"}
+    ]
+
+
+def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created() -> (
+    None
+):
+    cluster = FakeCluster(pod_document(uid=1000))
+    with pytest.raises(LauncherError) as raised:
+        attach(kubectl_for(cluster), "target", mounts=["myapp-venv:/opt/venv"])
+
+    message = str(raised.value)
+    assert "myapp-venv" in message
+    # The refusal has to explain that this is not podbench being unhelpful: a
+    # pod's volumes are immutable, which is why Patch mode needs the chart.
+    assert "immutable" in message
+    assert "--print-values" in message
+    assert cluster.added == [], "nothing may be submitted, and no name burnt"
+
+
+def test_an_explicit_mount_path_that_disagrees_is_warned_about() -> None:
+    cluster = FakeCluster(patch_pod())
+    session = attach(
+        kubectl_for(cluster), "target", mounts=["myapp-venv:/srv/venv"], probe=False
+    )
+
+    assert cluster.added[0]["volumeMounts"] == [
+        {"name": "podbench-patch-venv", "mountPath": "/srv/venv"}
+    ]
+    warning = next(w for w in session.warnings if "/srv/venv" in w)
+    assert "/opt/venv" in warning
+    assert "different venv" in warning
+
+
+def test_a_volume_the_application_does_not_mount_needs_an_explicit_path() -> None:
+    cluster = FakeCluster(pod_document(uid=1000, volumes=[PATCH_VOLUME]))
+    with pytest.raises(LauncherError, match="no mountPath to copy"):
+        attach(kubectl_for(cluster), "target", mounts=["myapp-venv"])
+
+    session = attach(kubectl_for(cluster), "target", mounts=["myapp-venv:/opt/venv"])
+    assert session.rung is Rung.FULL
+    assert cluster.added[0]["volumeMounts"] == [
+        {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
+    ]
+
+
+def test_reconnecting_cannot_add_a_mount_and_says_so() -> None:
+    existing = {
+        "name": "podbench-1",
+        "securityContext": {"runAsUser": 0, "capabilities": {"add": ["SYS_PTRACE"]}},
+    }
+    cluster = FakeCluster(
+        patch_pod(
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(kubectl_for(cluster), "target", mounts=["myapp-venv"])
+
+    assert session.reused
+    assert cluster.added == []
+    assert any("--new" in warning for warning in session.warnings)
+
+
+def test_a_relative_mount_path_is_refused() -> None:
+    with pytest.raises(LauncherError, match="absolute"):
+        parse_mount("myapp-venv:opt/venv")
+
+
+def test_attach_mount_is_repeatable_on_the_command_line(tmp_path: Path) -> None:
+    logs = {"name": "logs", "persistentVolumeClaim": {"claimName": "myapp-logs"}}
+    cluster = FakeCluster(
+        patch_pod(
+            volumes=[PATCH_VOLUME, logs],
+            volume_mounts=[APP_MOUNT, {"name": "logs", "mountPath": "/var/log/app"}],
+        )
+    )
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--mount",
+            "myapp-venv",
+            "--mount",
+            "logs",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    assert cluster.added[0]["volumeMounts"] == [
+        {"name": "podbench-patch-venv", "mountPath": "/opt/venv"},
+        {"name": "logs", "mountPath": "/var/log/app"},
+    ]
 
 
 # -- the capability report --------------------------------------------------
