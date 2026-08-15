@@ -5,9 +5,30 @@ on:
         type: boolean
         description: If true, pushes image to container registry
 
+env:
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
+  # podbench must run on both the amd64 and arm64 nodes of a mixed cluster, so
+  # the published image is a multi-arch manifest. Each architecture is built on a
+  # runner of that architecture — GitHub's arm64 runners are free for public
+  # repositories — rather than cross-built under QEMU. Emulating this image is
+  # expensive (apt, a uv sync and a managed CPython install), and an emulated
+  # build cannot run the smoke tests below, so the arm64 half used to ship
+  # having never executed anywhere.
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            slug: amd64
+            runs-on: ubuntu-latest
+          - platform: linux/arm64
+            slug: arm64
+            runs-on: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runs-on }}
 
     steps:
       - name: Checkout
@@ -15,14 +36,6 @@ jobs:
         with:
           # Need this to get version number from last tag
           fetch-depth: 0
-
-      # podbench must run on both the amd64 and arm64 nodes of a mixed cluster,
-      # so the published image is a multi-arch manifest. QEMU provides the arm64
-      # emulation for the cross build below.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         id: buildx
@@ -36,26 +49,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # `load: true` cannot export a multi-arch manifest to the docker daemon, so
-      # the smoke test is built for the native runner arch only. The multi-arch
-      # manifest is produced by the push step, which reuses these cache layers.
+      - name: Create labels for the image
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+
+      # Loaded into the local daemon so the smoke tests can run it. This is the
+      # runner's own architecture, so there is no emulation involved and the
+      # tests below are a real execution of the artefact being published.
       - name: Build and export to Docker local cache
         uses: docker/build-push-action@v7
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           tags: tag_for_testing
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped per platform: one shared scope would have the two runners
+          # evicting each other's layers on every build.
+          cache-from: type=gha,scope=${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
 
       - name: Test cli works in cached runtime image
         run: docker run --rm tag_for_testing --version
 
       # The image is only useful in a cluster, so exercise the in-image helpers
-      # too: they are the surface `kubectl podbench` drives once attached.
+      # too: they are the surface `podbench` drives once attached.
       - name: Test in-image helpers are present and self-report
         run: |
           set -euo pipefail
@@ -63,11 +84,66 @@ jobs:
           docker run --rm --entrypoint pids tag_for_testing --help
           docker run --rm --entrypoint sh tag_for_testing -c 'command -v gdb sshd uv git'
 
+      # Pushed by digest and left untagged: a per-architecture tag would be a
+      # published artefact people could pull by accident. The merge job below is
+      # what gives these digests their tags, as a single manifest list.
+      - name: Push image by digest
+        id: push
+        if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Same scope as the build above, which has just populated it, so this
+          # is a re-export of cached layers rather than a second build.
+          cache-from: type=gha,scope=${{ matrix.slug }}
+
+      - name: Export the digest
+        if: steps.push.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+
+      - name: Upload the digest
+        if: steps.push.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          # One file per architecture, merged by name in the job below.
+          name: digest-${{ matrix.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The manifest list is assembled from digests rather than by a second build, so
+  # the bytes published under a tag are exactly the bytes the smoke tests ran.
+  merge:
+    needs: build
+    if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Create tags for publishing image
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.REGISTRY_IMAGE }}
           # `main` and `sha-` tags let a cluster track the tip of the default
           # branch during development; `latest` and the tag itself are the
           # released artefacts.
@@ -77,16 +153,22 @@ jobs:
             type=raw,value=main,enable={{is_default_branch}}
             type=sha,format=long,enable={{is_default_branch}}
 
-      - name: Push multi-arch image to container registry
-        if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
-        uses: docker/build-push-action@v7
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: false
+      - name: Log in to GitHub Docker Registry
+        uses: docker/login-action@v4
         with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the manifest list and push it
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${REGISTRY_IMAGE}@sha256:%s " *)
+
+      - name: Inspect the pushed manifest
+        run: |
+          docker buildx imagetools inspect \
+            "${REGISTRY_IMAGE}:${{ steps.meta.outputs.version }}"

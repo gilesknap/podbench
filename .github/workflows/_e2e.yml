@@ -47,7 +47,9 @@ jobs:
           context: .
           load: true
           tags: podbench:e2e
-          cache-from: type=gha
+          # The container workflow scopes its cache per architecture; this job
+          # runs on an amd64 runner, so that is the scope worth reading.
+          cache-from: type=gha,scope=amd64
 
       - name: Create the kind cluster
         uses: helm/kind-action@v1
