@@ -7,8 +7,19 @@ delete it at the end.
 
 Budget about fifteen minutes, most of it waiting for image pulls.
 
-You need [the launcher installed](installation.md) and a cluster you are allowed
-to create pods in. A local [kind](https://kind.sigs.k8s.io) cluster is ideal.
+You need `uv` and `kubectl` on your machine, the one-time
+[ssh `Include` line](installation.md), and a cluster you are allowed to create
+pods in. A local [kind](https://kind.sigs.k8s.io) cluster is ideal. The launcher
+itself is not installed — `uvx` fetches and runs it.
+
+:::{important}
+**Before the first PyPI release** there is nothing for `uvx podbench` to
+resolve. Until then, run every `uvx podbench` on this page as:
+
+```
+$ uvx --from git+https://github.com/gilesknap/podbench podbench <verb>
+```
+:::
 
 :::{note}
 The measurements quoted throughout these docs were taken on a 6-node k3s
@@ -70,10 +81,11 @@ web-6c9d7f4b8b-hq2vn   1/1     Running   0          25s
 ## 2. Attach
 
 ```
-$ kubectl podbench attach pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
+$ uvx podbench attach pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
 ```
 
-That single command does five things:
+Nothing is installed to run that: `uvx` fetches the launcher, runs it against
+your kubeconfig and leaves nothing behind. It does five things:
 
 1. reads the target pod's spec, so it knows the workload container's UID and
    whether the pod insists on `runAsNonRoot`;
@@ -188,8 +200,8 @@ the settings that matter.
 ## 7. Look at what you have running
 
 ```
-$ kubectl podbench status pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
-$ kubectl podbench list -n podbench-demo
+$ uvx podbench status pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
+$ uvx podbench list -n podbench-demo
 ```
 
 `status` lists every podbench container in a pod, including dead ones whose

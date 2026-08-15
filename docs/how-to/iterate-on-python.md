@@ -6,6 +6,14 @@ podbench beside it as a real sidecar carrying the checkout, the interpreter and
 the editor. Edit, relaunch, and see the change through the Service — **1.18 s**
 per cycle, measured.
 
+:::{note}
+Commands here are written `podbench <verb>` — the only spelling there is. If you
+have not installed the launcher, run each as `uvx podbench <verb>`, or, before
+the first PyPI release, as
+`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+[Installation](../tutorials/installation.md).
+:::
+
 It is also the mode with no footguns about resources. A dev pod is authored by
 podbench, so the sidecar has its own memory and ephemeral-storage requests and
 its own workspace volume. The OOM and eviction warnings that apply to Observe

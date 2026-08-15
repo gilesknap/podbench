@@ -1,8 +1,9 @@
 """Interface for ``python -m podbench``, and the ``podbench`` console script.
 
 One binary serves both halves of the tool. On a developer's machine it is
-reached as ``kubectl podbench <verb>`` and drives the cluster; inside the debug
-container the same binary is PID 1 (``podbench agent``) and backs the helpers on
+reached as ``podbench <verb>`` — canonically ``uvx podbench <verb>``, with nothing
+installed — and drives the cluster; inside the debug container the same binary is
+PID 1 (``podbench agent``) and backs the helpers on
 ``PATH`` (``pids``, ``dbg``, ``capreport``, ...). Keeping it as one package means
 the capability logic that decides what a session can do is the same code in both
 places, rather than a launcher's guess and a helper's separate guess.
@@ -13,144 +14,194 @@ does not include the verb, so those are sliced; the rest are forwarded verbatim.
 Imports are done lazily per verb because ``podbench --version`` runs as the
 image's build-time smoke test, and it should not depend on every module in the
 package importing cleanly.
+
+That laziness is why the verbs here are declared with ``add_help_option=False``
+and swallow everything after their own name. ``podbench dev --help`` has to
+reach ``dev``'s parser to be worth reading, so this level must not claim
+``--help`` for itself — the only help it owns is the two-panel index below,
+which is built from :data:`ENTRY_POINTS` and needs no verb imported to render.
 """
 
 from __future__ import annotations
 
 import sys
-from argparse import REMAINDER, ArgumentParser
 from collections.abc import Callable, Sequence
+from typing import Annotated, NamedTuple
+
+import typer
 
 from . import __version__
+from .cli import new_app, run
 
 __all__ = ["ENTRY_POINTS", "main"]
 
+#: Where a verb runs. Rendered as the two panels of ``podbench --help``, because
+#: "will this even work from here?" is the first question every verb raises.
+LAPTOP = "On your machine"
+IN_POD = "Inside the debug container"
+
+
+class Verb(NamedTuple):
+    """One row of the dispatch table, and one line of the top-level help."""
+
+    handler: Callable[[Sequence[str]], int]
+    #: False for the two modules whose parsers were written before this
+    #: dispatcher existed and so do not expect their own name in argv; the
+    #: others own a subcommand keyed on it and need it kept.
+    keep_verb: bool
+    help: str
+    panel: str
+
 
 def _agent(args: Sequence[str]) -> int:
-    from .agent import main as run
+    from .agent import main as run_verb
 
-    return run(args)
+    return run_verb(args)
 
 
 def _capreport(args: Sequence[str]) -> int:
-    from .probe import main as run
+    from .probe import main as run_verb
 
-    return run(args)
+    return run_verb(args)
 
 
 def _gdbcmd(args: Sequence[str]) -> int:
-    from .gdbcmd import main as run
+    from .gdbcmd import main as run_verb
 
-    return run(args)
+    return run_verb(args)
 
 
 def _dev(args: Sequence[str]) -> int:
-    from .dev import main as run
+    from .dev import main as run_verb
 
-    return run(args)
+    return run_verb(args)
 
 
 def _launcher(args: Sequence[str]) -> int:
-    from .launcher import main as run
+    from .launcher import main as run_verb
 
-    return run(args)
+    return run_verb(args)
 
 
 def _patch(args: Sequence[str]) -> int:
-    from .patch import main as run
+    from .patch import main as run_verb
 
-    return run(args)
+    return run_verb(args)
 
 
-#: Verb -> (handler, keep_verb). ``keep_verb`` is False for the two modules whose
-#: parsers were written before this dispatcher existed and so do not expect their
-#: own name in argv; the others own a subparser keyed on it and need it kept.
-ENTRY_POINTS: dict[str, tuple[Callable[[Sequence[str]], int], bool]] = {
-    # In-pod: PID 1 and the helpers on PATH.
-    "agent": (_agent, False),
-    "capreport": (_capreport, False),
-    "pids": (_gdbcmd, True),
-    "dbg": (_gdbcmd, True),
-    "dev-bootstrap": (_dev, True),
-    "run": (_dev, True),
-    "stop": (_dev, True),
-    # Laptop side: `kubectl podbench ...`.
-    "attach": (_launcher, True),
-    "ssh-config": (_launcher, True),
-    "status": (_launcher, True),
-    "list": (_launcher, True),
-    "dev": (_dev, True),
-    # `patch status` is a *sub*-verb of this parser and does not collide with
+#: Verb -> everything this level knows about it. Ordered, because that is the
+#: order the two help panels list them in.
+ENTRY_POINTS: dict[str, Verb] = {
+    # Laptop side: `podbench ...`.
+    "attach": Verb(
+        _launcher,
+        True,
+        "add or reconnect a podbench container and print the report",
+        LAPTOP,
+    ),
+    "ssh-config": Verb(
+        _launcher, True, "regenerate the ssh stanza for an existing session", LAPTOP
+    ),
+    "status": Verb(
+        _launcher,
+        True,
+        "the podbench containers in one pod and what each supports",
+        LAPTOP,
+    ),
+    "list": Verb(
+        _launcher,
+        True,
+        "every pod in the namespace carrying a podbench container",
+        LAPTOP,
+    ),
+    "dev": Verb(_dev, True, "create or delete the dev pod", LAPTOP),
+    # `patch status` is a *sub*-verb of that parser and does not collide with
     # the launcher's own `status`.
-    "patch": (_patch, True),
+    "patch": Verb(
+        _patch, True, "durable in-place fixes on a claim-backed venv", LAPTOP
+    ),
+    # In-pod: PID 1 and the helpers on PATH.
+    "agent": Verb(
+        _agent, False, "prepare the container for ssh and idle as its PID 1", IN_POD
+    ),
+    "capreport": Verb(
+        _capreport,
+        False,
+        "name the mechanism that denies ptrace in this container",
+        IN_POD,
+    ),
+    "pids": Verb(_gdbcmd, True, "list the pod's processes", IN_POD),
+    "dbg": Verb(_gdbcmd, True, "debug a process", IN_POD),
+    "dev-bootstrap": Verb(
+        _dev, True, "clone, sync and editable-install a checkout", IN_POD
+    ),
+    "run": Verb(_dev, True, "relaunch the app and verify it", IN_POD),
+    "stop": Verb(_dev, True, "stop the recorded child", IN_POD),
 }
 
-_IN_POD = ("agent", "capreport", "pids", "dbg", "dev-bootstrap", "run", "stop")
-_LAUNCHER = ("attach", "ssh-config", "status", "list", "dev", "patch")
-#: The subset the `kubectl-podbench` plugin routes. `kubectl_plugin` hands argv
-#: to `launcher.main`, whose subparsers are these four and no others, so `dev`
-#: and `patch` are reachable as `podbench <verb>` only. Advertising them as
-#: `kubectl podbench <verb>` would print a verb that exits 2 on `invalid
-#: choice`, which is why this tuple is separate from `_LAUNCHER`.
-_PLUGIN = ("attach", "ssh-config", "status", "list")
+
+_Tail = Annotated[
+    list[str] | None, typer.Argument(metavar="[ARGS]...", help="arguments for the verb")
+]
 
 
-def _build_parser() -> ArgumentParser:
-    parser = ArgumentParser(
-        prog="podbench",
-        description=(
-            "A development seat inside a Kubernetes pod. Run `podbench <verb> "
-            "--help` for a verb's own options."
-        ),
-        epilog=(
-            "cluster-side verbs: "
-            + ", ".join(_LAUNCHER)
-            + " (of these, "
-            + ", ".join(_PLUGIN)
-            + " are also reachable as `kubectl podbench <verb>`); "
-            + "in-pod verbs: "
-            + ", ".join(_IN_POD)
-        ),
-    )
-    parser.add_argument("-v", "--version", action="version", version=__version__)
-    parser.add_argument(
-        "verb",
-        nargs="?",
-        choices=sorted(ENTRY_POINTS),
-        metavar="VERB",
-        help="the subcommand to run",
-    )
-    # REMAINDER hands the verb's own flags through untouched, so that `podbench
-    # dbg --launch ./prog --fast` reaches gdbcmd with `--fast` intact instead of
-    # being claimed by this parser.
-    parser.add_argument("args", nargs=REMAINDER, help="arguments for the verb")
-    return parser
+def _forwarder(verb: str) -> Callable[[list[str] | None], None]:
+    """A command whose only job is to hand its whole tail to the owning module.
+
+    Everything after the verb is a positional so that click never interprets it:
+    ``podbench dbg --launch ./prog --fast`` has to reach ``gdbcmd`` with
+    ``--fast`` intact, and ``podbench dev --help`` has to reach ``dev``.
+    """
+
+    def forward(args: _Tail = None) -> None:
+        entry = ENTRY_POINTS[verb]
+        rest = list(args or ())
+        raise typer.Exit(entry.handler([verb, *rest] if entry.keep_verb else rest))
+
+    return forward
+
+
+def _build_app() -> typer.Typer:
+    app = new_app()
+
+    @app.callback(invoke_without_command=True)
+    def root(
+        ctx: typer.Context,
+        version: Annotated[
+            bool,
+            typer.Option(
+                "-v", "--version", help="show the launcher's version and exit"
+            ),
+        ] = False,
+    ) -> None:
+        """A development seat inside a Kubernetes pod.
+
+        Run `podbench VERB --help` for a verb's own options.
+        """
+        if version:
+            print(__version__)
+            raise typer.Exit(0)
+        if ctx.invoked_subcommand is None:
+            rendered = ctx.get_help()
+            if rendered:
+                typer.echo(rendered)
+            raise typer.Exit(2)
+
+    for verb, entry in ENTRY_POINTS.items():
+        app.command(
+            name=verb,
+            help=entry.help,
+            rich_help_panel=entry.panel,
+            # The verb's own parser owns --help; see the module docstring.
+            add_help_option=False,
+            context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+        )(_forwarder(verb))
+    return app
 
 
 def main(args: Sequence[str] | None = None) -> int:
     """Dispatch a verb to the module that implements it."""
-    parser = _build_parser()
-    parsed = parser.parse_args(args)
-    verb: str | None = parsed.verb
-    if verb is None:
-        parser.print_help()
-        return 2
-
-    handler, keep_verb = ENTRY_POINTS[verb]
-    rest: list[str] = list(parsed.args)
-    return handler([verb, *rest] if keep_verb else rest)
-
-
-def kubectl_plugin(args: Sequence[str] | None = None) -> int:
-    """Entry point for the ``kubectl-podbench`` plugin.
-
-    kubectl invokes a plugin as ``kubectl-podbench <args>`` after stripping its
-    own name, so this is the launcher's argv with none of the in-pod verbs
-    offered — a plugin advertising `agent` in its help would be confusing.
-    """
-    from .launcher import main as run
-
-    return run(args)
+    return run(_build_app(), args, prog="podbench")
 
 
 if __name__ == "__main__":

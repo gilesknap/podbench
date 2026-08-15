@@ -5,6 +5,14 @@ carrier is `kubectl exec`. Remote-SSH does not know or care: it sees a host in
 your ssh config and connects. This page is the client setup, and the numbers you
 need to size a pod **before** you attach.
 
+:::{note}
+Commands here are written `podbench <verb>` — the only spelling there is. If you
+have not installed the launcher, run each as `uvx podbench <verb>`, or, before
+the first PyPI release, as
+`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+[Installation](../tutorials/installation.md).
+:::
+
 :::{warning}
 No real VS Code GUI client has been driven against podbench yet. The transport
 was verified at the protocol level — a real vscode-server completed an HTTP
@@ -71,7 +79,7 @@ Which pod that lands in decides how much it matters:
    podbench dev api-5f6c9b7d8-qz4tn -n demo --port 8080
 
    # Observe mode — a seat beside a live workload
-   kubectl podbench attach pod/api-5f6c9b7d8-qz4tn -n demo
+   podbench attach pod/api-5f6c9b7d8-qz4tn -n demo
    ```
 
    Both take `--identity` (which key is authorised in the container, default
@@ -109,6 +117,12 @@ Host podbench-demo-web-7d9f8c5b4-x2k9p
     UserKnownHostsFile ~/.podbench/known_hosts
     StrictHostKeyChecking yes
 ```
+
+Note what the `ProxyCommand` names: **`kubectl`, not podbench**. The launcher's
+whole job is to land the seat and write this file, so the seat outlives the
+process that created it. Land one with `uvx podbench attach`, which installs
+nothing, and Remote-SSH keeps connecting for as long as the pod lives — with the
+launcher no longer on the machine at all.
 
 Do not hand-edit it — it is regenerated on every attach, and three of those
 lines are load-bearing in ways that fail *silently*:

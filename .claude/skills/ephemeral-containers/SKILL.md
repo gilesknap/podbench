@@ -5,7 +5,7 @@ description: What the Kubernetes API will and will not let an ephemeral containe
 
 # Ephemeral containers
 
-`kubectl podbench attach` adds an **ephemeral** container; `podbench dev` authors an
+`podbench attach` adds an **ephemeral** container; `podbench dev` authors an
 **ordinary** pod. Most of podbench's odder shapes exist because those two are not
 interchangeable, and the API server enforces the difference. Every rule below was hit
 for real against a cluster, not read in a doc.

@@ -1,0 +1,34 @@
+# Publish the wheel and sdist built by _dist.yml to PyPI, with no API token.
+#
+# Trusted publishing matches the OIDC token's `job_workflow_ref` claim, and for a
+# reusable workflow that claim names *this* file — not the caller. The PyPI
+# publisher must therefore be registered as:
+#
+#   owner            gilesknap
+#   repository       podbench
+#   workflow name    _pypi.yml     (NOT ci.yml)
+#   environment      release       (must match `environment:` below)
+#
+# Registering `ci.yml` instead is rejected at upload time, after the tag has been
+# cut and the image pushed.
+on:
+  workflow_call:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    environment: release
+
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      # Attestations need `attestations: write`, which the caller does not grant
+      # (and which would have to be threaded through the reusable-workflow call).
+      - name: Publish to PyPI using trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: false

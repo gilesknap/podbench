@@ -30,13 +30,16 @@ over, so ``dbg`` never promises source text it cannot deliver (3.2, R4).
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Annotated
 
+import typer
+
+from .cli import new_app, require_subcommand, run
 from .model import CapabilityReport, ProcInfo, Verdict
 from .probe import Attacher, probe
 from .proc import (
@@ -78,7 +81,7 @@ process — and gdb takes the whole string as a filename, so it must come off.
 """
 
 EXIT_USAGE = 2
-"""Exit code for "there is nothing to debug", matching argparse's own."""
+"""Exit code for "there is nothing to debug", matching a usage error's own."""
 
 _PIDS_DESCRIPTION = (
     "List the processes in this pod's shared PID namespace, and say which "
@@ -369,96 +372,173 @@ def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
 
 
-def _pids_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--container-id",
-        default=None,
-        help="target container id (default: $PODBENCH_TARGET_CID)",
-    )
-    parser.add_argument(
-        "--targets",
-        action="store_true",
-        help="list only the target container's processes",
-    )
-    parser.add_argument(
-        "--json",
-        dest="json_output",
-        action="store_true",
-        help="emit the stable JSON form instead of the table",
-    )
+# -- CLI -------------------------------------------------------------------
+
+_Command = Callable[..., None]
+"""A typer command callback, built with its seams already closed over."""
+
+_ContainerIdHelp = "target container id (default: $PODBENCH_TARGET_CID)"
 
 
-def _dbg_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "pid",
-        nargs="?",
-        type=int,
-        default=None,
-        help="pid to attach to; discovered from the container id if omitted",
-    )
-    parser.add_argument(
-        "--container-id",
-        default=None,
-        help="target container id used to discover the pid "
-        "(default: $PODBENCH_TARGET_CID)",
-    )
-    parser.add_argument(
-        "--source-dir",
-        dest="source_dirs",
-        action="append",
-        default=None,
-        metavar="DIR",
-        help="extra source directory, wired with gdb's `directory`. debuginfod "
-        "serves symbols but no sources on Debian, so this is how source text "
-        "outside the target's rootfs is found. Repeatable.",
-    )
-    parser.add_argument(
-        "--no-debuginfod",
-        dest="debuginfod",
-        action="store_false",
-        help="do not enable debuginfod (it needs ca-certificates and network)",
-    )
-    parser.add_argument(
-        "--run",
-        action="store_true",
-        help="with --launch, start the program immediately",
-    )
-    parser.add_argument(
-        "--dry-run",
-        "--print-commands",
-        dest="dry_run",
-        action="store_true",
-        help="print the generated gdb commands and exit, without probing or "
-        "starting gdb",
-    )
-    parser.add_argument(
-        "--launch",
-        nargs=argparse.REMAINDER,
-        default=None,
-        metavar="PROGRAM",
-        help="debug a program gdb starts itself instead of attaching. Needs no "
-        "capability. Consumes the rest of the command line, so put other flags "
-        "first.",
-    )
+def _split_launch(args: Sequence[str] | None) -> tuple[list[str], list[str]]:
+    """Pull the program's own arguments out of argv before click sees them.
+
+    ``--launch`` was an ``argparse.REMAINDER``, and the contract it bought is
+    the documented one: ``dbg --launch ./prog --fast`` must hand ``--fast`` to
+    the program, not to ``dbg``. Click has no equivalent — every option it knows
+    is claimed wherever it appears — so the tail after ``--launch PROGRAM`` is
+    removed here and handed back separately. Everything up to and including the
+    program name is still parsed normally, which is what keeps ``--launch`` in
+    the help with a metavar and an error message click writes itself.
+
+    ``None`` is resolved to ``sys.argv`` here rather than left to click, so that
+    a command line typed at a terminal and one passed in as a list are split the
+    same way.
+
+    Both spellings of the option have to be recognised. ``--launch=./prog``
+    carries the program in the same token, so the tail starts one place earlier
+    than in the separated form; missing that spelling sent ``--fast`` to click,
+    which refused it as an unknown option.
+
+    >>> _split_launch(["--dry-run", "--launch", "./prog", "--fast"])
+    (['--dry-run', '--launch', './prog'], ['--fast'])
+    >>> _split_launch(["--dry-run", "--launch=./prog", "--fast"])
+    (['--dry-run', '--launch=./prog'], ['--fast'])
+    >>> _split_launch(["603", "--dry-run"])
+    (['603', '--dry-run'], [])
+    """
+    argv = list(sys.argv[1:] if args is None else args)
+    for index, token in enumerate(argv):
+        if token == "--launch":
+            # The program name is the next token, and belongs to click so that
+            # a missing one is its error message rather than ours.
+            return argv[: index + 2], argv[index + 2 :]
+        if token.startswith("--launch="):
+            return argv[: index + 1], argv[index + 1 :]
+    return argv, []
 
 
-def _pids_parser(prog: str = "pids") -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=prog, description=_PIDS_DESCRIPTION)
-    _pids_arguments(parser)
-    return parser
+def _pids_command(*, proc: Path) -> _Command:
+    def pids(
+        container_id: Annotated[
+            str | None,
+            typer.Option("--container-id", metavar="ID", help=_ContainerIdHelp),
+        ] = None,
+        targets: Annotated[
+            bool,
+            typer.Option(
+                "--targets", help="list only the target container's processes"
+            ),
+        ] = False,
+        json_output: Annotated[
+            bool,
+            typer.Option(
+                "--json", help="emit the stable JSON form instead of the table"
+            ),
+        ] = False,
+    ) -> None:
+        raise typer.Exit(
+            _run_pids(
+                container_id, targets_only=targets, json_output=json_output, proc=proc
+            )
+        )
+
+    return pids
 
 
-def _dbg_parser(prog: str = "dbg") -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=prog, description=_DBG_DESCRIPTION)
-    _dbg_arguments(parser)
-    return parser
+def _dbg_command(
+    *,
+    proc: Path,
+    attacher: Attacher | None,
+    runner: GdbRunner,
+    program_args: Sequence[str],
+) -> _Command:
+    def dbg(
+        pid: Annotated[
+            int | None,
+            typer.Argument(
+                metavar="[PID]",
+                help="pid to attach to; discovered from the container id if omitted",
+            ),
+        ] = None,
+        container_id: Annotated[
+            str | None,
+            typer.Option(
+                "--container-id",
+                metavar="ID",
+                help="target container id used to discover the pid "
+                "(default: $PODBENCH_TARGET_CID)",
+            ),
+        ] = None,
+        source_dir: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--source-dir",
+                metavar="DIR",
+                help="extra source directory, wired with gdb's `directory`. "
+                "debuginfod serves symbols but no sources on Debian, so this is "
+                "how source text outside the target's rootfs is found. Repeatable",
+            ),
+        ] = None,
+        no_debuginfod: Annotated[
+            bool,
+            typer.Option(
+                "--no-debuginfod",
+                help="do not enable debuginfod (it needs ca-certificates and network)",
+            ),
+        ] = False,
+        run_it: Annotated[
+            bool,
+            typer.Option("--run", help="with --launch, start the program immediately"),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run",
+                "--print-commands",
+                help="print the generated gdb commands and exit, without probing "
+                "or starting gdb",
+            ),
+        ] = False,
+        launch: Annotated[
+            str | None,
+            typer.Option(
+                "--launch",
+                metavar="PROGRAM",
+                help="debug a program gdb starts itself instead of attaching. "
+                "Needs no capability. Consumes the rest of the command line, so "
+                "put other flags first",
+            ),
+        ] = None,
+    ) -> None:
+        raise typer.Exit(
+            _run_dbg(
+                pid,
+                container_id,
+                source_dirs=source_dir or (),
+                debuginfod=not no_debuginfod,
+                run_it=run_it,
+                dry_run=dry_run,
+                launch=launch,
+                program_args=program_args,
+                proc=proc,
+                attacher=attacher,
+                runner=runner,
+            )
+        )
+
+    return dbg
 
 
-def _run_pids(opts: argparse.Namespace, *, proc: Path) -> int:
-    container_id: str | None = opts.container_id or env_target_container_id()
-    listing = scan_processes(container_id, proc=proc)
-    targets_only: bool = opts.targets
-    if opts.json_output:
+def _run_pids(
+    container_id: str | None,
+    *,
+    targets_only: bool,
+    json_output: bool,
+    proc: Path,
+) -> int:
+    listing = scan_processes(container_id or env_target_container_id(), proc=proc)
+    if json_output:
         print(json.dumps(pids_payload(listing, targets_only=targets_only), indent=2))
     else:
         if listing.warning is not None:
@@ -468,34 +548,33 @@ def _run_pids(opts: argparse.Namespace, *, proc: Path) -> int:
 
 
 def _run_dbg(
-    opts: argparse.Namespace,
+    pid: int | None,
+    container_id: str | None,
     *,
+    source_dirs: Sequence[str],
+    debuginfod: bool,
+    run_it: bool,
+    dry_run: bool,
+    launch: str | None,
+    program_args: Sequence[str],
     proc: Path,
     attacher: Attacher | None,
     runner: GdbRunner,
 ) -> int:
-    source_dirs: list[str] = list(opts.source_dirs or [])
-    debuginfod: bool = opts.debuginfod
-    dry_run: bool = opts.dry_run
-
-    launch: list[str] | None = opts.launch
     if launch is not None:
-        if not launch:
-            print("dbg: --launch needs a program to run", file=sys.stderr)
-            return EXIT_USAGE
         commands = launch_commands(
-            launch[0],
-            launch[1:],
-            source_dirs=source_dirs,
+            launch,
+            list(program_args),
+            source_dirs=list(source_dirs),
             debuginfod=debuginfod,
-            run=opts.run,
+            run=run_it,
         )
         if dry_run:
             print(command_file_text(commands), end="")
             return 0
         return runner(gdb_argv(commands))
 
-    pid, notes = resolve_target_pid(opts.pid, opts.container_id, proc=proc)
+    pid, notes = resolve_target_pid(pid, container_id, proc=proc)
     for note in notes:
         _warn(note)
     if pid is None:
@@ -509,7 +588,7 @@ def _run_dbg(
             "back as ?? ()"
         )
     commands = attach_commands(
-        pid, exe=exe, source_dirs=source_dirs, debuginfod=debuginfod
+        pid, exe=exe, source_dirs=list(source_dirs), debuginfod=debuginfod
     )
     if dry_run:
         # Deliberately before the probe: generating the documented command file
@@ -527,7 +606,9 @@ def _run_dbg(
 
 def pids_main(args: Sequence[str] | None = None, *, proc: Path = DEFAULT_PROC) -> int:
     """Entry point for the image's ``pids`` command."""
-    return _run_pids(_pids_parser().parse_args(args), proc=proc)
+    app = new_app()
+    app.command(help=_PIDS_DESCRIPTION)(_pids_command(proc=proc))
+    return run(app, args, prog="pids")
 
 
 def dbg_main(
@@ -542,9 +623,14 @@ def dbg_main(
     ``proc``, ``attacher`` and ``runner`` are test seams; the CLI passes none
     of them.
     """
-    return _run_dbg(
-        _dbg_parser().parse_args(args), proc=proc, attacher=attacher, runner=runner
+    argv, program_args = _split_launch(args)
+    app = new_app()
+    app.command(help=_DBG_DESCRIPTION)(
+        _dbg_command(
+            proc=proc, attacher=attacher, runner=runner, program_args=program_args
+        )
     )
+    return run(app, argv, prog="dbg")
 
 
 def main(
@@ -560,20 +646,18 @@ def main(
     walkthrough uses; :func:`pids_main` and :func:`dbg_main` are those entry
     points, so ``pids --help`` and ``dbg --help`` are self-describing.
     """
-    parser = argparse.ArgumentParser(
-        prog="podbench",
-        description="In-pod debugging helpers.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-    _pids_arguments(
-        sub.add_parser(
-            "pids", help="list the pod's processes", description=_PIDS_DESCRIPTION
+    argv, program_args = _split_launch(args)
+    app = new_app()
+
+    @app.callback(invoke_without_command=True)
+    def root(ctx: typer.Context) -> None:
+        """In-pod debugging helpers."""
+        require_subcommand(ctx)
+
+    app.command(name="pids", help=_PIDS_DESCRIPTION)(_pids_command(proc=proc))
+    app.command(name="dbg", help=_DBG_DESCRIPTION)(
+        _dbg_command(
+            proc=proc, attacher=attacher, runner=runner, program_args=program_args
         )
     )
-    _dbg_arguments(
-        sub.add_parser("dbg", help="debug a process", description=_DBG_DESCRIPTION)
-    )
-    opts = parser.parse_args(args)
-    if opts.command == "pids":
-        return _run_pids(opts, proc=proc)
-    return _run_dbg(opts, proc=proc, attacher=attacher, runner=runner)
+    return run(app, argv, prog="podbench")

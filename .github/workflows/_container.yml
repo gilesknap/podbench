@@ -139,19 +139,76 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # One release has two spellings: the git tag, chart and image use SemVer
+      # (1.0.0-beta.1) while the wheel — and so podbench.__version__ — uses
+      # PEP 440 (1.0.0b1). Publishing both as tags on one digest means the
+      # launcher can ask for its own version verbatim instead of translating,
+      # which would risk an ImagePullBackOff in an unrestartable ephemeral
+      # container. The normalisation is done by packaging itself, so it is the
+      # same code PyPI will apply to the wheel rather than an imitation of it.
+      - name: Install uv
+        if: github.ref_type == 'tag'
+        uses: astral-sh/setup-uv@v10.0.0
+
+      # `prerelease` comes from the same parse, because "does the tag contain a
+      # hyphen" is a fact about *our* SemVer tag convention, not about
+      # prereleases: PEP 440's normal form has no separator at all (1.0.0rc1),
+      # so a tag in that spelling would read as final to a string test and take
+      # `latest` with it. This guard has already been wrong once; ask the parser.
+      - name: Normalise the tag the way PyPI will
+        id: ver
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          # Assigned on its own line deliberately: `set -e` ignores a failing
+          # command substitution used as an argument, so folding this into the
+          # `echo` would let an unparseable tag pass silently as `pep440=`,
+          # publishing a release the launcher's own version cannot name.
+          parsed=$(uv run --no-project --with packaging python -c \
+            'import sys; from packaging.version import Version; v = Version(sys.argv[1]); print(f"pep440={v}"); print(f"prerelease={str(v.is_prerelease).lower()}")' \
+            "$GITHUB_REF_NAME")
+          echo "$parsed" >> "$GITHUB_OUTPUT"
+
       - name: Create tags for publishing image
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY_IMAGE }}
+          # metadata-action's default is `latest=auto`, which adds `latest` to
+          # any `type=ref,event=tag` build — it has no idea the tag is a
+          # prerelease. That silently beat the `enable=` guard below on
+          # 0.1.0-beta.1 and moved `latest` onto the beta. Turning the flavour
+          # off leaves the explicit rule as the only thing that can emit it.
+          flavor: latest=false
           # `main` and `sha-` tags let a cluster track the tip of the default
-          # branch during development; `latest` and the tag itself are the
-          # released artefacts.
+          # branch during development, and `main` is also what a launcher built
+          # off a checkout asks for (podbench.model.FLOATING_TAG), so it has to
+          # keep moving with every default-branch push. The git tag, its PEP 440
+          # spelling and — for a final release only — `latest` are the released
+          # artefacts. Moving `latest` onto a prerelease would hand it to every
+          # unpinned user, so the verdict comes from `packaging`, above.
           tags: |
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=${{ steps.ver.outputs.pep440 }},enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && steps.ver.outputs.prerelease == 'false' }}
             type=raw,value=main,enable={{is_default_branch}}
             type=sha,format=long,enable={{is_default_branch}}
+
+      # Asserted rather than trusted: the tag list is assembled by an action
+      # whose defaults have already put `latest` on a prerelease once, and the
+      # only place that mistake shows up is the registry, days later, on the
+      # machine of whoever pulled an unpinned image.
+      - name: Refuse to move `latest` onto a prerelease
+        if: github.ref_type == 'tag' && steps.ver.outputs.prerelease == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          if jq -e '.["tag-names"] | index("latest")' <<< "$TAGS" > /dev/null; then
+            echo "::error::$GITHUB_REF_NAME is a prerelease, but the computed" \
+                 "tags include \`latest\`: $(jq -c '.["tag-names"]' <<< "$TAGS")"
+            exit 1
+          fi
 
       - name: Log in to GitHub Docker Registry
         uses: docker/login-action@v4

@@ -4,6 +4,14 @@ Observe mode: put a debug seat into a **live** pod without disturbing it, and
 find out what that seat can actually do. For the guided version, see
 [Your first session](../tutorials/first-session.md); this page is the recipes.
 
+:::{note}
+Commands here are written `podbench <verb>` — the only spelling there is. If you
+have not installed the launcher, run each as `uvx podbench <verb>`, or, before
+the first PyPI release, as
+`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+[Installation](../tutorials/installation.md).
+:::
+
 :::{warning}
 On a live pod podbench shares the workload's memory and ephemeral-storage limits
 and **cannot reserve its own** — an ephemeral container may not declare
@@ -17,7 +25,7 @@ heavier than looking belongs in a dev pod
 ## Attach, and re-attach
 
 ```
-$ kubectl podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
+$ podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
 ```
 
 `pod/NAME` and a bare `NAME` are both accepted. Namespace defaults to your
@@ -36,7 +44,7 @@ podbench needs to know *which* container's PID namespace to join and whose UID
 to match:
 
 ```
-$ kubectl podbench attach pod/web-... --target api
+$ podbench attach pod/web-... --target api
 ```
 
 Without `--target` it picks the pod's first container. On a multi-container pod,
@@ -79,7 +87,7 @@ Two things it cannot do, so do not plan on them: `/proc/<pid>/mem` and
 ## Making memory headroom first
 
 ```
-$ kubectl podbench attach pod/web-... --resize 6Gi
+$ podbench attach pod/web-... --resize 6Gi
 ```
 
 This raises the **target container's** memory limit in place
@@ -99,8 +107,8 @@ rest.
 ## Getting the ssh stanza again
 
 ```
-$ kubectl podbench ssh-config pod/web-... -n demo
-$ kubectl podbench ssh-config pod/web-... -n demo --print-config
+$ podbench ssh-config pod/web-... -n demo
+$ podbench ssh-config pod/web-... -n demo --print-config
 ```
 
 `ssh-config` regenerates the stanza for a seat that is already running, without
@@ -137,8 +145,8 @@ To make host keys survive, deliver one from a Secret via
 ## Seeing what is out there
 
 ```
-$ kubectl podbench status pod/web-... -n demo    # every seat in one pod
-$ kubectl podbench list -n demo                  # every seat in the namespace
+$ podbench status pod/web-... -n demo    # every seat in one pod
+$ podbench list -n demo                  # every seat in the namespace
 ```
 
 `status` shows dead containers too, because their names remain burnt.
@@ -162,6 +170,6 @@ for whatever it has written.
 | every library reports `missing debugging information` | `ca-certificates` absent, so `libdebuginfod` fails the TLS handshake silently | use the published image; it is mandatory there for exactly this reason |
 | attach works on one pod, is denied on the next | Yama differs **per node**, by kernel flavour, not by architecture | nothing to fix. The report prints the node name and Yama state for this reason |
 
-`kubectl podbench attach` returns `2` only for a real error. A degraded seat is
+`podbench attach` returns `2` only for a real error. A degraded seat is
 a success: returning non-zero for "the cluster would not grant `SYS_PTRACE`"
 would make an honest report look like a failure.

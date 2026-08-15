@@ -4,7 +4,8 @@
 
 podbench puts a development seat — editor, gdb, a Python inner loop — *inside* a
 Kubernetes pod, reached over nothing but the kubeconfig. Two artefacts: a debug
-container image, and a `kubectl podbench` plugin that launches it.
+container image, and a `podbench` launcher — canonically run as
+`uvx podbench <verb>`, with nothing installed — that launches it.
 
 `docs/explanations/design-brief.md` is the definition of done — each phase's
 acceptance criteria are stated there.
@@ -32,9 +33,16 @@ silent.
   labels takes production traffic. Opt-in, behind an explicit flag, always.
 - **Never mutate a cluster outside a scratch namespace.** Cluster testing happens
   in `podbench-*` namespaces created for the purpose and deleted afterwards.
-- **No runtime dependencies.** The launcher shells out to `kubectl` deliberately, so
-  it inherits kubeconfig auth, contexts and exec credential plugins. argparse and
-  the stdlib only; the dev group is for test-only additions.
+- **One runtime dependency, and it is the CLI.** typer (with click and rich) is
+  the whole list, asserted by `tests/test_packaging.py`; the dev group is for
+  test-only additions. Adding a second has to be argued for in that test first.
+  In particular **never a Kubernetes client library**: the launcher shells out to
+  `kubectl` deliberately, so it inherits kubeconfig auth, contexts and exec
+  credential plugins.
+- **Every verb's CLI is typer, and every `main()` still returns an `int`.**
+  `cli.py` is the one place that catches click's `SystemExit`; a command callback
+  ends in `raise typer.Exit(code)`, because click discards a returned value and a
+  returned exit code is silently lost.
 
 ## Conventions
 

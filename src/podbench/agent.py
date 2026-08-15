@@ -22,7 +22,6 @@ of a seat without ssh and none of one with a dead container.
 
 from __future__ import annotations
 
-import argparse
 import os
 import pwd
 import signal
@@ -33,7 +32,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
+from typing import Annotated
 
+import typer
+
+from .cli import new_app, run
 from .model import SEAT_HOME_VOLUME, SEAT_IDENTITY_VOLUME, ContainerRef, PodRef
 from .sshcfg import SEAT_USER, SshdLayout, proxy_command, sshd_config
 
@@ -239,7 +242,7 @@ NSS_WAY_OUT = (
     "capreport, pids, dbg --launch, a shell - is unaffected. A seat that reads "
     "this is almost always an ephemeral container, and the way out for one is "
     "GID 0: land it again with "
-    "`kubectl podbench attach <pod> --new --seat-gid-root` and it registers its "
+    "`podbench attach <pod> --new --seat-gid-root` and it registers its "
     f"own record in the image's group-writable {PASSWD_PATH}. Failing that, run "
     "the target as a uid the debug image already has an account for. A "
     f"{SEAT_IDENTITY_VOLUME!r} volume does not help here, however plainly the "
@@ -931,56 +934,94 @@ def idle(
     return 0
 
 
+def _build_app() -> typer.Typer:
+    app = new_app()
+
+    @app.command()
+    def agent(
+        ensure_only: Annotated[
+            bool,
+            typer.Option(
+                "--ensure-only", help="prepare the container and exit instead of idling"
+            ),
+        ] = False,
+        self_check_only: Annotated[
+            bool,
+            typer.Option(
+                "--self-check",
+                help="run the startup checks and exit; non-zero if any fails",
+            ),
+        ] = False,
+        print_host_key: Annotated[
+            bool,
+            typer.Option(
+                "--print-host-key",
+                help="print the host public key for the launcher's known_hosts",
+            ),
+        ] = False,
+        print_login_user: Annotated[
+            bool,
+            typer.Option(
+                "--print-login-user",
+                help="print the login name sshd will resolve for this uid; "
+                "non-zero with the reason on stderr when there is none",
+            ),
+        ] = False,
+        no_self_check: Annotated[
+            bool,
+            typer.Option(
+                "--no-self-check",
+                help="skip the startup checks (they cost a subprocess and ~0.2 s)",
+            ),
+        ] = False,
+        idle_interval: Annotated[
+            float,
+            typer.Option(
+                "--idle-interval",
+                metavar="SECONDS",
+                help="seconds between reap sweeps while idling",
+            ),
+        ] = 30.0,
+    ) -> None:
+        """Prepare the debug container for ssh and idle as its PID 1."""
+        raise typer.Exit(
+            _run(
+                ensure_only=ensure_only,
+                self_check_only=self_check_only,
+                print_host_key=print_host_key,
+                print_login_user=print_login_user,
+                no_self_check=no_self_check,
+                idle_interval=idle_interval,
+            )
+        )
+
+    return app
+
+
 def main(args: Sequence[str] | None = None) -> int:
     """Entry point for ``podbench agent``. CLI wiring lives elsewhere."""
-    parser = argparse.ArgumentParser(
-        prog="podbench agent",
-        description="Prepare the debug container for ssh and idle as its PID 1.",
-    )
-    parser.add_argument(
-        "--ensure-only",
-        action="store_true",
-        help="prepare the container and exit instead of idling",
-    )
-    parser.add_argument(
-        "--self-check",
-        action="store_true",
-        help="run the startup checks and exit; non-zero if any fails",
-    )
-    parser.add_argument(
-        "--print-host-key",
-        action="store_true",
-        help="print the host public key for the launcher's known_hosts",
-    )
-    parser.add_argument(
-        "--print-login-user",
-        action="store_true",
-        help="print the login name sshd will resolve for this uid; non-zero "
-        "with the reason on stderr when there is none",
-    )
-    parser.add_argument(
-        "--no-self-check",
-        action="store_true",
-        help="skip the startup checks (they cost a subprocess and ~0.2 s)",
-    )
-    parser.add_argument(
-        "--idle-interval",
-        type=float,
-        default=30.0,
-        help="seconds between reap sweeps while idling",
-    )
-    opts = parser.parse_args(args)
+    return run(_build_app(), args, prog="podbench agent")
 
+
+def _run(
+    *,
+    ensure_only: bool,
+    self_check_only: bool,
+    print_host_key: bool,
+    print_login_user: bool,
+    no_self_check: bool,
+    idle_interval: float,
+) -> int:
     layout = SshdLayout.for_uid(os.geteuid())
 
-    if opts.print_login_user:
+    if print_login_user:
         # A pure read, answered before anything is ensured: the launcher asks
         # this of a container that has already started, and the answer has to be
         # the state sshd will find rather than the state a second ensure created.
         return _print_login_user()
 
     ensure: EnsureReport | None = None
-    if not opts.self_check:
+    if not self_check_only:
         ensure = ensure_all(layout)
         for change in ensure.changes:
             _say(change)
@@ -988,14 +1029,14 @@ def main(args: Sequence[str] | None = None) -> int:
             _say(str(failure))
 
     failures = 0
-    if opts.self_check or not opts.no_self_check:
+    if self_check_only or not no_self_check:
         for result in self_check(layout, ensure=ensure):
             _say(str(result))
             failures += 0 if result.ok else 1
-        if opts.self_check:
+        if self_check_only:
             return 1 if failures else 0
 
-    if opts.print_host_key:
+    if print_host_key:
         public = read_host_public_key(layout)
         if public is None:
             _say("no host public key available")
@@ -1016,9 +1057,9 @@ def main(args: Sequence[str] | None = None) -> int:
 
     status = reaper_status()
     _say(status.note)
-    if opts.ensure_only:
+    if ensure_only:
         return 1 if failures else 0
-    return idle(status, interval=opts.idle_interval)
+    return idle(status, interval=idle_interval)
 
 
 def _print_login_user() -> int:

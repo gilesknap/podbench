@@ -4,6 +4,14 @@ Take a **distroless** container — no shell, no gdb, no libc headers, nothing t
 exec into — and land on a breakpoint with source shown and locals readable. Ten
 minutes, most of it image pulls.
 
+:::{note}
+Commands here are written `podbench <verb>` — the only spelling there is. If you
+have not installed the launcher, run each as `uvx podbench <verb>`, or, before
+the first PyPI release, as
+`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+[Installation](../tutorials/installation.md).
+:::
+
 Everything here is driven by `dbg`, the helper on the debug container's `PATH`.
 `dbg` is not `gdb -p`: it fixes seven commands in one order, and the order is a
 correctness property rather than a preference. Setting the sysroot *after*
@@ -104,7 +112,7 @@ That is not incidental — see *Where source text actually comes from* below.
 ## 2. Attach the seat
 
 ```
-$ kubectl podbench attach pod/victim -n podbench-gdb
+$ podbench attach pod/victim -n podbench-gdb
 ```
 
 Check the report says `[x] live attach`. If it does not, skip to

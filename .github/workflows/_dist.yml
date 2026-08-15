@@ -29,6 +29,21 @@ jobs:
       - name: Check for packaging errors
         run: uvx twine check --strict dist/*
 
+      # Running from a throwaway environment with an empty cache is the headline
+      # of #1, so this is the launchability smoke test: a cold uvx has to
+      # resolve the wheel and its dependency tree and reach `--version`.
+      #
+      # This used to pass `--no-index`, which made the step double as the
+      # "no runtime dependencies" assertion. The rule is now "the CLI, and
+      # nothing else", and tests/test_packaging.py asserts that against the
+      # declared metadata — where it fails in the unit suite rather than after a
+      # wheel is built. What only this step can prove is that the resolve
+      # actually works from an empty cache.
+      - name: Test the wheel is launchable with uvx from a cold cache
+        run: |
+          set -euo pipefail
+          UV_CACHE_DIR=$(mktemp -d) uvx --from dist/*.whl podbench --version
+
       - name: Install produced wheel
         run: python -m pip install dist/*.whl
 
