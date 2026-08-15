@@ -27,7 +27,7 @@ indistinguishable from "there are no e2e tests".
 
 ```bash
 export PODBENCH_E2E=1
-export PODBENCH_IMAGE=ghcr.io/gilesknap/podbench:latest   # or a locally loaded tag
+export PODBENCH_IMAGE=ghcr.io/gilesknap/podbench:main   # or a locally loaded tag
 uv run --no-sync pytest tests/e2e -v
 ```
 
