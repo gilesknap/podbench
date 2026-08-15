@@ -263,13 +263,26 @@ These go in `.vscode/launch.json` **in the remote window** — the debug adapter
 runs inside the debug container, next to gdb, so every path below is a path in
 that container.
 
-:::{warning}
-gdb's DAP/MI mode has not been tested against podbench. The gdb command
-sequence above was verified from the CLI. The VS Code C++ extension consumes
-`info source`'s `fullname`, which is exactly the field the wrong source-mapping
-approach corrupts, so if paths come out doubled (`/proc/1/root/proc/1/root/…`)
-that is the failure to look for.
-:::
+### Let podbench write it
+
+Do not hand-copy the templates below unless you have to. In the seat:
+
+```
+root@victim:~# debug-config
+debug-config written to /root/.vscode/launch.json
+then: Run and Debug -> "podbench: attach to victim"
+```
+
+It fills in the pid, the sysroot-prefixed `program`, the setup ordering, the
+architecture and `miDebuggerPath` from what it can already see, which is the
+whole point: every one of those fails *silently* when wrong. `--print-config`
+emits it instead of writing it, `--output` puts it beside the folder you
+actually opened, and `--lldb` emits the CodeLLDB form. Re-running it replaces
+its own entry and leaves any hand-written configuration alone.
+
+VS Code reads `.vscode/launch.json` from the folder that is **open**, not from
+`$HOME`. A config written to `~` when you opened `/` never appears in the Run
+and Debug list, and nothing reports an error.
 
 ### C/C++ with `ms-vscode.cpptools` (gdb)
 
@@ -283,8 +296,10 @@ that is the failure to look for.
       "request": "attach",
       "processId": "1",
       "program": "/proc/1/root/app/victim",
+      "cwd": "/root",
       "MIMode": "gdb",
-      "miDebuggerPath": "/usr/bin/gdb",
+      "miDebuggerPath": "/usr/local/bin/gdb-podbench",
+      "targetArchitecture": "arm64",
       "setupCommands": [
         { "text": "set sysroot /proc/1/root" },
         { "text": "directory /proc/1/root" },
@@ -292,18 +307,63 @@ that is the failure to look for.
         { "text": "set debuginfod enabled on" }
       ],
       "sourceFileMap": {
-        "/app/src": "/proc/1/root/app/src",
-        "/workspace/build": "/workspace/src"
+        "/app/src": "/proc/1/root/app/src"
       }
     }
   ]
 }
 ```
 
-Two things are load-bearing. `program` must be the **sysroot-prefixed** path, or
-gdb reads the debug image's idea of the binary. And `setupCommands` run before
-the attach, which is the ordering the CLI sequence depends on — do not move the
-sysroot line into a post-attach hook.
+Four things are load-bearing.
+
+`program` must be the **sysroot-prefixed** path, or gdb reads the debug image's
+idea of the binary. `setupCommands` run before the attach, which is the ordering
+the CLI sequence depends on — do not move the sysroot line into a post-attach
+hook.
+
+`miDebuggerPath` must be **`/usr/local/bin/gdb-podbench`**, the image's wrapper,
+and never `/usr/bin/gdb`. cpptools launches gdb as a child, so gdb inherits
+cpptools' own working directory — its extension directory, which VS Code
+replaces wholesale on extension update. gdb links libpython;
+`-enable-pretty-printing` (which cpptools always sends) initialises CPython;
+CPython calls `getcwd()`; and gdb dies during startup:
+
+```
+gdb: warning: error finding working directory: No such file or directory
+Fatal signal:
+A fatal error internal to GDB has been detected, further
+debugging is not possible.  GDB will now terminate.
+```
+
+No signal name, no backtrace — it crashes before it can format either — and
+VS Code surfaces only `ERROR: Unable to start debugging. GDB exited
+unexpectedly`, which points at the attach rather than at startup. `dbg` never
+hits this because it never enables pretty-printing, so the CLI works perfectly
+on a seat where the VS Code debugger cannot start at all. Reproduce it in any
+seat with:
+
+```
+mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
+printf -- "-enable-pretty-printing\n-gdb-exit\n" | gdb --interpreter=mi
+```
+
+`cwd` must be set. On a developer's machine `${workspaceFolder}` always exists
+so nobody sets it; in a seat it can resolve to nothing, and the result is that
+same unformattable crash.
+
+:::{note}
+`targetArchitecture` is worth setting on arm64 — without it cpptools logs
+`Debuggee TargetArchitecture not detected, assuming x86_64` — but it is **not**
+what causes the crash above. It is a plausible-looking red herring that sits
+directly next to the real symptom in the log.
+:::
+
+:::{warning}
+The VS Code C++ extension consumes `info source`'s `fullname`, which is exactly
+the field the wrong source-mapping approach corrupts, so if paths come out
+doubled (`/proc/1/root/proc/1/root/…`) that is the failure to look for. Map the
+compilation directory, never `/`.
+:::
 
 `sourceFileMap` keys are the compilation directories recorded in the DWARF
 (`info source` prints them as *Compilation directory*); values are where those

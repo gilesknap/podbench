@@ -1,0 +1,6 @@
+#!/bin/sh
+# Write VS Code's launch.json for this seat, with the pid, the sysroot-prefixed
+# program path and the gdb setup order already filled in.
+#
+# Absolute path: see the note in `pids`.
+exec /app/.venv/bin/podbench debug-config "$@"
