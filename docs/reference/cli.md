@@ -96,7 +96,7 @@ whole name. Resolution is the same in all three:
 | the full name, or `pod/NAME` | used as typed, in one `kubectl get pod` — an exact name is never ambiguous, even when it is also a substring of another pod's name |
 | a substring matching **one** pod | resolved to that pod, and the name it resolved to is echoed on stderr |
 | a substring matching **several** | the matches are listed and you are asked which |
-| nothing at all | every pod in the namespace is listed and you are asked which |
+| nothing at all | every pod in the namespace is listed and you are asked which — unless the namespace holds exactly one, which resolves and is echoed like any other single match |
 | a substring matching **none** | an error naming the namespace searched, with what is in it |
 
 ```
@@ -142,8 +142,8 @@ what that seat can actually do.
  add or reconnect a podbench container and print the report
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Omitted, or matching more than │
-│                   one pod, lists the namespace and asks                                          │
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --target                    NAME             workload container name                             │
@@ -291,8 +291,8 @@ the pod.
  regenerate the ssh stanza for an existing session
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Omitted, or matching more than │
-│                   one pod, lists the namespace and asks                                          │
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
@@ -327,8 +327,8 @@ burnt.
  the podbench containers in one pod and what each supports
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Omitted, or matching more than │
-│                   one pod, lists the namespace and asks                                          │
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --no-prompt                      never ask which pod: an ambiguous or missing POD is refused     │

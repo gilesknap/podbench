@@ -2170,8 +2170,8 @@ _Pod = Annotated[
     str | None,
     typer.Argument(
         metavar="POD",
-        help="pod/NAME, a bare NAME, or any substring of one. Omitted, or "
-        "matching more than one pod, lists the namespace and asks",
+        help="pod/NAME, a bare NAME, or any substring of one. Anything that "
+        "does not settle on a single pod lists the namespace and asks",
     ),
 ]
 _NoPrompt = Annotated[

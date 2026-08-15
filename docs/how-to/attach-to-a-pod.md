@@ -35,8 +35,8 @@ exact name — `pod/NAME` or a bare `NAME` — is always taken as typed, even wh
 it is also a substring of another pod's name. Namespace defaults to your current
 context's.
 
-When more than one pod matches, or you name none at all, podbench lists what it
-found and asks:
+When more than one pod matches — or you name none at all and the namespace holds
+more than one — podbench lists what it found and asks:
 
 ```
 $ podbench attach -n demo
@@ -51,6 +51,10 @@ which one? [number or name, empty to cancel] 2
 The `PODBENCH` column is the seat that is already in the pod, so you can tell
 "reconnect to mine" from "land a new one" before choosing. Answer with the
 number, the name, or a longer substring.
+
+A namespace holding a single pod is not a choice, so it is not a question:
+`podbench attach -n demo` resolves to that pod and says which, the same echo any
+other single match gets.
 
 In a script, a CI job or over `ssh host podbench ...` there is nobody to answer,
 and a prompt would be a hang. podbench detects that stdin is not a tty, prints
