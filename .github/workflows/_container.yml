@@ -139,17 +139,47 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # One release has two spellings: the git tag, chart and image use SemVer
+      # (1.0.0-beta.1) while the wheel — and so podbench.__version__ — uses
+      # PEP 440 (1.0.0b1). Publishing both as tags on one digest means the
+      # launcher can ask for its own version verbatim instead of translating,
+      # which would risk an ImagePullBackOff in an unrestartable ephemeral
+      # container. The normalisation is done by packaging itself, so it is the
+      # same code PyPI will apply to the wheel rather than an imitation of it.
+      - name: Install uv
+        if: github.ref_type == 'tag'
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Normalise the tag the way PyPI will
+        id: ver
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          # Assigned on its own line deliberately: `set -e` ignores a failing
+          # command substitution used as an argument, so folding this into the
+          # `echo` would let an unparseable tag pass silently as `pep440=`,
+          # publishing a release the launcher's own version cannot name.
+          pep440=$(uv run --no-project --with packaging python -c \
+            'import sys; from packaging.version import Version; print(Version(sys.argv[1]))' \
+            "$GITHUB_REF_NAME")
+          echo "pep440=$pep440" >> "$GITHUB_OUTPUT"
+
       - name: Create tags for publishing image
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           # `main` and `sha-` tags let a cluster track the tip of the default
-          # branch during development; `latest` and the tag itself are the
-          # released artefacts.
+          # branch during development, and `main` is also what a launcher built
+          # off a checkout asks for (podbench.model.FLOATING_TAG), so it has to
+          # keep moving with every default-branch push. The git tag, its PEP 440
+          # spelling and — for a final release only — `latest` are the released
+          # artefacts. A SemVer prerelease always carries a hyphen, and moving
+          # `latest` onto one would hand it to every unpinned user.
           tags: |
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=${{ steps.ver.outputs.pep440 }},enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
             type=raw,value=main,enable={{is_default_branch}}
             type=sha,format=long,enable={{is_default_branch}}
 

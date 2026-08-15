@@ -9,11 +9,16 @@ agreements live here so that neither half owns them.
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from . import __version__
+
 __all__ = [
     "DEFAULT_IMAGE",
+    "FLOATING_TAG",
+    "IMAGE_REPOSITORY",
     "SEAT_GROUP_KEY",
     "SEAT_HOME_PATH",
     "SEAT_HOME_VOLUME",
@@ -29,14 +34,72 @@ __all__ = [
     "Rung",
     "Verdict",
     "as_dict",
+    "image_tag_for",
 ]
 
-DEFAULT_IMAGE = "ghcr.io/gilesknap/podbench:latest"
+IMAGE_REPOSITORY = "ghcr.io/gilesknap/podbench"
+"""Where the released debug images live, without a tag."""
+
+FLOATING_TAG = "main"
+"""The tag used when this launcher's version names no published image.
+
+That case is exactly a launcher built off a checkout — a clone, or
+``uvx --from git+…`` — so the honest counterpart is the image built from the
+same branch tip, which CI pushes on every default-branch commit. ``latest`` is
+deliberately *not* it: CI moves ``latest`` only on a final release (see the
+``enable=`` guard in ``.github/workflows/_container.yml``, which keeps unpinned
+users off prereleases), and this project has only ever tagged prereleases, so
+``latest`` would pair a launcher from today with an image from months ago.
+"""
+
+# An OCI reference tag: leading alphanumeric or underscore, then at most 127
+# more of a restricted set (distribution's `TagRegexp`). PEP 440 can spell
+# versions this cannot hold — a local segment's `+`, an epoch's `!` — and asking
+# for one of those is not a failed pull but a malformed reference.
+_OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+
+
+def image_tag_for(version: str) -> str:
+    """The image tag matching a launcher version, or the floating tag.
+
+    Under ``uvx`` the launcher's version floats between two attaches with no
+    visible event, so a launcher can author a container spec its image does not
+    understand — and that mismatch fails *in the pod*, where an ephemeral
+    container cannot be restarted. Asking for the image that ships with this
+    exact launcher is what keeps the two halves in step.
+
+    A release has two spellings — the git tag, chart and image use SemVer
+    (``1.0.0-beta.1``) while the wheel, and so ``__version__``, uses PEP 440
+    (``1.0.0b1``) — and CI publishes both on the one digest precisely so this
+    function can pass its own version through verbatim. Translating between the
+    spellings here would put a version-string bug on the launch path, whose
+    symptom is an ``ImagePullBackOff`` that burns the seat name for the life of
+    the pod.
+    """
+    # setuptools_scm marks anything that is not exactly a tagged commit with a
+    # dev segment and a `+g<sha>` local version. No such image was ever built,
+    # let alone pushed, so a working tree or a post-release commit has nothing
+    # to pin to and falls back to the branch tip.
+    if ".dev" in version or "+" in version:
+        return FLOATING_TAG
+    # Everything else is a version CI tagged, and so published: a final release
+    # or a prerelease. Refuse only spellings that cannot be a tag at all, rather
+    # than guess at a repair.
+    if not _OCI_TAG.fullmatch(version):
+        return FLOATING_TAG
+    return version
+
+
+DEFAULT_IMAGE = f"{IMAGE_REPOSITORY}:{image_tag_for(__version__)}"
 """The debug image the launcher attaches when nothing else is specified.
 
 Both halves of the launcher — `attach` on a live pod and `dev` on an authored
 one — put this into a container spec, and a release that bumped one and not the
-other would leave the two modes silently running different builds.
+other would leave the two modes silently running different builds. It is
+derived from :data:`podbench.__version__` at import time rather than pinned, so
+that a launcher run straight from the index by ``uvx`` — where the version
+floats silently between invocations — attaches the image built from its own
+source. See :func:`image_tag_for` for which versions name an image.
 """
 
 IMAGE_ENV = "PODBENCH_IMAGE"
