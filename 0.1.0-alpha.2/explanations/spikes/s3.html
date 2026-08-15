@@ -1,0 +1,1374 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>S3 — gdb attach with sysroot against a distroless target &#8212; podbench 0.1.0a2 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=7e4d6dd2"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=30646c52"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/spikes/s3';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a2';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="S4 — Python takeover: --copy-to dev pod, uv editable install, relaunch on the pod IP" href="s4.html" />
+    <link rel="prev" title="S2 — vscode-server inside an ephemeral container" href="s2.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0a2" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../design-brief.html">Podbench</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../security.html">Security model</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../spikes.html">Phase 0 spikes</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+</ul>
+</details></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../explanations.html" class="nav-link">Explanations</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../spikes.html" class="nav-link">Phase 0 spikes</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">S3 — gdb attach with sysroot against a distroless target</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="s3-gdb-attach-with-sysroot-against-a-distroless-target">
+<h1>S3 — gdb attach with sysroot against a distroless target<a class="headerlink" href="#s3-gdb-attach-with-sysroot-against-a-distroless-target" title="Link to this heading">#</a></h1>
+<p><strong>Verdict:</strong> PASS
+<strong>Date:</strong> 2026-08-15  (cluster: k3s v1.34, mixed arm64/amd64)</p>
+<section id="what-was-tested">
+<h2>What was tested<a class="headerlink" href="#what-was-tested" title="Link to this heading">#</a></h2>
+<p>Everything ran in namespace <code class="docutils literal notranslate"><span class="pre">podbench-s3</span></code>, all pods pinned to <code class="docutils literal notranslate"><span class="pre">nodeSelector:</span> <span class="pre">{kubernetes.io/arch:</span> <span class="pre">amd64}</span></code> and scheduled on <code class="docutils literal notranslate"><span class="pre">nuc2</span></code>. No image builds — the C
+target binary is compiled at pod start by an <code class="docutils literal notranslate"><span class="pre">initContainer</span></code> into a shared
+<code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>, and the <em>runtime</em> container is genuinely distroless.</p>
+<p>Three target pods:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>pod</p></th>
+<th class="head"><p>target container image</p></th>
+<th class="head"><p>shell?</p></th>
+<th class="head"><p>purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">victim</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gcr.io/distroless/cc-debian12</span></code> (+ <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> sidecar)</p></td>
+<td><p><strong>no</strong></p></td>
+<td><p>primary distroless proof; sidecar = stripped Debian binary for debuginfod</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">victim-ubuntu</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ubuntu:24.04</span></code> (glibc 2.39)</p></td>
+<td><p>yes</p></td>
+<td><p>deliberate glibc mismatch vs the <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> (glibc 2.36) debug image — the <em>wrong sysroot</em> doc example</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">victim-sps</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gcr.io/distroless/cc-debian12</span></code>, <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code></p></td>
+<td><p><strong>no</strong></p></td>
+<td><p>PID-discovery edge case</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Distroless-ness confirmed empirically:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl -n podbench-s3 exec victim -c victim -- /bin/sh -c &#39;echo hi&#39;
+error: Internal error occurred: ... OCI runtime exec failed: exec failed:
+unable to start container process: exec: &quot;/bin/sh&quot;: stat /bin/sh: no such file or directory
+</pre></div>
+</div>
+<p>Debug tooling image was always <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> with <code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">gdb</span></code>
+at runtime (gdb 13.1, Debian). Tested: ptrace/Yama, sysroot on/off/wrong,
+<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">sharedlibrary</span></code>, backtraces, breakpoints with source, <code class="docutils literal notranslate"><span class="pre">directory</span></code> vs
+<code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">substitute-path</span></code>, <code class="docutils literal notranslate"><span class="pre">auto-load</span> <span class="pre">safe-path</span></code>, ordering of <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> vs
+<code class="docutils literal notranslate"><span class="pre">attach</span></code>, debuginfod symbols <strong>and</strong> sources, and target-PID discovery.</p>
+</section>
+<section id="exact-commands-that-worked">
+<h2>Exact commands that worked<a class="headerlink" href="#exact-commands-that-worked" title="Link to this heading">#</a></h2>
+<section id="namespace-target-pod-distroless-no-image-build">
+<h3>0. Namespace + target pod (distroless, no image build)<a class="headerlink" href="#namespace-target-pod-distroless-no-image-build" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>create<span class="w"> </span>namespace<span class="w"> </span>podbench-s3
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">target.yaml</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ConfigMap</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">victim-src</span>
+<span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">podbench-s3</span>
+<span class="nt">data</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">victim.c</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">    </span><span class="no">#include &lt;stdio.h&gt;</span>
+<span class="w">    </span><span class="no">#include &lt;stdlib.h&gt;</span>
+<span class="w">    </span><span class="no">#include &lt;string.h&gt;</span>
+<span class="w">    </span><span class="no">#include &lt;unistd.h&gt;</span>
+<span class="w">    </span><span class="no">#include &lt;math.h&gt;</span>
+
+<span class="w">    </span><span class="no">struct work { int id; double value; char label[32]; };</span>
+
+<span class="w">    </span><span class="no">static double transform(struct work *w) {</span>
+<span class="w">      </span><span class="no">double r = sqrt((double)w-&gt;id) * w-&gt;value;</span>
+<span class="w">      </span><span class="no">return r;</span>
+<span class="w">    </span><span class="no">}</span>
+<span class="w">    </span><span class="no">static int compute(int n, struct work *w) {</span>
+<span class="w">      </span><span class="no">w-&gt;id = n;</span>
+<span class="w">      </span><span class="no">w-&gt;value = (double)n * 1.5;</span>
+<span class="w">      </span><span class="no">snprintf(w-&gt;label, sizeof(w-&gt;label), &quot;item-%d&quot;, n);</span>
+<span class="w">      </span><span class="no">double t = transform(w);</span>
+<span class="w">      </span><span class="no">return (int)t;</span>
+<span class="w">    </span><span class="no">}</span>
+<span class="w">    </span><span class="no">static void outer_loop(void) {</span>
+<span class="w">      </span><span class="no">struct work w; int i = 0;</span>
+<span class="w">      </span><span class="no">for (;;) {</span>
+<span class="w">        </span><span class="no">memset(&amp;w, 0, sizeof(w));</span>
+<span class="w">        </span><span class="no">int v = compute(i, &amp;w);</span>
+<span class="w">        </span><span class="no">printf(&quot;tick %d -&gt; %d (%s)\n&quot;, i, v, w.label); fflush(stdout);</span>
+<span class="w">        </span><span class="no">i++; sleep(2);</span>
+<span class="w">      </span><span class="no">}</span>
+<span class="w">    </span><span class="no">}</span>
+<span class="w">    </span><span class="no">int main(int argc, char **argv) {</span>
+<span class="w">      </span><span class="no">printf(&quot;victim starting, pid=%d\n&quot;, (int)getpid()); fflush(stdout);</span>
+<span class="w">      </span><span class="no">outer_loop(); return 0;</span>
+<span class="w">    </span><span class="no">}</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Pod</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">victim</span>
+<span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">podbench-s3</span>
+<span class="w">  </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="nv">victim</span><span class="p p-Indicator">}</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">nodeSelector</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">kubernetes.io/arch</span><span class="p">:</span><span class="w"> </span><span class="nv">amd64</span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">restartPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Never</span>
+<span class="w">  </span><span class="nt">volumes</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">app</span><span class="p p-Indicator">,</span><span class="nt"> emptyDir</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{}}</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">src</span><span class="p p-Indicator">,</span><span class="nt"> configMap</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">victim-src</span><span class="p p-Indicator">}}</span>
+<span class="w">  </span><span class="nt">initContainers</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">build</span>
+<span class="w">      </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">debian:bookworm-slim</span>
+<span class="w">      </span><span class="nt">imagePullPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">IfNotPresent</span>
+<span class="w">      </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;/bin/sh&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;-c&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">          </span><span class="no">set -ex</span>
+<span class="w">          </span><span class="no">apt-get update -qq</span>
+<span class="w">          </span><span class="no">apt-get install -y -qq --no-install-recommends gcc libc6-dev</span>
+<span class="w">          </span><span class="no">mkdir -p /app/src</span>
+<span class="w">          </span><span class="no">cp /src/victim.c /app/src/victim.c</span>
+<span class="w">          </span><span class="no">cd /app/src &amp;&amp; gcc -g -O0 -o /app/victim victim.c -lm</span>
+<span class="w">      </span><span class="nt">volumeMounts</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">app</span><span class="p p-Indicator">,</span><span class="nt"> mountPath</span><span class="p">:</span><span class="w"> </span><span class="nv">/app</span><span class="p p-Indicator">}</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">src</span><span class="p p-Indicator">,</span><span class="nt"> mountPath</span><span class="p">:</span><span class="w"> </span><span class="nv">/src</span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">containers</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">victim</span>
+<span class="w">      </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gcr.io/distroless/cc-debian12</span><span class="w">   </span><span class="c1"># no shell, no gdb, no libc headers</span>
+<span class="w">      </span><span class="nt">imagePullPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">IfNotPresent</span>
+<span class="w">      </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;/app/victim&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">volumeMounts</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">app</span><span class="p p-Indicator">,</span><span class="nt"> mountPath</span><span class="p">:</span><span class="w"> </span><span class="nv">/app</span><span class="p p-Indicator">}]</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sidecar-stripped</span><span class="w">                  </span><span class="c1"># stripped Debian binary for debuginfod</span>
+<span class="w">      </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">debian:bookworm-slim</span>
+<span class="w">      </span><span class="nt">imagePullPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">IfNotPresent</span>
+<span class="w">      </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;/bin/sleep&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;100000&quot;</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>target.yaml
+timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span><span class="nb">wait</span><span class="w"> </span>--for<span class="o">=</span><span class="nv">condition</span><span class="o">=</span>Ready<span class="w"> </span>pod/victim<span class="w"> </span>--timeout<span class="o">=</span>290s
+<span class="c1"># pod/victim condition met   (2/2 Running on nuc2, ~20s including both image pulls)</span>
+</pre></div>
+</div>
+</section>
+<section id="attach-the-debug-container">
+<h3>1. Attach the debug container<a class="headerlink" href="#attach-the-debug-container" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cat<span class="w"> </span>&gt;<span class="w"> </span>ptrace-profile.json<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">{&quot;securityContext&quot;:{&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}}}</span>
+<span class="s">EOF</span>
+
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span>debug<span class="w"> </span>-it<span class="w"> </span>victim<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--image<span class="o">=</span>debian:bookworm-slim<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--target<span class="o">=</span>victim<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-c<span class="w"> </span>dbg0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--custom<span class="o">=</span>ptrace-profile.json<span class="w"> </span>--profile<span class="o">=</span>general<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--<span class="w"> </span>sleep<span class="w"> </span>infinity
+</pre></div>
+</div>
+<p>Verified capabilities and PID-namespace sharing:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>victim<span class="w"> </span>-c<span class="w"> </span>dbg0<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;grep CapEff /proc/self/status; cat /proc/sys/kernel/yama/ptrace_scope&#39;</span>
+<span class="c1"># CapEff: 00000000a80c25fb    &lt;- bit 19 (CAP_SYS_PTRACE) set</span>
+<span class="c1"># 1                            &lt;- yama ptrace_scope</span>
+</pre></div>
+</div>
+</section>
+<section id="install-gdb-runtime-no-image-build">
+<h3>2. Install gdb (runtime, no image build)<a class="headerlink" href="#install-gdb-runtime-no-image-build" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>victim<span class="w"> </span>-c<span class="w"> </span>dbg0<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;apt-get update -qq &amp;&amp; DEBIAN_FRONTEND=noninteractive \</span>
+<span class="s1">   apt-get install -y -qq --no-install-recommends gdb ca-certificates&#39;</span>
+<span class="c1"># GNU gdb (Debian 13.1-3) 13.1</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> is <strong>not optional</strong> — see Findings §7.</p>
+</section>
+<section id="the-working-gdb-session-distroless-target">
+<h3>3. The working gdb session (distroless target)<a class="headerlink" href="#the-working-gdb-session-distroless-target" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>victim<span class="w"> </span>-c<span class="w"> </span>dbg0<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;</span>
+<span class="s1">cat &gt; /tmp/dbg.gdb &lt;&lt;EOF</span>
+<span class="s1">set confirm off</span>
+<span class="s1">set pagination off</span>
+<span class="s1">set sysroot /proc/1/root</span>
+<span class="s1">directory /proc/1/root</span>
+<span class="s1">add-auto-load-safe-path /proc/1/root</span>
+<span class="s1">set debuginfod enabled on</span>
+<span class="s1">file /proc/1/root/app/victim</span>
+<span class="s1">attach 1</span>
+<span class="s1">break compute</span>
+<span class="s1">continue</span>
+<span class="s1">bt</span>
+<span class="s1">list</span>
+<span class="s1">info sharedlibrary</span>
+<span class="s1">detach</span>
+<span class="s1">EOF</span>
+<span class="s1">DEBUGINFOD_URLS=https://debuginfod.debian.net gdb -q -batch -x /tmp/dbg.gdb&#39;</span>
+</pre></div>
+</div>
+<p>Observed output (abridged, this is the PASS evidence):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Downloading</span> <span class="n">separate</span> <span class="n">debug</span> <span class="n">info</span> <span class="k">for</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">597</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span><span class="o">...</span>
+<span class="p">[</span><span class="n">Thread</span> <span class="n">debugging</span> <span class="n">using</span> <span class="n">libthread_db</span> <span class="n">enabled</span><span class="p">]</span>
+<span class="n">Breakpoint</span> <span class="mi">1</span> <span class="n">at</span> <span class="mh">0x575fbad351f4</span><span class="p">:</span> <span class="n">file</span> <span class="n">victim</span><span class="o">.</span><span class="n">c</span><span class="p">,</span> <span class="n">line</span> <span class="mf">19.</span>
+
+<span class="n">Breakpoint</span> <span class="mi">1</span><span class="p">,</span> <span class="n">compute</span> <span class="p">(</span><span class="n">n</span><span class="o">=</span><span class="mi">23</span><span class="p">,</span> <span class="n">w</span><span class="o">=</span><span class="mh">0x7ffc633f7600</span><span class="p">)</span> <span class="n">at</span> <span class="n">victim</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">19</span>
+<span class="mi">19</span>	  <span class="n">w</span><span class="o">-&gt;</span><span class="nb">id</span> <span class="o">=</span> <span class="n">n</span><span class="p">;</span>
+<span class="c1">#0  compute (n=23, w=0x7ffc633f7600) at victim.c:19</span>
+<span class="c1">#1  0x0000575fbad35297 in outer_loop () at victim.c:31</span>
+<span class="c1">#2  0x0000575fbad3531b in main (argc=1, argv=0x7ffc633f7778) at victim.c:42</span>
+<span class="mi">18</span>	<span class="n">static</span> <span class="nb">int</span> <span class="n">compute</span><span class="p">(</span><span class="nb">int</span> <span class="n">n</span><span class="p">,</span> <span class="n">struct</span> <span class="n">work</span> <span class="o">*</span><span class="n">w</span><span class="p">)</span> <span class="p">{</span>
+<span class="mi">19</span>	  <span class="n">w</span><span class="o">-&gt;</span><span class="nb">id</span> <span class="o">=</span> <span class="n">n</span><span class="p">;</span>
+<span class="mi">20</span>	  <span class="n">w</span><span class="o">-&gt;</span><span class="n">value</span> <span class="o">=</span> <span class="p">(</span><span class="n">double</span><span class="p">)</span><span class="n">n</span> <span class="o">*</span> <span class="mf">1.5</span><span class="p">;</span>
+<span class="mi">21</span>	  <span class="n">snprintf</span><span class="p">(</span><span class="n">w</span><span class="o">-&gt;</span><span class="n">label</span><span class="p">,</span> <span class="n">sizeof</span><span class="p">(</span><span class="n">w</span><span class="o">-&gt;</span><span class="n">label</span><span class="p">),</span> <span class="s2">&quot;item-</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">n</span><span class="p">);</span>
+<span class="mi">22</span>	  <span class="n">double</span> <span class="n">t</span> <span class="o">=</span> <span class="n">transform</span><span class="p">(</span><span class="n">w</span><span class="p">);</span>
+<span class="mi">23</span>	  <span class="k">return</span> <span class="p">(</span><span class="nb">int</span><span class="p">)</span><span class="n">t</span><span class="p">;</span>
+<span class="n">From</span>                <span class="n">To</span>                  <span class="n">Syms</span> <span class="n">Read</span>   <span class="n">Shared</span> <span class="n">Object</span> <span class="n">Library</span>
+<span class="mi">0</span><span class="n">x</span><span class="o">...</span>  <span class="mi">0</span><span class="n">x</span><span class="o">...</span>  <span class="n">Yes</span>  <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">597</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libm</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="mi">0</span><span class="n">x</span><span class="o">...</span>  <span class="mi">0</span><span class="n">x</span><span class="o">...</span>  <span class="n">Yes</span>  <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">597</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="mi">0</span><span class="n">x</span><span class="o">...</span>  <span class="mi">0</span><span class="n">x</span><span class="o">...</span>  <span class="n">Yes</span>  <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">597</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib64</span><span class="o">/</span><span class="n">ld</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">x86</span><span class="o">-</span><span class="mf">64.</span><span class="n">so</span><span class="mf">.2</span>
+</pre></div>
+</div>
+<p>All three requirements met: libraries resolve under <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, backtrace
+has function names + args, breakpoint HITS and prints source lines.</p>
+</section>
+<section id="target-pid-discovery-robust-form">
+<h3>4. Target-PID discovery (robust form)<a class="headerlink" href="#target-pid-discovery-robust-form" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># client side: get the target container&#39;s runtime ID</span>
+<span class="nv">ID</span><span class="o">=</span><span class="k">$(</span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span>get<span class="w"> </span>pod<span class="w"> </span>victim<span class="w"> </span><span class="se">\</span>
+<span class="w">      </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.status.containerStatuses[?(@.name==&quot;victim&quot;)].containerID}&#39;</span><span class="k">)</span>
+<span class="nv">ID</span><span class="o">=</span><span class="si">${</span><span class="nv">ID</span><span class="p">#*://</span><span class="si">}</span><span class="w">      </span><span class="c1"># strip containerd://</span>
+
+<span class="c1"># in the debug container: match it against /proc/&lt;pid&gt;/cgroup</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s3<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>victim<span class="w"> </span>-c<span class="w"> </span>dbg0<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">for p in \$(ls /proc|grep -E &#39;^[0-9]+\$&#39;); do</span>
+<span class="s2">  cg=\$(cat /proc/\$p/cgroup 2&gt;/dev/null) || continue</span>
+<span class="s2">  case \&quot;\$cg\&quot; in *</span><span class="nv">$ID</span><span class="s2">*) echo \&quot;\$p \$(tr &#39;\0&#39; &#39; &#39; &lt;/proc/\$p/cmdline)\&quot;;; esac</span>
+<span class="s2">done&quot;</span>
+<span class="c1"># TARGET 597 /app/victim</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="findings">
+<h2>Findings<a class="headerlink" href="#findings" title="Link to this heading">#</a></h2>
+<section id="cap-sys-ptrace-does-override-yama-ptrace-scope-1-confirmed-empirically">
+<h3>1. CAP_SYS_PTRACE <strong>does</strong> override Yama <code class="docutils literal notranslate"><span class="pre">ptrace_scope=1</span></code> — confirmed empirically<a class="headerlink" href="#cap-sys-ptrace-does-override-yama-ptrace-scope-1-confirmed-empirically" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">/proc/sys/kernel/yama/ptrace_scope</span></code> is <code class="docutils literal notranslate"><span class="pre">1</span></code> on nuc2. gdb attached to a
+<strong>non-descendant</strong> process (PID 1 of a different container, not a child of gdb)
+with only <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> and succeeded. Negative control with
+<code class="docutils literal notranslate"><span class="pre">--profile=legacy</span></code> (no <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> at all, <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">00000000a80425fb</span></code>,
+bit 19 clear):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ dd if=/proc/1/mem bs=1 count=1 skip=...
+dd: failed to open &#39;/proc/1/mem&#39;: Permission denied
+</pre></div>
+</div>
+<p>vs. with <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>: <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">byte</span> <span class="pre">copied</span></code>. So Yama scope 1 is a real gate and
+<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> is exactly the thing that lifts it. <strong>No node sysctl change is
+needed</strong>, and none was made.</p>
+<p>Note that <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> traversal still works <em>without</em> <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>
+(same uid 0, same user namespace) — only <code class="docutils literal notranslate"><span class="pre">ptrace</span></code>/<code class="docutils literal notranslate"><span class="pre">/proc/pid/mem</span></code> need the cap.
+Read-only filesystem inspection of a distroless target therefore needs no
+special capability at all.</p>
+</section>
+<section id="profile-general-already-adds-sys-ptrace-the-custom-file-is-redundant">
+<h3>2. <code class="docutils literal notranslate"><span class="pre">--profile=general</span></code> already adds <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>; the <code class="docutils literal notranslate"><span class="pre">--custom</span></code> file is redundant<a class="headerlink" href="#profile-general-already-adds-sys-ptrace-the-custom-file-is-redundant" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">--custom</span></code> JSON was applied, but so was the profile’s own. Even the
+container I created <em>without</em> <code class="docutils literal notranslate"><span class="pre">--custom</span></code> came out with the cap:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl -n podbench-s3 get pod victim-ubuntu \
+    -o jsonpath=&#39;{range .spec.ephemeralContainers[*]}{.name}: {.securityContext}{&quot;\n&quot;}{end}&#39;
+dbg0:    {&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}}
+nocap:   {&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}}     &lt;- --profile=general only, no --custom
+dbgadm:  {&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;,&quot;SYS_ADMIN&quot;]}}
+legacy0:                                              &lt;- --profile=legacy, empty
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--custom</span></code> <strong>merges into</strong> the profile rather than replacing it.</p>
+</section>
+<section id="without-set-sysroot-gdb-13-does-not-silently-use-the-wrong-libs-it-fails-hard-with-eperm">
+<h3>3. Without <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code>, gdb 13 does not silently use the wrong libs — it fails hard with EPERM<a class="headerlink" href="#without-set-sysroot-gdb-13-does-not-silently-use-the-wrong-libs-it-fails-hard-with-eperm" title="Link to this heading">#</a></h3>
+<p>gdb’s default is <code class="docutils literal notranslate"><span class="pre">sysroot</span> <span class="pre">=</span> <span class="pre">&quot;target:&quot;</span></code>, not <code class="docutils literal notranslate"><span class="pre">/</span></code>. On a native Linux ptrace target
+with only <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> this produces:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>warning: &quot;target:/app/victim&quot;: could not open as an executable file: Operation not permitted.
+warning: `target:/app/victim&#39;: can&#39;t open to read symbols: Operation not permitted.
+warning: Could not load vsyscall page because no executable was specified
+0x000076694f49b503 in ?? ()
+Error reading attached process&#39;s symbol file.
+: No such file or directory.
+Error while mapping shared library sections:
+Could not open `target:/lib/x86_64-linux-gnu/libc.so.6&#39; as an executable file: Operation not permitted
+From    To    Syms Read   Shared Object Library
+                  No      /lib/x86_64-linux-gnu/libm.so.6
+                  No      /lib/x86_64-linux-gnu/libc.so.6
+                  No      /lib64/ld-linux-x86-64.so.2
+#0  0x000076694f49b503 in ?? ()
+#1  0x000076694f49fe53 in ?? ()
+#2  0x0000000000000000 in ?? ()
+</pre></div>
+</div>
+<p><strong>Root cause, proven:</strong> gdb’s <code class="docutils literal notranslate"><span class="pre">target:</span></code> file access uses
+<code class="docutils literal notranslate"><span class="pre">linux_mntns_access_fs()</span></code> → <code class="docutils literal notranslate"><span class="pre">setns(CLONE_NEWNS)</span></code> into the inferior’s mount
+namespace, which requires <strong><code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code></strong>, not <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>. I added an
+ephemeral container with both caps (<code class="docutils literal notranslate"><span class="pre">dbgadm</span></code>) and the <em>default</em> sysroot then
+works with zero configuration:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mh">0x000077f6377dcb7a</span> <span class="ow">in</span> <span class="n">clock_nanosleep</span> <span class="p">()</span> <span class="kn">from</span><span class="w"> </span><span class="nn">target</span><span class="p">:</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="c1">#3  0x00005c459789e35c in outer_loop () at victim.c:35</span>
+<span class="c1">#4  0x00005c459789e3a1 in main (argc=1, argv=0x7ffc6f735c98) at victim.c:42</span>
+</pre></div>
+</div>
+<p>…but it also breaks libthread_db (<code class="docutils literal notranslate"><span class="pre">warning:</span> <span class="pre">Expected</span> <span class="pre">absolute</span> <span class="pre">pathname</span> <span class="pre">for</span> <span class="pre">libpthread</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">inferior,</span> <span class="pre">but</span> <span class="pre">got</span> <span class="pre">target:/lib/...</span></code>) and <code class="docutils literal notranslate"><span class="pre">SYS_ADMIN</span></code> is a
+container-escape-adjacent privilege that any restricted PodSecurity policy will
+reject. <strong>Recommendation: stay on <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> + explicit
+<code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code>.</strong></p>
+</section>
+<section id="the-real-wrong-symbols-failure-mode-needs-a-version-skewed-debug-image">
+<h3>4. The <em>real</em> wrong-symbols failure mode needs a version-skewed debug image<a class="headerlink" href="#the-real-wrong-symbols-failure-mode-needs-a-version-skewed-debug-image" title="Link to this heading">#</a></h3>
+<p>This is the key doc example, and it is subtler than the brief assumed. With
+<code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/</span></code> (debug image = <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code>, glibc 2.36) against a
+<strong>Debian 12 distroless</strong> target, the backtrace comes out <em>correct</em> — because the
+two glibcs are byte-identical (same build-id <code class="docutils literal notranslate"><span class="pre">93ac61ec…</span></code>). The bug is silent.</p>
+<p>Against <code class="docutils literal notranslate"><span class="pre">ubuntu:24.04</span></code> (glibc 2.39) it is loud and wrong:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>### WRONG: set sysroot /
+warning: .dynamic section for &quot;/lib/x86_64-linux-gnu/libc.so.6&quot; is not at the expected address (wrong library or version mismatch?)
+warning: Unable to find libthread_db matching inferior&#39;s thread library, thread debugging will not be available.
+0x000077f6377dcb7a in wcsxfrm_l () from /lib/x86_64-linux-gnu/libc.so.6
+#0  0x000077f6377dcb7a in wcsxfrm_l () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x000077f6377e9b27 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00005c459789e35f in outer_loop () at victim.c:29
+#3  0x000077f63771a28b in ?? ()
+#4  0x00007ffc6f735ca8 in ?? ()
+#5  0x00005c45978a0d80 in __frame_dummy_init_array_entry ()
+#6  0x00007ffc6f735ca8 in ?? ()
+#7  0x00005c459789e35f in outer_loop () at victim.c:29
+#8  0x00005c459789e145 in _start ()
+
+### RIGHT: set sysroot /proc/1/root
+0x000077f6377dcb7a in clock_nanosleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#0  0x000077f6377dcb7a in clock_nanosleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#1  0x000077f6377e9b27 in nanosleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#2  0x000077f6377fed93 in sleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#3  0x00005c459789e35c in outer_loop () at victim.c:35
+#4  0x00005c459789e3a1 in main (argc=1, argv=0x7ffc6f735c98) at victim.c:42
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">clock_nanosleep</span></code> is reported as <strong><code class="docutils literal notranslate"><span class="pre">wcsxfrm_l</span></code></strong>, frames are duplicated and
+interleaved with garbage, and even the user-code line number is wrong
+(<code class="docutils literal notranslate"><span class="pre">victim.c:29</span></code> instead of <code class="docutils literal notranslate"><span class="pre">:35</span></code>). Use <em>this</em> pair as the documentation example —
+it is exactly what a user sees when the debug image drifts from the target.</p>
+</section>
+<section id="set-sysroot-does-not-cover-source-lookup">
+<h3>5. <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> does <strong>not</strong> cover source lookup<a class="headerlink" href="#set-sysroot-does-not-cover-source-lookup" title="Link to this heading">#</a></h3>
+<p>Even with a correct sysroot and the source file physically present in the target
+rootfs at <code class="docutils literal notranslate"><span class="pre">/app/src/victim.c</span></code>, gdb reports:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Breakpoint</span> <span class="mi">1</span><span class="p">,</span> <span class="n">compute</span> <span class="p">(</span><span class="n">n</span><span class="o">=</span><span class="mi">71</span><span class="p">,</span> <span class="n">w</span><span class="o">=</span><span class="mh">0x7ffd5f9c54c0</span><span class="p">)</span> <span class="n">at</span> <span class="n">victim</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">19</span>
+<span class="mi">19</span>	<span class="n">victim</span><span class="o">.</span><span class="n">c</span><span class="p">:</span> <span class="n">No</span> <span class="n">such</span> <span class="n">file</span> <span class="ow">or</span> <span class="n">directory</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>Function names, args and locals are all correct — only the <em>source text</em> is
+missing. <code class="docutils literal notranslate"><span class="pre">sysroot</span></code> is applied to shared-object and separate-debuginfo lookup
+only. Three fixes tested:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>approach</p></th>
+<th class="head"><p>works?</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code> fullname</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/1/root/app/src</span></code> (exact <code class="docutils literal notranslate"><span class="pre">DW_AT_comp_dir</span></code> under sysroot)</p></td>
+<td><p>yes</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/1/root/app/src/victim.c</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">substitute-path</span> <span class="pre">/app/src</span> <span class="pre">/proc/1/root/app/src</span></code></p></td>
+<td><p>yes</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/1/root/app/src/victim.c</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><strong><code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/1/root</span></code></strong> (generic, no comp_dir knowledge needed)</p></td>
+<td><p><strong>yes</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/1/root/app/src/victim.c</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">substitute-path</span> <span class="pre">/</span> <span class="pre">/proc/1/root/</span></code> (generic)</p></td>
+<td><p>yes, but</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root/proc/1/root/proc/1/root/app/src/victim.c</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The last one <em>functions</em> (the recursive path happens to resolve, because
+<code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root</span></code> is a fixed point) but gdb re-applies the substitution
+on display and emits an absurd fullname. That fullname is what a DAP client
+hands to the editor, so <strong>do not use the generic <code class="docutils literal notranslate"><span class="pre">substitute-path</span></code> form</strong>. Use
+<code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> — one line, no <code class="docutils literal notranslate"><span class="pre">comp_dir</span></code> knowledge, clean fullname.</p>
+</section>
+<section id="ordering-set-sysroot-must-precede-attach-or-you-must-re-file-after">
+<h3>6. Ordering: <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> <strong>must</strong> precede <code class="docutils literal notranslate"><span class="pre">attach</span></code> (or you must re-<code class="docutils literal notranslate"><span class="pre">file</span></code> after)<a class="headerlink" href="#ordering-set-sysroot-must-precede-attach-or-you-must-re-file-after" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>order</p></th>
+<th class="head"><p>libs</p></th>
+<th class="head"><p>main executable / user frames</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> → <code class="docutils literal notranslate"><span class="pre">file</span></code> → <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>correct</p></td>
+<td><p>correct</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code> → <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code></p></td>
+<td><p>fixed up on the fly (<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">sharedlibrary</span></code> shows <code class="docutils literal notranslate"><span class="pre">/proc/1/root/…</span></code>)</p></td>
+<td><p><strong>broken</strong>: <code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">reading</span> <span class="pre">attached</span> <span class="pre">process's</span> <span class="pre">symbol</span> <span class="pre">file.</span></code> and frames <code class="docutils literal notranslate"><span class="pre">#3</span> <span class="pre">0x…</span> <span class="pre">in</span> <span class="pre">??</span> <span class="pre">()</span></code>, <code class="docutils literal notranslate"><span class="pre">#5</span> <span class="pre">0x405d400000000000</span> <span class="pre">in</span> <span class="pre">??</span> <span class="pre">()</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code> → <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> → <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">&lt;root&gt;&lt;exe&gt;</span></code> → <code class="docutils literal notranslate"><span class="pre">sharedlibrary</span></code></p></td>
+<td><p>correct</p></td>
+<td><p>correct (recovers)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>So <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> after <code class="docutils literal notranslate"><span class="pre">attach</span></code> repairs <em>libraries</em> but not the <em>main
+executable’s</em> symbol file — you get a plausible-looking libc backtrace with
+total garbage above it. Set it before <code class="docutils literal notranslate"><span class="pre">attach</span></code>, and explicitly <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root$(readlink</span> <span class="pre">/proc/&lt;pid&gt;/exe)</span></code> before <code class="docutils literal notranslate"><span class="pre">attach</span></code> too.</p>
+</section>
+<section id="auto-load-safe-path-bites-but-only-once-the-sysroot-is-set">
+<h3>7. <code class="docutils literal notranslate"><span class="pre">auto-load</span> <span class="pre">safe-path</span></code> bites, but only once the sysroot is set<a class="headerlink" href="#auto-load-safe-path-bites-but-only-once-the-sysroot-is-set" title="Link to this heading">#</a></h3>
+<p>With <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code>, gdb tries to auto-load the <em>target’s</em>
+<code class="docutils literal notranslate"><span class="pre">libthread_db.so.1</span></code> and is refused by the default safe-path
+(<code class="docutils literal notranslate"><span class="pre">$debugdir:$datadir/auto-load</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>warning: File &quot;/usr/lib/x86_64-linux-gnu/libthread_db.so.1&quot; auto-loading has been
+declined by your `auto-load safe-path&#39; set to &quot;$debugdir:$datadir/auto-load&quot;.
+warning: Unable to find libthread_db matching inferior&#39;s thread library,
+thread debugging will not be available.
+</pre></div>
+</div>
+<p>Losing <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> means no <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code>, no per-thread backtraces — fatal
+for any real multithreaded workload. Fix (narrow, not <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">auto-load</span> <span class="pre">safe-path</span> <span class="pre">/</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">add</span><span class="o">-</span><span class="n">auto</span><span class="o">-</span><span class="n">load</span><span class="o">-</span><span class="n">safe</span><span class="o">-</span><span class="n">path</span> <span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span>
+</pre></div>
+</div>
+<p>After which:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>[Thread debugging using libthread_db enabled]
+Using host libthread_db library &quot;/proc/1/root/lib/x86_64-linux-gnu/libthread_db.so.1&quot;.
+  Id   Target Id                              Frame
+* 1    Thread 0x77f6376ed740 (LWP 1) &quot;victim&quot; 0x… in clock_nanosleep () from /proc/1/root/…
+</pre></div>
+</div>
+<p>gdb did <strong>not</strong> refuse the <code class="docutils literal notranslate"><span class="pre">/proc/...</span></code> path for any other reason — no complaints
+about <code class="docutils literal notranslate"><span class="pre">/proc</span></code> being non-canonical, and <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/1/root/app/victim</span></code> was accepted.</p>
+</section>
+<section id="debuginfod-symbols-yes-sources-no-this-contradicts-the-brief">
+<h3>8. debuginfod: symbols YES, <strong>sources NO</strong> — this contradicts the brief<a class="headerlink" href="#debuginfod-symbols-yes-sources-no-this-contradicts-the-brief" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS=https://debuginfod.debian.net</span></code> works and is genuinely useful:
+attaching to a stripped <code class="docutils literal notranslate"><span class="pre">/bin/sleep</span></code> (Debian coreutils 9.1) produced a fully
+symbolised, source-line-annotated backtrace across coreutils <em>and</em> glibc:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Downloading</span> <span class="n">separate</span> <span class="n">debug</span> <span class="n">info</span> <span class="k">for</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="nb">bin</span><span class="o">/</span><span class="n">sleep</span><span class="o">...</span>
+<span class="n">Downloading</span> <span class="n">separate</span> <span class="n">debug</span> <span class="n">info</span> <span class="k">for</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span><span class="o">...</span>
+<span class="c1">#0  __GI___clock_nanosleep (clock_id=0, flags=0, req=0x7ffe06ced790, rem=0x7ffe06ced7d0)</span>
+        <span class="n">at</span> <span class="o">../</span><span class="n">sysdeps</span><span class="o">/</span><span class="n">unix</span><span class="o">/</span><span class="n">sysv</span><span class="o">/</span><span class="n">linux</span><span class="o">/</span><span class="n">clock_nanosleep</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">71</span>
+<span class="c1">#1  0x… in __GI___nanosleep (req=…, rem=…) at ../sysdeps/unix/sysv/linux/nanosleep.c:25</span>
+<span class="c1">#2  0x… in rpl_nanosleep (requested_delay=…, remaining_delay=…) at lib/nanosleep.c:83</span>
+<span class="c1">#3  0x… in xnanosleep (seconds=seconds@entry=100000) at lib/xnanosleep.c:69</span>
+<span class="c1">#4  0x… in main (argc=&lt;optimized out&gt;, argv=&lt;optimized out&gt;) at src/sleep.c:142</span>
+</pre></div>
+</div>
+<p>It also works <strong>through the sysroot</strong> — gdb reads the build-id from
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/lib/...</span></code> and fetches matching debuginfo, including for
+<code class="docutils literal notranslate"><span class="pre">gcr.io/distroless/cc-debian12</span></code> libraries (distroless ships the same Debian 12
+libc, build-id <code class="docutils literal notranslate"><span class="pre">93ac61ec5a8eb1396f9fbd350e3169a558528a40</span></code>; <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">sharedlibrary</span></code>
+then shows <code class="docutils literal notranslate"><span class="pre">Syms</span> <span class="pre">Read:</span> <span class="pre">Yes</span></code> with no <code class="docutils literal notranslate"><span class="pre">(*)</span></code>).</p>
+<p><strong>But every source fetch failed:</strong></p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Download</span> <span class="n">failed</span><span class="p">:</span> <span class="n">Invalid</span> <span class="n">argument</span><span class="o">.</span>  <span class="n">Continuing</span> <span class="n">without</span> <span class="n">source</span> <span class="n">file</span> <span class="o">./</span><span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span><span class="o">.</span>
+<span class="mi">142</span>	<span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span><span class="p">:</span> <span class="n">Inappropriate</span> <span class="n">ioctl</span> <span class="k">for</span> <span class="n">device</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>Diagnosed to the bottom. Two independent causes, both fatal:</p>
+<ol class="arabic">
+<li><p>Debian builds its <code class="docutils literal notranslate"><span class="pre">-dbgsym</span></code> packages with <code class="docutils literal notranslate"><span class="pre">DW_AT_comp_dir</span> <span class="pre">=</span> <span class="pre">&quot;.&quot;</span></code>
+(reproducible-builds path normalisation). Confirmed directly on the
+downloaded dbgsym:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ readelf --debug-dump=info ~/.cache/debuginfod_client/e3103c…/debuginfo | grep DW_AT_comp_dir
+    &lt;11&gt;   DW_AT_comp_dir : (indirect line string, offset: 0xc): .
+</pre></div>
+</div>
+<p>The debuginfod protocol requires an <strong>absolute</strong> source path
+(<code class="docutils literal notranslate"><span class="pre">debuginfod-find</span></code>: <code class="docutils literal notranslate"><span class="pre">If</span> <span class="pre">FILETYPE</span> <span class="pre">is</span> <span class="pre">&quot;source&quot;</span> <span class="pre">then</span> <span class="pre">absolute</span> <span class="pre">/FILENAME</span> <span class="pre">must</span> <span class="pre">be</span> <span class="pre">given</span></code>), so gdb’s <code class="docutils literal notranslate"><span class="pre">./src/sleep.c</span></code> is rejected client-side with <code class="docutils literal notranslate"><span class="pre">EINVAL</span></code> →
+<code class="docutils literal notranslate"><span class="pre">&quot;Invalid</span> <span class="pre">argument&quot;</span></code>.</p>
+</li>
+<li><p>Even given an absolute path, <strong>the server has no sources</strong>. Direct probes:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">debuginfod</span><span class="o">.</span><span class="n">debian</span><span class="o">.</span><span class="n">net</span><span class="o">/</span><span class="n">buildid</span><span class="o">/&lt;</span><span class="n">bid</span><span class="o">&gt;/</span><span class="n">debuginfo</span>            <span class="o">-&gt;</span> <span class="mi">200</span>
+<span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">debuginfod</span><span class="o">.</span><span class="n">debian</span><span class="o">.</span><span class="n">net</span><span class="o">/</span><span class="n">buildid</span><span class="o">/&lt;</span><span class="n">bid</span><span class="o">&gt;/</span><span class="n">source</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span>   <span class="o">-&gt;</span> <span class="mi">404</span>
+<span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">debuginfod</span><span class="o">.</span><span class="n">elfutils</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">buildid</span><span class="o">/&lt;</span><span class="n">bid</span><span class="o">&gt;/</span><span class="n">debuginfo</span>          <span class="o">-&gt;</span> <span class="mi">200</span>
+<span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">debuginfod</span><span class="o">.</span><span class="n">elfutils</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">buildid</span><span class="o">/&lt;</span><span class="n">bid</span><span class="o">&gt;/</span><span class="n">source</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span> <span class="o">-&gt;</span> <span class="mi">404</span>
+</pre></div>
+</div>
+<p>Same for glibc under every plausible path form
+(<code class="docutils literal notranslate"><span class="pre">/usr/src/glibc/…</span></code>, <code class="docutils literal notranslate"><span class="pre">/build/glibc-…/…</span></code>, <code class="docutils literal notranslate"><span class="pre">/sysdeps/…</span></code>) — all
+<code class="docutils literal notranslate"><span class="pre">Server</span> <span class="pre">query</span> <span class="pre">failed:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code>. The federated
+<code class="docutils literal notranslate"><span class="pre">debuginfod.elfutils.org</span></code> does not help for Debian build-ids.</p>
+</li>
+</ol>
+<p>Cache footprint after fetching debuginfo for coreutils + glibc + ld.so:
+<code class="docutils literal notranslate"><span class="pre">4.7M</span> <span class="pre">/root/.cache/debuginfod_client</span></code> (glibc alone is 4.0M).</p>
+<p><strong>Also required: <code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code>.</strong> <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> ships none, and
+<code class="docutils literal notranslate"><span class="pre">libdebuginfod</span></code> fails the HTTPS handshake <strong>silently</strong> — <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">debuginfod</span> <span class="pre">enabled</span> <span class="pre">on</span></code> simply produces no <code class="docutils literal notranslate"><span class="pre">Downloading…</span></code> lines and every library shows
+<code class="docutils literal notranslate"><span class="pre">(*)</span> <span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code>. Reproduced:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ curl -sS .../debuginfo ; echo $?
+curl: (77) error setting certificate file: /etc/ssl/certs/ca-certificates.crt
+000
+$ apt-get install -y ca-certificates &amp;&amp; curl -s -o /dev/null -w &#39;%{http_code}\n&#39; .../debuginfo
+200
+</pre></div>
+</div>
+</section>
+<section id="identifying-the-target-pid-three-rules-only-one-is-correct">
+<h3>9. Identifying the target PID: three rules, only one is correct<a class="headerlink" href="#identifying-the-target-pid-three-rules-only-one-is-correct" title="Link to this heading">#</a></h3>
+<p>The debug container’s own processes share the target’s PID namespace, so
+<code class="docutils literal notranslate"><span class="pre">/proc</span></code> is polluted. Rules tested:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>rule</p></th>
+<th class="head"><p>verdict</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>“target is PID 1”</p></td>
+<td><p>works only for the simple case; <strong>wrong</strong> under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code>, where PID 1 is <code class="docutils literal notranslate"><span class="pre">/pause</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span> <span class="pre">!=</span> <span class="pre">&quot;0::/&quot;</span></code></p></td>
+<td><p>excludes <em>my</em> processes (cgroup-namespace root reads as <code class="docutils literal notranslate"><span class="pre">0::/</span></code>) but <strong>includes every <em>other</em> ephemeral debug container’s</strong> processes. Observed on <code class="docutils literal notranslate"><span class="pre">victim-ubuntu</span></code> with 4 debug containers: 3 spurious <code class="docutils literal notranslate"><span class="pre">sleep</span> <span class="pre">infinity</span></code> “targets”</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/ns/mnt</span> <span class="pre">==</span> <span class="pre">/proc/1/ns/mnt</span></code></p></td>
+<td><p>exact on a normal pod; <strong>fails completely</strong> under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> (pause has its own mount ns, nothing matches)</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span></code> contains the target container’s runtime ID</strong></p></td>
+<td><p><strong>correct in all cases</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Evidence for the last one, on <code class="docutils literal notranslate"><span class="pre">victim-sps</span></code> (<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>1    0::/../cri-containerd-d5daaa53…scope   /pause
+597  0::/../cri-containerd-87d20e23…scope   /app/victim      &lt;- target containerID
+603  0::/../cri-containerd-7206c89b…scope   /bin/sleep 100000
+609  0::/                                   sleep infinity   &lt;- my own
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">87d20e23…</span></code> is exactly
+<code class="docutils literal notranslate"><span class="pre">.status.containerStatuses[?(&#64;.name==&quot;victim&quot;)].containerID</span></code> with the
+<code class="docutils literal notranslate"><span class="pre">containerd://</span></code> scheme stripped. Note that on k3s/containerd the in-container
+cgroup path is <strong>relative</strong> (<code class="docutils literal notranslate"><span class="pre">0::/../cri-containerd-&lt;id&gt;.scope</span></code>) because the
+ephemeral container gets its own cgroup namespace — substring matching on the ID
+is the portable form, not path equality.</p>
+<p>Processes <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>’d into the target container are correctly picked up too
+(a <code class="docutils literal notranslate"><span class="pre">/bin/sleep</span> <span class="pre">400</span></code> exec’d into <code class="docutils literal notranslate"><span class="pre">victim-ubuntu</span></code>’s target container appeared with
+the target’s cgroup, PID 1347 — not PID 1, not a child of PID 1).</p>
+</section>
+</section>
+<section id="deviations-from-the-brief">
+<h2>Deviations from the brief<a class="headerlink" href="#deviations-from-the-brief" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p><strong>debuginfod does NOT provide sources for Debian binaries.</strong> The brief “leans
+heavily” on this for Observe mode’s disk budget. It is false on Debian (and on
+the federated elfutils server) for two independent reasons: <code class="docutils literal notranslate"><span class="pre">DW_AT_comp_dir=&quot;.&quot;</span></code>
+makes gdb’s query malformed, and the server 404s on <code class="docutils literal notranslate"><span class="pre">/source/…</span></code> anyway.
+Symbols do come down (4.7 MB for a coreutils + glibc session), so debuginfod
+is still worth wiring up — but any plan that assumes <em>source text</em> arrives
+over the wire needs rethinking. Fedora/RHEL debuginfod is known to serve
+sources; Debian/Ubuntu-based targets will not. Podbench must ship a
+source-provisioning story (source in the target image, a source sidecar
+volume, or client-side source mapping to the developer’s checkout).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--custom</span></code> with <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> is redundant.</strong> <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--profile=general</span></code>
+already adds <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>. Podbench can drop the custom-profile file
+entirely (one less flag, one less temp file) unless it wants caps the profile
+does not grant.</p></li>
+<li><p><strong>The “no sysroot” failure mode is not “wrong symbols from the debug image”.</strong>
+gdb 13’s default sysroot is <code class="docutils literal notranslate"><span class="pre">target:</span></code>, not <code class="docutils literal notranslate"><span class="pre">/</span></code>, so the no-sysroot case fails
+<em>loudly</em> with <code class="docutils literal notranslate"><span class="pre">Operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> and <code class="docutils literal notranslate"><span class="pre">??</span> <span class="pre">()</span></code> everywhere. The
+wrong-symbols mode requires <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/</span></code> <strong>and</strong> a version-skewed debug
+image. Docs should show both, and should note that a matched-distro debug
+image hides the bug entirely (Debian-12-debug vs Debian-12-distroless gave a
+correct backtrace with <code class="docutils literal notranslate"><span class="pre">sysroot</span> <span class="pre">/</span></code>).</p></li>
+<li><p><strong>A hidden alternative exists: <code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code> makes gdb’s default <code class="docutils literal notranslate"><span class="pre">target:</span></code>
+sysroot work with zero configuration.</strong> Worth knowing, worth rejecting.
+It costs a container-escape-adjacent capability and breaks <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code>.
+Document it as an anti-pattern so nobody rediscovers it.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> alone is insufficient for source-level debugging</strong> — the brief
+treats sysroot as the whole fix. Three more lines are mandatory:
+<code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code>, and
+an explicit <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root$(readlink</span> <span class="pre">/proc/&lt;pid&gt;/exe)</span></code> before <code class="docutils literal notranslate"><span class="pre">attach</span></code>.</p></li>
+<li><p><strong>“The target PID will not necessarily be PID 1” is right, but the fix the
+brief implies (scan <code class="docutils literal notranslate"><span class="pre">/proc</span></code>) is not enough.</strong> Ephemeral containers are
+<em>mutually visible</em> in the shared PID namespace, so a second podbench session
+attached to the same pod pollutes the process list. Discovery must key off the
+target container’s runtime ID from the pod status, which means podbench needs
+to pass that ID into the container (env var at <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code> time).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> must be in the podbench image.</strong> Not mentioned in the
+brief; without it debuginfod fails silently rather than erroring, which will
+read to users as “debuginfod doesn’t work in podbench”.</p></li>
+</ol>
+</section>
+<section id="recommendations-for-implementation">
+<h2>Recommendations for implementation<a class="headerlink" href="#recommendations-for-implementation" title="Link to this heading">#</a></h2>
+<section id="the-dbg-helper-tested-end-to-end-exactly-as-written">
+<h3>The <code class="docutils literal notranslate"><span class="pre">dbg</span></code> helper (tested end-to-end, exactly as written)<a class="headerlink" href="#the-dbg-helper-tested-end-to-end-exactly-as-written" title="Link to this heading">#</a></h3>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/bin/sh</span>
+<span class="c1"># /usr/local/bin/dbg — podbench: attach gdb to a process in the TARGET container</span>
+<span class="c1"># usage: dbg &lt;pid&gt; [extra gdb args...]</span>
+<span class="nb">set</span><span class="w"> </span>-eu
+<span class="nv">PID</span><span class="o">=</span><span class="s2">&quot;</span><span class="si">${</span><span class="nv">1</span><span class="p">:?usage: dbg &lt;pid&gt; [gdb args...]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">;</span><span class="w"> </span><span class="nb">shift</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<span class="nv">ROOT</span><span class="o">=</span><span class="s2">&quot;/proc/</span><span class="nv">$PID</span><span class="s2">/root&quot;</span>
+<span class="o">[</span><span class="w"> </span>-d<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$ROOT</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dbg: no </span><span class="nv">$ROOT</span><span class="s2"> (pid gone, or wrong --target?)&quot;</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="nv">EXE</span><span class="o">=</span><span class="k">$(</span>readlink<span class="w"> </span><span class="s2">&quot;/proc/</span><span class="nv">$PID</span><span class="s2">/exe&quot;</span><span class="k">)</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dbg: cannot read /proc/</span><span class="nv">$PID</span><span class="s2">/exe&quot;</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="nv">EXE</span><span class="o">=</span><span class="si">${</span><span class="nv">EXE</span><span class="p">% (deleted)</span><span class="si">}</span>
+
+<span class="nv">INIT</span><span class="o">=</span><span class="k">$(</span>mktemp<span class="w"> </span>/tmp/podbench-dbg.XXXXXX.gdb<span class="k">)</span>
+cat<span class="w"> </span>&gt;<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$INIT</span><span class="s2">&quot;</span><span class="w"> </span><span class="s">&lt;&lt;EOF</span>
+<span class="s">set pagination off</span>
+<span class="s"># 1. shared libs + separate debuginfo come from the TARGET rootfs, not this image.</span>
+<span class="s">#    MUST be set before &#39;attach&#39;.</span>
+<span class="s">set sysroot $ROOT</span>
+<span class="s"># 2. sysroot does NOT cover source lookup. This resolves DW_AT_comp_dir paths</span>
+<span class="s">#    inside the target rootfs and keeps &#39;info source&#39; fullname sane (do NOT use</span>
+<span class="s">#    &#39;set substitute-path / $ROOT/&#39; — gdb re-applies it and emits nested paths).</span>
+<span class="s">directory $ROOT</span>
+<span class="s"># 3. libthread_db now lives under the sysroot and is refused by the default</span>
+<span class="s">#    auto-load safe-path -&gt; &quot;thread debugging will not be available&quot;.</span>
+<span class="s">add-auto-load-safe-path $ROOT</span>
+<span class="s"># 4. symbols (NOT sources) for distro-packaged binaries; needs ca-certificates.</span>
+<span class="s">set debuginfod enabled on</span>
+<span class="s"># 5. main-executable symbols MUST be loaded before attach, else gdb tries</span>
+<span class="s">#    &quot;target:$EXE&quot; and gets EPERM (that path needs CAP_SYS_ADMIN).</span>
+<span class="s">file $ROOT$EXE</span>
+<span class="s">attach $PID</span>
+<span class="s">EOF</span>
+<span class="nb">exec</span><span class="w"> </span>gdb<span class="w"> </span>-q<span class="w"> </span>-iex<span class="w"> </span><span class="s2">&quot;set confirm off&quot;</span><span class="w"> </span>-x<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$INIT</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$@</span><span class="s2">&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="the-podbench-pids-helper-use-the-container-id-form">
+<h3>The <code class="docutils literal notranslate"><span class="pre">podbench-pids</span></code> helper (use the container-ID form)<a class="headerlink" href="#the-podbench-pids-helper-use-the-container-id-form" title="Link to this heading">#</a></h3>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/bin/sh</span>
+<span class="c1"># /usr/local/bin/podbench-pids — list PIDs in the TARGET container.</span>
+<span class="c1"># PODBENCH_TARGET_CID is injected at `kubectl debug` time from</span>
+<span class="c1">#   .status.containerStatuses[?(@.name==&lt;target&gt;)].containerID  (scheme stripped).</span>
+<span class="c1"># Falls back to a cgroup-!= &quot;0::/&quot; scan, which is wrong when a second podbench</span>
+<span class="c1"># session is attached to the same pod — warn in that case.</span>
+<span class="nb">set</span><span class="w"> </span>-eu
+<span class="nv">CID</span><span class="o">=</span><span class="s2">&quot;</span><span class="si">${</span><span class="nv">PODBENCH_TARGET_CID</span><span class="k">:-</span><span class="si">}</span><span class="s2">&quot;</span>
+<span class="k">for</span><span class="w"> </span>p<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>ls<span class="w"> </span>/proc<span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-E<span class="w"> </span><span class="s1">&#39;^[0-9]+$&#39;</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span><span class="nv">cg</span><span class="o">=</span><span class="k">$(</span>cat<span class="w"> </span><span class="s2">&quot;/proc/</span><span class="nv">$p</span><span class="s2">/cgroup&quot;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="k">)</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">continue</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CID</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$cg</span><span class="s2">&quot;</span><span class="w"> </span><span class="k">in</span><span class="w"> </span>*<span class="s2">&quot;</span><span class="nv">$CID</span><span class="s2">&quot;</span>*<span class="o">)</span><span class="w"> </span><span class="p">;;</span><span class="w"> </span>*<span class="o">)</span><span class="w"> </span><span class="k">continue</span><span class="w"> </span><span class="p">;;</span><span class="w"> </span><span class="k">esac</span>
+<span class="w">  </span><span class="k">else</span>
+<span class="w">    </span><span class="o">[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$cg</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0::/&quot;</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="k">continue</span>
+<span class="w">  </span><span class="k">fi</span>
+<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;%s\t%s\t%s\n&#39;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$p</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>readlink<span class="w"> </span><span class="s2">&quot;/proc/</span><span class="nv">$p</span><span class="s2">/exe&quot;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;?&#39;</span><span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">         </span><span class="s2">&quot;</span><span class="k">$(</span>tr<span class="w"> </span><span class="s1">&#39;\0&#39;</span><span class="w"> </span><span class="s1">&#39; &#39;</span><span class="w"> </span>&lt;<span class="w"> </span><span class="s2">&quot;/proc/</span><span class="nv">$p</span><span class="s2">/cmdline&quot;</span><span class="k">)</span><span class="s2">&quot;</span>
+<span class="k">done</span>
+</pre></div>
+</div>
+<p>Launcher side:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CID</span><span class="o">=</span><span class="k">$(</span>kubectl<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$NS</span><span class="s2">&quot;</span><span class="w"> </span>get<span class="w"> </span>pod<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$POD</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">        </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s2">&quot;{.status.containerStatuses[?(@.name==\&quot;</span><span class="nv">$TARGET</span><span class="s2">\&quot;)].containerID}&quot;</span><span class="k">)</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$NS</span><span class="s2">&quot;</span><span class="w"> </span>debug<span class="w"> </span>-it<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$POD</span><span class="s2">&quot;</span><span class="w"> </span>--image<span class="o">=</span><span class="s2">&quot;</span><span class="nv">$PODBENCH_IMAGE</span><span class="s2">&quot;</span><span class="w"> </span>--target<span class="o">=</span><span class="s2">&quot;</span><span class="nv">$TARGET</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$DBGC</span><span class="s2">&quot;</span><span class="w"> </span>--profile<span class="o">=</span>general<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--env<span class="o">=</span><span class="s2">&quot;PODBENCH_TARGET_CID=</span><span class="si">${</span><span class="nv">CID</span><span class="p">#*://</span><span class="si">}</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--<span class="w"> </span>sleep<span class="w"> </span>infinity
+</pre></div>
+</div>
+</section>
+<section id="image-contents">
+<h3>Image contents<a class="headerlink" href="#image-contents" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">gdb</span></code> (13.x from Debian 12 is fine) — pulls <code class="docutils literal notranslate"><span class="pre">libpython3.11</span></code> as a dependency,
+so the image is not tiny; budget for it.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code></strong> — mandatory, or debuginfod silently no-ops.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">binutils</span></code> (<code class="docutils literal notranslate"><span class="pre">readelf</span></code>) — needed to inspect build-ids when diagnosing a
+debuginfod miss.</p></li>
+<li><p>Optionally <code class="docutils literal notranslate"><span class="pre">debuginfod</span></code> (the <code class="docutils literal notranslate"><span class="pre">debuginfod-find</span></code> CLI) for the same reason.</p></li>
+<li><p>Match the debug image’s distro/release to the <em>common</em> target base
+(Debian 12 here) so that the accidental-success case at least degrades
+gracefully, but never rely on it.</p></li>
+</ul>
+</section>
+<section id="docs">
+<h3>Docs<a class="headerlink" href="#docs" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Ship the §4 <code class="docutils literal notranslate"><span class="pre">wcsxfrm_l</span></code> transcript verbatim as the canonical “you forgot the
+sysroot” example. It is far more persuasive than a description.</p></li>
+<li><p>State plainly that sysroot fixes libraries, not sources, and that Debian
+debuginfod gives symbols but not sources.</p></li>
+<li><p>Warn that <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> after <code class="docutils literal notranslate"><span class="pre">attach</span></code> produces a <em>plausible-looking</em> wrong
+backtrace — the most dangerous failure mode found.</p></li>
+</ul>
+</section>
+<section id="not-yet-proven-follow-ups">
+<h3>Not yet proven / follow-ups<a class="headerlink" href="#not-yet-proven-follow-ups" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Only tested on <strong>amd64/nuc2</strong>. arm64 (<code class="docutils literal notranslate"><span class="pre">node01-04</span></code>) untested; distroless
+<code class="docutils literal notranslate"><span class="pre">cc-debian12</span></code> and Debian debuginfod both have arm64 coverage, but the
+build-id/dbgsym path should be re-checked there.</p></li>
+<li><p>Only a <strong>single-threaded</strong> target was exercised. <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> loaded
+correctly once <code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span></code> was set (<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code> listed the
+one LWP), but a genuinely multithreaded target should be re-tested.</p></li>
+<li><p>Not tested: gdb’s DAP/MI mode as used by the VS Code C++ extension, which is
+the path that consumes <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code>’s fullname — this is why the nested
+<code class="docutils literal notranslate"><span class="pre">substitute-path</span></code> fullname matters and should be validated in S-next.</p></li>
+<li><p>Not tested: non-root targets (<code class="docutils literal notranslate"><span class="pre">runAsUser</span> <span class="pre">!=</span> <span class="pre">0</span></code>) or targets in a user
+namespace.</p></li>
+</ul>
+</section>
+</section>
+<section id="what-was-left-behind">
+<h2>What was left behind<a class="headerlink" href="#what-was-left-behind" title="Link to this heading">#</a></h2>
+<p>Namespace <code class="docutils literal notranslate"><span class="pre">podbench-s3</span></code> remains, as instructed. Inside it:</p>
+<ul class="simple">
+<li><p><strong>All pods deleted</strong> — <code class="docutils literal notranslate"><span class="pre">victim</span></code>, <code class="docutils literal notranslate"><span class="pre">victim-ubuntu</span></code>, <code class="docutils literal notranslate"><span class="pre">victim-sps</span></code> (with their
+ephemeral debug containers <code class="docutils literal notranslate"><span class="pre">dbg0</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg1</span></code>, <code class="docutils literal notranslate"><span class="pre">nocap</span></code>, <code class="docutils literal notranslate"><span class="pre">dbgadm</span></code>, <code class="docutils literal notranslate"><span class="pre">legacy0</span></code>).
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">-n</span> <span class="pre">podbench-s3</span> <span class="pre">get</span> <span class="pre">all</span></code> → <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">resources</span> <span class="pre">found</span></code>.</p></li>
+<li><p>ConfigMap <strong><code class="docutils literal notranslate"><span class="pre">victim-src</span></code></strong> left in place (the C source used by the
+initContainers — cheap to keep, needed to re-run the spike).
+<code class="docutils literal notranslate"><span class="pre">kube-root-ca.crt</span></code> is the auto-created one.</p></li>
+</ul>
+<p>No other namespace was touched; no node-level settings were changed; no
+sysctls were modified.</p>
+<p>Local scratch files (manifests used above):
+<code class="docutils literal notranslate"><span class="pre">/tmp/claude-0/-workspaces-tpi-k3s-ansible/2c9abbf4-6c26-436d-9237-a03194fe5977/scratchpad/spikes/</span></code>
+— <code class="docutils literal notranslate"><span class="pre">target.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">victim-ubuntu.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">sps.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">ptrace-profile.json</span></code>,
+<code class="docutils literal notranslate"><span class="pre">sysadmin-profile.json</span></code>.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="s2.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">S2 — vscode-server inside an ephemeral container</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="s4.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-was-tested">What was tested</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exact-commands-that-worked">Exact commands that worked</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#namespace-target-pod-distroless-no-image-build">0. Namespace + target pod (distroless, no image build)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-the-debug-container">1. Attach the debug container</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-gdb-runtime-no-image-build">2. Install gdb (runtime, no image build)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-working-gdb-session-distroless-target">3. The working gdb session (distroless target)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#target-pid-discovery-robust-form">4. Target-PID discovery (robust form)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#findings">Findings</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cap-sys-ptrace-does-override-yama-ptrace-scope-1-confirmed-empirically">1. CAP_SYS_PTRACE <strong>does</strong> override Yama <code class="docutils literal notranslate"><span class="pre">ptrace_scope=1</span></code> — confirmed empirically</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#profile-general-already-adds-sys-ptrace-the-custom-file-is-redundant">2. <code class="docutils literal notranslate"><span class="pre">--profile=general</span></code> already adds <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>; the <code class="docutils literal notranslate"><span class="pre">--custom</span></code> file is redundant</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#without-set-sysroot-gdb-13-does-not-silently-use-the-wrong-libs-it-fails-hard-with-eperm">3. Without <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code>, gdb 13 does not silently use the wrong libs — it fails hard with EPERM</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-real-wrong-symbols-failure-mode-needs-a-version-skewed-debug-image">4. The <em>real</em> wrong-symbols failure mode needs a version-skewed debug image</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#set-sysroot-does-not-cover-source-lookup">5. <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> does <strong>not</strong> cover source lookup</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-set-sysroot-must-precede-attach-or-you-must-re-file-after">6. Ordering: <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> <strong>must</strong> precede <code class="docutils literal notranslate"><span class="pre">attach</span></code> (or you must re-<code class="docutils literal notranslate"><span class="pre">file</span></code> after)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auto-load-safe-path-bites-but-only-once-the-sysroot-is-set">7. <code class="docutils literal notranslate"><span class="pre">auto-load</span> <span class="pre">safe-path</span></code> bites, but only once the sysroot is set</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#debuginfod-symbols-yes-sources-no-this-contradicts-the-brief">8. debuginfod: symbols YES, <strong>sources NO</strong> — this contradicts the brief</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#identifying-the-target-pid-three-rules-only-one-is-correct">9. Identifying the target PID: three rules, only one is correct</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deviations-from-the-brief">Deviations from the brief</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recommendations-for-implementation">Recommendations for implementation</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-dbg-helper-tested-end-to-end-exactly-as-written">The <code class="docutils literal notranslate"><span class="pre">dbg</span></code> helper (tested end-to-end, exactly as written)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-podbench-pids-helper-use-the-container-id-form">The <code class="docutils literal notranslate"><span class="pre">podbench-pids</span></code> helper (use the container-ID form)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#image-contents">Image contents</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docs">Docs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#not-yet-proven-follow-ups">Not yet proven / follow-ups</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-was-left-behind">What was left behind</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a2/docs/explanations/spikes/s3.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../../_sources/explanations/spikes/s3.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
