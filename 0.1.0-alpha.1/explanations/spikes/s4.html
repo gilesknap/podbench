@@ -1,0 +1,1455 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>S4 — Python takeover: --copy-to dev pod, uv editable install, relaunch on the pod IP &#8212; podbench 0.1.0a1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=49b5e7b8"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=30646c52"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/spikes/s4';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder" href="s5.html" />
+    <link rel="prev" title="S3 — gdb attach with sysroot against a distroless target" href="s3.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0a1" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../design-brief.html">Podbench</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../spikes.html">Phase 0 spikes</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+</ul>
+</details></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../explanations.html" class="nav-link">Explanations</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../spikes.html" class="nav-link">Phase 0 spikes</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="s4-python-takeover-copy-to-dev-pod-uv-editable-install-relaunch-on-the-pod-ip">
+<h1>S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP<a class="headerlink" href="#s4-python-takeover-copy-to-dev-pod-uv-editable-install-relaunch-on-the-pod-ip" title="Link to this heading">#</a></h1>
+<p><strong>Verdict:</strong> PASS (with three material deviations from the brief — see <em>Deviations</em>)
+<strong>Date:</strong> 2026-08-15  (cluster: k3s v1.34.6+k3s1, kubectl v1.36.3, mixed arm64/amd64)
+<strong>Namespace:</strong> <code class="docutils literal notranslate"><span class="pre">podbench-s4</span></code> (only namespace touched)</p>
+<hr class="docutils" />
+<section id="what-was-tested">
+<h2>What was tested<a class="headerlink" href="#what-was-tested" title="Link to this heading">#</a></h2>
+<p>The whole Iterate-mode loop, end to end, against a real Deployment + Service:</p>
+<ol class="arabic simple">
+<li><p>A target <code class="docutils literal notranslate"><span class="pre">Deployment</span></code> + <code class="docutils literal notranslate"><span class="pre">Service</span></code> running a stdlib Python HTTP server on <code class="docutils literal notranslate"><span class="pre">:8080</span></code>,
+with <strong>readiness, liveness and startup probes</strong> and a ConfigMap-mounted source file.
+Proved reachable through the Service from a throwaway pod.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">pod/…</span> <span class="pre">--copy-to</span> <span class="pre">…</span> <span class="pre">--container</span> <span class="pre">app</span> <span class="pre">--</span> <span class="pre">sleep</span> <span class="pre">infinity</span></code> — and a forensic
+diff of what <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> does to <strong>probes, labels, annotations, ownerReferences,
+nodeName, resources and volumes</strong>.</p></li>
+<li><p>The <strong>Phase-4 authored-spec variant</strong>: a launcher prototype
+(<code class="docutils literal notranslate"><span class="pre">podbench_author.py</span></code>) that reads the live pod JSON, mutates it, and creates the
+dev pod itself — with a <strong>real sidecar container</strong> that has its own
+<code class="docutils literal notranslate"><span class="pre">resources</span></code>, an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> workspace, <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> and
+<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code>.</p></li>
+<li><p>Toolchain bootstrap inside the sidecar at runtime: <code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">curl</span> <span class="pre">git</span></code>,
+<code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">-LsSf</span> <span class="pre">https://astral.sh/uv/install.sh</span> <span class="pre">|</span> <span class="pre">sh</span></code>, <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">python</span> <span class="pre">install</span> <span class="pre">3.12</span></code>,
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">venv</span></code>, <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> (real editable install, hatchling pulled from PyPI).</p></li>
+<li><p>Relaunch of the app <strong>from the sidecar</strong> on the same pod port; verified the response
+arrives through the <strong>Service</strong>, not just the pod IP.</p></li>
+<li><p>Edit → relaunch → curl loop, timed.</p></li>
+<li><p>The mount-namespace warning: a <code class="docutils literal notranslate"><span class="pre">.pth</span></code> in the <em>target</em> container’s site-packages
+pointing at a path that only exists in the <em>debug</em> container.</p></li>
+<li><p>Port-conflict behaviour, including the <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> silent-split case and a
+<code class="docutils literal notranslate"><span class="pre">TIME_WAIT</span></code> case that breaks the relaunch loop for ~60 s.</p></li>
+<li><p>Timings for every phase.</p></li>
+<li><p>Before/after <code class="docutils literal notranslate"><span class="pre">resourceVersion</span></code> comparison on the original pod and Deployment.</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="exact-commands-that-worked">
+<h2>Exact commands that worked<a class="headerlink" href="#exact-commands-that-worked" title="Link to this heading">#</a></h2>
+<section id="target-workload">
+<h3>1. Target workload<a class="headerlink" href="#target-workload" title="Link to this heading">#</a></h3>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># 00-target.yaml</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ConfigMap</span>
+<span class="nt">metadata</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">app-src</span><span class="p p-Indicator">,</span><span class="nt"> namespace</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-s4</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">data</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">app.py</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">    </span><span class="no">import http.server, socketserver, os</span>
+<span class="w">    </span><span class="no">MSG = &quot;PODBENCH-ORIGINAL-v1 from %s&quot; % os.environ.get(&quot;HOSTNAME&quot;, &quot;?&quot;)</span>
+<span class="w">    </span><span class="no">class H(http.server.BaseHTTPRequestHandler):</span>
+<span class="w">        </span><span class="no">def do_GET(self):</span>
+<span class="w">            </span><span class="no">body = b&quot;ok&quot; if self.path == &quot;/healthz&quot; else MSG.encode()</span>
+<span class="w">            </span><span class="no">self.send_response(200)</span>
+<span class="w">            </span><span class="no">self.send_header(&quot;Content-Type&quot;, &quot;text/plain&quot;)</span>
+<span class="w">            </span><span class="no">self.send_header(&quot;Content-Length&quot;, str(len(body)))</span>
+<span class="w">            </span><span class="no">self.end_headers(); self.wfile.write(body)</span>
+<span class="w">        </span><span class="no">def log_message(self, *a): pass</span>
+<span class="w">    </span><span class="no">socketserver.TCPServer.allow_reuse_address = True</span>
+<span class="w">    </span><span class="no">with socketserver.TCPServer((&quot;0.0.0.0&quot;, 8080), H) as s: s.serve_forever()</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">apps/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Deployment</span>
+<span class="nt">metadata</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="p p-Indicator">,</span><span class="nt"> namespace</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-s4</span><span class="p p-Indicator">,</span><span class="nt"> labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> app</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">  </span><span class="nt">selector</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> matchLabels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> app</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">template</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">metadata</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> app</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="p p-Indicator">,</span><span class="nt"> tier</span><span class="p">:</span><span class="w"> </span><span class="nv">demo</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">nodeSelector</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> kubernetes.io/arch</span><span class="p">:</span><span class="w"> </span><span class="nv">amd64</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">app</span>
+<span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python:3.12-slim</span>
+<span class="w">          </span><span class="nt">imagePullPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">IfNotPresent</span>
+<span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;python&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;/src/app.py&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">          </span><span class="nt">ports</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">http</span><span class="p p-Indicator">,</span><span class="nt"> containerPort</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="w"> </span><span class="p p-Indicator">}]</span>
+<span class="w">          </span><span class="nt">volumeMounts</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">src</span><span class="p p-Indicator">,</span><span class="nt"> mountPath</span><span class="p">:</span><span class="w"> </span><span class="nv">/src</span><span class="w"> </span><span class="p p-Indicator">}]</span>
+<span class="w">          </span><span class="nt">readinessProbe</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> httpGet</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/healthz</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="w"> </span><span class="p p-Indicator">},</span><span class="nt"> initialDelaySeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">5</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">          </span><span class="nt">livenessProbe</span><span class="p">:</span><span class="w">  </span><span class="p p-Indicator">{</span><span class="nt"> httpGet</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/healthz</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="w"> </span><span class="p p-Indicator">},</span><span class="nt"> initialDelaySeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">5</span><span class="p p-Indicator">,</span><span class="nt"> periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">10</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">          </span><span class="nt">startupProbe</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">{</span><span class="nt"> httpGet</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/healthz</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="w"> </span><span class="p p-Indicator">},</span><span class="nt"> failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="nv">30</span><span class="p p-Indicator">,</span><span class="nt"> periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">          </span><span class="nt">resources</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">requests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpu</span><span class="p">:</span><span class="w"> </span><span class="nv">50m</span><span class="p p-Indicator">,</span><span class="nt"> memory</span><span class="p">:</span><span class="w"> </span><span class="nv">64Mi</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">            </span><span class="nt">limits</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">{</span><span class="nt"> cpu</span><span class="p">:</span><span class="w"> </span><span class="nv">500m</span><span class="p p-Indicator">,</span><span class="nt"> memory</span><span class="p">:</span><span class="w"> </span><span class="nv">256Mi</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">      </span><span class="nt">volumes</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">src</span><span class="p p-Indicator">,</span><span class="nt"> configMap</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">app-src</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}]</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Service</span>
+<span class="nt">metadata</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="p p-Indicator">,</span><span class="nt"> namespace</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-s4</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">selector</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> app</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">ports</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">http</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">80</span><span class="p p-Indicator">,</span><span class="nt"> targetPort</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="w"> </span><span class="p p-Indicator">}]</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>create<span class="w"> </span>namespace<span class="w"> </span>podbench-s4
+kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span><span class="m">00</span>-target.yaml
+timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deploy/podbench-target<span class="w"> </span>--timeout<span class="o">=</span>280s
+
+<span class="c1"># throwaway client pod (curlimages/curl, sleep infinity, amd64 nodeSelector)</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>curler<span class="w"> </span>--<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>-m<span class="w"> </span><span class="m">5</span><span class="w"> </span>http://podbench-target/
+<span class="c1"># PODBENCH-ORIGINAL-v1 from podbench-target-7b8d54747c-ltmtd</span>
+</pre></div>
+</div>
+</section>
+<section id="plain-kubectl-debug-copy-to-the-control">
+<h3>2. Plain <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code> (the control)<a class="headerlink" href="#plain-kubectl-debug-copy-to-the-control" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span>debug<span class="w"> </span>pod/podbench-target-7b8d54747c-ltmtd<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--copy-to<span class="w"> </span>devpod-plain<span class="w"> </span>--container<span class="w"> </span>app<span class="w"> </span>--<span class="w"> </span>sleep<span class="w"> </span>infinity
+<span class="c1"># (prints NOTHING on stdout, exit 0 — no &quot;Defaulting…&quot; message, easy to think it failed)</span>
+</pre></div>
+</div>
+<p>Result, extracted from the created pod:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">labels</span><span class="p">:</span>            <span class="n">null</span>          <span class="o">&lt;--</span> <span class="n">ALL</span> <span class="n">labels</span> <span class="n">removed</span>
+<span class="n">annotations</span><span class="p">:</span>       <span class="p">{}</span>            <span class="o">&lt;--</span> <span class="n">ALL</span> <span class="n">annotations</span> <span class="n">removed</span> <span class="p">(</span><span class="n">verified</span> <span class="n">separately</span><span class="p">)</span>
+<span class="n">ownerReferences</span><span class="p">:</span>   <span class="n">null</span>          <span class="o">&lt;--</span> <span class="n">orphaned</span><span class="p">;</span> <span class="n">no</span> <span class="n">ReplicaSet</span> <span class="n">adoption</span>
+<span class="n">generateName</span><span class="p">:</span>      <span class="n">null</span>
+<span class="n">nodeName</span><span class="p">:</span>          <span class="o">&lt;</span><span class="n">cleared</span><span class="p">,</span> <span class="n">rescheduled</span> <span class="n">normally</span><span class="o">&gt;</span>
+<span class="n">container</span> <span class="n">app</span><span class="p">:</span>
+  <span class="n">command</span><span class="p">:</span>         <span class="p">[</span><span class="s1">&#39;sleep&#39;</span><span class="p">,</span><span class="s1">&#39;infinity&#39;</span><span class="p">]</span>
+  <span class="n">ports</span><span class="p">:</span>           <span class="p">[{</span><span class="n">containerPort</span><span class="p">:</span> <span class="mi">8080</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="n">http</span><span class="p">}]</span>      <span class="n">kept</span>
+  <span class="n">resources</span><span class="p">:</span>       <span class="p">{</span><span class="n">requests</span> <span class="mi">50</span><span class="n">m</span><span class="o">/</span><span class="mi">64</span><span class="n">Mi</span><span class="p">,</span> <span class="n">limits</span> <span class="mi">500</span><span class="n">m</span><span class="o">/</span><span class="mi">256</span><span class="n">Mi</span><span class="p">}</span>   <span class="n">kept</span>
+  <span class="n">volumeMounts</span><span class="p">:</span>    <span class="p">[</span><span class="s1">&#39;/src&#39;</span><span class="p">,</span> <span class="n">serviceaccount</span><span class="p">]</span>                 <span class="n">kept</span>
+  <span class="n">readinessProbe</span> <span class="o">/</span> <span class="n">livenessProbe</span> <span class="o">/</span> <span class="n">startupProbe</span><span class="p">:</span>  <span class="n">ALL</span> <span class="kc">None</span>  <span class="o">&lt;--</span> <span class="n">stripped</span>
+</pre></div>
+</div>
+<p>Missing <code class="docutils literal notranslate"><span class="pre">--container</span></code> gives:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">error</span><span class="p">:</span> <span class="n">you</span> <span class="n">must</span> <span class="n">specify</span> <span class="n">an</span> <span class="n">existing</span> <span class="n">container</span> <span class="ow">or</span> <span class="n">a</span> <span class="n">new</span> <span class="n">image</span> <span class="n">when</span> <span class="n">specifying</span> <span class="n">args</span><span class="o">.</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code> has <strong>no <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code></strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">error</span><span class="p">:</span> <span class="n">unknown</span> <span class="n">flag</span><span class="p">:</span> <span class="o">--</span><span class="n">dry</span><span class="o">-</span><span class="n">run</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> <em>can</em> add a brand-new container, and it sets <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace</span></code> for you:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span>debug<span class="w"> </span>pod/podbench-target-7b8d54747c-ltmtd<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--copy-to<span class="w"> </span>devpod-addc<span class="w"> </span>--image<span class="o">=</span>debian:bookworm-slim<span class="w"> </span>--container<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>sleep<span class="w"> </span>infinity
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">labels</span> <span class="kc">None</span>
+<span class="n">app</span>      <span class="n">cmd</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;python&#39;</span><span class="p">,</span><span class="s1">&#39;/src/app.py&#39;</span><span class="p">]</span>  <span class="n">probes</span><span class="o">=</span><span class="p">[]</span>  <span class="n">res</span><span class="o">=</span><span class="p">{</span><span class="mi">50</span><span class="n">m</span><span class="o">/</span><span class="mi">64</span><span class="n">Mi</span><span class="p">,</span><span class="mi">500</span><span class="n">m</span><span class="o">/</span><span class="mi">256</span><span class="n">Mi</span><span class="p">}</span>  <span class="n">mounts</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;/src&#39;</span><span class="p">,</span> <span class="n">sa</span><span class="p">]</span>
+<span class="n">podbench</span> <span class="n">cmd</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;sleep&#39;</span><span class="p">,</span><span class="s1">&#39;infinity&#39;</span><span class="p">]</span>      <span class="n">probes</span><span class="o">=</span><span class="p">[]</span>  <span class="n">res</span><span class="o">=</span><span class="p">{}</span>   <span class="o">&lt;--</span> <span class="n">EMPTY</span><span class="p">,</span> <span class="ow">not</span> <span class="n">settable</span>
+<span class="n">volumes</span> <span class="p">[</span><span class="s1">&#39;src&#39;</span><span class="p">,</span> <span class="s1">&#39;kube-api-access-2x9jr&#39;</span><span class="p">]</span>            <span class="o">&lt;--</span> <span class="n">no</span> <span class="n">workspace</span> <span class="n">volume</span><span class="p">,</span> <span class="ow">not</span> <span class="n">settable</span>
+<span class="n">shareProcessNamespace</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<p>Note that in this mode probes are stripped from <strong>all</strong> containers, but the app container
+is <strong>not</strong> idled (it keeps its original command).</p>
+</section>
+<section id="phase-4-authored-spec-what-the-launcher-should-actually-do">
+<h3>3. Phase-4 authored spec (what the launcher should actually do)<a class="headerlink" href="#phase-4-authored-spec-what-the-launcher-should-actually-do" title="Link to this heading">#</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/usr/bin/env python3</span>
+<span class="sd">&quot;&quot;&quot;Podbench Phase-4 launcher prototype: author the dev-pod spec ourselves.</span>
+<span class="sd">Reads `kubectl get pod -o json` on stdin, emits a mutated pod manifest on stdout.&quot;&quot;&quot;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span><span class="o">,</span><span class="w"> </span><span class="nn">sys</span>
+
+<span class="n">TARGET_CONTAINER</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+<span class="n">DEV_NAME</span>         <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span>
+<span class="n">TAKE_TRAFFIC</span>     <span class="o">=</span> <span class="s2">&quot;--take-traffic&quot;</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">argv</span>
+
+<span class="n">pod</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">stdin</span><span class="p">)</span>
+
+<span class="c1"># ---- 1. metadata: drop server-owned + controller-owned fields -------------</span>
+<span class="n">md</span> <span class="o">=</span> <span class="n">pod</span><span class="p">[</span><span class="s2">&quot;metadata&quot;</span><span class="p">]</span>
+<span class="n">ORIGIN</span> <span class="o">=</span> <span class="n">md</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">]</span>
+<span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;uid&quot;</span><span class="p">,</span> <span class="s2">&quot;resourceVersion&quot;</span><span class="p">,</span> <span class="s2">&quot;creationTimestamp&quot;</span><span class="p">,</span> <span class="s2">&quot;generation&quot;</span><span class="p">,</span>
+          <span class="s2">&quot;managedFields&quot;</span><span class="p">,</span> <span class="s2">&quot;ownerReferences&quot;</span><span class="p">,</span> <span class="s2">&quot;selfLink&quot;</span><span class="p">,</span> <span class="s2">&quot;generateName&quot;</span><span class="p">,</span>
+          <span class="s2">&quot;deletionTimestamp&quot;</span><span class="p">,</span> <span class="s2">&quot;deletionGracePeriodSeconds&quot;</span><span class="p">,</span> <span class="s2">&quot;finalizers&quot;</span><span class="p">):</span>
+    <span class="n">md</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+<span class="n">md</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">DEV_NAME</span>
+<span class="n">pod</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+
+<span class="c1"># ---- 2. labels -----------------------------------------------------------</span>
+<span class="c1"># kubectl debug --copy-to nukes ALL labels, so the clone never receives Service</span>
+<span class="c1"># traffic.  We keep them, but MUST drop the controller-revision label, otherwise</span>
+<span class="c1"># the owning ReplicaSet adopts the clone and deletes one pod to honour replicas=1.</span>
+<span class="n">labels</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">md</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;labels&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="p">{})</span>
+<span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;pod-template-hash&quot;</span><span class="p">,</span> <span class="s2">&quot;controller-revision-hash&quot;</span><span class="p">,</span>
+          <span class="s2">&quot;statefulset.kubernetes.io/pod-name&quot;</span><span class="p">,</span> <span class="s2">&quot;batch.kubernetes.io/job-name&quot;</span><span class="p">,</span>
+          <span class="s2">&quot;job-name&quot;</span><span class="p">,</span> <span class="s2">&quot;controller-uid&quot;</span><span class="p">,</span> <span class="s2">&quot;batch.kubernetes.io/controller-uid&quot;</span><span class="p">):</span>
+    <span class="n">labels</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+<span class="n">md</span><span class="p">[</span><span class="s2">&quot;labels&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">labels</span> <span class="k">if</span> <span class="n">TAKE_TRAFFIC</span> <span class="k">else</span> <span class="p">{}</span>
+<span class="n">md</span><span class="p">[</span><span class="s2">&quot;annotations&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;podbench.dev/origin&quot;</span><span class="p">:</span> <span class="n">ORIGIN</span><span class="p">}</span>
+<span class="n">md</span><span class="p">[</span><span class="s2">&quot;labels&quot;</span><span class="p">][</span><span class="s2">&quot;podbench.dev/devpod&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;true&quot;</span>
+
+<span class="n">spec</span> <span class="o">=</span> <span class="n">pod</span><span class="p">[</span><span class="s2">&quot;spec&quot;</span><span class="p">]</span>
+
+<span class="c1"># ---- 3. scheduling -------------------------------------------------------</span>
+<span class="n">spec</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;nodeName&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+<span class="n">spec</span><span class="p">[</span><span class="s2">&quot;restartPolicy&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;Never&quot;</span>          <span class="c1"># a crashed dev pod must stay dead</span>
+
+<span class="c1"># ---- 4. idle the target container, strip everything that can kill it -----</span>
+<span class="n">found</span> <span class="o">=</span> <span class="kc">False</span>
+<span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">spec</span><span class="p">[</span><span class="s2">&quot;containers&quot;</span><span class="p">]:</span>
+    <span class="k">if</span> <span class="n">c</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">]</span> <span class="o">!=</span> <span class="n">TARGET_CONTAINER</span><span class="p">:</span>
+        <span class="k">continue</span>
+    <span class="n">found</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">c</span><span class="p">[</span><span class="s2">&quot;command&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;sleep&quot;</span><span class="p">,</span> <span class="s2">&quot;infinity&quot;</span><span class="p">]</span>
+    <span class="n">c</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;args&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">probe</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;readinessProbe&quot;</span><span class="p">,</span> <span class="s2">&quot;livenessProbe&quot;</span><span class="p">,</span> <span class="s2">&quot;startupProbe&quot;</span><span class="p">,</span> <span class="s2">&quot;lifecycle&quot;</span><span class="p">):</span>
+        <span class="n">c</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">probe</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="n">c</span><span class="p">[</span><span class="s2">&quot;stdin&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">c</span><span class="p">[</span><span class="s2">&quot;tty&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">found</span><span class="p">:</span>
+    <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="s2">&quot;container </span><span class="si">%s</span><span class="s2"> not found&quot;</span> <span class="o">%</span> <span class="n">TARGET_CONTAINER</span><span class="p">)</span>
+
+<span class="c1"># ---- 5. add the podbench sidecar + workspace volume ----------------------</span>
+<span class="n">spec</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">&quot;volumes&quot;</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+    <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;podbench-workspace&quot;</span><span class="p">,</span> <span class="s2">&quot;emptyDir&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;sizeLimit&quot;</span><span class="p">:</span> <span class="s2">&quot;4Gi&quot;</span><span class="p">}})</span>
+<span class="n">spec</span><span class="p">[</span><span class="s2">&quot;containers&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
+    <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;podbench&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;image&quot;</span><span class="p">:</span> <span class="s2">&quot;debian:bookworm-slim&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;imagePullPolicy&quot;</span><span class="p">:</span> <span class="s2">&quot;IfNotPresent&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;command&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;sleep&quot;</span><span class="p">,</span> <span class="s2">&quot;infinity&quot;</span><span class="p">],</span>
+    <span class="s2">&quot;workingDir&quot;</span><span class="p">:</span> <span class="s2">&quot;/workspace&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;env&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;PODBENCH_TARGET&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="n">TARGET_CONTAINER</span><span class="p">},</span>
+            <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;HOME&quot;</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="s2">&quot;/workspace&quot;</span><span class="p">}],</span>
+    <span class="s2">&quot;volumeMounts&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;podbench-workspace&quot;</span><span class="p">,</span> <span class="s2">&quot;mountPath&quot;</span><span class="p">:</span> <span class="s2">&quot;/workspace&quot;</span><span class="p">}],</span>
+    <span class="s2">&quot;resources&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;requests&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;cpu&quot;</span><span class="p">:</span> <span class="s2">&quot;200m&quot;</span><span class="p">,</span> <span class="s2">&quot;memory&quot;</span><span class="p">:</span> <span class="s2">&quot;512Mi&quot;</span><span class="p">},</span>
+                  <span class="s2">&quot;limits&quot;</span><span class="p">:</span>   <span class="p">{</span><span class="s2">&quot;cpu&quot;</span><span class="p">:</span> <span class="s2">&quot;2&quot;</span><span class="p">,</span>    <span class="s2">&quot;memory&quot;</span><span class="p">:</span> <span class="s2">&quot;3Gi&quot;</span><span class="p">}},</span>
+    <span class="s2">&quot;securityContext&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;capabilities&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;add&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;SYS_PTRACE&quot;</span><span class="p">]}},</span>
+    <span class="s2">&quot;stdin&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;tty&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">})</span>
+<span class="n">spec</span><span class="p">[</span><span class="s2">&quot;shareProcessNamespace&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>     <span class="c1"># gdb + ss -lntp across containers</span>
+
+<span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">pod</span><span class="p">,</span> <span class="n">sys</span><span class="o">.</span><span class="n">stdout</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span>get<span class="w"> </span>pod<span class="w"> </span>podbench-target-7b8d54747c-ltmtd<span class="w"> </span>-o<span class="w"> </span>json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>podbench_author.py<span class="w"> </span>app<span class="w"> </span>devpod<span class="w"> </span>--take-traffic<span class="w"> </span>&gt;<span class="w"> </span>devpod.json
+kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>devpod.json
+timeout<span class="w"> </span><span class="m">240</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">wait</span><span class="w"> </span>--for<span class="o">=</span><span class="nv">condition</span><span class="o">=</span>Ready<span class="w"> </span>pod/devpod<span class="w"> </span>--timeout<span class="o">=</span>230s
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">labels</span> <span class="p">{</span><span class="s1">&#39;app&#39;</span><span class="p">:</span> <span class="s1">&#39;podbench-target&#39;</span><span class="p">,</span> <span class="s1">&#39;tier&#39;</span><span class="p">:</span> <span class="s1">&#39;demo&#39;</span><span class="p">,</span> <span class="s1">&#39;podbench.dev/devpod&#39;</span><span class="p">:</span> <span class="s1">&#39;true&#39;</span><span class="p">}</span>
+<span class="n">annot</span>  <span class="p">{</span><span class="s1">&#39;podbench.dev/origin&#39;</span><span class="p">:</span> <span class="s1">&#39;podbench-target-7b8d54747c-ltmtd&#39;</span><span class="p">}</span>
+<span class="n">containers</span> <span class="p">[</span><span class="s1">&#39;app&#39;</span><span class="p">,</span> <span class="s1">&#39;podbench&#39;</span><span class="p">]</span>   <span class="n">shareProcessNamespace</span> <span class="kc">True</span>
+<span class="n">devpod</span>  <span class="mi">2</span><span class="o">/</span><span class="mi">2</span>  <span class="n">Running</span>  <span class="mf">10.42.5.125</span>  <span class="n">nuc2</span>
+</pre></div>
+</div>
+<p>The dev pod <strong>joins the Service</strong> (the whole point):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span>get<span class="w"> </span>endpointslices<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-o<span class="w"> </span>custom-columns<span class="o">=</span><span class="s1">&#39;EP:.endpoints[*].addresses,TARGETS:.endpoints[*].targetRef.name&#39;</span>
+<span class="c1"># [10.42.5.117],[10.42.5.125]   podbench-target-7b8d54747c-ltmtd,devpod</span>
+</pre></div>
+</div>
+<p>…and the ReplicaSet does <strong>not</strong> fight it (because <code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code> was dropped):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">NAME</span>                         <span class="n">DESIRED</span>   <span class="n">CURRENT</span>
+<span class="n">podbench</span><span class="o">-</span><span class="n">target</span><span class="o">-</span><span class="mi">7</span><span class="n">b8d54747c</span>   <span class="mi">1</span>         <span class="mi">1</span>
+</pre></div>
+</div>
+</section>
+<section id="toolchain-bootstrap-in-the-sidecar">
+<h3>4. Toolchain bootstrap in the sidecar<a class="headerlink" href="#toolchain-bootstrap-in-the-sidecar" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>bash<span class="w"> </span>-lc<span class="w"> </span><span class="s1">&#39;</span>
+<span class="s1">  set -e; export DEBIAN_FRONTEND=noninteractive</span>
+<span class="s1">  apt-get update -qq &gt;/dev/null</span>
+<span class="s1">  apt-get install -y -qq --no-install-recommends curl ca-certificates git xz-utils procps &gt;/dev/null</span>
+<span class="s1">  echo APT_OK&#39;</span>
+<span class="c1"># APT_OK        (10.6 s)</span>
+
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>bash<span class="w"> </span>-lc<span class="w"> </span><span class="s1">&#39;</span>
+<span class="s1">  set -e; export HOME=/workspace</span>
+<span class="s1">  curl -LsSf https://astral.sh/uv/install.sh | sh</span>
+<span class="s1">  export PATH=/workspace/.local/bin:$PATH</span>
+<span class="s1">  uv --version</span>
+<span class="s1">  uv python install 3.12&#39;</span>
+<span class="c1"># uv 0.12.5 (x86_64-unknown-linux-gnu)</span>
+<span class="c1"># Downloaded cpython-3.12.14-linux-x86_64-gnu (download)</span>
+<span class="c1"># Installed Python 3.12.14 in 615ms       (2.3 s total)</span>
+</pre></div>
+</div>
+</section>
+<section id="editable-install">
+<h3>5. Editable install<a class="headerlink" href="#editable-install" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># bootstrap-src.sh, piped in with `kubectl exec -i devpod -c podbench -- bash -s &lt; …`</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">HOME</span><span class="o">=</span>/workspace<span class="w"> </span><span class="nv">PATH</span><span class="o">=</span>/workspace/.local/bin:<span class="nv">$PATH</span>
+mkdir<span class="w"> </span>-p<span class="w"> </span>/workspace/src/podbench_demo/src/podbench_demo
+<span class="nb">cd</span><span class="w"> </span>/workspace/src/podbench_demo
+cat<span class="w"> </span>&gt;<span class="w"> </span>pyproject.toml<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">[project]</span>
+<span class="s">name = &quot;podbench-demo&quot;</span>
+<span class="s">version = &quot;0.1.0&quot;</span>
+<span class="s">requires-python = &quot;&gt;=3.12&quot;</span>
+<span class="s">[project.scripts]</span>
+<span class="s">podbench-demo = &quot;podbench_demo.app:main&quot;</span>
+<span class="s">[build-system]</span>
+<span class="s">requires = [&quot;hatchling&quot;]</span>
+<span class="s">build-backend = &quot;hatchling.build&quot;</span>
+<span class="s">EOF</span>
+:<span class="w"> </span>&gt;<span class="w"> </span>src/podbench_demo/__init__.py
+cat<span class="w"> </span>&gt;<span class="w"> </span>src/podbench_demo/app.py<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">import http.server, os, socketserver</span>
+<span class="s">MESSAGE = &quot;PODBENCH-DEVPOD-v2 (editable install from the sidecar)&quot;</span>
+<span class="s">def main() -&gt; None:</span>
+<span class="s">    class H(http.server.BaseHTTPRequestHandler):</span>
+<span class="s">        def do_GET(self):</span>
+<span class="s">            body = (&quot;%s host=%s\n&quot; % (MESSAGE, os.environ.get(&quot;HOSTNAME&quot;,&quot;?&quot;))).encode()</span>
+<span class="s">            self.send_response(200)</span>
+<span class="s">            self.send_header(&quot;Content-Type&quot;,&quot;text/plain&quot;)</span>
+<span class="s">            self.send_header(&quot;Content-Length&quot;,str(len(body)))</span>
+<span class="s">            self.end_headers(); self.wfile.write(body)</span>
+<span class="s">        def log_message(self,*a): pass</span>
+<span class="s">    socketserver.TCPServer.allow_reuse_address = True</span>
+<span class="s">    with socketserver.TCPServer((&quot;0.0.0.0&quot;,8080), H) as s: s.serve_forever()</span>
+<span class="s">if __name__ == &quot;__main__&quot;: main()</span>
+<span class="s">EOF</span>
+uv<span class="w"> </span>venv<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span>/workspace/.venv
+<span class="nv">VIRTUAL_ENV</span><span class="o">=</span>/workspace/.venv<span class="w"> </span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
+/workspace/.venv/bin/python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import podbench_demo.app as a; print(&#39;IMPORT_OK&#39;, a.MESSAGE)&quot;</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Using</span> <span class="n">CPython</span> <span class="mf">3.12.14</span>
+<span class="n">Creating</span> <span class="n">virtual</span> <span class="n">environment</span> <span class="n">at</span><span class="p">:</span> <span class="o">/</span><span class="n">workspace</span><span class="o">/.</span><span class="n">venv</span>
+   <span class="n">Building</span> <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span> <span class="o">@</span> <span class="n">file</span><span class="p">:</span><span class="o">///</span><span class="n">workspace</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">podbench_demo</span>
+      <span class="n">Built</span> <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span> <span class="o">@</span> <span class="n">file</span><span class="p">:</span><span class="o">///</span><span class="n">workspace</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">podbench_demo</span>
+<span class="n">Prepared</span> <span class="mi">1</span> <span class="n">package</span> <span class="ow">in</span> <span class="mi">631</span><span class="n">ms</span>
+<span class="n">Installed</span> <span class="mi">1</span> <span class="n">package</span> <span class="ow">in</span> <span class="mf">0.46</span><span class="n">ms</span>
+ <span class="o">+</span> <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">==</span><span class="mf">0.1.0</span> <span class="p">(</span><span class="kn">from</span><span class="w"> </span><span class="nn">file</span><span class="p">:</span><span class="o">///</span><span class="n">workspace</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">podbench_demo</span><span class="p">)</span>
+<span class="n">IMPORT_OK</span> <span class="n">PODBENCH</span><span class="o">-</span><span class="n">DEVPOD</span><span class="o">-</span><span class="n">v2</span> <span class="p">(</span><span class="n">editable</span> <span class="n">install</span> <span class="kn">from</span><span class="w"> </span><span class="nn">the</span> <span class="n">sidecar</span><span class="p">)</span>
+<span class="n">site</span><span class="o">-</span><span class="n">packages</span><span class="p">:</span> <span class="n">_editable_impl_podbench_demo</span><span class="o">.</span><span class="n">pth</span>  <span class="n">_virtualenv</span><span class="o">.</span><span class="n">pth</span>  <span class="n">podbench_demo</span><span class="o">-</span><span class="mf">0.1.0</span><span class="o">.</span><span class="n">dist</span><span class="o">-</span><span class="n">info</span>
+</pre></div>
+</div>
+</section>
+<section id="relaunch-on-the-pod-ip-from-the-sidecar">
+<h3>6. Relaunch on the pod IP from the sidecar<a class="headerlink" href="#relaunch-on-the-pod-ip-from-the-sidecar" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># relaunch.sh, run with `kubectl exec -i devpod -c podbench -- bash -s &lt; relaunch.sh`</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">HOME</span><span class="o">=</span>/workspace<span class="w"> </span><span class="nv">PATH</span><span class="o">=</span>/workspace/.local/bin:<span class="nv">$PATH</span>
+pkill<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;podbench_demo&#39;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="p">;</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">0</span>.4
+<span class="nb">cd</span><span class="w"> </span>/workspace/src/podbench_demo
+setsid<span class="w"> </span>nohup<span class="w"> </span>/workspace/.venv/bin/python<span class="w"> </span>-m<span class="w"> </span>podbench_demo.app<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>&gt;<span class="w"> </span>/workspace/app.log<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span>&lt;<span class="w"> </span>/dev/null<span class="w"> </span><span class="p">&amp;</span>
+<span class="k">for</span><span class="w"> </span>i<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>seq<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">40</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span>/workspace/.venv/bin/python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">import socket,sys</span>
+<span class="s2">s=socket.socket(); s.settimeout(0.3)</span>
+<span class="s2">sys.exit(0 if s.connect_ex((&#39;127.0.0.1&#39;,8080))==0 else 1)&quot;</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">    </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;LISTENING after </span><span class="si">${</span><span class="nv">i</span><span class="si">}</span><span class="s2"> polls&quot;</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">0</span>
+<span class="w">  </span><span class="k">fi</span><span class="p">;</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">0</span>.25
+<span class="k">done</span>
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;FAILED to listen&quot;</span><span class="p">;</span><span class="w"> </span>cat<span class="w"> </span>/workspace/app.log<span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+<p>Verification <strong>through the Service</strong>, from a separate pod:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>curler<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;for i in $(seq 1 10); do curl -s -m 3 http://podbench-target/; done&#39;</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">PODBENCH</span><span class="o">-</span><span class="n">ORIGINAL</span><span class="o">-</span><span class="n">v1</span> <span class="kn">from</span><span class="w"> </span><span class="nn">podbench</span><span class="o">-</span><span class="n">target</span><span class="o">-</span><span class="mi">7</span><span class="n">b8d54747c</span><span class="o">-</span><span class="n">ltmtd</span>
+<span class="n">PODBENCH</span><span class="o">-</span><span class="n">ORIGINAL</span><span class="o">-</span><span class="n">v1</span> <span class="kn">from</span><span class="w"> </span><span class="nn">podbench</span><span class="o">-</span><span class="n">target</span><span class="o">-</span><span class="mi">7</span><span class="n">b8d54747c</span><span class="o">-</span><span class="n">ltmtd</span>
+<span class="n">PODBENCH</span><span class="o">-</span><span class="n">DEVPOD</span><span class="o">-</span><span class="n">v2</span> <span class="p">(</span><span class="n">editable</span> <span class="n">install</span> <span class="kn">from</span><span class="w"> </span><span class="nn">the</span> <span class="n">sidecar</span><span class="p">)</span> <span class="n">host</span><span class="o">=</span><span class="n">devpod</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+<p>Clean cutover — flip the Service selector so <strong>only</strong> the dev pod serves
+(<strong>use a JSON patch, not a merge patch</strong> — see Findings):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span>patch<span class="w"> </span>svc<span class="w"> </span>podbench-target<span class="w"> </span>--type<span class="o">=</span>json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-p<span class="w"> </span><span class="s1">&#39;[{&quot;op&quot;:&quot;replace&quot;,&quot;path&quot;:&quot;/spec/selector&quot;,&quot;value&quot;:{&quot;podbench.dev/devpod&quot;:&quot;true&quot;}}]&#39;</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span><span class="o">-</span><span class="n">target</span><span class="o">-</span><span class="n">smpjx</span>   <span class="p">[</span><span class="mf">10.42.5.125</span><span class="p">]</span>   <span class="n">devpod</span>
+<span class="n">PODBENCH</span><span class="o">-</span><span class="n">DEVPOD</span><span class="o">-</span><span class="n">v2</span> <span class="p">(</span><span class="n">editable</span> <span class="n">install</span> <span class="kn">from</span><span class="w"> </span><span class="nn">the</span> <span class="n">sidecar</span><span class="p">)</span> <span class="n">host</span><span class="o">=</span><span class="n">devpod</span>   <span class="p">(</span><span class="n">x6</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="edit-relaunch-verify">
+<h3>7. Edit → relaunch → verify<a class="headerlink" href="#edit-relaunch-verify" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>bash<span class="w"> </span>-lc<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">&quot;sed -i &#39;s/PODBENCH-DEVPOD-v2 (editable install from the sidecar)/PODBENCH-DEVPOD-v3 EDITED-IN-PLACE/&#39; \</span>
+<span class="s2">   /workspace/src/podbench_demo/src/podbench_demo/app.py&quot;</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>-i<span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>bash<span class="w"> </span>-s<span class="w"> </span>&lt;<span class="w"> </span>relaunch.sh
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>curler<span class="w"> </span>--<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>-m<span class="w"> </span><span class="m">5</span><span class="w"> </span>http://podbench-target/
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">LISTENING</span> <span class="n">after</span> <span class="mi">2</span> <span class="n">polls</span>
+<span class="n">PODBENCH</span><span class="o">-</span><span class="n">DEVPOD</span><span class="o">-</span><span class="n">v3</span> <span class="n">EDITED</span><span class="o">-</span><span class="n">IN</span><span class="o">-</span><span class="n">PLACE</span> <span class="n">host</span><span class="o">=</span><span class="n">devpod</span>
+</pre></div>
+</div>
+<p><strong>Elapsed 10:44:56.325 → 10:44:57.501 = 1.18 s</strong> for the whole edit→relaunch→Service-verify loop.</p>
+</section>
+<section id="mount-namespace-pth-test-run-inside-the-target-app-container">
+<h3>8. Mount-namespace <code class="docutils literal notranslate"><span class="pre">.pth</span></code> test (run <strong>inside the target <code class="docutils literal notranslate"><span class="pre">app</span></code> container</strong>)<a class="headerlink" href="#mount-namespace-pth-test-run-inside-the-target-app-container" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">SP</span><span class="o">=</span>/usr/local/lib/python3.12/site-packages
+ls<span class="w"> </span>-la<span class="w"> </span>/workspace<span class="w">                                     </span><span class="c1"># -&gt; No such file or directory</span>
+<span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;/workspace/src/podbench_demo/src&#39;</span><span class="w"> </span>&gt;<span class="w"> </span><span class="nv">$SP</span>/podbench_dangle.pth
+python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import sys; print(&#39;on sys.path?&#39;, any(&#39;podbench_demo&#39; in p for p in sys.path))&quot;</span>
+python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import podbench_demo&quot;</span>
+<span class="c1"># exec-style .pth, which is what modern editable installs actually emit:</span>
+<span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;import _podbench_impl\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span><span class="nv">$SP</span>/podbench_exec.pth
+cat<span class="w"> </span>&gt;<span class="w"> </span><span class="nv">$SP</span>/_podbench_impl.py<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">import sys</span>
+<span class="s">sys.path.insert(0, &quot;/workspace/src/podbench_demo/src&quot;)</span>
+<span class="s">import podbench_demo</span>
+<span class="s">EOF</span>
+python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;print(&#39;interpreter started&#39;)&quot;</span>
+python<span class="w"> </span>-m<span class="w"> </span>podbench_demo.app
+</pre></div>
+</div>
+</section>
+<section id="port-conflicts">
+<h3>9. Port conflicts<a class="headerlink" href="#port-conflicts" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># A. sidecar holds :8080, app container tries to bind</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>app<span class="w"> </span>--<span class="w"> </span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">import socket</span>
+<span class="s2">s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)</span>
+<span class="s2">s.bind((&#39;0.0.0.0&#39;,8080))&quot;</span>
+<span class="c1">#   OSError: [Errno 98] Address already in use</span>
+
+<span class="c1"># B. who owns the port?  (works cross-container thanks to shared netns + shared PID ns + CAP_SYS_PTRACE)</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>bash<span class="w"> </span>-lc<span class="w"> </span><span class="s1">&#39;apt-get install -y -qq iproute2; ss -lntp&#39;</span>
+<span class="c1">#   LISTEN 0 5 0.0.0.0:8080 0.0.0.0:*  users:((&quot;python&quot;,pid=3463,fd=3))</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>ls<span class="w"> </span>-l<span class="w"> </span>/proc/3463/root/<span class="w">   </span><span class="c1"># tells you WHICH container</span>
+
+<span class="c1"># C. rebinding after a SO_REUSEPORT server has served traffic</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s4<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>devpod<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>/workspace/.venv/bin/python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">import socket</span>
+<span class="s2">for name in (&#39;SO_REUSEADDR only&#39;,&#39;SO_REUSEADDR+SO_REUSEPORT&#39;):</span>
+<span class="s2">    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)</span>
+<span class="s2">    if &#39;PORT&#39; in name: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT,1)</span>
+<span class="s2">    try: s.bind((&#39;0.0.0.0&#39;,8080)); print(name,&#39;-&gt; BOUND OK&#39;)</span>
+<span class="s2">    except OSError as e: print(name,&#39;-&gt; errno&#39;,e.errno,str(e))</span>
+<span class="s2">    s.close()&quot;</span>
+<span class="c1">#   SO_REUSEADDR only            -&gt; errno 98 [Errno 98] Address already in use</span>
+<span class="c1">#   SO_REUSEADDR+SO_REUSEPORT    -&gt; BOUND OK</span>
+</pre></div>
+</div>
+</section>
+<section id="readiness-gated-dev-pod-the-fix-for-the-split-traffic-window">
+<h3>10. Readiness-gated dev pod (the fix for the split-traffic window)<a class="headerlink" href="#readiness-gated-dev-pod-the-fix-for-the-split-traffic-window" title="Link to this heading">#</a></h3>
+<p>Add to the <strong>podbench sidecar</strong> (pod Ready = all containers Ready):</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">readinessProbe</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">tcpSocket</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">  </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">  </span><span class="nt">initialDelaySeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># before the relaunched process binds :8080</span>
+<span class="n">devpod2</span>  <span class="mi">1</span><span class="o">/</span><span class="mi">2</span>  <span class="n">Running</span>
+<span class="n">endpointslice</span><span class="p">:</span> <span class="n">devpod2</span> <span class="n">ready</span><span class="o">=</span><span class="n">false</span> <span class="n">serving</span><span class="o">=</span><span class="n">false</span>     <span class="o">&lt;--</span> <span class="n">gets</span> <span class="n">NO</span> <span class="n">traffic</span>
+
+<span class="c1"># after a process binds :8080 inside the sidecar</span>
+<span class="n">devpod2</span>  <span class="mi">2</span><span class="o">/</span><span class="mi">2</span>  <span class="n">Running</span>
+<span class="n">endpointslice</span><span class="p">:</span> <span class="n">devpod2</span> <span class="n">ready</span><span class="o">=</span><span class="n">true</span>                    <span class="o">&lt;--</span> <span class="n">joins</span> <span class="n">the</span> <span class="n">Service</span>
+<span class="n">curl</span> <span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="n">podbench</span><span class="o">-</span><span class="n">target</span><span class="o">/</span>  <span class="o">-&gt;</span>  <span class="n">READINESS</span><span class="o">-</span><span class="n">GATED</span><span class="o">-</span><span class="n">DEVPOD2</span>
+
+<span class="c1"># kill the process again</span>
+<span class="n">devpod2</span>  <span class="mi">1</span><span class="o">/</span><span class="mi">2</span>  <span class="n">Running</span>   <span class="p">(</span><span class="n">within</span> <span class="o">~</span><span class="mi">6</span> <span class="n">s</span><span class="p">)</span>
+<span class="n">endpointslice</span><span class="p">:</span> <span class="n">devpod2</span> <span class="n">ready</span><span class="o">=</span><span class="n">false</span>                   <span class="o">&lt;--</span> <span class="n">drops</span> <span class="n">out</span> <span class="n">again</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="findings">
+<h2>Findings<a class="headerlink" href="#findings" title="Link to this heading">#</a></h2>
+<section id="f1-copy-to-strips-probes-and-all-labels-and-annotations-the-clone-gets-no-service-traffic">
+<h3>F1 — <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> strips probes <strong>and all labels and annotations</strong>. The clone gets <strong>no Service traffic</strong>.<a class="headerlink" href="#f1-copy-to-strips-probes-and-all-labels-and-annotations-the-clone-gets-no-service-traffic" title="Link to this heading">#</a></h3>
+<p>The brief’s claim about probes is correct — <code class="docutils literal notranslate"><span class="pre">readinessProbe</span></code>, <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> and
+<code class="docutils literal notranslate"><span class="pre">startupProbe</span></code> are all removed. But <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> also sets <code class="docutils literal notranslate"><span class="pre">metadata.labels</span> <span class="pre">=</span> <span class="pre">nil</span></code>,
+<code class="docutils literal notranslate"><span class="pre">metadata.annotations</span> <span class="pre">=</span> <span class="pre">nil</span></code> and <code class="docutils literal notranslate"><span class="pre">metadata.ownerReferences</span> <span class="pre">=</span> <span class="pre">nil</span></code> (verified twice:
+once on the app pod, once on a pod carrying a deliberately-added annotation).
+Empirically:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>field</p></th>
+<th class="head"><p>after <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>labels</p></td>
+<td><p><strong>removed</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>annotations</p></td>
+<td><p><strong>removed</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>ownerReferences</p></td>
+<td><p><strong>removed</strong> (orphan — no RS adoption, no GC)</p></td>
+</tr>
+<tr class="row-odd"><td><p>all three probes</p></td>
+<td><p><strong>removed</strong> (on <em>every</em> container, even in <code class="docutils literal notranslate"><span class="pre">--image</span></code> mode)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nodeName</span></code></p></td>
+<td><p>cleared; pod is rescheduled normally</p></td>
+</tr>
+<tr class="row-odd"><td><p>ports / resources / volumeMounts / volumes</p></td>
+<td><p>preserved</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shareProcessNamespace</span></code></p></td>
+<td><p>set to <code class="docutils literal notranslate"><span class="pre">true</span></code> <strong>only</strong> when <code class="docutils literal notranslate"><span class="pre">--image</span></code> adds a container</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Consequence for the demo: a plain <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod is <strong>invisible to the Service</strong>.
+The endpointslice keeps only the original pod. Anyone demoing “edit code, curl the
+Service, see your change” with vanilla <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> will see the <em>old</em> response forever
+and have no idea why.</p>
+</section>
+<section id="f2-restoring-labels-works-but-you-must-drop-pod-template-hash-or-the-replicaset-eats-your-dev-pod">
+<h3>F2 — Restoring labels works, but you must drop <code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code>, or the ReplicaSet eats your dev pod.<a class="headerlink" href="#f2-restoring-labels-works-but-you-must-drop-pod-template-hash-or-the-replicaset-eats-your-dev-pod" title="Link to this heading">#</a></h3>
+<p>The Service selector is <code class="docutils literal notranslate"><span class="pre">{app:</span> <span class="pre">podbench-target}</span></code> while the ReplicaSet selector is
+<code class="docutils literal notranslate"><span class="pre">{app:</span> <span class="pre">podbench-target,</span> <span class="pre">pod-template-hash:</span> <span class="pre">7b8d54747c}</span></code>. Keeping <code class="docutils literal notranslate"><span class="pre">app</span></code> + <code class="docutils literal notranslate"><span class="pre">tier</span></code> and
+dropping <code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code> puts the dev pod in the Service <strong>without</strong> making it a
+ReplicaSet member — verified: RS stayed <code class="docutils literal notranslate"><span class="pre">DESIRED</span> <span class="pre">1</span> <span class="pre">/</span> <span class="pre">CURRENT</span> <span class="pre">1</span></code> and never deleted
+either pod. Keeping the hash would have made two pods match a <code class="docutils literal notranslate"><span class="pre">replicas:</span> <span class="pre">1</span></code> RS and one
+of them would be reaped. The same applies to <code class="docutils literal notranslate"><span class="pre">controller-revision-hash</span></code> (StatefulSet/
+DaemonSet) and <code class="docutils literal notranslate"><span class="pre">controller-uid</span></code>/<code class="docutils literal notranslate"><span class="pre">batch.kubernetes.io/*</span></code> (Job).</p>
+</section>
+<section id="f3-joining-the-service-before-the-app-is-relaunched-produces-50-hard-failures">
+<h3>F3 — Joining the Service <em>before</em> the app is relaunched produces ~50 % hard failures.<a class="headerlink" href="#f3-joining-the-service-before-the-app-is-relaunched-produces-50-hard-failures" title="Link to this heading">#</a></h3>
+<p>With no probes, the dev pod is <code class="docutils literal notranslate"><span class="pre">Ready</span></code> the instant its containers start, so it enters
+the endpointslice while nothing is listening on <code class="docutils literal notranslate"><span class="pre">:8080</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">000</span> <span class="n">ERR</span> <span class="mi">000</span> <span class="n">ERR</span> <span class="mi">200</span> <span class="mi">000</span> <span class="n">ERR</span> <span class="mi">200</span> <span class="mi">200</span> <span class="mi">000</span> <span class="n">ERR</span> <span class="mi">000</span> <span class="n">ERR</span>
+</pre></div>
+</div>
+<p>Two clean fixes, both verified:</p>
+<ul class="simple">
+<li><p><strong>Readiness gate</strong> (recommended): put a <code class="docutils literal notranslate"><span class="pre">tcpSocket:</span> <span class="pre">8080</span></code> readinessProbe on the
+<em>podbench</em> container. The dev pod then joins the Service exactly when the relaunched
+process binds, and <strong>drops out again within ~6 s</strong> when you kill it. This makes
+Service membership automatically track your inner loop.</p></li>
+<li><p><strong>Selector flip</strong> for an exclusive cutover:
+<code class="docutils literal notranslate"><span class="pre">--type=json</span> <span class="pre">…</span> <span class="pre">replace</span> <span class="pre">/spec/selector</span></code> → only the dev pod serves; the original
+Deployment stays running untouched as an instant rollback.</p></li>
+</ul>
+</section>
+<section id="f4-shared-network-namespace-claim-confirmed">
+<h3>F4 — Shared network namespace claim: <strong>CONFIRMED</strong>.<a class="headerlink" href="#f4-shared-network-namespace-claim-confirmed" title="Link to this heading">#</a></h3>
+<p>The process launched by the sidecar’s own <code class="docutils literal notranslate"><span class="pre">uv</span></code>-installed interpreter bound
+<code class="docutils literal notranslate"><span class="pre">0.0.0.0:8080</span></code> and served on the <strong>pod IP</strong> <code class="docutils literal notranslate"><span class="pre">10.42.5.125:8080</span></code>, reachable both directly
+and through the Service, with the app container untouched and idled. <code class="docutils literal notranslate"><span class="pre">/proc/net/tcp</span></code>
+read from the <em>app</em> container showed the <em>sidecar’s</em> outbound sockets — same netns.</p>
+</section>
+<section id="f5-mount-namespace-warning-confirmed-and-worse-than-it-dangles">
+<h3>F5 — Mount-namespace warning: <strong>CONFIRMED, and worse than “it dangles”</strong>.<a class="headerlink" href="#f5-mount-namespace-warning-confirmed-and-worse-than-it-dangles" title="Link to this heading">#</a></h3>
+<p>Two distinct failure shapes, from inside the target container:</p>
+<p><em>Path-style <code class="docutils literal notranslate"><span class="pre">.pth</span></code></em> — <strong>silently ignored</strong>, no warning at all. <code class="docutils literal notranslate"><span class="pre">site.py</span></code> only appends
+directories that exist:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>on sys.path? False
+sys.path == [&#39;&#39;, &#39;/usr/local/lib/python312.zip&#39;, &#39;/usr/local/lib/python3.12&#39;,
+             &#39;/usr/local/lib/python3.12/lib-dynload&#39;, &#39;/usr/local/lib/python3.12/site-packages&#39;]
+ModuleNotFoundError: No module named &#39;podbench_demo&#39;
+</pre></div>
+</div>
+<p>The failure surfaces much later as an unrelated-looking import error.</p>
+<p><em>Exec-style <code class="docutils literal notranslate"><span class="pre">.pth</span></code></em> (what modern PEP-660 editable installs emit) — prints an error but
+is <strong>non-fatal</strong>; the interpreter still starts with exit code 0:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Error</span> <span class="n">processing</span> <span class="n">line</span> <span class="mi">1</span> <span class="n">of</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">local</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">python3</span><span class="mf">.12</span><span class="o">/</span><span class="n">site</span><span class="o">-</span><span class="n">packages</span><span class="o">/</span><span class="n">podbench_exec</span><span class="o">.</span><span class="n">pth</span><span class="p">:</span>
+
+  <span class="n">Traceback</span> <span class="p">(</span><span class="n">most</span> <span class="n">recent</span> <span class="n">call</span> <span class="n">last</span><span class="p">):</span>
+    <span class="n">File</span> <span class="s2">&quot;&lt;frozen site&gt;&quot;</span><span class="p">,</span> <span class="n">line</span> <span class="mi">206</span><span class="p">,</span> <span class="ow">in</span> <span class="n">addpackage</span>
+    <span class="n">File</span> <span class="s2">&quot;&lt;string&gt;&quot;</span><span class="p">,</span> <span class="n">line</span> <span class="mi">1</span><span class="p">,</span> <span class="ow">in</span> <span class="o">&lt;</span><span class="n">module</span><span class="o">&gt;</span>
+    <span class="n">File</span> <span class="s2">&quot;/usr/local/lib/python3.12/site-packages/_podbench_impl.py&quot;</span><span class="p">,</span> <span class="n">line</span> <span class="mi">3</span><span class="p">,</span> <span class="ow">in</span> <span class="o">&lt;</span><span class="n">module</span><span class="o">&gt;</span>
+      <span class="kn">import</span><span class="w"> </span><span class="nn">podbench_demo</span>
+      <span class="o">^^^^^^^^^^^^^^^^^^^^</span>
+  <span class="ne">ModuleNotFoundError</span><span class="p">:</span> <span class="n">No</span> <span class="n">module</span> <span class="n">named</span> <span class="s1">&#39;podbench_demo&#39;</span>
+
+<span class="n">Remainder</span> <span class="n">of</span> <span class="n">file</span> <span class="n">ignored</span>
+<span class="n">interpreter</span> <span class="n">started</span>
+<span class="n">exit</span><span class="o">=</span><span class="mi">0</span>
+</pre></div>
+</div>
+<p>And running the app the naive way:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">local</span><span class="o">/</span><span class="nb">bin</span><span class="o">/</span><span class="n">python</span><span class="p">:</span> <span class="n">Error</span> <span class="k">while</span> <span class="n">finding</span> <span class="n">module</span> <span class="n">specification</span> <span class="k">for</span> <span class="s1">&#39;podbench_demo.app&#39;</span>
+<span class="p">(</span><span class="ne">ModuleNotFoundError</span><span class="p">:</span> <span class="n">No</span> <span class="n">module</span> <span class="n">named</span> <span class="s1">&#39;podbench_demo&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>This is decisive support for the “everything in the debug container” design rule.</p>
+</section>
+<section id="f6-the-proc-pid-root-bridge-is-one-directional-by-capability">
+<h3>F6 — The <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is <strong>one-directional</strong>, by capability.<a class="headerlink" href="#f6-the-proc-pid-root-bridge-is-one-directional-by-capability" title="Link to this heading">#</a></h3>
+<p>From the <strong>podbench sidecar</strong> → into the app container’s rootfs: works.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">FOUND</span> <span class="n">via</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">7</span>
+<span class="o">/</span><span class="n">workspace</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">podbench_demo</span><span class="o">/</span><span class="n">src</span>
+</pre></div>
+</div>
+<p>From the <strong>app container</strong> → into the sidecar’s rootfs: <strong>fails</strong>, finds nothing.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bridged</span> <span class="n">paths</span> <span class="n">found</span><span class="p">:</span> <span class="p">[]</span>
+</pre></div>
+</div>
+<p>Cause (measured, not assumed):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">app</span> <span class="n">container</span>      <span class="n">CapEff</span><span class="p">:</span> <span class="mi">00000000</span><span class="n">a80425fb</span>
+<span class="n">podbench</span> <span class="n">container</span> <span class="n">CapEff</span><span class="p">:</span> <span class="mi">00000000</span><span class="n">a80c25fb</span>    <span class="p">(</span><span class="n">delta</span> <span class="o">=</span> <span class="n">bit</span> <span class="mi">19</span><span class="p">,</span> <span class="n">CAP_SYS_PTRACE</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">yama/ptrace_scope</span> <span class="pre">=</span> <span class="pre">1</span></code>, traversing another process’s <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> needs
+<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>. Only the sidecar has it. This is a <em>good</em> property: the debug
+container can reach into the app, but a compromised app container cannot reach the
+debug toolchain. It also means “just symlink from the target into the workspace” is
+not available as a workaround — the design rule stands.</p>
+</section>
+<section id="f7-port-conflicts-three-distinct-behaviours-one-of-them-silent-and-dangerous">
+<h3>F7 — Port conflicts: three distinct behaviours, one of them silent and dangerous.<a class="headerlink" href="#f7-port-conflicts-three-distinct-behaviours-one-of-them-silent-and-dangerous" title="Link to this heading">#</a></h3>
+<ul>
+<li><p><strong>Plain conflict</strong> — clear and loud:
+<code class="docutils literal notranslate"><span class="pre">OSError:</span> <span class="pre">[Errno</span> <span class="pre">98]</span> <span class="pre">Address</span> <span class="pre">already</span> <span class="pre">in</span> <span class="pre">use</span></code>, raised from
+<code class="docutils literal notranslate"><span class="pre">socketserver.TCPServer.server_bind</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> silent split</strong> — if the process already holding the port set
+<code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> (uvicorn with multiple workers, gunicorn <code class="docutils literal notranslate"><span class="pre">reuse_port</span></code>, many Go/Rust
+servers), a second <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> bind <strong>succeeds with no error</strong> and the kernel
+load-balances between the two listeners:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ss</span> <span class="o">-</span><span class="n">lntp</span><span class="p">:</span>
+  <span class="n">LISTEN</span> <span class="mf">0.0.0.0</span><span class="p">:</span><span class="mi">8080</span>  <span class="n">users</span><span class="p">:((</span><span class="s2">&quot;python&quot;</span><span class="p">,</span><span class="n">pid</span><span class="o">=</span><span class="mi">3645</span><span class="p">,</span><span class="n">fd</span><span class="o">=</span><span class="mi">3</span><span class="p">))</span>
+  <span class="n">LISTEN</span> <span class="mf">0.0.0.0</span><span class="p">:</span><span class="mi">8080</span>  <span class="n">users</span><span class="p">:((</span><span class="s2">&quot;python&quot;</span><span class="p">,</span><span class="n">pid</span><span class="o">=</span><span class="mi">3635</span><span class="p">,</span><span class="n">fd</span><span class="o">=</span><span class="mi">3</span><span class="p">))</span>
+<span class="n">curl</span> <span class="n">x10</span> <span class="n">through</span> <span class="n">the</span> <span class="n">Service</span><span class="p">:</span>
+  <span class="n">NEW</span><span class="o">-</span><span class="n">CODE</span><span class="o">-</span><span class="n">from</span><span class="o">-</span><span class="n">podbench</span><span class="o">-</span><span class="n">sidecar</span>   <span class="p">(</span><span class="n">x5</span><span class="p">)</span>
+  <span class="n">OLD</span><span class="o">-</span><span class="n">CODE</span><span class="o">-</span><span class="n">still</span><span class="o">-</span><span class="ow">in</span><span class="o">-</span><span class="n">app</span><span class="o">-</span><span class="n">container</span>  <span class="p">(</span><span class="n">x3</span><span class="p">)</span>
+  <span class="n">NEW</span><span class="o">-</span><span class="n">CODE</span><span class="o">-</span><span class="n">from</span><span class="o">-</span><span class="n">podbench</span><span class="o">-</span><span class="n">sidecar</span>   <span class="p">(</span><span class="n">x2</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>You would be debugging code that only handles half the requests, with nothing in any
+log to tell you.</p>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">TIME_WAIT</span></code> lockout after a <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> server</strong> — once a <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code>
+listener has served connections, a plain <code class="docutils literal notranslate"><span class="pre">SO_REUSEADDR</span></code> rebind of the same port fails
+for the full TIME_WAIT window (~60 s) even though <code class="docutils literal notranslate"><span class="pre">ss</span> <span class="pre">-lntp</span></code> shows <strong>no listener</strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ss</span> <span class="o">-</span><span class="n">antp</span><span class="p">:</span>  <span class="n">TIME</span><span class="o">-</span><span class="n">WAIT</span> <span class="mf">10.42.5.125</span><span class="p">:</span><span class="mi">8080</span>  <span class="mf">10.42.5.119</span><span class="p">:</span><span class="mi">56498</span>   <span class="p">(</span><span class="n">x9</span><span class="p">)</span>
+<span class="n">SO_REUSEADDR</span> <span class="n">only</span>          <span class="o">-&gt;</span> <span class="n">errno</span> <span class="mi">98</span> <span class="p">[</span><span class="n">Errno</span> <span class="mi">98</span><span class="p">]</span> <span class="n">Address</span> <span class="n">already</span> <span class="ow">in</span> <span class="n">use</span>
+<span class="n">SO_REUSEADDR</span><span class="o">+</span><span class="n">SO_REUSEPORT</span>  <span class="o">-&gt;</span> <span class="n">BOUND</span> <span class="n">OK</span>
+</pre></div>
+</div>
+<p>Verified recovery: after ~70 s the plain relaunch succeeded again and the Service
+returned the edited string.</p>
+</li>
+</ul>
+</section>
+<section id="f8-a-naive-wait-for-the-port-to-open-health-check-gives-a-false-pass">
+<h3>F8 — A naive “wait for the port to open” health check gives a <strong>false PASS</strong>.<a class="headerlink" href="#f8-a-naive-wait-for-the-port-to-open-health-check-gives-a-false-pass" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">relaunch.sh</span></code> polls <code class="docutils literal notranslate"><span class="pre">connect(127.0.0.1:8080)</span></code>. When the idled container was still
+holding the port, the relaunch crashed with <code class="docutils literal notranslate"><span class="pre">EADDRINUSE</span></code> and the wrapper still printed
+<code class="docutils literal notranslate"><span class="pre">LISTENING</span> <span class="pre">after</span> <span class="pre">1</span> <span class="pre">polls</span></code>, exit 0 — while the Service kept returning the <em>old</em> string.
+The wrapper must verify <strong>its own child</strong> is alive and owns the socket, not merely that
+<em>something</em> answers.</p>
+</section>
+<section id="f9-operational-footguns-observed">
+<h3>F9 — Operational footguns observed<a class="headerlink" href="#f9-operational-footguns-observed" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code> prints <strong>nothing</strong> on success. No confirmation line.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span> <span class="pre">&lt;pattern&gt;</span></code> inside the sidecar <strong>kills the exec’d shell itself</strong> when the
+pattern appears in the shell’s own command line (<code class="docutils literal notranslate"><span class="pre">command</span> <span class="pre">terminated</span> <span class="pre">with</span> <span class="pre">exit</span> <span class="pre">code</span> <span class="pre">143</span></code>). With <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> this is worse: <code class="docutils literal notranslate"><span class="pre">pkill</span></code> sees every process
+in every container of the pod.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">svc</span> <span class="pre">--type=merge</span></code> on <code class="docutils literal notranslate"><span class="pre">spec.selector</span></code> <strong>merges</strong> map keys rather than
+replacing them. Patching back to <code class="docutils literal notranslate"><span class="pre">{app:</span> <span class="pre">podbench-target}</span></code> produced
+<code class="docutils literal notranslate"><span class="pre">{app:</span> <span class="pre">podbench-target,</span> <span class="pre">podbench.dev/devpod:</span> <span class="pre">&quot;true&quot;}</span></code> and silently dropped the
+original pod out of the endpointslice. Use <code class="docutils literal notranslate"><span class="pre">--type=json</span></code> with <code class="docutils literal notranslate"><span class="pre">op:</span> <span class="pre">replace</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ss</span></code> and <code class="docutils literal notranslate"><span class="pre">pkill</span></code> are not in <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code>; <code class="docutils literal notranslate"><span class="pre">ps</span></code> is not in <code class="docutils literal notranslate"><span class="pre">python:3.12-slim</span></code>.
+<code class="docutils literal notranslate"><span class="pre">iproute2</span></code> and <code class="docutils literal notranslate"><span class="pre">procps</span></code> are required parts of the podbench image.</p></li>
+<li><p>The target <code class="docutils literal notranslate"><span class="pre">python:3.12-slim</span></code> container has <strong>no shell tooling</strong> for diagnosis — all
+diagnosis has to be driven from the sidecar.</p></li>
+</ul>
+</section>
+<section id="f10-original-workload-provably-untouched">
+<h3>F10 — Original workload provably untouched<a class="headerlink" href="#f10-original-workload-provably-untouched" title="Link to this heading">#</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>BEFORE:  rv=38532067  uid=b75ba7ec-…  restarts=0  start=2026-08-15T10:40:55Z
+AFTER:   rv=38532067  uid=b75ba7ec-…  restarts=0  start=2026-08-15T10:40:55Z   ready=true
+deploy   BEFORE rv=38532071 gen=1     AFTER rv=38532071 gen=1 obsGen=1 ready=1
+events on the original pod: Scheduled / Pulled / Created / Started — and nothing else
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">resourceVersion</span></code> was <strong>byte-identical</strong> across the entire spike (12 minutes, three dev
+pods, a Service selector flipped twice). The original <code class="docutils literal notranslate"><span class="pre">/src/app.py</span></code> was unmodified.
+Note this is only true because the dev pod is an <em>orphan copy</em> — the Deployment never
+learned it existed.</p>
+</section>
+<section id="f11-timings-all-on-nuc2-warm-image-cache">
+<h3>F11 — Timings (all on <code class="docutils literal notranslate"><span class="pre">nuc2</span></code>, warm image cache)<a class="headerlink" href="#f11-timings-all-on-nuc2-warm-image-cache" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>phase</p></th>
+<th class="head"><p>elapsed</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>author spec + <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">apply</span></code> + pod <code class="docutils literal notranslate"><span class="pre">Ready</span></code></p></td>
+<td><p><strong>4.3 s</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">curl</span> <span class="pre">ca-certificates</span> <span class="pre">git</span> <span class="pre">xz-utils</span> <span class="pre">procps</span></code></p></td>
+<td><p><strong>10.6 s</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>uv install script + <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">python</span> <span class="pre">install</span> <span class="pre">3.12</span></code></p></td>
+<td><p><strong>2.3 s</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>write package + <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">venv</span></code> + <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> (hatchling from PyPI)</p></td>
+<td><p><strong>1.0 s</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>first relaunch → listening</p></td>
+<td><p><strong>0.85 s</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>edit → relaunch → verified through the Service</strong></p></td>
+<td><p><strong>1.18 s</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><strong>total, <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> to a working edit-relaunch loop</strong></p></td>
+<td><p><strong>≈ 19 s of work</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Caveats: <code class="docutils literal notranslate"><span class="pre">python:3.12-slim</span></code> and <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> were already cached on <code class="docutils literal notranslate"><span class="pre">nuc2</span></code>
+(“Container image … already present on machine”), so <strong>image pull time is excluded</strong>.
+I attempted a genuinely cold measurement on the other amd64 node and could not —
+<code class="docutils literal notranslate"><span class="pre">ws03</span></code> carries a <code class="docutils literal notranslate"><span class="pre">workstation</span></code> taint and <code class="docutils literal notranslate"><span class="pre">node01</span></code> a control-plane taint, so <strong><code class="docutils literal notranslate"><span class="pre">nuc2</span></code> is
+the only schedulable amd64 node on this cluster</strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">0</span><span class="o">/</span><span class="mi">6</span> <span class="n">nodes</span> <span class="n">are</span> <span class="n">available</span><span class="p">:</span> <span class="mi">2</span> <span class="n">node</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="n">had</span> <span class="n">untolerated</span> <span class="n">taint</span><span class="p">(</span><span class="n">s</span><span class="p">),</span>
+<span class="mi">4</span> <span class="n">node</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="n">didn</span><span class="s1">&#39;t match Pod&#39;</span><span class="n">s</span> <span class="n">node</span> <span class="n">affinity</span><span class="o">/</span><span class="n">selector</span><span class="o">.</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="deviations-from-the-brief">
+<h2>Deviations from the brief<a class="headerlink" href="#deviations-from-the-brief" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> does far more than strip probes — it strips <em>all</em> labels and
+annotations, so the clone receives no Service traffic.</strong> The brief only claimed
+probes. This is the single most important deviation: the headline Iterate-mode demo
+(“edit code, curl the Service, see your change”) <strong>cannot work at all</strong> with vanilla
+<code class="docutils literal notranslate"><span class="pre">--copy-to</span></code>. Podbench must author the spec and deliberately re-apply the selector
+labels, minus the controller-revision label.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> cannot give the debug container <code class="docutils literal notranslate"><span class="pre">resources</span></code> or a workspace volume.</strong>
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span> <span class="pre">--image=…</span> <span class="pre">--container</span> <span class="pre">podbench</span></code> does create a real
+(non-ephemeral) sidecar and does set <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code>, but the container
+comes out with <code class="docutils literal notranslate"><span class="pre">resources:</span> <span class="pre">{}</span></code> and only the serviceaccount mount. There is no flag
+for requests/limits or an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>. This empirically justifies the Phase-4
+authored-spec approach rather than shelling out to <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code>.</p></li>
+<li><p><strong>Taking Service traffic is not free — there is a broken window, and the fix is a
+readiness probe on the <em>debug</em> container.</strong> The brief treats “the clone receives
+Service traffic” as a binary property. In practice a probe-less dev pod becomes
+<code class="docutils literal notranslate"><span class="pre">Ready</span></code> immediately and blackholes ~50 % of requests until you relaunch. A
+<code class="docutils literal notranslate"><span class="pre">tcpSocket</span></code> readinessProbe on the podbench sidecar makes endpoint membership track
+the inner loop automatically, in both directions. This should be part of the
+authored spec, not an option.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> breaks the “the port is either free or you get EADDRINUSE”
+assumption.</strong> With any framework that sets <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code>, a relaunch succeeds
+silently and splits traffic between old and new code, and afterwards TIME_WAIT
+entries lock out a plain rebind for ~60 s with no visible listener. Podbench must
+inspect the port before relaunching, not just try to bind.</p></li>
+<li><p><strong>Cold-start timings could not be measured on this cluster</strong> — only one amd64 node is
+schedulable (<code class="docutils literal notranslate"><span class="pre">ws03</span></code> is tainted <code class="docutils literal notranslate"><span class="pre">workstation</span></code>). All numbers are warm-cache.</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="recommendations-for-implementation">
+<h2>Recommendations for implementation<a class="headerlink" href="#recommendations-for-implementation" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p><strong>Author the pod spec in the launcher. Do not shell out to <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code>.</strong>
+The prototype above is ~60 lines and gives you probes, labels, resources, volumes and
+<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace</span></code> under your own control. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code> has no <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code>,
+so you cannot even preview what it will produce.</p></li>
+<li><p><strong>Label policy is the crux.</strong> Copy the origin pod’s labels, then delete
+<code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code>, <code class="docutils literal notranslate"><span class="pre">controller-revision-hash</span></code>, <code class="docutils literal notranslate"><span class="pre">controller-uid</span></code>,
+<code class="docutils literal notranslate"><span class="pre">batch.kubernetes.io/controller-uid</span></code>, <code class="docutils literal notranslate"><span class="pre">batch.kubernetes.io/job-name</span></code>, <code class="docutils literal notranslate"><span class="pre">job-name</span></code>,
+<code class="docutils literal notranslate"><span class="pre">statefulset.kubernetes.io/pod-name</span></code>. Add <code class="docutils literal notranslate"><span class="pre">podbench.dev/devpod:</span> <span class="pre">&quot;true&quot;</span></code> and an
+annotation recording the origin pod. Gate the whole thing behind an explicit
+<code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code> flag: default <strong>off</strong> (labels emptied, like <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code>), because
+silently joining a production Service is a foot-cannon.</p></li>
+<li><p><strong>Always put a <code class="docutils literal notranslate"><span class="pre">tcpSocket</span></code> readinessProbe for the target port on the podbench
+container</strong> (<code class="docutils literal notranslate"><span class="pre">periodSeconds:</span> <span class="pre">2,</span> <span class="pre">failureThreshold:</span> <span class="pre">1</span></code>). This makes the dev pod’s
+Service membership follow the relaunched process automatically and removes the
+50 %-failure window entirely.</p></li>
+<li><p><strong>Offer a “cutover” mode</strong> that flips the Service selector to
+<code class="docutils literal notranslate"><span class="pre">{podbench.dev/devpod:</span> <span class="pre">&quot;true&quot;}</span></code> for exclusive traffic, restoring on exit. Implement
+it with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">--type=json</span> <span class="pre">op=replace</span></code> on <code class="docutils literal notranslate"><span class="pre">/spec/selector</span></code> — a merge patch
+silently unions the maps. Record the original selector so the restore is exact.</p></li>
+<li><p><strong>Pre-flight the port before every relaunch.</strong> Read <code class="docutils literal notranslate"><span class="pre">/proc/net/tcp{,6}</span></code> (or run
+<code class="docutils literal notranslate"><span class="pre">ss</span> <span class="pre">-lntp</span></code>, which sees all containers thanks to shared netns + shared PID ns +
+<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>) and refuse to launch if anything is already LISTENing on the target
+port, naming the owning PID and — via <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> — the owning container.
+Also count TIME_WAIT entries on the port and tell the user to wait rather than
+letting them stare at an inexplicable <code class="docutils literal notranslate"><span class="pre">EADDRINUSE</span></code>.</p></li>
+<li><p><strong>Never assume the socket poll means success.</strong> The relaunch wrapper must track its
+own child PID, confirm it is alive, and confirm that PID owns the listening socket
+(match the socket inode against <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/fd</span></code>). Otherwise a crashed relaunch
+reports success while the idled container keeps serving stale code.</p></li>
+<li><p><strong>Bake the toolchain into the podbench image.</strong> <code class="docutils literal notranslate"><span class="pre">apt-get</span></code> at runtime cost 10.6 s of
+the 19 s loop — 55 % of the total. The image needs at minimum <code class="docutils literal notranslate"><span class="pre">curl</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code>, <code class="docutils literal notranslate"><span class="pre">git</span></code>, <code class="docutils literal notranslate"><span class="pre">xz-utils</span></code>, <code class="docutils literal notranslate"><span class="pre">procps</span></code>, <code class="docutils literal notranslate"><span class="pre">iproute2</span></code>, plus <code class="docutils literal notranslate"><span class="pre">uv</span></code> and a
+pre-seeded CPython. That would bring the bootstrap to ~4 s.</p></li>
+<li><p><strong>Give the sidecar <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> unconditionally.</strong> It is what makes
+<code class="docutils literal notranslate"><span class="pre">ss</span> <span class="pre">-lntp</span></code>, <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> and gdb work across containers, and it is what keeps
+the bridge one-directional — the app container cannot reach back into the workspace.</p></li>
+<li><p><strong>Set <code class="docutils literal notranslate"><span class="pre">HOME=/workspace</span></code> on the sidecar</strong> so uv’s toolchains, caches and venvs land in
+the <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> rather than the container’s writable layer. Size the <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>
+generously (4 Gi was fine; a CPython toolchain plus a real dependency tree will use
+it).</p></li>
+<li><p><strong>Document the mount-namespace rule with the exec-style <code class="docutils literal notranslate"><span class="pre">.pth</span></code> error text</strong>, not
+just the path-style one. Users hitting the path-style case get <em>no</em> diagnostic at
+all, which is the harder failure to recognise.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">restartPolicy:</span> <span class="pre">Never</span></code> on the dev pod</strong>, so a crash leaves a corpse to inspect
+rather than looping. (Used throughout this spike; the pod never restarted.)</p></li>
+<li><p><strong>Warn about <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code> in generated helper scripts.</strong> Under
+<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> it matches the invoking shell and every container’s
+processes. Kill by recorded PID instead.</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="cleanup-what-was-left-behind">
+<h2>Cleanup / what was left behind<a class="headerlink" href="#cleanup-what-was-left-behind" title="Link to this heading">#</a></h2>
+<p>Deleted: <code class="docutils literal notranslate"><span class="pre">deployment/podbench-target</span></code>, <code class="docutils literal notranslate"><span class="pre">pod/devpod</span></code>, <code class="docutils literal notranslate"><span class="pre">pod/devpod2</span></code>, <code class="docutils literal notranslate"><span class="pre">pod/devpod-plain</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pod/devpod-plain2</span></code>, <code class="docutils literal notranslate"><span class="pre">pod/devpod-addc</span></code>, <code class="docutils literal notranslate"><span class="pre">pod/devpod-cold</span></code>, <code class="docutils literal notranslate"><span class="pre">pod/curler-copy</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pod/curler</span></code>. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">-n</span> <span class="pre">podbench-s4</span> <span class="pre">get</span> <span class="pre">pods</span></code> → <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">resources</span> <span class="pre">found</span></code>.</p>
+<p><strong>Left in place (deliberately):</strong></p>
+<ul class="simple">
+<li><p>namespace <code class="docutils literal notranslate"><span class="pre">podbench-s4</span></code> (as instructed)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">service/podbench-target</span></code> (ClusterIP 10.43.124.195, selector restored to
+<code class="docutils literal notranslate"><span class="pre">{app:</span> <span class="pre">podbench-target}</span></code>, now with zero endpoints)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">configmap/app-src</span></code> (and the auto-created <code class="docutils literal notranslate"><span class="pre">kube-root-ca.crt</span></code>)</p></li>
+</ul>
+<p>Nothing outside <code class="docutils literal notranslate"><span class="pre">podbench-s4</span></code> was created, modified or deleted. No node-level settings
+were changed. Scratch artefacts (manifests, <code class="docutils literal notranslate"><span class="pre">podbench_author.py</span></code>, helper scripts) are in
+<code class="docutils literal notranslate"><span class="pre">/tmp/claude-0/-workspaces-tpi-k3s-ansible/2c9abbf4-6c26-436d-9237-a03194fe5977/scratchpad/s4/</span></code>.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="s3.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">S3 — gdb attach with sysroot against a distroless target</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="s5.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-was-tested">What was tested</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exact-commands-that-worked">Exact commands that worked</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#target-workload">1. Target workload</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#plain-kubectl-debug-copy-to-the-control">2. Plain <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code> (the control)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-4-authored-spec-what-the-launcher-should-actually-do">3. Phase-4 authored spec (what the launcher should actually do)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#toolchain-bootstrap-in-the-sidecar">4. Toolchain bootstrap in the sidecar</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#editable-install">5. Editable install</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#relaunch-on-the-pod-ip-from-the-sidecar">6. Relaunch on the pod IP from the sidecar</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#edit-relaunch-verify">7. Edit → relaunch → verify</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mount-namespace-pth-test-run-inside-the-target-app-container">8. Mount-namespace <code class="docutils literal notranslate"><span class="pre">.pth</span></code> test (run <strong>inside the target <code class="docutils literal notranslate"><span class="pre">app</span></code> container</strong>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#port-conflicts">9. Port conflicts</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#readiness-gated-dev-pod-the-fix-for-the-split-traffic-window">10. Readiness-gated dev pod (the fix for the split-traffic window)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#findings">Findings</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f1-copy-to-strips-probes-and-all-labels-and-annotations-the-clone-gets-no-service-traffic">F1 — <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> strips probes <strong>and all labels and annotations</strong>. The clone gets <strong>no Service traffic</strong>.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f2-restoring-labels-works-but-you-must-drop-pod-template-hash-or-the-replicaset-eats-your-dev-pod">F2 — Restoring labels works, but you must drop <code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code>, or the ReplicaSet eats your dev pod.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f3-joining-the-service-before-the-app-is-relaunched-produces-50-hard-failures">F3 — Joining the Service <em>before</em> the app is relaunched produces ~50 % hard failures.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f4-shared-network-namespace-claim-confirmed">F4 — Shared network namespace claim: <strong>CONFIRMED</strong>.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f5-mount-namespace-warning-confirmed-and-worse-than-it-dangles">F5 — Mount-namespace warning: <strong>CONFIRMED, and worse than “it dangles”</strong>.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f6-the-proc-pid-root-bridge-is-one-directional-by-capability">F6 — The <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is <strong>one-directional</strong>, by capability.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f7-port-conflicts-three-distinct-behaviours-one-of-them-silent-and-dangerous">F7 — Port conflicts: three distinct behaviours, one of them silent and dangerous.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f8-a-naive-wait-for-the-port-to-open-health-check-gives-a-false-pass">F8 — A naive “wait for the port to open” health check gives a <strong>false PASS</strong>.</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f9-operational-footguns-observed">F9 — Operational footguns observed</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f10-original-workload-provably-untouched">F10 — Original workload provably untouched</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#f11-timings-all-on-nuc2-warm-image-cache">F11 — Timings (all on <code class="docutils literal notranslate"><span class="pre">nuc2</span></code>, warm image cache)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deviations-from-the-brief">Deviations from the brief</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recommendations-for-implementation">Recommendations for implementation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cleanup-what-was-left-behind">Cleanup / what was left behind</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a1/docs/explanations/spikes/s4.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../../_sources/explanations/spikes/s4.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

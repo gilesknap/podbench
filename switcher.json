@@ -2,5 +2,9 @@
   {
     "version": "main",
     "url": "https://gilesknap.github.io/podbench/main/"
+  },
+  {
+    "version": "0.1.0-alpha.1",
+    "url": "https://gilesknap.github.io/podbench/0.1.0-alpha.1/"
   }
 ]
