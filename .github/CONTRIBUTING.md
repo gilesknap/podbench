@@ -26,8 +26,11 @@ It is recommended that developers use a [vscode devcontainer](https://code.visua
 pre-commit hook regenerates it from `values.yaml` and `example.values.yaml`. That
 hook is a shim around a helm plugin — the devcontainer image installs both it and
 `helm`, and a checkout outside the devcontainer needs
-`helm plugin install https://github.com/losisin/helm-values-schema-json` before
-`pre-commit run --all-files` will pass. Add a value by editing `values.yaml` —
+`helm plugin install https://github.com/losisin/helm-values-schema-json --version
+v2.5.0` before `pre-commit run --all-files` will pass — pinned to the hook's
+`rev`, because a different plugin version generates a different schema and the
+disagreement lands in CI as a diff nobody wrote. Add a value by editing
+`values.yaml` —
 including the `# @schema` comment if it needs an enum or an item shape — and
 letting the hook rewrite the JSON.
 
