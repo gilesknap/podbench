@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0a7.dev2+g0f9d515b9 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=358aa716"></script>
+    <script src="../_static/documentation_options.js?v=4624ee37"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -493,6 +493,14 @@
 <p>Take a <strong>distroless</strong> container — no shell, no gdb, no libc headers, nothing to
 exec into — and land on a breakpoint with source shown and locals readable. Ten
 minutes, most of it image pulls.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Commands here are written <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — the only spelling there is. If you
+have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, or, before
+the first PyPI release, as
+<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
+<a class="reference internal" href="../tutorials/installation.html"><span class="std std-doc">Installation</span></a>.</p>
+</div>
 <p>Everything here is driven by <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, the helper on the debug container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.
 <code class="docutils literal notranslate"><span class="pre">dbg</span></code> is not <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span></code>: it fixes seven commands in one order, and the order is a
 correctness property rather than a preference. Setting the sysroot <em>after</em>
@@ -587,7 +595,7 @@ That is not incidental — see <em>Where source text actually comes from</em> be
 </section>
 <section id="attach-the-seat">
 <h2>2. Attach the seat<a class="headerlink" href="#attach-the-seat" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/victim -n podbench-gdb
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/victim -n podbench-gdb
 </pre></div>
 </div>
 <p>Check the report says <code class="docutils literal notranslate"><span class="pre">[x]</span> <span class="pre">live</span> <span class="pre">attach</span></code>. If it does not, skip to

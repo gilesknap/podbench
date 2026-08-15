@@ -4,6 +4,10 @@ A debug-container image for Kubernetes that puts your editor, gdb, and a Python 
 
 Working name — rename freely. This document is the handoff brief for implementation; the kickoff prompt is at the end.
 
+:::{note}
+Historical in one respect: the brief specifies a kubectl plugin, so it says `kubectl podbench <verb>` and lists a `kubectl-podbench` launcher. That plugin was built and then removed — a plugin has to be installed to be discovered, which is the opposite of the "install nothing" goal. The only spelling is `podbench <verb>`, canonically `uvx podbench <verb>`. See [ADR 0003](decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.md). Every acceptance criterion below still stands; only the command spelling changed.
+:::
+
 ## The idea
 
 Kubernetes ephemeral containers (`kubectl debug --target=…`, stable since 1.25) can join any running container's PID namespace, and always share the pod's network namespace. Podbench is a single container image plus a small launcher that turns that primitive into a full development seat inside a pod:

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0a7.dev2+g0f9d515b9 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=358aa716"></script>
+    <script src="../_static/documentation_options.js?v=4624ee37"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -493,6 +493,14 @@
 <p>Observe mode: put a debug seat into a <strong>live</strong> pod without disturbing it, and
 find out what that seat can actually do. For the guided version, see
 <a class="reference internal" href="../tutorials/first-session.html"><span class="std std-doc">Your first session</span></a>; this page is the recipes.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Commands here are written <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — the only spelling there is. If you
+have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, or, before
+the first PyPI release, as
+<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
+<a class="reference internal" href="../tutorials/installation.html"><span class="std std-doc">Installation</span></a>.</p>
+</div>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>On a live pod podbench shares the workload’s memory and ephemeral-storage limits
@@ -505,7 +513,7 @@ heavier than looking belongs in a dev pod
 </div>
 <section id="attach-and-re-attach">
 <h2>Attach, and re-attach<a class="headerlink" href="#attach-and-re-attach" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code> and a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code> are both accepted. Namespace defaults to your
@@ -521,7 +529,7 @@ died, not out of habit.</p>
 <h2>Choosing the target container<a class="headerlink" href="#choosing-the-target-container" title="Link to this heading">#</a></h2>
 <p>podbench needs to know <em>which</em> container’s PID namespace to join and whose UID
 to match:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-... --target api
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/web-... --target api
 </pre></div>
 </div>
 <p>Without <code class="docutils literal notranslate"><span class="pre">--target</span></code> it picks the pod’s first container. On a multi-container pod,
@@ -559,7 +567,7 @@ already-running process. See <a class="reference internal" href="debug-with-gdb.
 </section>
 <section id="making-memory-headroom-first">
 <h2>Making memory headroom first<a class="headerlink" href="#making-memory-headroom-first" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-... --resize 6Gi
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach pod/web-... --resize 6Gi
 </pre></div>
 </div>
 <p>This raises the <strong>target container’s</strong> memory limit in place
@@ -576,8 +584,8 @@ rest.</p>
 </section>
 <section id="getting-the-ssh-stanza-again">
 <h2>Getting the ssh stanza again<a class="headerlink" href="#getting-the-ssh-stanza-again" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench ssh-config pod/web-... -n demo
-$ kubectl podbench ssh-config pod/web-... -n demo --print-config
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench ssh-config pod/web-... -n demo
+$ podbench ssh-config pod/web-... -n demo --print-config
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> regenerates the stanza for a seat that is already running, without
@@ -611,8 +619,8 @@ re-attach.</p>
 </section>
 <section id="seeing-what-is-out-there">
 <h2>Seeing what is out there<a class="headerlink" href="#seeing-what-is-out-there" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench status pod/web-... -n demo    # every seat in one pod
-$ kubectl podbench list -n demo                  # every seat in the namespace
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench status pod/web-... -n demo    # every seat in one pod
+$ podbench list -n demo                  # every seat in the namespace
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">status</span></code> shows dead containers too, because their names remain burnt.</p>
@@ -665,7 +673,7 @@ for whatever it has written.</p>
 </tbody>
 </table>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span> <span class="pre">attach</span></code> returns <code class="docutils literal notranslate"><span class="pre">2</span></code> only for a real error. A degraded seat is
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> returns <code class="docutils literal notranslate"><span class="pre">2</span></code> only for a real error. A degraded seat is
 a success: returning non-zero for “the cluster would not grant <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>”
 would make an honest report look like a failure.</p>
 </section>

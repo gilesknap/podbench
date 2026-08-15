@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.1.0a7.dev2+g0f9d515b9 documentation</title>
+    <title>Your first session &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=358aa716"></script>
+    <script src="../_static/documentation_options.js?v=4624ee37"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -491,8 +491,18 @@ session into it, and VS Code editing files that live in your cluster. Nothing
 you do here touches a real workload — you will create a throwaway namespace and
 delete it at the end.</p>
 <p>Budget about fifteen minutes, most of it waiting for image pulls.</p>
-<p>You need <a class="reference internal" href="installation.html"><span class="std std-doc">the launcher installed</span></a> and a cluster you are allowed
-to create pods in. A local <a class="reference external" href="https://kind.sigs.k8s.io">kind</a> cluster is ideal.</p>
+<p>You need <code class="docutils literal notranslate"><span class="pre">uv</span></code> and <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on your machine, the one-time
+<a class="reference internal" href="installation.html"><span class="std std-doc">ssh <code class="docutils literal notranslate"><span class="pre">Include</span></code> line</span></a>, and a cluster you are allowed to create
+pods in. A local <a class="reference external" href="https://kind.sigs.k8s.io">kind</a> cluster is ideal. The launcher
+itself is not installed — <code class="docutils literal notranslate"><span class="pre">uvx</span></code> fetches and runs it.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Before the first PyPI release</strong> there is nothing for <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> to
+resolve. Until then, run every <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> on this page as:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx --from git+https://github.com/gilesknap/podbench podbench &lt;verb&gt;
+</pre></div>
+</div>
+</div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>The measurements quoted throughout these docs were taken on a 6-node k3s
@@ -549,10 +559,11 @@ web-6c9d7f4b8b-hq2vn   1/1     Running   0          25s
 </section>
 <section id="attach">
 <h2>2. Attach<a class="headerlink" href="#attach" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench attach pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
 </pre></div>
 </div>
-<p>That single command does five things:</p>
+<p>Nothing is installed to run that: <code class="docutils literal notranslate"><span class="pre">uvx</span></code> fetches the launcher, runs it against
+your kubeconfig and leaves nothing behind. It does five things:</p>
 <ol class="arabic simple">
 <li><p>reads the target pod’s spec, so it knows the workload container’s UID and
 whether the pod insists on <code class="docutils literal notranslate"><span class="pre">runAsNonRoot</span></code>;</p></li>
@@ -658,8 +669,8 @@ the settings that matter.</p>
 </section>
 <section id="look-at-what-you-have-running">
 <h2>7. Look at what you have running<a class="headerlink" href="#look-at-what-you-have-running" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench status pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
-$ kubectl podbench list -n podbench-demo
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench status pod/web-6c9d7f4b8b-hq2vn -n podbench-demo
+$ uvx podbench list -n podbench-demo
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">status</span></code> lists every podbench container in a pod, including dead ones whose

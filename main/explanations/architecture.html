@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Architecture &#8212; podbench 0.1.0a7.dev2+g0f9d515b9 documentation</title>
+    <title>Architecture &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=358aa716"></script>
+    <script src="../_static/documentation_options.js?v=4624ee37"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -426,6 +426,8 @@
 <li class="toctree-l1 has-children"><a class="reference internal" href="decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="design-brief.html">Podbench</a></li>
@@ -698,15 +700,30 @@ tidiness: the logic that decides what a session can do — which capability rung
 is valid, what blocks ptrace, which processes belong to the target — has to give
 the same answer on both sides. Two implementations would be two answers.</p>
 <ul class="simple">
-<li><p>On your machine: <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, via the <code class="docutils literal notranslate"><span class="pre">kubectl-podbench</span></code> plugin
-entry point.</p></li>
+<li><p>On your machine: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, normally reached as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>
+— uv fetches the launcher for that one run and leaves nothing installed. There
+is no kubectl plugin: a plugin has to be an executable on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, which is
+exactly the thing that outlives the command.</p></li>
 <li><p>In the pod: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code> is PID 1, and <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>,
 <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code> are one-line wrappers on
 <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.</p></li>
 </ul>
-<p>There are <strong>no runtime dependencies</strong> — argparse and the stdlib. The launcher
-shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on purpose, so authentication, contexts and credential
-plugins are inherited rather than reimplemented.</p>
+<p>There is <strong>one runtime dependency, and it is the CLI</strong> — typer, which brings
+click and rich. The help a developer reads at 3 a.m. is part of the product, and
+four small pure-Python wheels is what that costs on a cold <code class="docutils literal notranslate"><span class="pre">uvx</span></code> start.
+Everything else is the stdlib. In particular there is no Kubernetes client: the
+launcher shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on purpose, so authentication, contexts and
+credential plugins are inherited rather than reimplemented.</p>
+<p>Running the launcher from the index rather than from an install has one
+consequence worth stating: its version can change between two attaches with no
+visible event. So the image tag is <strong>derived from the launcher’s own version</strong>
+rather than fixed, and a launcher asks for the image built from its own source.
+The failure that prevents is a launcher authoring a container spec its image
+does not understand — which fails inside the pod, where an ephemeral container
+cannot be restarted. A dev build off a checkout matches no published image and
+falls back to <code class="docutils literal notranslate"><span class="pre">main</span></code>, the branch-tip image CI pushes on every default-branch
+commit — not to <code class="docutils literal notranslate"><span class="pre">latest</span></code>, which moves only on a final release and so may be far
+older than the launcher. <code class="docutils literal notranslate"><span class="pre">--image</span></code> and <code class="docutils literal notranslate"><span class="pre">PODBENCH_IMAGE</span></code> still win over both.</p>
 </section>
 <section id="the-mount-namespace-rule">
 <h2>The mount-namespace rule<a class="headerlink" href="#the-mount-namespace-rule" title="Link to this heading">#</a></h2>

@@ -4,20 +4,56 @@ The image is the half of podbench that runs in the cluster. It is a development
 seat, not a CLI wrapper: a developer lands *inside* it over ssh, so the whole
 toolchain has to be there.
 
+:::{note}
+Commands here are written `podbench <verb>` — the only spelling there is. If you
+have not installed the launcher, run each as `uvx podbench <verb>`, or, before
+the first PyPI release, as
+`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+[Installation](../tutorials/installation.md).
+:::
+
 ```
-ghcr.io/gilesknap/podbench:latest
+ghcr.io/gilesknap/podbench:<launcher version>
 ```
 
 Built and pushed by CI on tag; a numbered release tag pins a specific build.
 
-You normally never pull it yourself. `kubectl podbench attach` names it in the
+**The default tag follows the launcher's own version**, so a launcher asks for
+the image built from its own source. That matters because `uvx podbench` resolves
+a launcher afresh on every run, and a version can move between two attaches with
+nothing to see: pinning the tag to the version keeps the two halves in step,
+where a fixed `:latest` would eventually let a launcher author a container spec
+its image does not understand.
+
+A launcher built from a checkout — a clone, or `uvx --from git+...` — matches no
+published image and falls back to **`:main`**, the branch-tip image CI pushes on
+every default-branch commit. That is the same-source counterpart to such a
+launcher. `:latest` is deliberately not the fallback: it moves only on a
+**final** release, so an unpinned user is never handed a prerelease — but for
+the same reason it does not move at all on a project that has so far tagged only
+prereleases, and a stale `:latest` is exactly the launcher/image skew this
+scheme exists to prevent.
+
+One release has two spellings, and CI pushes both onto the same digest: the git
+tag and the chart use SemVer (`1.0.0-beta.1`), while the wheel — and so the
+launcher's version — uses PEP 440 (`1.0.0b1`). Either tag pulls the same image.
+
+:::{note}
+Tags published before this scheme (`0.1.0-alpha.1` … `0.1.0-alpha.6`) carry the
+SemVer spelling only. A launcher installed from one of those git tags asks for
+its own PEP 440 spelling — `0.1.0-alpha.4` becomes `0.1.0a4` — which was never
+pushed; pass the SemVer tag of that same release, e.g. `--image
+ghcr.io/gilesknap/podbench:0.1.0-alpha.4`.
+:::
+
+You normally never pull it yourself. `podbench attach` names it in the
 ephemeral container spec and the kubelet pulls it onto whichever node the target
 pod is running on.
 
 ## Choosing a different image
 
 ```
-$ kubectl podbench attach pod/foo --image ghcr.io/gilesknap/podbench:0.3.0
+$ podbench attach pod/foo --image ghcr.io/gilesknap/podbench:0.3.0
 $ export PODBENCH_IMAGE=registry.internal/podbench@sha256:...
 ```
 
@@ -30,8 +66,11 @@ whole organisational argument for allowing podbench at all. See
 [Security model](../explanations/security.md).
 
 The Helm chart records the same reference under `image.repository` / `image.tag`
-so a cluster has one place to state which build it trusts. Keep it and the
-launcher's default in agreement.
+so a cluster has one place to state which build it trusts. Nothing in the chart
+templates it — it is there to be read by the admission policy you write — so a
+cluster that pins there must pin the launcher too, with `PODBENCH_IMAGE` or
+`--image`. Left alone, the launcher tracks its own version and the chart's
+`image.tag` stays empty.
 
 ## Mirroring it
 

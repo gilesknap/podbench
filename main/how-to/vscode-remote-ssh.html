@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0a7.dev2+g0f9d515b9 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=358aa716"></script>
+    <script src="../_static/documentation_options.js?v=4624ee37"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -494,6 +494,14 @@
 carrier is <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. Remote-SSH does not know or care: it sees a host in
 your ssh config and connects. This page is the client setup, and the numbers you
 need to size a pod <strong>before</strong> you attach.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Commands here are written <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — the only spelling there is. If you
+have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, or, before
+the first PyPI release, as
+<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
+<a class="reference internal" href="../tutorials/installation.html"><span class="std std-doc">Installation</span></a>.</p>
+</div>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>No real VS Code GUI client has been driven against podbench yet. The transport
@@ -587,7 +595,7 @@ stanza to the same place, and both print the alias on the last line:</p>
 <span class="n">podbench</span> <span class="n">dev</span> <span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="n">port</span> <span class="mi">8080</span>
 
 <span class="c1"># Observe mode — a seat beside a live workload</span>
-<span class="n">kubectl</span> <span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span>
+<span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span>
 </pre></div>
 </div>
 <p>Both take <code class="docutils literal notranslate"><span class="pre">--identity</span></code> (which key is authorised in the container, default
@@ -625,6 +633,11 @@ straight at <code class="docutils literal notranslate"><span class="pre">~/.podb
     <span class="n">StrictHostKeyChecking</span> <span class="n">yes</span>
 </pre></div>
 </div>
+<p>Note what the <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> names: <strong><code class="docutils literal notranslate"><span class="pre">kubectl</span></code>, not podbench</strong>. The launcher’s
+whole job is to land the seat and write this file, so the seat outlives the
+process that created it. Land one with <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">attach</span></code>, which installs
+nothing, and Remote-SSH keeps connecting for as long as the pod lives — with the
+launcher no longer on the machine at all.</p>
 <p>Do not hand-edit it — it is regenerated on every attach, and three of those
 lines are load-bearing in ways that fail <em>silently</em>:</p>
 <div class="pst-scrollable-table-container"><table class="table">

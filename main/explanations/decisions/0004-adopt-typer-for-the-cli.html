@@ -2,13 +2,13 @@
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="./" >
+<html lang="en" data-content_root="../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Tutorials &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
+    <title>4. Adopt typer for the CLI, and spend the one runtime dependency on it &#8212; podbench 0.1.0b3.dev4+g71797388b documentation</title>
   
   
   
@@ -27,27 +27,27 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
-    <link rel="stylesheet" type="text/css" href="_static/graphviz.css?v=4ae1632d" />
-    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="_static/documentation_options.js?v=4624ee37"></script>
-    <script src="_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
-    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
-    <script src="_static/copybutton.js?v=30646c52"></script>
-    <script src="_static/design-tabs.js?v=f930bc37"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'tutorials';</script>
+    <script src="../../_static/documentation_options.js?v=4624ee37"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=30646c52"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/decisions/0004-adopt-typer-for-the-cli';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
@@ -56,19 +56,19 @@
             false;
         </script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <link rel="icon" href="_static/dls-logo.svg"/>
-    <link rel="index" title="Index" href="genindex.html" />
-    <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Your first session" href="tutorials/first-session.html" />
-    <link rel="prev" title="podbench" href="index.html" />
+    <link rel="icon" href="../../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Podbench" href="../design-brief.html" />
+    <link rel="prev" title="3. Publish the launcher to PyPI and drop the kubectl plugin" href="0003-publish-to-pypi-and-drop-the-kubectl-plugin.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="main" />
   
     
-    <script src="_static/searchtools.js"></script>
-    <script src="_static/language_data.js"></script>
-    <script src="searchindex.js"></script>
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
   
   </head>
   <body data-default-mode="">
@@ -88,7 +88,7 @@
   <dialog id="pst-search-dialog">
     
 <form class="bd-search d-flex align-items-center"
-      action="search.html"
+      action="../../search.html"
       method="get">
   <i class="fa-solid fa-magnifying-glass"></i>
   <input type="search"
@@ -124,7 +124,7 @@
     
   
 
-<a class="navbar-brand logo" href="index.html">
+<a class="navbar-brand logo" href="../../index.html">
   
   
   
@@ -135,8 +135,8 @@
       
     
     
-    <img src="_static/dls-logo.svg" class="logo__image only-light" alt=""/>
-    <img src="_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
   
   
     <p class="title logo__title">podbench</p>
@@ -153,29 +153,29 @@
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
     Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="how-to.html">
+  <a class="nav-link nav-internal" href="../../how-to.html">
     How-to Guides
   </a>
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="explanations.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
     Explanations
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="reference.html">
+  <a class="nav-link nav-internal" href="../../reference.html">
     Reference
   </a>
 </li>
@@ -306,29 +306,29 @@
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
     Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="how-to.html">
+  <a class="nav-link nav-internal" href="../../how-to.html">
     How-to Guides
   </a>
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="explanations.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
     Explanations
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="reference.html">
+  <a class="nav-link nav-internal" href="../../reference.html">
     Reference
   </a>
 </li>
@@ -421,9 +421,26 @@
 <nav class="bd-docs-nav bd-links"
      aria-label="Section Navigation">
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
-  <div class="bd-toc-item navbar-nav"><ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="tutorials/first-session.html">Your first session</a></li>
-<li class="toctree-l1"><a class="reference internal" href="tutorials/installation.html">Installation</a></li>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">Architecture</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../decisions.html">Architectural Decision Records</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../design-brief.html">Podbench</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../security.html">Security model</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../spikes.html">Phase 0 spikes</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../spikes/phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../spikes/s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../spikes/s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../spikes/s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../spikes/s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../spikes/s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+</ul>
+</details></li>
 </ul>
 </div>
 </nav></div>
@@ -460,11 +477,17 @@
   <ul class="bd-breadcrumbs">
     
     <li class="breadcrumb-item breadcrumb-home">
-      <a href="index.html" class="nav-link" aria-label="Home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Tutorials</span></li>
+    
+    <li class="breadcrumb-item"><a href="../../explanations.html" class="nav-link">Explanations</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../decisions.html" class="nav-link">Architectural Decision Records</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">4. Adopt typer for the CLI, and spend the one runtime dependency on it</span></li>
   </ul>
 </nav>
 </div>
@@ -481,15 +504,80 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="tutorials">
-<h1>Tutorials<a class="headerlink" href="#tutorials" title="Link to this heading">#</a></h1>
-<p>Tutorials for installation and typical usage. New users start here.</p>
-<div class="toctree-wrapper compound">
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="tutorials/first-session.html">Your first session</a></li>
-<li class="toctree-l1"><a class="reference internal" href="tutorials/installation.html">Installation</a></li>
+  <section id="adopt-typer-for-the-cli-and-spend-the-one-runtime-dependency-on-it">
+<h1>4. Adopt typer for the CLI, and spend the one runtime dependency on it<a class="headerlink" href="#adopt-typer-for-the-cli-and-spend-the-one-runtime-dependency-on-it" title="Link to this heading">#</a></h1>
+<p>Date: 2026-08-15</p>
+<section id="status">
+<h2>Status<a class="headerlink" href="#status" title="Link to this heading">#</a></h2>
+<p>Accepted</p>
+</section>
+<section id="context">
+<h2>Context<a class="headerlink" href="#context" title="Link to this heading">#</a></h2>
+<p>podbench declared <code class="docutils literal notranslate"><span class="pre">dependencies</span> <span class="pre">=</span> <span class="pre">[]</span></code> and built every verb’s command line out of
+argparse. The rule had a test behind it (<code class="docutils literal notranslate"><span class="pre">tests/test_packaging.py</span></code>) and a CI step
+that ran the built wheel through <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--no-index</span></code>, so nothing could be added by
+accident.</p>
+<p>What the rule was really protecting was never argparse. It was two things: that a
+cold <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> resolves in one step on a machine whose only promised
+tools are uv, helm, kubectl and VS Code, and that podbench talks to Kubernetes by
+shelling out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> — inheriting kubeconfig contexts, exec credential
+plugins and cloud auth rather than reimplementing any of it. A Kubernetes client
+library would have reversed a real decision. argparse was only ever the incumbent.</p>
+<p>And argparse was costing something. The CLI is the product’s surface: thirteen
+verbs across two machines, several of which a developer meets for the first time
+while a pod is broken. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--help</span></code> was a flat list of verb names with an
+epilog splitting them into “cluster-side” and “in-pod” in prose, and a dozen
+flags across the launcher verbs had no help text at all because argparse makes
+that easy to leave out and impossible to notice.</p>
+</section>
+<section id="decision">
+<h2>Decision<a class="headerlink" href="#decision" title="Link to this heading">#</a></h2>
+<p>Depend on <code class="docutils literal notranslate"><span class="pre">typer</span></code>, and give every verb — laptop-side and in-pod — a typer app.</p>
+<p>The dependency budget goes from “none” to “the CLI, and nothing else”: typer,
+which brings click, rich and shellingham. <code class="docutils literal notranslate"><span class="pre">tests/test_packaging.py</span></code> now asserts
+the whole direct set rather than that it is empty, so a second dependency still
+has to be argued for in a diff. The <code class="docutils literal notranslate"><span class="pre">--no-index</span></code> half of the <code class="docutils literal notranslate"><span class="pre">_dist.yml</span></code> smoke
+test is dropped — it cannot survive a dependency — and the step keeps proving
+what only it can, that a cold-cache resolve reaches <code class="docutils literal notranslate"><span class="pre">--version</span></code>.</p>
+<p>Three shapes hold the conversion together:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cli.py</span></code> owns the one adapter between click’s world and this package’s. Every
+<code class="docutils literal notranslate"><span class="pre">main()</span></code> is still <code class="docutils literal notranslate"><span class="pre">(argv)</span> <span class="pre">-&gt;</span> <span class="pre">int</span></code>, because the tests drive them directly and
+the <code class="docutils literal notranslate"><span class="pre">image/bin</span></code> wrappers care about nothing else; click’s standalone mode
+renders its own errors and then exits, so exactly one place catches
+<code class="docutils literal notranslate"><span class="pre">SystemExit</span></code>. Command callbacks end in <code class="docutils literal notranslate"><span class="pre">raise</span> <span class="pre">typer.Exit(code)</span></code>, since click
+discards a callback’s return value on purpose.</p></li>
+<li><p>The top-level dispatcher stays dumb. Each verb is a typer command declared with
+<code class="docutils literal notranslate"><span class="pre">add_help_option=False</span></code> that swallows its tail and hands it to the owning
+module, so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span> <span class="pre">--help</span></code> reaches <code class="docutils literal notranslate"><span class="pre">dev</span></code>’s own parser and
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--version</span></code> still imports no verb — it remains the image’s build-time
+smoke test, and must not depend on every module importing cleanly.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> keeps its <code class="docutils literal notranslate"><span class="pre">argparse.REMAINDER</span></code> contract by having the program’s own
+arguments lifted out of argv before click sees them. Click claims every option
+it knows wherever it appears, and <code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span> <span class="pre">--fast</span></code> has to hand
+<code class="docutils literal notranslate"><span class="pre">--fast</span></code> to the program.</p></li>
 </ul>
-</div>
+</section>
+<section id="consequences">
+<h2>Consequences<a class="headerlink" href="#consequences" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--help</span></code> lists the verbs in two rich panels, “On your machine” and
+“Inside the debug container”, which is the distinction a reader needs first and
+which prose in an epilog was not delivering. Every flag now has help text.</p></li>
+<li><p>A cold <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> resolves four extra pure-Python wheels. The debug image
+is unaffected in shape: it already installs the project with
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span> <span class="pre">--locked</span> <span class="pre">--no-dev</span></code>, so the dependency arrives with it.</p></li>
+<li><p>Two behaviours changed, both of them exit codes that were previously raised
+rather than returned. <code class="docutils literal notranslate"><span class="pre">main()</span></code> now <em>returns</em> 2 for a usage error and 0 for
+<code class="docutils literal notranslate"><span class="pre">--help</span></code> instead of raising <code class="docutils literal notranslate"><span class="pre">SystemExit</span></code>; the codes are the ones argparse used,
+so nothing outside the test suite can tell.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pyright</span></code> needs <code class="docutils literal notranslate"><span class="pre">reportUnusedFunction</span> <span class="pre">=</span> <span class="pre">false</span></code>. Typer registers a command by
+decorating a nested function whose name is then never read, and pyright cannot
+see the registration.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">docs/reference/cli.md</span></code> carries verbatim help for every verb, so it has to be
+regenerated when a flag changes — as it always did.</p></li>
+</ul>
+</section>
 </section>
 
 
@@ -503,20 +591,20 @@
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="index.html"
+       href="0003-publish-to-pypi-and-drop-the-kubectl-plugin.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">podbench</p>
+        <p class="prev-next-title">3. Publish the launcher to PyPI and drop the kubectl plugin</p>
       </div>
     </a>
     <a class="right-next"
-       href="tutorials/first-session.html"
+       href="../design-brief.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Your first session</p>
+        <p class="prev-next-title">Podbench</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -532,10 +620,25 @@
 
 
   <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#context">Context</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decision">Decision</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#consequences">Consequences</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/gilesknap/podbench/edit/main/docs/tutorials.md">
+    <a href="https://github.com/gilesknap/podbench/edit/main/docs/explanations/decisions/0004-adopt-typer-for-the-cli.md">
       <i class="fa-solid fa-pencil"></i>
       
       
@@ -550,7 +653,7 @@
   <div class="sidebar-secondary-item">
 
   <div class="tocsection sourcelink">
-    <a href="_sources/tutorials.md.txt">
+    <a href="../../_sources/explanations/decisions/0004-adopt-typer-for-the-cli.md.txt">
       <i class="fa-solid fa-file-lines"></i> Show Source
     </a>
   </div>
@@ -569,8 +672,8 @@
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
 
   <footer class="bd-footer">
 <div class="bd-footer__inner bd-page-width">
