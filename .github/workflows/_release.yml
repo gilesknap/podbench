@@ -18,6 +18,15 @@ jobs:
         with:
           name: dist
 
+      # The chart's generated values.schema.json, so the release carries a
+      # per-tag URL a site's values file can name in a
+      # `# yaml-language-server: $schema=` line and get completion against the
+      # chart version it actually deploys.
+      - name: Download the chart values schema
+        uses: actions/download-artifact@v8
+        with:
+          name: chart-schema
+
       - name: Download the built docs
         uses: actions/download-artifact@v8
         with:

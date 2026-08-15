@@ -73,8 +73,10 @@ jobs:
     permissions:
       id-token: write
 
+  # `helm` is in the needs list because the release attaches the chart's
+  # generated values.schema.json, which that job uploads.
   release:
-    needs: [dist, test, docs]
+    needs: [dist, test, docs, helm]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_release.yml
     permissions:

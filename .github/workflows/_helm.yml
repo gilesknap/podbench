@@ -54,6 +54,17 @@ jobs:
             --set scratchPvc.enabled=true \
             --set rbac.create=true > /dev/null
 
+      # Attached to the GitHub release by `_release.yml`, which gives the schema
+      # a stable per-tag URL a site's own values file can point
+      # `# yaml-language-server: $schema=` at. Uploaded from here rather than
+      # committed into the release job's workdir because that job deliberately
+      # downloads named artifacts only.
+      - name: Upload the chart values schema
+        uses: actions/upload-artifact@v7
+        with:
+          name: chart-schema
+          path: Charts/podbench/values.schema.json
+
       - name: Package helm chart
         env:
           # Stamp the real version from the tag; off a tag it stays at 0.0.0 so a PR
