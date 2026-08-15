@@ -55,6 +55,35 @@ rules:
     resources: ["pods/resize"]
     verbs: ["patch"]
   {{- end }}
+  {{- if .Values.rbac.patch }}
+  # Patch mode builds on rbac.observe — it reads the pod to find the application
+  # container and its imageID, and reaches the claim's git checkout by exec'ing
+  # into the seat — and adds the following.
+  #
+  # Read-only walk from the pod to the object that owns its pod template: pod ->
+  # ReplicaSet -> Deployment. It is what refuses a multi-replica target, which
+  # matters because the claim is ReadWriteOnce and two writers on one checkout is
+  # a race with no winner. The ReplicaSet is only ever read: annotating it would
+  # be discarded by the next rollout.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get"]
+  # The provenance annotations go on the workload's pod template, because pod
+  # annotations do not survive the reschedule Patch mode relies on. That one
+  # write is therefore also what rolls the workload — the mechanism `kubectl
+  # rollout restart` uses — so this verb deploys code, and it is the most
+  # privileged thing podbench asks for anywhere.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["patch"]
+  # A pod with no pod template — unowned, or owned by something podbench does not
+  # template — takes the annotations directly, and when it does have a controller
+  # it is deleted so the controller replaces it with the patch picked up. An
+  # unowned pod is never deleted: nothing would bring it back.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch", "delete"]
+  {{- end }}
 {{- if .Values.rbac.subjects }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -40,13 +40,21 @@ rbac:
   observe: true # read pods, add an ephemeral container, exec into it
   iterate: false # create and delete dev pods, patch a Service selector
   resize: false # patch pods/resize, to make memory headroom before attaching
+  # Patch mode: read Deployments/StatefulSets/ReplicaSets to find the pod
+  # template and refuse a multi-replica target, then patch that template with the
+  # provenance annotations — which is also what rolls the workload. That makes it
+  # a code-deploying grant, so it is the one to hand out most sparingly. Assumes
+  # observe as well; on its own it cannot read a pod or reach the claim.
+  patch: false
 
-# The scratch workspace PVC (`podbench init`).
+# The scratch workspace PVC for Iterate mode. Created by this chart only —
+# there is no `podbench init` verb; the launcher never creates a claim.
 #
-# Without it Iterate mode uses an emptyDir and works with zero setup, at the cost
-# of losing the workspace when the dev pod goes away. With it, a reattach takes
-# seconds. ReadWriteOnce is fine — one dev pod mounts it — at the cost of pinning
-# that pod to the volume's node.
+# Iterate mode uses an emptyDir today and works with zero setup, at the cost of
+# losing the workspace when the dev pod goes away. This claim is here for the
+# durable version of that: ReadWriteOnce is fine — one dev pod mounts it — at the
+# cost of pinning that pod to the volume's node. `podbench dev` has no flag to
+# mount it yet, so enabling this creates a claim nothing consumes.
 scratchPvc:
   enabled: false
   name: "" # defaults to <release>-scratch
