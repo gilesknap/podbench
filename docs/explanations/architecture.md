@@ -195,8 +195,10 @@ tidiness: the logic that decides what a session can do — which capability rung
 is valid, what blocks ptrace, which processes belong to the target — has to give
 the same answer on both sides. Two implementations would be two answers.
 
-* On your machine: `kubectl podbench <verb>`, via the `kubectl-podbench` plugin
-  entry point.
+* On your machine: `podbench <verb>`, normally reached as `uvx podbench <verb>`
+  — uv fetches the launcher for that one run and leaves nothing installed. There
+  is no kubectl plugin: a plugin has to be an executable on `PATH`, which is
+  exactly the thing that outlives the command.
 * In the pod: `podbench agent` is PID 1, and `pids`, `dbg`, `capreport`,
   `dev-bootstrap`, `podbench-run` and `podbench-stop` are one-line wrappers on
   `PATH`.
@@ -204,6 +206,17 @@ the same answer on both sides. Two implementations would be two answers.
 There are **no runtime dependencies** — argparse and the stdlib. The launcher
 shells out to `kubectl` on purpose, so authentication, contexts and credential
 plugins are inherited rather than reimplemented.
+
+Running the launcher from the index rather than from an install has one
+consequence worth stating: its version can change between two attaches with no
+visible event. So the image tag is **derived from the launcher's own version**
+rather than fixed, and a launcher asks for the image built from its own source.
+The failure that prevents is a launcher authoring a container spec its image
+does not understand — which fails inside the pod, where an ephemeral container
+cannot be restarted. A dev build off a checkout matches no published image and
+falls back to `main`, the branch-tip image CI pushes on every default-branch
+commit — not to `latest`, which moves only on a final release and so may be far
+older than the launcher. `--image` and `PODBENCH_IMAGE` still win over both.
 
 ## The mount-namespace rule
 

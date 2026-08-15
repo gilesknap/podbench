@@ -256,7 +256,7 @@ automatically and prints why.
   and takes the projected identity instead, needing no group change.
 * **Ephemeral containers are an audit trail.** They cannot be removed, so an
   attach is permanently visible in the pod spec, with the image, the
-  securityContext and the container name. `kubectl podbench list` reads the same
+  securityContext and the container name. `podbench list` reads the same
   data.
 * **Host keys are minted per attach**, so `known_hosts` identity is per pod.
   podbench manages its own `known_hosts`, keyed on the pod UID, rather than

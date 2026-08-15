@@ -1,10 +1,10 @@
 # Command-line reference
 
 One binary serves both halves of podbench. On your machine it is reached as
-`kubectl podbench <verb>` (or `podbench <verb>`); inside the debug container the
-same binary is PID 1 and backs the helpers on `PATH`. Keeping it as one package
-means the capability logic that decides what a session can do is the same code
-in both places, rather than a launcher's guess and a helper's separate guess.
+`podbench <verb>`; inside the debug container the same binary is PID 1 and backs
+the helpers on `PATH`. Keeping it as one package means the capability logic that
+decides what a session can do is the same code in both places, rather than a
+launcher's guess and a helper's separate guess.
 
 ```
 $ podbench --help
@@ -20,6 +20,9 @@ positional arguments:
 options:
   -h, --help     show this help message and exit
   -v, --version  show program's version number and exit
+
+cluster-side verbs: attach, ssh-config, status, list, dev, patch; in-pod
+verbs: agent, capreport, pids, dbg, dev-bootstrap, run, stop
 ```
 
 | Where it runs | Verbs |
@@ -27,9 +30,18 @@ options:
 | Your machine | `attach`, `ssh-config`, `status`, `list`, `dev`, `patch` |
 | Inside the debug container | `agent`, `capreport`, `pids`, `dbg`, `dev-bootstrap`, `run`, `stop` |
 
-The `kubectl podbench` plugin currently routes `attach`, `ssh-config`, `status`
-and `list`. Reach `dev` and `patch` as **`podbench dev`** / **`podbench patch`**
-— the same binary, the same arguments.
+Every verb below is written as `podbench <verb>`, which is the only spelling
+there is — there is no kubectl plugin. How you reach that program is your
+choice, and all three run the same code:
+
+| Invocation | Why |
+|---|---|
+| `uvx podbench <verb>` | the canonical one. uv fetches the launcher for the run and leaves nothing installed |
+| `uvx podbench@<version> <verb>` | pinned, so a session is reproducible and the image tag it picks is known in advance |
+| `uv tool install podbench` (or pipx, or pip) | for `podbench` permanently on `PATH` |
+
+See [Installation](../tutorials/installation.md) for the details, including how
+to run it before the first PyPI release.
 
 The in-pod verbs are also reachable as `podbench <verb>` from a terminal in the
 seat; several have shorter aliases on `PATH` (`pids`, `dbg`, `capreport`,
@@ -50,9 +62,11 @@ The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take th
 
 `dev` takes `-n`/`--namespace`, `--context` and — because it writes an ssh
 config too — `--identity`, `--config-dir` and `--host-alias`. It does not take
-`--kubectl`: it shells out to `kubectl` on `PATH`. `patch` takes
-`-n`/`--namespace`, `--context` and `--kubectl`, and writes no ssh config, so it
-has no `--config-dir`.
+`--kubectl`: it shells out to `kubectl` on `PATH`. Under `patch` the same three —
+`-n`/`--namespace`, `--context` and `--kubectl` — sit on each **sub-verb**, not
+on `patch` itself, so it is `podbench patch status -n demo` and never
+`podbench patch -n demo status`. `patch` writes no ssh config, so nothing under
+it takes `--config-dir`.
 
 podbench shells out to `kubectl` deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
@@ -68,17 +82,15 @@ Land a debug seat in a **live** pod, walking the capability ladder, and print
 what that seat can actually do.
 
 ```
-usage: kubectl podbench attach [-h] [--target TARGET] [--image IMAGE]
-                               [--target-uid TARGET_UID]
-                               [--mount CLAIM:MOUNTPATH] [--new]
-                               [--seat-gid-root] [--no-seat-identity]
-                               [--no-probe] [--resize MEMORY]
-                               [--identity IDENTITY] [--ssh-user SSH_USER]
-                               [--host-alias HOST_ALIAS] [--print-config]
-                               [--timeout TIMEOUT] [-n NAMESPACE]
-                               [--context CONTEXT] [--kubectl KUBECTL]
-                               [--config-dir CONFIG_DIR]
-                               pod
+usage: podbench attach [-h] [--target TARGET] [--image IMAGE]
+                       [--target-uid TARGET_UID] [--mount CLAIM:MOUNTPATH]
+                       [--new] [--seat-gid-root] [--no-seat-identity]
+                       [--no-probe] [--resize MEMORY] [--identity IDENTITY]
+                       [--ssh-user SSH_USER] [--host-alias HOST_ALIAS]
+                       [--print-config] [--timeout TIMEOUT] [-n NAMESPACE]
+                       [--context CONTEXT] [--kubectl KUBECTL]
+                       [--config-dir CONFIG_DIR]
+                       pod
 
 positional arguments:
   pod
@@ -124,6 +136,11 @@ options:
 Notes:
 
 * `pod` accepts `pod/NAME` or a bare `NAME`.
+* `--image` has no default of its own to print: the launcher asks for the image
+  built from its own version — `ghcr.io/gilesknap/podbench:<launcher version>`,
+  and `:main` when the launcher is a dev build off a checkout. `--image` wins
+  over `PODBENCH_IMAGE`, which wins over that. See
+  [The container image](../how-to/run-container.md).
 * Re-running `attach` **reconnects** to a running seat. `--new` appends another
   ephemeral container, whose name is then burnt for the pod's lifetime.
 * `--target-uid` matters only for the degraded rung, which must match the
@@ -207,13 +224,11 @@ Regenerate the ssh stanza for a seat that is already running, without touching
 the pod.
 
 ```
-usage: kubectl podbench ssh-config [-h] [--identity IDENTITY]
-                                   [--ssh-user SSH_USER]
-                                   [--host-alias HOST_ALIAS] [--print-config]
-                                   [-n NAMESPACE] [--context CONTEXT]
-                                   [--kubectl KUBECTL]
-                                   [--config-dir CONFIG_DIR]
-                                   pod
+usage: podbench ssh-config [-h] [--identity IDENTITY] [--ssh-user SSH_USER]
+                           [--host-alias HOST_ALIAS] [--print-config]
+                           [-n NAMESPACE] [--context CONTEXT]
+                           [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
+                           pod
 ```
 
 Fails if there is no running podbench container in the pod.
@@ -224,9 +239,9 @@ Every podbench container in one pod, including dead ones whose names remain
 burnt.
 
 ```
-usage: kubectl podbench status [-h] [-n NAMESPACE] [--context CONTEXT]
-                               [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
-                               pod
+usage: podbench status [-h] [-n NAMESPACE] [--context CONTEXT]
+                       [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
+                       pod
 ```
 
 ### `list`
@@ -234,8 +249,8 @@ usage: kubectl podbench status [-h] [-n NAMESPACE] [--context CONTEXT]
 The same, across the namespace.
 
 ```
-usage: kubectl podbench list [-h] [-n NAMESPACE] [--context CONTEXT]
-                             [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
+usage: podbench list [-h] [-n NAMESPACE] [--context CONTEXT]
+                     [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
 ```
 
 ### `dev`
@@ -264,9 +279,9 @@ options:
   --name NAME           dev pod name (default: <pod>-podbench)
   --image IMAGE         podbench image
   --port PORT           the port your app serves
-  --take-traffic        copy the origin's labels so the dev pod shares
-                        Service traffic with it. Off by default: joining a
-                        production Service silently is a foot-cannon
+  --take-traffic        copy the origin's labels so the dev pod shares Service
+                        traffic with it. Off by default: joining a production
+                        Service silently is a foot-cannon
   --cutover SERVICE     point SERVICE exclusively at the dev pod, recording
                         its selector for an exact restore at teardown
   --identity IDENTITY   ssh key to authorise in the sidecar and name in the
@@ -283,7 +298,6 @@ options:
 
 Notes:
 
-* Reached as `podbench dev`; the kubectl plugin does not route this verb yet.
 * `pod` accepts `pod/NAME` or a bare `NAME`, the same as the launcher verbs —
   it is the same helper, so the two halves of the CLI cannot drift apart.
 * The namespace defaults to `default` here, not to your current context's
@@ -323,7 +337,7 @@ how `patch` reads `pyvenv.cfg` and runs `git` against the checkout. Land it that
 way with `attach --mount`:
 
 ```
-kubectl podbench attach myapp-0 --mount myapp-venv --new
+podbench attach myapp-0 --mount myapp-venv --new
 ```
 
 `--local` remains the alternative when `patch` is run from a terminal inside the
@@ -332,7 +346,7 @@ seat, where the claim is already in this process's own mount namespace.
 ```
 usage: podbench patch [-h] [--print-values] [--app APP]
                       [--venv-path VENV_PATH] [--size SIZE]
-                      [--app-image APP_IMAGE]
+                      [--app-image APP_IMAGE] [--uid UID] [--gid GID]
                       {init,apply,status,consolidate} ...
 ```
 
@@ -603,7 +617,7 @@ stream.
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides |
+| `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides. Both override the default, which is `ghcr.io/gilesknap/podbench:` plus the launcher's own version (`main` for a dev build) |
 | `PODBENCH_CONFIG_DIR` | launcher, `dev` | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
 | `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `run` | the target container's runtime ID, injected at attach time |
 | `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected into the seat's spec by `attach` and by `dev` |

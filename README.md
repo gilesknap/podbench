@@ -38,36 +38,48 @@ inside the cluster.
 ```
 
 Two artefacts: a debug **container image** (`ghcr.io/gilesknap/podbench`) and a
-**kubectl plugin** (`kubectl podbench`) that launches it.
+**launcher you never have to install** — `uvx podbench` runs it straight from
+PyPI, uses your kubeconfig, and leaves nothing behind.
 
 | | Observe mode | Iterate mode |
 |---|---|---|
-| Command | `kubectl podbench attach pod/foo` | `podbench dev pod/foo` |
+| Command | `uvx podbench attach pod/foo` | `uvx podbench dev pod/foo` |
 | What it does | adds an ephemeral container to the **live** pod | authors a **sacrificial clone** with the app idled and podbench as a real sidecar |
 | Built for | distroless targets with no shell of their own; gdb against the running workload | edit → relaunch → see the change through the Service |
 | Resources | shares the workload's limits, **cannot reserve its own** | has its own memory and ephemeral-storage requests |
 | Risk to the workload | real — see below | none by default; the origin pod is never touched. `--cutover` moves Service traffic, and is opt-in |
 
-## Install
+## Run it
 
-The launcher is a pure-stdlib Python package. Install it so that both
-`podbench` and `kubectl-podbench` land on `PATH` — kubectl treats the latter as
-a plugin, which is what makes `kubectl podbench …` work:
+The launcher is a pure-stdlib Python package with **no runtime dependencies**,
+so `uvx` resolves and runs it in one cold start and nothing outlives the
+command:
 
 ```
-$ uv tool install git+https://github.com/gilesknap/podbench.git
-$ podbench --version
-$ kubectl podbench list
+$ uvx podbench --version
+$ uvx podbench list
+no podbench containers in namespace default
 ```
 
-`pipx install` and `pip install` into a venv work equally well. Full
-prerequisites, cluster-side RBAC and the one-time ssh `Include` line are in the
-*Installation* tutorial.
+**That will not resolve until the first PyPI release** — the name is not
+published yet — so until then, run it from git instead, here and everywhere
+below:
+
+```
+$ uvx --from git+https://github.com/gilesknap/podbench podbench list
+```
+
+Once published, pin it with `uvx podbench@1.0.0 <verb>`, or put it on `PATH`
+permanently with `uv tool install podbench` if you would rather type `podbench`.
+It is the same program either way.
+
+Full prerequisites, cluster-side RBAC and the one-time ssh `Include` line — the
+only thing that does outlive the command — are in the *Installation* tutorial.
 
 ## Observe mode in one command
 
 ```
-$ kubectl podbench attach pod/web-7d9f8c5b4-x2k9p -n demo
+$ uvx podbench attach pod/web-7d9f8c5b4-x2k9p -n demo
 ```
 
 podbench walks a capability ladder, lands the best seat the cluster will admit,
@@ -103,7 +115,7 @@ Then **Remote-SSH: Connect to Host…** in VS Code and pick that alias.
 ## Iterate mode in one command
 
 ```
-$ podbench dev api-5f6c9b7d8-qz4tn -n demo --port 8080
+$ uvx podbench dev api-5f6c9b7d8-qz4tn -n demo --port 8080
 $ kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
 # podbench dev-bootstrap --repo https://github.com/you/api
 # podbench run --port 8080 -- python -m api
@@ -237,7 +249,9 @@ Known-unproven, stated plainly:
 What            | Where
 :---:           | :---:
 Source          | <https://github.com/gilesknap/podbench>
-Image           | `ghcr.io/gilesknap/podbench:latest`
+Launcher        | <https://pypi.org/project/podbench> (not published yet)
+Image           | `ghcr.io/gilesknap/podbench`
+Chart           | `oci://ghcr.io/gilesknap/charts/podbench`
 Documentation   | <https://gilesknap.github.io/podbench>
 Releases        | <https://github.com/gilesknap/podbench/releases>
 

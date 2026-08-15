@@ -4,7 +4,8 @@
 
 podbench puts a development seat — editor, gdb, a Python inner loop — *inside* a
 Kubernetes pod, reached over nothing but the kubeconfig. Two artefacts: a debug
-container image, and a `kubectl podbench` plugin that launches it.
+container image, and a `podbench` launcher — canonically run as
+`uvx podbench <verb>`, with nothing installed — that launches it.
 
 `docs/explanations/design-brief.md` is the definition of done — each phase's
 acceptance criteria are stated there.
