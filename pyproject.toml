@@ -37,6 +37,9 @@ dev = [
 
 [project.scripts]
 podbench = "podbench.__main__:main"
+# Installed so `kubectl podbench ...` works: kubectl treats any kubectl-*
+# executable on PATH as a plugin and hands it the remaining argv.
+"kubectl-podbench" = "podbench.__main__:kubectl_plugin"
 
 [project.urls]
 GitHub = "https://github.com/gilesknap/podbench"
