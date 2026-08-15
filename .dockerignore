@@ -1,0 +1,25 @@
+# .git is deliberately NOT ignored: the build stage runs setuptools_scm, which
+# derives the version from git metadata, so `uv sync` cannot build the project
+# without it (and _version.py is itself gitignored).
+
+# Build and test outputs - regenerated inside the image, and a stale .venv from
+# the host would be the wrong architecture.
+.venv/
+build/
+dist/
+docs/_build/
+.tox/
+*.egg-info/
+**/__pycache__/
+*.py[cod]
+
+# Caches and coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+cov.xml
+
+# Editor and container tooling that never reaches the runtime image
+.devcontainer/
+.vscode/

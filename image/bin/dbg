@@ -1,0 +1,7 @@
+#!/bin/sh
+# Run gdb against a target process with the sysroot, source path and
+# auto-load safe path preset. Ordering of those settings is load-bearing, which
+# is why this is a wrapper and not a gdb alias.
+#
+# Absolute path: see the note in `pids`.
+exec /app/.venv/bin/podbench dbg "$@"

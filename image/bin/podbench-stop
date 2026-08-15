@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stop the process `podbench-run` started, by its recorded PID.
+#
+# Never `pkill -f`: under shareProcessNamespace it matches the invoking shell
+# and every container's processes (S4 killed its own session that way).
+#
+# Absolute path: see the note in `pids`.
+exec /app/.venv/bin/podbench stop "$@"

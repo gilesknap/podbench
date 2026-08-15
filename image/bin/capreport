@@ -1,0 +1,8 @@
+#!/bin/sh
+# Probe what this container may do to the target and name the blocker.
+#
+# Exits 0 (live attach), 10 (read-only) or 20 (nothing) so a shell can branch on
+# the verdict without parsing; `exec` is what preserves that exit code.
+#
+# Absolute path: see the note in `pids`.
+exec /app/.venv/bin/podbench capreport "$@"

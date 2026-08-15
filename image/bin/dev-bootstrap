@@ -1,0 +1,5 @@
+#!/bin/sh
+# Clone, sync and editable-install a checkout in the workspace.
+#
+# Absolute path: see the note in `pids`.
+exec /app/.venv/bin/podbench dev-bootstrap "$@"
