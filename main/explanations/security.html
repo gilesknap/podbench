@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.1.0a4 documentation</title>
+    <title>Security model &#8212; podbench 0.1.0a5.dev1+gae065d4ad documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=11bc7906"></script>
+    <script src="../_static/documentation_options.js?v=275ce1d6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,7 +51,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a4';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'main';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -63,7 +63,7 @@
     <link rel="prev" title="Podbench" href="design-brief.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.0a4" />
+  <meta name="docsearch:version" content="main" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -828,6 +828,19 @@ application container cannot reach the debug toolchain.</p></li>
 <li><p><strong>The target’s filesystem is never written.</strong> <code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem</span></code> is
 common in production and podbench does not depend on writing into the target.
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a read path in every standard workflow.</p></li>
+<li><p><strong>An ssh-able seat on a live pod runs with <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code></strong>, and that is a
+deliberate opt-in (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code>). The degraded rung runs as the
+<em>target’s</em> uid, discovered at attach time, and sshd will not authenticate a
+user NSS cannot resolve; the debug image makes its own <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>
+group-writable so the agent can append a record for that uid, which needs GID
+0. Projecting the file instead — a ConfigMap over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> — is not
+available here: a <code class="docutils literal notranslate"><span class="pre">volumeMount</span></code> on an <em>ephemeral</em> container may not carry a
+<code class="docutils literal notranslate"><span class="pre">subPath</span></code>, and the API server refuses the whole request if one does. So the
+choice on a live pod is a seat in group 0 or a seat reachable only by
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. Group 0 is a group, not a capability: it grants nothing in the
+target container, whose files it does not own, and <code class="docutils literal notranslate"><span class="pre">restricted</span></code> PSA admits it
+(measured: uid 1000 / gid 0). <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>’s seat is an ordinary container
+and takes the projected identity instead, needing no group change.</p></li>
 <li><p><strong>Ephemeral containers are an audit trail.</strong> They cannot be removed, so an
 attach is permanently visible in the pod spec, with the image, the
 securityContext and the container name. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span> <span class="pre">list</span></code> reads the same
@@ -935,7 +948,7 @@ transport measurement comes from a flat exec path.</p></li>
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a4/docs/explanations/security.md">
+    <a href="https://github.com/gilesknap/podbench/edit/main/docs/explanations/security.md">
       <i class="fa-solid fa-pencil"></i>
       
       

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0a4 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0a5.dev1+gae065d4ad documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=11bc7906"></script>
+    <script src="../_static/documentation_options.js?v=275ce1d6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,7 +51,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a4';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'main';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -63,7 +63,7 @@
     <link rel="prev" title="Reference" href="../reference.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.0a4" />
+  <meta name="docsearch:version" content="main" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -541,8 +541,11 @@ seat; several have shorter aliases on <code class="docutils literal notranslate"
                         <span class="p">(</span><span class="n">default</span> <span class="o">~/.</span><span class="n">podbench</span><span class="p">)</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">dev</span></code> takes only <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code> and <code class="docutils literal notranslate"><span class="pre">--context</span></code>; <code class="docutils literal notranslate"><span class="pre">patch</span></code> takes those plus
-<code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>. Neither writes an ssh config, so neither has <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">dev</span></code> takes <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>, <code class="docutils literal notranslate"><span class="pre">--context</span></code> and — because it writes an ssh
+config too — <code class="docutils literal notranslate"><span class="pre">--identity</span></code>, <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> and <code class="docutils literal notranslate"><span class="pre">--host-alias</span></code>. It does not take
+<code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>: it shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. <code class="docutils literal notranslate"><span class="pre">patch</span></code> takes
+<code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>, <code class="docutils literal notranslate"><span class="pre">--context</span></code> and <code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>, and writes no ssh config, so it
+has no <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code>.</p>
 <p>podbench shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
 credential and no client library.</p>
@@ -584,13 +587,17 @@ what that seat can actually do.</p>
                         <span class="n">permanent</span><span class="p">)</span>
   <span class="o">--</span><span class="n">seat</span><span class="o">-</span><span class="n">gid</span><span class="o">-</span><span class="n">root</span>       <span class="n">land</span> <span class="n">the</span> <span class="n">seat</span> <span class="k">with</span> <span class="n">runAsGroup</span><span class="p">:</span> <span class="mi">0</span> <span class="n">so</span> <span class="n">it</span> <span class="n">can</span> <span class="n">register</span> <span class="n">an</span>
                         <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">passwd</span> <span class="n">entry</span> <span class="k">for</span> <span class="n">the</span> <span class="n">target</span><span class="s1">&#39;s uid, which is what</span>
-                        <span class="n">sshd</span> <span class="n">needs</span> <span class="n">to</span> <span class="n">let</span> <span class="n">anyone</span> <span class="n">log</span> <span class="ow">in</span><span class="o">.</span> <span class="n">Off</span> <span class="n">by</span> <span class="n">default</span><span class="p">:</span> <span class="n">it</span>
-                        <span class="n">drops</span> <span class="n">the</span> <span class="n">target</span><span class="s1">&#39;s own group</span>
-  <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">seat</span><span class="o">-</span><span class="n">identity</span>    <span class="n">do</span> <span class="ow">not</span> <span class="n">mount</span> <span class="n">the</span> <span class="n">pod</span><span class="s1">&#39;s podbench-identity and podbench-</span>
-                        <span class="n">home</span> <span class="n">volumes</span><span class="o">.</span> <span class="n">They</span> <span class="n">are</span> <span class="n">mounted</span> <span class="n">by</span> <span class="n">convention</span> <span class="n">when</span> <span class="n">the</span>
-                        <span class="n">pod</span> <span class="n">declares</span> <span class="n">them</span><span class="p">,</span> <span class="n">because</span> <span class="n">that</span> <span class="ow">is</span> <span class="n">the</span> <span class="n">only</span> <span class="n">way</span> <span class="n">an</span>
-                        <span class="n">ephemeral</span> <span class="n">container</span> <span class="n">can</span> <span class="n">have</span> <span class="n">an</span> <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">passwd</span> <span class="n">entry</span> <span class="k">for</span>
-                        <span class="n">the</span> <span class="n">target</span><span class="s1">&#39;s uid - and sshd needs one</span>
+                        <span class="n">sshd</span> <span class="n">needs</span> <span class="n">to</span> <span class="n">let</span> <span class="n">anyone</span> <span class="n">log</span> <span class="ow">in</span><span class="p">,</span> <span class="ow">and</span> <span class="n">the</span> <span class="n">only</span> <span class="n">way</span> <span class="n">to</span>
+                        <span class="n">get</span> <span class="n">one</span> <span class="n">on</span> <span class="n">a</span> <span class="n">live</span> <span class="n">pod</span><span class="o">.</span> <span class="n">Off</span> <span class="n">by</span> <span class="n">default</span><span class="p">:</span> <span class="n">it</span> <span class="n">drops</span> <span class="n">the</span>
+                        <span class="n">target</span><span class="s1">&#39;s own group</span>
+  <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">seat</span><span class="o">-</span><span class="n">identity</span>    <span class="n">do</span> <span class="ow">not</span> <span class="n">mount</span> <span class="n">the</span> <span class="n">pod</span><span class="s1">&#39;s podbench-home volume, which is</span>
+                        <span class="n">otherwise</span> <span class="n">mounted</span> <span class="n">by</span> <span class="n">convention</span> <span class="n">when</span> <span class="n">the</span> <span class="n">pod</span> <span class="n">declares</span>
+                        <span class="n">it</span> <span class="ow">and</span> <span class="n">keeps</span> <span class="n">everything</span> <span class="n">the</span> <span class="n">seat</span> <span class="n">writes</span> <span class="n">off</span> <span class="n">the</span>
+                        <span class="n">workload</span><span class="s1">&#39;s ephemeral-storage budget. The podbench-</span>
+                        <span class="n">identity</span> <span class="n">volume</span> <span class="ow">is</span> <span class="n">never</span> <span class="n">mounted</span> <span class="n">by</span> <span class="n">attach</span><span class="p">:</span> <span class="n">it</span> <span class="n">needs</span> <span class="n">a</span>
+                        <span class="n">subPath</span> <span class="n">per</span> <span class="n">file</span><span class="p">,</span> <span class="n">which</span> <span class="n">an</span> <span class="n">ephemeral</span> <span class="n">container</span> <span class="n">may</span> <span class="ow">not</span>
+                        <span class="n">have</span> <span class="o">-</span> <span class="n">use</span> <span class="o">--</span><span class="n">seat</span><span class="o">-</span><span class="n">gid</span><span class="o">-</span><span class="n">root</span> <span class="k">for</span> <span class="n">the</span> <span class="n">seat</span><span class="s1">&#39;s /etc/passwd</span>
+                        <span class="n">entry</span>
   <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">probe</span>            <span class="n">skip</span> <span class="n">capreport</span><span class="p">;</span> <span class="n">the</span> <span class="n">report</span> <span class="n">then</span> <span class="n">says</span> <span class="n">nothing</span> <span class="n">was</span>
                         <span class="n">measured</span>
   <span class="o">--</span><span class="n">resize</span> <span class="n">MEMORY</span>       <span class="k">raise</span> <span class="n">the</span> <span class="n">target</span><span class="s1">&#39;s memory limit in place first, e.g.</span>
@@ -621,49 +628,73 @@ seeding initContainer that put it there.</p>
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">MOUNTPATH</span></code> is optional and usually should be. Where the application
-container mounts that volume, its mountPath (and any <code class="docutils literal notranslate"><span class="pre">subPath</span></code>) is copied,
-because Patch mode only works when the claim resolves at the <em>same</em> path on
-both sides — the venv’s <code class="docutils literal notranslate"><span class="pre">bin/python</span></code> and the checkout’s editable install are
-absolute paths recorded on the volume. An explicit path that disagrees is
-honoured and warned about; a volume the application does not mount has no
-path to copy, so one must be given.</p></li>
+container mounts that volume, its mountPath is copied, because Patch mode
+only works when the claim resolves at the <em>same</em> path on both sides — the
+venv’s <code class="docutils literal notranslate"><span class="pre">bin/python</span></code> and the checkout’s editable install are absolute paths
+recorded on the volume. An explicit path that disagrees is honoured and
+warned about; a volume the application does not mount has no path to copy,
+so one must be given.</p></li>
+<li><p>An application mount that uses a <strong><code class="docutils literal notranslate"><span class="pre">subPath</span></code> is refused</strong>, before anything
+is submitted. An ephemeral container’s volumeMounts may not carry one — the
+API server answers <code class="docutils literal notranslate"><span class="pre">Forbidden:</span> <span class="pre">cannot</span> <span class="pre">be</span> <span class="pre">set</span> <span class="pre">for</span> <span class="pre">an</span> <span class="pre">Ephemeral</span> <span class="pre">Container</span></code> and
+rejects the whole request — and dropping it silently would give the seat the
+volume root where the application sees one directory inside it, so every
+path Patch mode recorded would resolve to the wrong thing. Deploy the claim
+mounted whole over the venv path, or use <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>, whose seat is an
+ordinary container.</p></li>
 <li><p>Mounts are fixed when a container is created, so <code class="docutils literal notranslate"><span class="pre">--mount</span></code> against a
 reconnect warns and does nothing. Use <code class="docutils literal notranslate"><span class="pre">--new</span></code> for a seat with a new mount.</p></li>
 </ul>
 </li>
-<li><p><strong>The seat’s identity is mounted by convention, not by flag.</strong> If the pod
-declares a volume named <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts its <code class="docutils literal notranslate"><span class="pre">passwd</span></code> key
-read-only over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> and its <code class="docutils literal notranslate"><span class="pre">group</span></code> key over <code class="docutils literal notranslate"><span class="pre">/etc/group</span></code> — each with
-a <code class="docutils literal notranslate"><span class="pre">subPath</span></code>, because mounting the volume at <code class="docutils literal notranslate"><span class="pre">/etc</span></code> would replace the whole
-directory. If the pod declares <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code>, that is mounted read-write at
-<code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> and becomes the seat’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>.</p>
+<li><p><strong>The seat’s home is mounted by convention, not by flag.</strong> If the pod declares
+a volume named <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts it read-write at
+<code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> and makes it the seat’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>, which keeps vscode-server and
+everything else the seat writes off the workload’s ephemeral-storage budget.</p>
 <ul>
-<li><p>This is what makes ssh work on the degraded rung. That rung runs as the
-<em>target’s</em> uid, which no debug image can have an account for, and sshd will
-not authenticate a user NSS cannot resolve. <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> is <code class="docutils literal notranslate"><span class="pre">644</span> <span class="pre">root:root</span></code>,
-so the seat cannot write one either.</p></li>
-<li><p>It is a convention because the volumes cannot be there by accident: an
+<li><p>It is a convention because the volume cannot be there by accident: an
 ephemeral container may only mount volumes the pod already declares and
-<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable, so anything called <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> was put
-in the pod at deploy time on purpose. The chart emits the ConfigMap
-(<code class="docutils literal notranslate"><span class="pre">seatIdentity</span></code> in <code class="docutils literal notranslate"><span class="pre">Charts/podbench/values.yaml</span></code>); the application’s own
-chart declares the volumes. An <code class="docutils literal notranslate"><span class="pre">attach</span></code> against a pod without them still
-lands a seat and reports honestly that ssh is unavailable.</p></li>
+<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable, so anything called <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> was put in
+the pod at deploy time on purpose.</p></li>
+<li><p>It needs the pod to set <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> to the application’s gid, or it arrives
+owned by <code class="docutils literal notranslate"><span class="pre">root:root</span></code> and the seat cannot write to it. The agent reports that
+by name at start-up.</p></li>
 <li><p>An explicit <code class="docutils literal notranslate"><span class="pre">--mount</span></code> for the same mountPath <strong>wins</strong> over the convention.
-<code class="docutils literal notranslate"><span class="pre">--no-seat-identity</span></code> turns it off entirely.</p></li>
-<li><p>The home volume needs the pod to set <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> to the application’s gid, or
-it arrives owned by <code class="docutils literal notranslate"><span class="pre">root:root</span></code> and the seat cannot write to it. The agent
-reports that by name at start-up.</p></li>
-<li><p>The capability report says which of these applied: the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">seat</span></code> line names
-the identity volume when that is what made the login resolvable.</p></li>
+<code class="docutils literal notranslate"><span class="pre">--no-seat-identity</span></code> turns the convention off.</p></li>
+</ul>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">attach</span></code> cannot mount <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>, however plainly the pod declares
+it.</strong> The identity has to land as two <em>files</em> — <code class="docutils literal notranslate"><span class="pre">passwd</span></code> over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>,
+<code class="docutils literal notranslate"><span class="pre">group</span></code> over <code class="docutils literal notranslate"><span class="pre">/etc/group</span></code> — and one file at a time takes a <code class="docutils literal notranslate"><span class="pre">subPath</span></code> per
+mount, which an ephemeral container may not have: the API server answers
+<code class="docutils literal notranslate"><span class="pre">spec.ephemeralContainers[0].volumeMounts[0].subPath:</span> <span class="pre">Forbidden:</span> <span class="pre">cannot</span> <span class="pre">be</span> <span class="pre">set</span> <span class="pre">for</span> <span class="pre">an</span> <span class="pre">Ephemeral</span> <span class="pre">Container</span></code> and refuses the <em>whole</em> request, so no seat lands
+at all. Mounting the volume whole is not an alternative either; a directory
+mount replaces the path, and over <code class="docutils literal notranslate"><span class="pre">/etc</span></code> it would take <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code> with it
+— the very lookup the identity exists to satisfy.</p>
+<ul>
+<li><p><strong>On a live pod, <code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is the route to the same identity.</strong> The
+debug image makes <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> group-writable (OpenShift’s convention) and
+the agent appends a record for whatever uid the seat turned out to run as,
+which needs <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code> and nothing else. Verified against a
+PSA-<code class="docutils literal notranslate"><span class="pre">restricted</span></code> pod: <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--no-seat-identity</span> <span class="pre">--seat-gid-root</span></code> landed the
+degraded rung and ssh logged in as <code class="docutils literal notranslate"><span class="pre">uid=1000(podbench)</span></code>.</p></li>
+<li><p>The volume is for a seat that is an <strong>ordinary</strong> container, which is what
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> authors — <code class="docutils literal notranslate"><span class="pre">subPath</span></code> is legal there and nothing is written at
+runtime. (The dev sidecar does not mount it yet; see the follow-up note in
+<code class="docutils literal notranslate"><span class="pre">Charts/podbench/values.yaml</span></code>.)</p></li>
+<li><p>The capability report says so where it matters: when the pod declares the
+volume, the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">seat</span></code> line explains that it cannot be projected into an
+ephemeral container and names <code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code>. Where a seat <em>does</em> carry
+the identity, the same line credits it.</p></li>
 </ul>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is opt-in and lightly proven; it prints a warning either way and
 needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is the fallback where the pod has no identity volume and
-cannot be redeployed with one: GID 0 lets the agent append its own
+<li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is <strong>the</strong> way to an ssh-able seat on a live pod, not a
+fallback from the identity volume: GID 0 lets the agent append its own
 <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> record (the image makes the file group-writable for it), at the
-cost of the target’s own group.</p></li>
+cost of the target’s own group. It is opt-in for that cost, not because a
+cluster would refuse it — the restricted Pod Security Standard does not
+constrain <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>.</p></li>
 <li><p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for any seat that lands, including a degraded one; <code class="docutils literal notranslate"><span class="pre">2</span></code> for a
 real error.</p></li>
 </ul>
@@ -707,7 +738,9 @@ burnt.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">usage</span><span class="p">:</span> <span class="n">podbench</span> <span class="n">dev</span> <span class="p">[</span><span class="o">-</span><span class="n">h</span><span class="p">]</span> <span class="p">[</span><span class="o">-</span><span class="n">n</span> <span class="n">NAMESPACE</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">context</span> <span class="n">CONTEXT</span><span class="p">]</span>
                     <span class="p">[</span><span class="o">--</span><span class="n">container</span> <span class="n">CONTAINER</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">name</span> <span class="n">NAME</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">image</span> <span class="n">IMAGE</span><span class="p">]</span>
                     <span class="p">[</span><span class="o">--</span><span class="n">port</span> <span class="n">PORT</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">take</span><span class="o">-</span><span class="n">traffic</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">cutover</span> <span class="n">SERVICE</span><span class="p">]</span>
-                    <span class="p">[</span><span class="o">--</span><span class="n">delete</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">dry</span><span class="o">-</span><span class="n">run</span><span class="p">]</span>
+                    <span class="p">[</span><span class="o">--</span><span class="n">identity</span> <span class="n">IDENTITY</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span><span class="p">]</span>
+                    <span class="p">[</span><span class="o">--</span><span class="n">host</span><span class="o">-</span><span class="n">alias</span> <span class="n">HOST_ALIAS</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">delete</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span><span class="p">]</span>
+                    <span class="p">[</span><span class="o">--</span><span class="n">dry</span><span class="o">-</span><span class="n">run</span><span class="p">]</span>
                     <span class="n">pod</span>
 
 <span class="n">positional</span> <span class="n">arguments</span><span class="p">:</span>
@@ -723,11 +756,18 @@ burnt.</p>
   <span class="o">--</span><span class="n">name</span> <span class="n">NAME</span>           <span class="n">dev</span> <span class="n">pod</span> <span class="n">name</span> <span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="o">&lt;</span><span class="n">pod</span><span class="o">&gt;-</span><span class="n">podbench</span><span class="p">)</span>
   <span class="o">--</span><span class="n">image</span> <span class="n">IMAGE</span>         <span class="n">podbench</span> <span class="n">image</span>
   <span class="o">--</span><span class="n">port</span> <span class="n">PORT</span>           <span class="n">the</span> <span class="n">port</span> <span class="n">your</span> <span class="n">app</span> <span class="n">serves</span>
-  <span class="o">--</span><span class="n">take</span><span class="o">-</span><span class="n">traffic</span>        <span class="n">copy</span> <span class="n">the</span> <span class="n">origin</span><span class="s1">&#39;s labels so the dev pod shares Service</span>
-                        <span class="n">traffic</span> <span class="k">with</span> <span class="n">it</span><span class="o">.</span> <span class="n">Off</span> <span class="n">by</span> <span class="n">default</span><span class="p">:</span> <span class="n">joining</span> <span class="n">a</span> <span class="n">production</span>
-                        <span class="n">Service</span> <span class="n">silently</span> <span class="ow">is</span> <span class="n">a</span> <span class="n">foot</span><span class="o">-</span><span class="n">cannon</span>
+  <span class="o">--</span><span class="n">take</span><span class="o">-</span><span class="n">traffic</span>        <span class="n">copy</span> <span class="n">the</span> <span class="n">origin</span><span class="s1">&#39;s labels so the dev pod shares</span>
+                        <span class="n">Service</span> <span class="n">traffic</span> <span class="k">with</span> <span class="n">it</span><span class="o">.</span> <span class="n">Off</span> <span class="n">by</span> <span class="n">default</span><span class="p">:</span> <span class="n">joining</span> <span class="n">a</span>
+                        <span class="n">production</span> <span class="n">Service</span> <span class="n">silently</span> <span class="ow">is</span> <span class="n">a</span> <span class="n">foot</span><span class="o">-</span><span class="n">cannon</span>
   <span class="o">--</span><span class="n">cutover</span> <span class="n">SERVICE</span>     <span class="n">point</span> <span class="n">SERVICE</span> <span class="n">exclusively</span> <span class="n">at</span> <span class="n">the</span> <span class="n">dev</span> <span class="n">pod</span><span class="p">,</span> <span class="n">recording</span>
                         <span class="n">its</span> <span class="n">selector</span> <span class="k">for</span> <span class="n">an</span> <span class="n">exact</span> <span class="n">restore</span> <span class="n">at</span> <span class="n">teardown</span>
+  <span class="o">--</span><span class="n">identity</span> <span class="n">IDENTITY</span>   <span class="n">ssh</span> <span class="n">key</span> <span class="n">to</span> <span class="n">authorise</span> <span class="ow">in</span> <span class="n">the</span> <span class="n">sidecar</span> <span class="ow">and</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">the</span>
+                        <span class="n">generated</span> <span class="n">stanza</span> <span class="p">(</span><span class="n">default</span> <span class="o">~/.</span><span class="n">ssh</span><span class="o">/</span><span class="n">id_ed25519</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span> <span class="n">CONFIG_DIR</span>
+                        <span class="n">where</span> <span class="n">the</span> <span class="n">generated</span> <span class="n">ssh</span> <span class="n">config</span> <span class="ow">and</span> <span class="n">known_hosts</span> <span class="n">live</span>
+                        <span class="p">(</span><span class="n">default</span> <span class="o">~/.</span><span class="n">podbench</span><span class="p">)</span>
+  <span class="o">--</span><span class="n">host</span><span class="o">-</span><span class="n">alias</span> <span class="n">HOST_ALIAS</span>
+                        <span class="n">ssh</span> <span class="n">Host</span> <span class="n">name</span> <span class="k">for</span> <span class="n">the</span> <span class="n">sidecar</span>
   <span class="o">--</span><span class="n">delete</span>              <span class="n">tear</span> <span class="n">the</span> <span class="n">dev</span> <span class="n">pod</span> <span class="n">down</span>
   <span class="o">--</span><span class="n">timeout</span> <span class="n">TIMEOUT</span>     <span class="n">seconds</span> <span class="n">to</span> <span class="n">wait</span>
   <span class="o">--</span><span class="n">dry</span><span class="o">-</span><span class="n">run</span>             <span class="nb">print</span> <span class="n">the</span> <span class="n">authored</span> <span class="n">pod</span> <span class="n">instead</span> <span class="n">of</span> <span class="n">creating</span> <span class="n">it</span>
@@ -745,8 +785,21 @@ namespace as the launcher verbs do. Pass <code class="docutils literal notransla
 traffic, and both are explicit. <code class="docutils literal notranslate"><span class="pre">--cutover</span></code> uses a JSON <em>replace</em> patch — a
 merge patch would union the selector maps and quietly leave the original pod
 serving half the requests.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--delete</span></code> restores any borrowed selector before removing the pod.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> is the best available description of what this mode does.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--identity</span></code> is authorised inside the sidecar and named as the stanza’s
+<code class="docutils literal notranslate"><span class="pre">IdentityFile</span></code>, exactly as for <code class="docutils literal notranslate"><span class="pre">attach</span></code> — same flag, same default, same
+refusal when the public key is missing. It is read <strong>before</strong> anything is
+created, because the key reaches the sidecar through its environment and a
+container’s environment cannot be changed after the pod exists.</p></li>
+<li><p>The generated stanza is written to the same <code class="docutils literal notranslate"><span class="pre">config.d</span></code> file <code class="docutils literal notranslate"><span class="pre">attach</span></code> would
+use for that pod, and the summary ends with the alias to <code class="docutils literal notranslate"><span class="pre">ssh</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> line is printed as well: it works when ssh does not.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--delete</span></code> restores any borrowed selector, removes the pod, then removes the
+stanza and the <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> entry it wrote. <code class="docutils literal notranslate"><span class="pre">attach</span></code> deliberately leaves its
+stanza in place — that seat is reconnectable while its pod lives, this one is
+not.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> is the best available description of what this mode does. It
+still needs a readable public key, so that what it prints is what <code class="docutils literal notranslate"><span class="pre">dev</span></code> would
+actually create.</p></li>
 </ul>
 </section>
 <section id="patch">
@@ -1027,11 +1080,11 @@ mounted <code class="docutils literal notranslate"><span class="pre">podbench-ho
 directory is not writable the failure names <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code>, which is almost always
 the cause: a projected volume is <code class="docutils literal notranslate"><span class="pre">root:root</span></code> until the pod’s <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> hands it
 to the seat’s group, and a seat running as the target’s uid can chown nothing.</p></li>
-<li><p><strong>nss-identity</strong> is a no-op when NSS already resolves the seat’s uid — which is
-exactly what a mounted <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> achieves, and it stays a no-op even
-though the projected <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> is read-only. Only where no identity was
-supplied does it try to append one, which needs GID 0
-(<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code>).</p></li>
+<li><p><strong>nss-identity</strong> is a no-op when NSS already resolves the seat’s uid — what a
+mounted <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> achieves for an ordinary container, and it stays a
+no-op even though the projected <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> is read-only. In an ephemeral
+seat, which cannot be given that file at all, it appends one instead, and that
+needs GID 0 (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code>).</p></li>
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">--print-login-user</span></code> is how the launcher decides whether an ssh stanza is worth
 writing: the name on stdout, or exit 1 with the mechanism and the way out on
@@ -1058,7 +1111,7 @@ stream.</p>
 <td><p>debug image to attach; <code class="docutils literal notranslate"><span class="pre">--image</span></code> overrides</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_CONFIG_DIR</span></code></p></td>
-<td><p>launcher</p></td>
+<td><p>launcher, <code class="docutils literal notranslate"><span class="pre">dev</span></code></p></td>
 <td><p>where the ssh config and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> go; <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> overrides. Default <code class="docutils literal notranslate"><span class="pre">~/.podbench</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code></p></td>
@@ -1067,7 +1120,7 @@ stream.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_PUBKEY</span></code></p></td>
 <td><p>agent</p></td>
-<td><p>authorized key, injected by the launcher</p></td>
+<td><p>authorized key, injected into the seat’s spec by <code class="docutils literal notranslate"><span class="pre">attach</span></code> and by <code class="docutils literal notranslate"><span class="pre">dev</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_PUBKEY_FILE</span></code></p></td>
 <td><p>agent</p></td>
@@ -1192,7 +1245,7 @@ stream.</p>
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a4/docs/reference/cli.md">
+    <a href="https://github.com/gilesknap/podbench/edit/main/docs/reference/cli.md">
       <i class="fa-solid fa-pencil"></i>
       
       

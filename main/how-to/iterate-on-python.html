@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iterate on Python &#8212; podbench 0.1.0a4 documentation</title>
+    <title>Iterate on Python &#8212; podbench 0.1.0a5.dev1+gae065d4ad documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=11bc7906"></script>
+    <script src="../_static/documentation_options.js?v=275ce1d6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,7 +51,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a4';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'main';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -63,7 +63,7 @@
     <link rel="prev" title="Debug with gdb" href="debug-with-gdb.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.0a4" />
+  <meta name="docsearch:version" content="main" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -512,15 +512,34 @@ api-5f6c9b7d8-qz4tn itself is untouched)
   service          : none — this pod receives no traffic until you pass
                      --take-traffic or --cutover
 
+ssh config written to ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-podbench.conf
+add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+then:  ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench   (or Remote-SSH: Connect
+       to Host -&gt; podbench-demo-api-5f6c9b7d8-qz4tn-podbench)
+
 next:
-  kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
+  ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench
+  kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash   # works when ssh does not
   podbench dev-bootstrap --repo &lt;url&gt; [--ref &lt;ref&gt;]
   podbench run --port 8080 -- &lt;your command&gt;
 
-teardown (restores any borrowed Service selector, then removes the pod):
+teardown (restores any borrowed Service selector, removes the pod, and takes the
+ssh config with it):
   podbench dev --delete api-5f6c9b7d8-qz4tn-podbench -n demo
 </pre></div>
 </div>
+<p>Two routes in, and the first one is the point of the mode: the editor lives in
+the cluster. <code class="docutils literal notranslate"><span class="pre">dev</span></code> authorises your public key inside the sidecar
+(<code class="docutils literal notranslate"><span class="pre">--identity</span></code>, default <code class="docutils literal notranslate"><span class="pre">~/.ssh/id_ed25519</span></code>) and writes the client stanza that
+reaches it (<code class="docutils literal notranslate"><span class="pre">--config-dir</span></code>, <code class="docutils literal notranslate"><span class="pre">--host-alias</span></code>) — the same generator <code class="docutils literal notranslate"><span class="pre">attach</span></code> uses,
+so <a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a> applies unchanged. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>
+stays listed because it works when ssh does not.</p>
+<p>The key goes in when the pod is <strong>authored</strong>, and there is no second chance: an
+ordinary container’s environment is fixed once the pod exists. So <code class="docutils literal notranslate"><span class="pre">dev</span></code> refuses
+before it creates anything if there is no key to authorise, and a dev pod made
+with the wrong <code class="docutils literal notranslate"><span class="pre">--identity</span></code> has to be deleted and made again.</p>
+<p>Do not reach a dev pod with <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code>. That lands a <em>second</em>, ephemeral
+container inside it and ignores the sidecar that already runs the agent.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> prints the authored pod instead of creating it. Read it once; it is
 the clearest statement of what this mode does.</p>
 <p>What podbench changes on the way from origin to clone:</p>
@@ -546,13 +565,63 @@ Service while nothing is listening, and serves about half errors;</p></li>
 invisible to the Service and the headline demo simply cannot work), gives the
 added container <code class="docutils literal notranslate"><span class="pre">resources:</span> <span class="pre">{}</span></code> with no way to set them, has no <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code>, and
 prints nothing at all on success.</p>
+<section id="if-the-origin-declares-podbench-identity-the-sidecar-is-not-root">
+<h3>If the origin declares <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>, the sidecar is not root<a class="headerlink" href="#if-the-origin-declares-podbench-identity-the-sidecar-is-not-root" title="Link to this heading">#</a></h3>
+<p>A dev pod’s sidecar is an <strong>ordinary</strong> container, so — unlike an <code class="docutils literal notranslate"><span class="pre">attach</span></code> seat —
+it may mount a file with <code class="docutils literal notranslate"><span class="pre">subPath</span></code>. Where the origin pod declares the
+<code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> volume (the ConfigMap the podbench chart emits; see
+<a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a>), the clone carries it and the sidecar is
+authored differently:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">passwd</span></code> is mounted read-only over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> and <code class="docutils literal notranslate"><span class="pre">group</span></code> over <code class="docutils literal notranslate"><span class="pre">/etc/group</span></code>;</p></li>
+<li><p>the sidecar runs as the <strong>application’s own uid and gid</strong> — the pair that
+record names — because sshd resolves the login name <code class="docutils literal notranslate"><span class="pre">podbench</span></code> to that uid, and
+a root sidecar would be logging in as somebody else. That failure surfaces as
+<code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code>, so the two are decided together;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> goes with the root it no longer has. A capability added to a
+non-root uid reaches the bounding set only, so it could not have worked anyway.
+For Python this costs nothing: use <code class="docutils literal notranslate"><span class="pre">debugpy</span></code> (below), which never needed it;</p></li>
+<li><p>a declared <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume is mounted at <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code>, the home that
+same record names, so an ssh session lands somewhere writable. <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> for the
+sidecar’s own tooling stays <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> is inherited from the origin, and set to the identity’s gid if the
+origin sets none — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is <code class="docutils literal notranslate"><span class="pre">root:root</span></code> until it is not, and the
+sidecar has just stopped being root.</p></li>
+</ul>
+<p>The line is printed when the pod comes up:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="n">seat</span> <span class="n">identity</span>    <span class="p">:</span> <span class="n">podbench</span><span class="o">-</span><span class="n">identity</span> <span class="n">projected</span> <span class="n">over</span> <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">passwd</span> <span class="ow">and</span>
+                     <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">group</span><span class="p">,</span> <span class="n">so</span> <span class="n">the</span> <span class="n">sidecar</span> <span class="n">runs</span> <span class="k">as</span> <span class="mi">1000</span><span class="p">:</span><span class="mi">1000</span> <span class="p">(</span><span class="n">the</span> <span class="n">app</span><span class="s1">&#39;s</span>
+                     <span class="n">own</span><span class="p">)</span> <span class="k">with</span> <span class="n">no</span> <span class="n">SYS_PTRACE</span>
+</pre></div>
+</div>
+<p>This is also what makes a dev pod admissible in a namespace enforcing the
+<strong>restricted</strong> Pod Security Standard, which refuses the root sidecar outright.
+The prompts further down this page read <code class="docutils literal notranslate"><span class="pre">root&#64;…</span></code> because they were captured
+without an identity; with one they read <code class="docutils literal notranslate"><span class="pre">podbench&#64;…</span></code>, and everything else on the
+page is the same.</p>
+<p>If the origin declares the volume but pins no uid and gid in its manifest,
+podbench cannot know which uid the record was written for, says so on stderr, and
+authors the root sidecar it always did. Nothing changes for an origin that does
+not declare the volume at all.</p>
+</section>
 </section>
 <section id="get-in-and-populate-the-workspace">
 <h2>2. Get in and populate the workspace<a class="headerlink" href="#get-in-and-populate-the-workspace" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench
+root@api-...-podbench:~# dev-bootstrap --repo https://github.com/you/api --ref my-branch
+</pre></div>
+</div>
+<p>or, when ssh is not what you want:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
 root@api-...-podbench:/workspace# dev-bootstrap --repo https://github.com/you/api --ref my-branch
 </pre></div>
 </div>
+<p>The two land in different directories, which is a fact about sshd rather than
+about podbench: an ssh session gets the home the <em>passwd record</em> names (<code class="docutils literal notranslate"><span class="pre">/root</span></code>,
+or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> with the identity volume), while <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> inherits the
+container’s environment, where <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> is <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>. <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code> takes
+absolute paths and defaults to <code class="docutils literal notranslate"><span class="pre">/workspace/src</span></code>, so it does not care either way
+— but <code class="docutils literal notranslate"><span class="pre">~</span></code> means different things in the two shells.</p>
 <p><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code> does three things, in order: <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span></code> into
 <code class="docutils literal notranslate"><span class="pre">/workspace/src</span></code>, <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span> <span class="pre">--frozen</span></code> from the project’s own lockfile, and
 <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code>. Flags: <code class="docutils literal notranslate"><span class="pre">--dir</span></code> for a different checkout path, <code class="docutils literal notranslate"><span class="pre">--python</span></code>
@@ -635,10 +704,18 @@ point of the mode.</p>
 <section id="tear-down">
 <h2>5. Tear down<a class="headerlink" href="#tear-down" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench dev --delete api-5f6c9b7d8-qz4tn-podbench -n demo
+restored selector {&quot;app&quot;: &quot;api&quot;} on service/api
+deleted pod/api-5f6c9b7d8-qz4tn-podbench
+removed ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-podbench.conf
+dropped podbench-3edcc84e-… from ~/.podbench/known_hosts
 </pre></div>
 </div>
 <p>This restores any borrowed Service selector <em>before</em> removing the pod, and
-leaves nothing behind. The origin pod was never modified.</p>
+leaves nothing behind — on the laptop either. The stanza and its pinned host key
+go with the pod, because the <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> is keyed on a pod UID no pod will
+ever have again, so a stanza left behind could only ever fail. (An <code class="docutils literal notranslate"><span class="pre">attach</span></code>
+seat’s stanza is kept instead: that seat is reconnectable for as long as its pod
+lives.) The origin pod was never modified.</p>
 </section>
 <section id="alternative-pythonpath-shadowing">
 <h2>Alternative: <code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code> shadowing<a class="headerlink" href="#alternative-pythonpath-shadowing" title="Link to this heading">#</a></h2>
@@ -788,7 +865,10 @@ kubelet: mint a dev pod.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mint-the-dev-pod">1. Mint the dev pod</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mint-the-dev-pod">1. Mint the dev pod</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#if-the-origin-declares-podbench-identity-the-sidecar-is-not-root">If the origin declares <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>, the sidecar is not root</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-in-and-populate-the-workspace">2. Get in and populate the workspace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-relaunch-loop">3. The relaunch loop</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-the-change-through-the-service">4. See the change through the Service</a></li>
@@ -804,7 +884,7 @@ kubelet: mint a dev pod.</p>
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a4/docs/how-to/iterate-on-python.md">
+    <a href="https://github.com/gilesknap/podbench/edit/main/docs/how-to/iterate-on-python.md">
       <i class="fa-solid fa-pencil"></i>
       
       

@@ -48,8 +48,11 @@ The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take th
                         (default ~/.podbench)
 ```
 
-`dev` takes only `-n`/`--namespace` and `--context`; `patch` takes those plus
-`--kubectl`. Neither writes an ssh config, so neither has `--config-dir`.
+`dev` takes `-n`/`--namespace`, `--context` and — because it writes an ssh
+config too — `--identity`, `--config-dir` and `--host-alias`. It does not take
+`--kubectl`: it shells out to `kubectl` on `PATH`. `patch` takes
+`-n`/`--namespace`, `--context` and `--kubectl`, and writes no ssh config, so it
+has no `--config-dir`.
 
 podbench shells out to `kubectl` deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
@@ -95,13 +98,17 @@ options:
                         permanent)
   --seat-gid-root       land the seat with runAsGroup: 0 so it can register an
                         /etc/passwd entry for the target's uid, which is what
-                        sshd needs to let anyone log in. Off by default: it
-                        drops the target's own group
-  --no-seat-identity    do not mount the pod's podbench-identity and podbench-
-                        home volumes. They are mounted by convention when the
-                        pod declares them, because that is the only way an
-                        ephemeral container can have an /etc/passwd entry for
-                        the target's uid - and sshd needs one
+                        sshd needs to let anyone log in, and the only way to
+                        get one on a live pod. Off by default: it drops the
+                        target's own group
+  --no-seat-identity    do not mount the pod's podbench-home volume, which is
+                        otherwise mounted by convention when the pod declares
+                        it and keeps everything the seat writes off the
+                        workload's ephemeral-storage budget. The podbench-
+                        identity volume is never mounted by attach: it needs a
+                        subPath per file, which an ephemeral container may not
+                        have - use --seat-gid-root for the seat's /etc/passwd
+                        entry
   --no-probe            skip capreport; the report then says nothing was
                         measured
   --resize MEMORY       raise the target's memory limit in place first, e.g.
@@ -131,44 +138,66 @@ Notes:
   * The argument is a **claim** name or the pod's **volume** name; a claim is
     resolved to the volume entry that references it.
   * `MOUNTPATH` is optional and usually should be. Where the application
-    container mounts that volume, its mountPath (and any `subPath`) is copied,
-    because Patch mode only works when the claim resolves at the *same* path on
-    both sides — the venv's `bin/python` and the checkout's editable install are
-    absolute paths recorded on the volume. An explicit path that disagrees is
-    honoured and warned about; a volume the application does not mount has no
-    path to copy, so one must be given.
+    container mounts that volume, its mountPath is copied, because Patch mode
+    only works when the claim resolves at the *same* path on both sides — the
+    venv's `bin/python` and the checkout's editable install are absolute paths
+    recorded on the volume. An explicit path that disagrees is honoured and
+    warned about; a volume the application does not mount has no path to copy,
+    so one must be given.
+  * An application mount that uses a **`subPath` is refused**, before anything
+    is submitted. An ephemeral container's volumeMounts may not carry one — the
+    API server answers `Forbidden: cannot be set for an Ephemeral Container` and
+    rejects the whole request — and dropping it silently would give the seat the
+    volume root where the application sees one directory inside it, so every
+    path Patch mode recorded would resolve to the wrong thing. Deploy the claim
+    mounted whole over the venv path, or use `podbench dev`, whose seat is an
+    ordinary container.
   * Mounts are fixed when a container is created, so `--mount` against a
     reconnect warns and does nothing. Use `--new` for a seat with a new mount.
-* **The seat's identity is mounted by convention, not by flag.** If the pod
-  declares a volume named `podbench-identity`, `attach` mounts its `passwd` key
-  read-only over `/etc/passwd` and its `group` key over `/etc/group` — each with
-  a `subPath`, because mounting the volume at `/etc` would replace the whole
-  directory. If the pod declares `podbench-home`, that is mounted read-write at
-  `/home/podbench` and becomes the seat's `$HOME`.
-  * This is what makes ssh work on the degraded rung. That rung runs as the
-    *target's* uid, which no debug image can have an account for, and sshd will
-    not authenticate a user NSS cannot resolve. `/etc/passwd` is `644 root:root`,
-    so the seat cannot write one either.
-  * It is a convention because the volumes cannot be there by accident: an
+* **The seat's home is mounted by convention, not by flag.** If the pod declares
+  a volume named `podbench-home`, `attach` mounts it read-write at
+  `/home/podbench` and makes it the seat's `$HOME`, which keeps vscode-server and
+  everything else the seat writes off the workload's ephemeral-storage budget.
+  * It is a convention because the volume cannot be there by accident: an
     ephemeral container may only mount volumes the pod already declares and
-    `spec.volumes` is immutable, so anything called `podbench-identity` was put
-    in the pod at deploy time on purpose. The chart emits the ConfigMap
-    (`seatIdentity` in `Charts/podbench/values.yaml`); the application's own
-    chart declares the volumes. An `attach` against a pod without them still
-    lands a seat and reports honestly that ssh is unavailable.
+    `spec.volumes` is immutable, so anything called `podbench-home` was put in
+    the pod at deploy time on purpose.
+  * It needs the pod to set `fsGroup` to the application's gid, or it arrives
+    owned by `root:root` and the seat cannot write to it. The agent reports that
+    by name at start-up.
   * An explicit `--mount` for the same mountPath **wins** over the convention.
-    `--no-seat-identity` turns it off entirely.
-  * The home volume needs the pod to set `fsGroup` to the application's gid, or
-    it arrives owned by `root:root` and the seat cannot write to it. The agent
-    reports that by name at start-up.
-  * The capability report says which of these applied: the `ssh seat` line names
-    the identity volume when that is what made the login resolvable.
+    `--no-seat-identity` turns the convention off.
+* **`attach` cannot mount `podbench-identity`, however plainly the pod declares
+  it.** The identity has to land as two *files* — `passwd` over `/etc/passwd`,
+  `group` over `/etc/group` — and one file at a time takes a `subPath` per
+  mount, which an ephemeral container may not have: the API server answers
+  `spec.ephemeralContainers[0].volumeMounts[0].subPath: Forbidden: cannot be set
+  for an Ephemeral Container` and refuses the *whole* request, so no seat lands
+  at all. Mounting the volume whole is not an alternative either; a directory
+  mount replaces the path, and over `/etc` it would take `nsswitch.conf` with it
+  — the very lookup the identity exists to satisfy.
+  * **On a live pod, `--seat-gid-root` is the route to the same identity.** The
+    debug image makes `/etc/passwd` group-writable (OpenShift's convention) and
+    the agent appends a record for whatever uid the seat turned out to run as,
+    which needs `runAsGroup: 0` and nothing else. Verified against a
+    PSA-`restricted` pod: `attach --no-seat-identity --seat-gid-root` landed the
+    degraded rung and ssh logged in as `uid=1000(podbench)`.
+  * The volume is for a seat that is an **ordinary** container, which is what
+    `podbench dev` authors — `subPath` is legal there and nothing is written at
+    runtime. (The dev sidecar does not mount it yet; see the follow-up note in
+    `Charts/podbench/values.yaml`.)
+  * The capability report says so where it matters: when the pod declares the
+    volume, the `ssh seat` line explains that it cannot be projected into an
+    ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
+    the identity, the same line credits it.
 * `--resize` is opt-in and lightly proven; it prints a warning either way and
   needs `pods/resize` `patch`.
-* `--seat-gid-root` is the fallback where the pod has no identity volume and
-  cannot be redeployed with one: GID 0 lets the agent append its own
+* `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
+  fallback from the identity volume: GID 0 lets the agent append its own
   `/etc/passwd` record (the image makes the file group-writable for it), at the
-  cost of the target's own group.
+  cost of the target's own group. It is opt-in for that cost, not because a
+  cluster would refuse it — the restricted Pod Security Standard does not
+  constrain `runAsGroup`.
 * Exit code is `0` for any seat that lands, including a degraded one; `2` for a
   real error.
 
@@ -217,7 +246,9 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 usage: podbench dev [-h] [-n NAMESPACE] [--context CONTEXT]
                     [--container CONTAINER] [--name NAME] [--image IMAGE]
                     [--port PORT] [--take-traffic] [--cutover SERVICE]
-                    [--delete] [--timeout TIMEOUT] [--dry-run]
+                    [--identity IDENTITY] [--config-dir CONFIG_DIR]
+                    [--host-alias HOST_ALIAS] [--delete] [--timeout TIMEOUT]
+                    [--dry-run]
                     pod
 
 positional arguments:
@@ -233,11 +264,18 @@ options:
   --name NAME           dev pod name (default: <pod>-podbench)
   --image IMAGE         podbench image
   --port PORT           the port your app serves
-  --take-traffic        copy the origin's labels so the dev pod shares Service
-                        traffic with it. Off by default: joining a production
-                        Service silently is a foot-cannon
+  --take-traffic        copy the origin's labels so the dev pod shares
+                        Service traffic with it. Off by default: joining a
+                        production Service silently is a foot-cannon
   --cutover SERVICE     point SERVICE exclusively at the dev pod, recording
                         its selector for an exact restore at teardown
+  --identity IDENTITY   ssh key to authorise in the sidecar and name in the
+                        generated stanza (default ~/.ssh/id_ed25519)
+  --config-dir CONFIG_DIR
+                        where the generated ssh config and known_hosts live
+                        (default ~/.podbench)
+  --host-alias HOST_ALIAS
+                        ssh Host name for the sidecar
   --delete              tear the dev pod down
   --timeout TIMEOUT     seconds to wait
   --dry-run             print the authored pod instead of creating it
@@ -255,8 +293,21 @@ Notes:
   traffic, and both are explicit. `--cutover` uses a JSON *replace* patch — a
   merge patch would union the selector maps and quietly leave the original pod
   serving half the requests.
-* `--delete` restores any borrowed selector before removing the pod.
-* `--dry-run` is the best available description of what this mode does.
+* `--identity` is authorised inside the sidecar and named as the stanza's
+  `IdentityFile`, exactly as for `attach` — same flag, same default, same
+  refusal when the public key is missing. It is read **before** anything is
+  created, because the key reaches the sidecar through its environment and a
+  container's environment cannot be changed after the pod exists.
+* The generated stanza is written to the same `config.d` file `attach` would
+  use for that pod, and the summary ends with the alias to `ssh`. The
+  `kubectl exec` line is printed as well: it works when ssh does not.
+* `--delete` restores any borrowed selector, removes the pod, then removes the
+  stanza and the `known_hosts` entry it wrote. `attach` deliberately leaves its
+  stanza in place — that seat is reconnectable while its pod lives, this one is
+  not.
+* `--dry-run` is the best available description of what this mode does. It
+  still needs a readable public key, so that what it prints is what `dev` would
+  actually create.
 
 ### `patch`
 
@@ -531,11 +582,11 @@ worth knowing by name:
   directory is not writable the failure names `fsGroup`, which is almost always
   the cause: a projected volume is `root:root` until the pod's `fsGroup` hands it
   to the seat's group, and a seat running as the target's uid can chown nothing.
-* **nss-identity** is a no-op when NSS already resolves the seat's uid — which is
-  exactly what a mounted `podbench-identity` achieves, and it stays a no-op even
-  though the projected `/etc/passwd` is read-only. Only where no identity was
-  supplied does it try to append one, which needs GID 0
-  (`attach --seat-gid-root`).
+* **nss-identity** is a no-op when NSS already resolves the seat's uid — what a
+  mounted `podbench-identity` achieves for an ordinary container, and it stays a
+  no-op even though the projected `/etc/passwd` is read-only. In an ephemeral
+  seat, which cannot be given that file at all, it appends one instead, and that
+  needs GID 0 (`attach --seat-gid-root`).
 
 `--print-login-user` is how the launcher decides whether an ssh stanza is worth
 writing: the name on stdout, or exit 1 with the mechanism and the way out on
@@ -553,9 +604,9 @@ stream.
 | Variable | Read by | Meaning |
 |---|---|---|
 | `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides |
-| `PODBENCH_CONFIG_DIR` | launcher | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
+| `PODBENCH_CONFIG_DIR` | launcher, `dev` | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
 | `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `run` | the target container's runtime ID, injected at attach time |
-| `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected by the launcher |
+| `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected into the seat's spec by `attach` and by `dev` |
 | `PODBENCH_SSH_PUBKEY_FILE` | agent | read it from a file instead. Default mount `/etc/podbench/ssh/authorized_keys` |
 | `PODBENCH_SSH_HOST_KEY` | agent | host private key, rather than minting one |
 | `PODBENCH_SSH_HOST_KEY_FILE` | agent | the same from a file. Default mount `/etc/podbench/ssh/ssh_host_ed25519_key` |

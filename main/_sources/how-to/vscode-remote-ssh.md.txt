@@ -63,9 +63,27 @@ Which pod that lands in decides how much it matters:
    Include ~/.podbench/config.d/*.conf
    ```
 
-3. `kubectl podbench attach pod/… -n …` and note the alias it prints.
+3. Land a seat and note the alias it prints. Both modes write the same kind of
+   stanza to the same place, and both print the alias on the last line:
+
+   ```
+   # Iterate mode — a dev pod whose sidecar is the seat
+   podbench dev api-5f6c9b7d8-qz4tn -n demo --port 8080
+
+   # Observe mode — a seat beside a live workload
+   kubectl podbench attach pod/api-5f6c9b7d8-qz4tn -n demo
+   ```
+
+   Both take `--identity` (which key is authorised in the container, default
+   `~/.ssh/id_ed25519`), `--config-dir` and `--host-alias`.
 4. **Remote-SSH: Connect to Host…**, pick the alias, and wait out the first
    connect while the server downloads.
+
+Do **not** reach an Iterate-mode dev pod with `podbench attach`. It works, but
+it lands a *second*, ephemeral container inside the dev pod and ignores the
+sidecar that is already there — a second copy of the image, a second
+vscode-server on the pod's disk budget, and a container name burnt for the
+pod's lifetime. `podbench dev` gives its own sidecar the seat.
 
 If Remote-SSH does not offer the alias, it is reading a different config file.
 Set `remote.SSH.configFile` to the file that has the `Include`, or point it
@@ -106,6 +124,25 @@ lines are load-bearing in ways that fail *silently*:
 
 Transport budget, for reference: ~10–11 MB RSS per live session, 26 MB/s
 pod→client, 13 MB/s client→pod, 0 failures in 30 connect/disconnect cycles.
+
+The stanza above is an Observe-mode one. A dev pod's differs in exactly two
+places, both derived from what the sidecar actually is rather than assumed:
+
+```
+    User podbench
+    ProxyCommand kubectl -n demo exec -i api-…-podbench -c podbench -- /usr/sbin/sshd -i -e -f /workspace/.podbench/sshd_config -o LogLevel=ERROR
+```
+
+`User` is the login name the sidecar reports for the uid it runs as — `root`
+for a plain dev pod, and whatever the `podbench-identity` passwd record names
+(`podbench`) where the origin declares that volume. The sshd config path
+follows the same rule the agent uses inside the container: a non-root seat
+keeps its files under `$HOME`, which for the sidecar is `/workspace`; a root
+seat keeps them in `/etc/podbench` and `/root` whatever `$HOME` says.
+
+`podbench dev --delete` removes the stanza and its `known_hosts` entry along
+with the pod. An `attach` seat's stanza is left in place instead, because that
+seat is reconnectable for as long as its pod lives.
 
 ## First connect
 
@@ -164,7 +201,18 @@ arguments. It kills the server after exactly five minutes idle.
 
 ## Once you are connected
 
-* Open `/workspace` in Iterate mode — that is the checkout, the venv and `$HOME`.
+* Open `/workspace` in Iterate mode — that is the checkout, the venv and the
+  sidecar's own `$HOME`.
+
+  An ssh session's `$HOME` is **not** `/workspace`, and this is worth knowing
+  before the server unpacks 700 MB somewhere you did not expect: sshd puts a
+  session in the home the *passwd record* names, so it is `/home/podbench`
+  where the origin declares the `podbench-identity` and `podbench-home`
+  volumes, and `/root` on a plain dev pod. A `kubectl exec` shell is the other
+  answer — it inherits the container's environment and lands in `/workspace`.
+  Only the sidecar's tooling (uv's caches, toolchains and venvs) is pinned to
+  the workspace volume; `~/.vscode-server` follows the passwd home. Declaring a
+  `podbench-home` volume is what keeps that off the container's writable layer.
 * Open `/` in Observe mode and browse the workload's filesystem through
   `/proc/<pid>/root`. The `pids` helper tells you which pid.
 * `.vscode/launch.json` lives **in the remote window**; every path in it is a
@@ -184,7 +232,8 @@ arguments. It kills the server after exactly five minutes idle.
 | connection hangs with no output | keepalives removed, or a genuinely stalled apiserver path |
 | server download stalls | the container has no egress to the four host groups above |
 | session dies and the workload restarts | the pod hit its memory limit. This is the Observe-mode footgun; an OOM inside an ephemeral container is unrecoverable |
-| everything is gone after a reconnect | the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach and re-bootstrap |
+| everything is gone after a reconnect | the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate) |
+| `Permission denied (publickey)` on a dev pod | the key is authorised from the sidecar's environment, which is fixed when the pod is created — so a dev pod made with a different `--identity` needs `podbench dev --delete` and a fresh one, not a re-run |
 
 Behaviour through konnectivity or an API gateway is unknown — every measurement
 here comes from a flat k3s exec path — as is Remote-SSH's own reconnect

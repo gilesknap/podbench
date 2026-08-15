@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0a4 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0a5.dev1+gae065d4ad documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=11bc7906"></script>
+    <script src="../_static/documentation_options.js?v=275ce1d6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,7 +51,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a4';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'main';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -63,7 +63,7 @@
     <link rel="prev" title="The container image" href="run-container.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.0a4" />
+  <meta name="docsearch:version" content="main" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -581,10 +581,26 @@ the include once, <strong>above</strong> any <code class="docutils literal notra
 </pre></div>
 </div>
 </li>
-<li><p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">pod/…</span> <span class="pre">-n</span> <span class="pre">…</span></code> and note the alias it prints.</p></li>
+<li><p>Land a seat and note the alias it prints. Both modes write the same kind of
+stanza to the same place, and both print the alias on the last line:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Iterate mode — a dev pod whose sidecar is the seat</span>
+<span class="n">podbench</span> <span class="n">dev</span> <span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="n">port</span> <span class="mi">8080</span>
+
+<span class="c1"># Observe mode — a seat beside a live workload</span>
+<span class="n">kubectl</span> <span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span>
+</pre></div>
+</div>
+<p>Both take <code class="docutils literal notranslate"><span class="pre">--identity</span></code> (which key is authorised in the container, default
+<code class="docutils literal notranslate"><span class="pre">~/.ssh/id_ed25519</span></code>), <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> and <code class="docutils literal notranslate"><span class="pre">--host-alias</span></code>.</p>
+</li>
 <li><p><strong>Remote-SSH: Connect to Host…</strong>, pick the alias, and wait out the first
 connect while the server downloads.</p></li>
 </ol>
+<p>Do <strong>not</strong> reach an Iterate-mode dev pod with <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code>. It works, but
+it lands a <em>second</em>, ephemeral container inside the dev pod and ignores the
+sidecar that is already there — a second copy of the image, a second
+vscode-server on the pod’s disk budget, and a container name burnt for the
+pod’s lifetime. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> gives its own sidecar the seat.</p>
 <p>If Remote-SSH does not offer the alias, it is reading a different config file.
 Set <code class="docutils literal notranslate"><span class="pre">remote.SSH.configFile</span></code> to the file that has the <code class="docutils literal notranslate"><span class="pre">Include</span></code>, or point it
 straight at <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/&lt;namespace&gt;-&lt;pod&gt;.conf</span></code>.</p>
@@ -641,6 +657,21 @@ lines are load-bearing in ways that fail <em>silently</em>:</p>
 </div>
 <p>Transport budget, for reference: ~10–11 MB RSS per live session, 26 MB/s
 pod→client, 13 MB/s client→pod, 0 failures in 30 connect/disconnect cycles.</p>
+<p>The stanza above is an Observe-mode one. A dev pod’s differs in exactly two
+places, both derived from what the sidecar actually is rather than assumed:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>    User podbench
+    ProxyCommand kubectl -n demo exec -i api-…-podbench -c podbench -- /usr/sbin/sshd -i -e -f /workspace/.podbench/sshd_config -o LogLevel=ERROR
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">User</span></code> is the login name the sidecar reports for the uid it runs as — <code class="docutils literal notranslate"><span class="pre">root</span></code>
+for a plain dev pod, and whatever the <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> passwd record names
+(<code class="docutils literal notranslate"><span class="pre">podbench</span></code>) where the origin declares that volume. The sshd config path
+follows the same rule the agent uses inside the container: a non-root seat
+keeps its files under <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>, which for the sidecar is <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>; a root
+seat keeps them in <code class="docutils literal notranslate"><span class="pre">/etc/podbench</span></code> and <code class="docutils literal notranslate"><span class="pre">/root</span></code> whatever <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> says.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span> <span class="pre">--delete</span></code> removes the stanza and its <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> entry along
+with the pod. An <code class="docutils literal notranslate"><span class="pre">attach</span></code> seat’s stanza is left in place instead, because that
+seat is reconnectable for as long as its pod lives.</p>
 </section>
 <section id="first-connect">
 <h2>First connect<a class="headerlink" href="#first-connect" title="Link to this heading">#</a></h2>
@@ -713,8 +744,19 @@ arguments. It kills the server after exactly five minutes idle.</p>
 </section>
 <section id="once-you-are-connected">
 <h2>Once you are connected<a class="headerlink" href="#once-you-are-connected" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p>Open <code class="docutils literal notranslate"><span class="pre">/workspace</span></code> in Iterate mode — that is the checkout, the venv and <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>.</p></li>
+<ul>
+<li><p>Open <code class="docutils literal notranslate"><span class="pre">/workspace</span></code> in Iterate mode — that is the checkout, the venv and the
+sidecar’s own <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>.</p>
+<p>An ssh session’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> is <strong>not</strong> <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>, and this is worth knowing
+before the server unpacks 700 MB somewhere you did not expect: sshd puts a
+session in the home the <em>passwd record</em> names, so it is <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code>
+where the origin declares the <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code>
+volumes, and <code class="docutils literal notranslate"><span class="pre">/root</span></code> on a plain dev pod. A <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> shell is the other
+answer — it inherits the container’s environment and lands in <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>.
+Only the sidecar’s tooling (uv’s caches, toolchains and venvs) is pinned to
+the workspace volume; <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> follows the passwd home. Declaring a
+<code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume is what keeps that off the container’s writable layer.</p>
+</li>
 <li><p>Open <code class="docutils literal notranslate"><span class="pre">/</span></code> in Observe mode and browse the workload’s filesystem through
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>. The <code class="docutils literal notranslate"><span class="pre">pids</span></code> helper tells you which pid.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> lives <strong>in the remote window</strong>; every path in it is a
@@ -751,7 +793,10 @@ all there.</p></li>
 <td><p>the pod hit its memory limit. This is the Observe-mode footgun; an OOM inside an ephemeral container is unrecoverable</p></td>
 </tr>
 <tr class="row-odd"><td><p>everything is gone after a reconnect</p></td>
-<td><p>the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach and re-bootstrap</p></td>
+<td><p>the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code> on a dev pod</p></td>
+<td><p>the key is authorised from the sidecar’s environment, which is fixed when the pod is created — so a dev pod made with a different <code class="docutils literal notranslate"><span class="pre">--identity</span></code> needs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span> <span class="pre">--delete</span></code> and a fresh one, not a re-run</p></td>
 </tr>
 </tbody>
 </table>
@@ -823,7 +868,7 @@ behaviour when the pod is deleted mid-session.</p>
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a4/docs/how-to/vscode-remote-ssh.md">
+    <a href="https://github.com/gilesknap/podbench/edit/main/docs/how-to/vscode-remote-ssh.md">
       <i class="fa-solid fa-pencil"></i>
       
       
