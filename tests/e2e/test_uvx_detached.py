@@ -251,9 +251,12 @@ def test_attach_leaves_no_process_running(
     A helper left running — a port-forward, a watch, a reconnect loop — would
     make the seat depend on the machine that created it, which is the same
     failure as a podbench in the ProxyCommand arriving by a different route.
-    Matched on the scratch namespace, which is unique to this module and
+    Matched on the scratch namespace alone, which is unique to this module and
     appears in the launcher's own argv, so no other test's kubectl can be
-    mistaken for one of ours.
+    mistaken for one of ours. Deliberately not also matched on ``podbench``:
+    that would be redundant — ``NAMESPACE_PREFIX`` starts with it — while
+    reading as though a namespace-scoped helper under some other name, a
+    lingering ``kubectl port-forward`` say, would be allowed to survive.
     """
     proc = Path("/proc")
     if not proc.is_dir():
@@ -267,7 +270,7 @@ def test_attach_leaves_no_process_running(
         except OSError:  # pragma: no cover - the process exited mid-scan
             continue
         cmdline = raw.replace(b"\0", b" ").decode(errors="replace").strip()
-        if namespace in cmdline and "podbench" in cmdline:
+        if namespace in cmdline:
             survivors.append(cmdline)
     assert not survivors, (
         "attach left a process behind, so the seat is not self-contained:\n"

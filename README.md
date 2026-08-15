@@ -39,7 +39,7 @@ inside the cluster.
 
 Two artefacts: a debug **container image** (`ghcr.io/gilesknap/podbench`) and a
 **launcher you never have to install** — `uvx podbench` runs it straight from
-PyPI, uses your kubeconfig, and leaves nothing behind.
+PyPI, uses your kubeconfig, and puts nothing on your `PATH`.
 
 | | Observe mode | Iterate mode |
 |---|---|---|
@@ -52,8 +52,10 @@ PyPI, uses your kubeconfig, and leaves nothing behind.
 ## Run it
 
 The launcher is a pure-stdlib Python package with **no runtime dependencies**,
-so `uvx` resolves and runs it in one cold start and nothing outlives the
-command:
+so `uvx` resolves and runs it in one cold start, with nothing installed and
+nothing on your `PATH` afterwards (uv does keep the environment in its own
+cache, so an unpinned `uvx podbench` reuses that version until you ask for
+`podbench@latest`):
 
 ```
 $ uvx podbench --version

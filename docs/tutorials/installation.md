@@ -9,7 +9,7 @@ to change.
 
 | | Why |
 |---|---|
-| [`uv`](https://docs.astral.sh/uv/) | `uvx` fetches and runs the launcher in one command, leaving nothing behind. Skip it only if you would rather install. It fetches a suitable Python (3.11+) too, so you need none of your own |
+| [`uv`](https://docs.astral.sh/uv/) | `uvx` fetches and runs the launcher in one command, installing nothing. Skip it only if you would rather install. It fetches a suitable Python (3.11+) too, so you need none of your own |
 | `kubectl` **1.25 or later** | ephemeral containers are stable from 1.25; podbench posts to the `ephemeralcontainers` subresource itself |
 | `helm` **3.8 or later** | only for the optional RBAC chart at the end of this page. OCI registry support is what the 3.8 floor is for |
 | a working kubeconfig | this *is* podbench's authentication. There is no second credential |
@@ -51,19 +51,27 @@ That builds the launcher from the repository head, so it is a dev build — see
 *The image*, below, for which image such a launcher asks for.
 :::
 
-That is the whole setup. `uvx` resolves the wheel from PyPI, caches it, and runs
-it; because podbench declares no runtime dependencies there is nothing else to
-resolve, and no environment is left on your machine.
+That is the whole setup. `uvx` resolves the wheel from PyPI and runs it; because
+podbench declares no runtime dependencies there is nothing else to resolve, and
+nothing is installed — no environment you have to manage, and nothing on your
+`PATH`.
+
+It is not quite "nothing on disk": uv keeps the environment in its own cache
+(`uv cache dir`), which is what makes the second run fast. That has one
+consequence worth knowing — an unpinned `uvx podbench` keeps using the cached
+version rather than checking PyPI for a newer one. Ask for `podbench@latest`, or
+pass `--refresh`, when you want the newest release.
 
 Three shapes are supported, and they run the same program:
 
 | Invocation | When |
 |---|---|
-| `uvx podbench <verb>` | the default. Latest release, nothing persists |
+| `uvx podbench <verb>` | the default. Nothing installed; the version is whatever uv has cached |
 | `uvx podbench@1.0.0 <verb>` | pinned and reproducible — a script, a runbook, a shared incident channel |
 | `uv tool install podbench` | you want `podbench` on `PATH` permanently, and will manage upgrades yourself |
 
-Any of these put that same single executable on `PATH`:
+If you would rather install it, any of these will do. The first two put
+`podbench` on your `PATH`; the third does so only while its venv is activated:
 
 ::::{tab-set}
 
@@ -86,12 +94,14 @@ $ pipx install podbench
 :::{tab-item} pip + venv
 
 ```
-$ python3 -m venv ~/.venvs/podbench
+$ python3.11 -m venv ~/.venvs/podbench    # or any later 3.x
 $ source ~/.venvs/podbench/bin/activate
 $ python3 -m pip install podbench
 ```
 
-With a venv you must keep it activated, or symlink `podbench` onto your `PATH`.
+This is the one route that does not fetch its own interpreter, so the venv has
+to be built with **3.11 or later** — pip refuses the wheel otherwise. And you
+must keep the venv activated, or symlink `podbench` onto your `PATH`.
 
 :::
 
