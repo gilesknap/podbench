@@ -40,7 +40,6 @@ failure if ignored:
 
 from __future__ import annotations
 
-import argparse
 import enum
 import json
 import os
@@ -52,10 +51,13 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Annotated, Any, Protocol, cast
+
+import typer
 
 from . import spec
 from .agent import PUBKEY_ENV
+from .cli import new_app, require_subcommand, run
 from .kubectl import Kubectl, KubectlError, Runner, run_subprocess
 from .launcher import (
     DEFAULT_CLIENT_DIR,
@@ -1518,8 +1520,6 @@ def _say(message: str) -> None:
 
 # -- CLI -------------------------------------------------------------------
 
-_Handler = Callable[[argparse.Namespace], int]
-
 
 def _pod_argument(reference: str) -> str:
     """``pod/NAME`` or a bare ``NAME``, exactly as the launcher verbs take it.
@@ -1551,182 +1551,265 @@ def _identity_argument(identity: str) -> tuple[str, str]:
         raise DevError(str(error)) from error
 
 
-def _cmd_dev(opts: argparse.Namespace) -> int:
-    kube = Kubectl(opts.namespace, context=opts.context)
-    pod_reference = _pod_argument(opts.pod)
-    if opts.delete:
-        for action in delete_dev_pod(
+_Namespace = Annotated[
+    str, typer.Option("-n", "--namespace", metavar="NAMESPACE", help="namespace")
+]
+_Context = Annotated[
+    str | None, typer.Option("--context", metavar="NAME", help="kubeconfig context")
+]
+_Workspace = Annotated[
+    str, typer.Option("--workspace", metavar="DIR", help="workspace root")
+]
+
+
+def _build_app() -> typer.Typer:
+    app = new_app()
+
+    @app.callback(invoke_without_command=True)
+    def root(ctx: typer.Context) -> None:
+        """Iterate mode: a dev pod and the relaunch loop inside it."""
+        require_subcommand(ctx)
+
+    @app.command(help="create or delete the dev pod (runs on the laptop)")
+    def dev(
+        pod: Annotated[
+            str,
+            typer.Argument(
+                metavar="POD", help="the pod to clone, or the dev pod to delete"
+            ),
+        ],
+        namespace: _Namespace = "default",
+        context: _Context = None,
+        container: Annotated[
+            str | None,
+            typer.Option("--container", metavar="NAME", help="container to take over"),
+        ] = None,
+        name: Annotated[
+            str | None,
+            typer.Option(
+                "--name", metavar="NAME", help="dev pod name (default: POD-podbench)"
+            ),
+        ] = None,
+        image: Annotated[
+            str,
+            typer.Option(
+                "--image",
+                metavar="REF",
+                # The resolved value is derived from this launcher's version,
+                # so printing it would advertise a checkout's `:main` as the
+                # release tag.
+                show_default=False,
+                help="podbench image (default: the image built from this "
+                "launcher's version)",
+            ),
+        ] = DEFAULT_IMAGE,
+        port: Annotated[
+            int | None,
+            typer.Option("--port", metavar="PORT", help="the port your app serves"),
+        ] = None,
+        take_traffic: Annotated[
+            bool,
+            typer.Option(
+                "--take-traffic",
+                help="copy the origin's labels so the dev pod shares Service "
+                "traffic with it. Off by default: joining a production Service "
+                "silently is a foot-cannon",
+            ),
+        ] = False,
+        cutover: Annotated[
+            str | None,
+            typer.Option(
+                "--cutover",
+                metavar="SERVICE",
+                help="point SERVICE exclusively at the dev pod, recording its "
+                "selector for an exact restore at teardown",
+            ),
+        ] = None,
+        identity: Annotated[
+            str,
+            typer.Option(
+                "--identity",
+                metavar="KEY",
+                help="ssh key to authorise in the sidecar and name in the "
+                "generated stanza",
+            ),
+        ] = DEFAULT_IDENTITY,
+        config_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--config-dir",
+                metavar="DIR",
+                help="where the generated ssh config and known_hosts live "
+                f"(default {DEFAULT_CLIENT_DIR})",
+            ),
+        ] = None,
+        host_alias: Annotated[
+            str | None,
+            typer.Option(
+                "--host-alias", metavar="NAME", help="ssh Host name for the sidecar"
+            ),
+        ] = None,
+        delete: Annotated[
+            bool, typer.Option("--delete", help="tear the dev pod down")
+        ] = False,
+        timeout: Annotated[
+            float, typer.Option("--timeout", metavar="SECONDS", help="seconds to wait")
+        ] = 120.0,
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run", help="print the authored pod instead of creating it"
+            ),
+        ] = False,
+    ) -> None:
+        kube = Kubectl(namespace, context=context)
+        pod_reference = _pod_argument(pod)
+        if delete:
+            for action in delete_dev_pod(
+                kube,
+                dev_pod_name(pod_reference),
+                timeout=timeout,
+                config_dir=config_dir,
+            ):
+                print(action)
+            raise typer.Exit(0)
+        # Before anything is created: the key is authored into the sidecar's
+        # env, which cannot be changed afterwards, so a missing key must refuse
+        # here rather than after a pod exists that can never be ssh'd into.
+        key_path, public_key = _identity_argument(identity)
+        created, manifest = create_dev_pod(
             kube,
-            dev_pod_name(pod_reference),
-            timeout=opts.timeout,
-            config_dir=opts.config_dir,
-        ):
-            print(action)
-        return 0
-    # Before anything is created: the key is authored into the sidecar's env,
-    # which cannot be changed afterwards, so a missing key must refuse here
-    # rather than after a pod exists that can never be ssh'd into.
-    identity, public_key = _identity_argument(opts.identity)
-    pod, manifest = create_dev_pod(
-        kube,
-        pod_reference,
-        name=opts.name,
-        container=opts.container,
-        image=opts.image,
-        port=opts.port,
-        public_key=public_key,
-        take_traffic=opts.take_traffic,
-        cutover_service=opts.cutover,
-        timeout=opts.timeout,
-        dry_run=opts.dry_run,
-    )
-    if opts.dry_run:
-        print(json.dumps(manifest, indent=2, sort_keys=True))
-        return 0
-    seat = seat_ssh_config(
-        kube,
-        pod,
-        manifest,
-        identity=identity,
-        config_dir=opts.config_dir,
-        host_alias=opts.host_alias,
-    )
-    print(connection_summary(pod, seat))
-    return 0
+            pod_reference,
+            name=name,
+            container=container,
+            image=image,
+            port=port,
+            public_key=public_key,
+            take_traffic=take_traffic,
+            cutover_service=cutover,
+            timeout=timeout,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            print(json.dumps(manifest, indent=2, sort_keys=True))
+            raise typer.Exit(0)
+        seat = seat_ssh_config(
+            kube,
+            created,
+            manifest,
+            identity=key_path,
+            config_dir=config_dir,
+            host_alias=host_alias,
+        )
+        print(connection_summary(created, seat))
+        raise typer.Exit(0)
 
+    @app.command(
+        name="dev-bootstrap",
+        help="clone, sync and editable-install (runs in the pod)",
+    )
+    def dev_bootstrap(
+        repo: Annotated[
+            str, typer.Option("--repo", metavar="URL", help="git URL to clone")
+        ],
+        ref: Annotated[
+            str | None,
+            typer.Option(
+                "--ref", metavar="REF", help="branch, tag or commit to check out"
+            ),
+        ] = None,
+        directory: Annotated[
+            str,
+            typer.Option(
+                "--dir",
+                metavar="DIR",
+                help="checkout directory (must be in this container)",
+            ),
+        ] = str(Path(DEFAULT_WORKSPACE) / "src"),
+        python: Annotated[
+            str | None,
+            typer.Option(
+                "--python", metavar="VERSION", help="CPython version for uv to use"
+            ),
+        ] = None,
+        no_sync: Annotated[
+            bool, typer.Option("--no-sync", help="skip uv sync --frozen")
+        ] = False,
+        no_editable: Annotated[
+            bool, typer.Option("--no-editable", help="skip uv pip install -e .")
+        ] = False,
+    ) -> None:
+        raise typer.Exit(
+            bootstrap(
+                BootstrapPlan(
+                    repo=repo,
+                    checkout=directory,
+                    ref=ref,
+                    sync=not no_sync,
+                    editable=not no_editable,
+                    python=python,
+                )
+            )
+        )
 
-def _cmd_bootstrap(opts: argparse.Namespace) -> int:
-    plan = BootstrapPlan(
-        repo=opts.repo,
-        checkout=opts.dir,
-        ref=opts.ref,
-        sync=not opts.no_sync,
-        editable=not opts.no_editable,
-        python=opts.python,
-    )
-    return bootstrap(plan)
+    # Named explicitly: the function cannot be called `run`, which this
+    # module already imports from .cli, nor `stop`, which is the relaunch
+    # loop's own.
+    @app.command(name="run", help="relaunch the app and verify it (runs in the pod)")
+    def run_app(
+        port: Annotated[
+            int, typer.Option("--port", metavar="PORT", help="the port it must serve")
+        ],
+        workspace: _Workspace = DEFAULT_WORKSPACE,
+        directory: Annotated[
+            str | None,
+            typer.Option(
+                "--dir", metavar="DIR", help="working directory (default: workspace)"
+            ),
+        ] = None,
+        timeout: Annotated[
+            float,
+            typer.Option("--timeout", metavar="SECONDS", help="seconds to verify"),
+        ] = 15.0,
+        command: Annotated[
+            list[str] | None,
+            typer.Argument(metavar="[COMMAND]...", help="the command, after `--`"),
+        ] = None,
+    ) -> None:
+        result = start(
+            list(command or ()),
+            port=port,
+            workspace=workspace,
+            cwd=directory,
+            timeout=timeout,
+            target_cid=os.environ.get(TARGET_CID_ENV) or None,
+        )
+        print(result.detail)
+        raise typer.Exit(0 if result.ok else 1)
 
+    @app.command(name="stop", help="stop the recorded child (runs in the pod)")
+    def stop_app(
+        workspace: _Workspace = DEFAULT_WORKSPACE,
+        grace: Annotated[
+            float,
+            typer.Option("--grace", metavar="SECONDS", help="seconds before SIGKILL"),
+        ] = 5.0,
+    ) -> None:
+        result = stop(workspace=workspace, grace=grace)
+        print(result.detail)
+        raise typer.Exit(0 if result.ok else 1)
 
-def _cmd_run(opts: argparse.Namespace) -> int:
-    result = start(
-        opts.command,
-        port=opts.port,
-        workspace=opts.workspace,
-        cwd=opts.dir,
-        timeout=opts.timeout,
-        target_cid=os.environ.get(TARGET_CID_ENV) or None,
-    )
-    print(result.detail)
-    return 0 if result.ok else 1
-
-
-def _cmd_stop(opts: argparse.Namespace) -> int:
-    result = stop(workspace=opts.workspace, grace=opts.grace)
-    print(result.detail)
-    return 0 if result.ok else 1
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="podbench",
-        description="Iterate mode: a dev pod and the relaunch loop inside it.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    dev = sub.add_parser(
-        "dev", help="create or delete the dev pod (runs on the laptop)"
-    )
-    dev.add_argument("pod", help="the pod to clone, or the dev pod to delete")
-    dev.add_argument(
-        "-n", "--namespace", default="default", help="namespace (default: default)"
-    )
-    dev.add_argument("--context", default=None, help="kubeconfig context")
-    dev.add_argument("--container", default=None, help="container to take over")
-    dev.add_argument(
-        "--name", default=None, help="dev pod name (default: <pod>-podbench)"
-    )
-    dev.add_argument("--image", default=DEFAULT_IMAGE, help="podbench image")
-    dev.add_argument("--port", type=int, default=None, help="the port your app serves")
-    dev.add_argument(
-        "--take-traffic",
-        action="store_true",
-        help="copy the origin's labels so the dev pod shares Service traffic "
-        "with it. Off by default: joining a production Service silently is a "
-        "foot-cannon",
-    )
-    dev.add_argument(
-        "--cutover",
-        metavar="SERVICE",
-        default=None,
-        help="point SERVICE exclusively at the dev pod, recording its selector "
-        "for an exact restore at teardown",
-    )
-    dev.add_argument(
-        "--identity",
-        default=DEFAULT_IDENTITY,
-        help="ssh key to authorise in the sidecar and name in the generated "
-        f"stanza (default {DEFAULT_IDENTITY})",
-    )
-    dev.add_argument(
-        "--config-dir",
-        default=None,
-        help="where the generated ssh config and known_hosts live "
-        f"(default {DEFAULT_CLIENT_DIR})",
-    )
-    dev.add_argument("--host-alias", default=None, help="ssh Host name for the sidecar")
-    dev.add_argument("--delete", action="store_true", help="tear the dev pod down")
-    dev.add_argument("--timeout", type=float, default=120.0, help="seconds to wait")
-    dev.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print the authored pod instead of creating it",
-    )
-    dev.set_defaults(handler=_cmd_dev)
-
-    boot = sub.add_parser(
-        "dev-bootstrap", help="clone, sync and editable-install (runs in the pod)"
-    )
-    boot.add_argument("--repo", required=True, help="git URL to clone")
-    boot.add_argument("--ref", default=None, help="branch, tag or commit to check out")
-    boot.add_argument(
-        "--dir",
-        default=str(Path(DEFAULT_WORKSPACE) / "src"),
-        help="checkout directory (must be in this container)",
-    )
-    boot.add_argument("--python", default=None, help="CPython version for uv to use")
-    boot.add_argument("--no-sync", action="store_true", help="skip uv sync --frozen")
-    boot.add_argument(
-        "--no-editable", action="store_true", help="skip uv pip install -e ."
-    )
-    boot.set_defaults(handler=_cmd_bootstrap)
-
-    run = sub.add_parser("run", help="relaunch the app and verify it (runs in the pod)")
-    run.add_argument("--port", type=int, required=True, help="the port it must serve")
-    run.add_argument("--workspace", default=DEFAULT_WORKSPACE, help="workspace root")
-    run.add_argument(
-        "--dir", default=None, help="working directory (default: workspace)"
-    )
-    run.add_argument("--timeout", type=float, default=15.0, help="seconds to verify")
-    run.add_argument("command", nargs="*", help="the command, after `--`")
-    run.set_defaults(handler=_cmd_run)
-
-    halt = sub.add_parser("stop", help="stop the recorded child (runs in the pod)")
-    halt.add_argument("--workspace", default=DEFAULT_WORKSPACE, help="workspace root")
-    halt.add_argument("--grace", type=float, default=5.0, help="seconds before SIGKILL")
-    halt.set_defaults(handler=_cmd_stop)
-    return parser
+    return app
 
 
 def main(args: Sequence[str] | None = None) -> int:
     """Entry point for ``dev``, ``dev-bootstrap``, ``run`` and ``stop``.
 
-    One parser for all four because they are one workflow: a top-level CLI can
+    One app for all four because they are one workflow: a top-level CLI can
     forward its argv verbatim once it recognises the verb.
     """
-    opts = _build_parser().parse_args(args)
-    handler = cast(_Handler, opts.handler)
     try:
-        return handler(opts)
+        return run(_build_app(), args, prog="podbench")
     except (DevError, KubectlError, LauncherError, spec.InvalidSpecError) as exc:
         print(f"podbench: {exc}", file=sys.stderr)
         return 1

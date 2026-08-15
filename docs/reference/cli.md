@@ -8,21 +8,34 @@ launcher's guess and a helper's separate guess.
 
 ```
 $ podbench --help
-usage: podbench [-h] [-v] [VERB] ...
 
-A development seat inside a Kubernetes pod. Run `podbench <verb> --help` for a
-verb's own options.
+ Usage: podbench [OPTIONS] COMMAND [ARGS]...
 
-positional arguments:
-  VERB           the subcommand to run
-  args           arguments for the verb
+ A development seat inside a Kubernetes pod.
 
-options:
-  -h, --help     show this help message and exit
-  -v, --version  show program's version number and exit
+ Run `podbench VERB --help` for a verb's own options.
 
-cluster-side verbs: attach, ssh-config, status, list, dev, patch; in-pod
-verbs: agent, capreport, pids, dbg, dev-bootstrap, run, stop
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --version  -v        show the launcher's version and exit                                        │
+│ --help               Show this message and exit.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
+│ attach         add or reconnect a podbench container and print the report                        │
+│ ssh-config     regenerate the ssh stanza for an existing session                                 │
+│ status         the podbench containers in one pod and what each supports                         │
+│ list           every pod in the namespace carrying a podbench container                          │
+│ dev            create or delete the dev pod                                                      │
+│ patch          durable in-place fixes on a claim-backed venv                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
+│ agent          prepare the container for ssh and idle as its PID 1                               │
+│ capreport      name the mechanism that denies ptrace in this container                           │
+│ pids           list the pod's processes                                                          │
+│ dbg            debug a process                                                                   │
+│ dev-bootstrap  clone, sync and editable-install a checkout                                       │
+│ run            relaunch the app and verify it                                                    │
+│ stop           stop the recorded child                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 | Where it runs | Verbs |
@@ -52,12 +65,11 @@ seat; several have shorter aliases on `PATH` (`pids`, `dbg`, `capreport`,
 The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take these:
 
 ```
-  -n NAMESPACE, --namespace NAMESPACE
-  --context CONTEXT
-  --kubectl KUBECTL     kubectl binary to use
-  --config-dir CONFIG_DIR
-                        where the generated ssh config and known_hosts live
-                        (default ~/.podbench)
+--namespace  -n  NAMESPACE  namespace (default: the kubeconfig context's own)
+--context        NAME       kubeconfig context
+--kubectl        BIN        kubectl binary to use [default: kubectl]
+--config-dir     DIR        where the generated ssh config and known_hosts live
+                            (default ~/.podbench)
 ```
 
 `dev` takes `-n`/`--namespace`, `--context` and — because it writes an ssh
@@ -82,61 +94,63 @@ Land a debug seat in a **live** pod, walking the capability ladder, and print
 what that seat can actually do.
 
 ```
-usage: podbench attach [-h] [--target TARGET] [--image IMAGE]
-                       [--target-uid TARGET_UID] [--mount CLAIM:MOUNTPATH]
-                       [--new] [--seat-gid-root] [--no-seat-identity]
-                       [--no-probe] [--resize MEMORY] [--identity IDENTITY]
-                       [--ssh-user SSH_USER] [--host-alias HOST_ALIAS]
-                       [--print-config] [--timeout TIMEOUT] [-n NAMESPACE]
-                       [--context CONTEXT] [--kubectl KUBECTL]
-                       [--config-dir CONFIG_DIR]
-                       pod
 
-positional arguments:
-  pod
+ Usage: podbench attach [OPTIONS] {POD}
 
-options:
-  -h, --help            show this help message and exit
-  --target TARGET       workload container name
-  --image IMAGE
-  --target-uid TARGET_UID
-                        the target's uid, when its pod spec does not say
-  --mount CLAIM:MOUNTPATH
-                        mount a volume the pod already declares into the seat,
-                        named by claim or by volume name. MOUNTPATH defaults
-                        to the application container's own, which Patch mode
-                        requires it to equal. Repeatable
-  --new                 add a container even if one is running (its name is
-                        permanent)
-  --seat-gid-root       land the seat with runAsGroup: 0 so it can register an
-                        /etc/passwd entry for the target's uid, which is what
-                        sshd needs to let anyone log in, and the only way to
-                        get one on a live pod. Off by default: it drops the
-                        target's own group
-  --no-seat-identity    do not mount the pod's podbench-home volume, which is
-                        otherwise mounted by convention when the pod declares
-                        it and keeps everything the seat writes off the
-                        workload's ephemeral-storage budget. The podbench-
-                        identity volume is never mounted by attach: it needs a
-                        subPath per file, which an ephemeral container may not
-                        have - use --seat-gid-root for the seat's /etc/passwd
-                        entry
-  --no-probe            skip capreport; the report then says nothing was
-                        measured
-  --resize MEMORY       raise the target's memory limit in place first, e.g.
-                        6Gi
-  --identity IDENTITY
-  --ssh-user SSH_USER
-  --host-alias HOST_ALIAS
-  --print-config        print the ssh stanza instead of writing it to the
-                        config dir
-  --timeout TIMEOUT
+ add or reconnect a podbench container and print the report
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    POD      <str>  pod/NAME or a bare NAME [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --target                    NAME             workload container name                             │
+│ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
+│                                              image built from this launcher's version)           │
+│ --target-uid                UID              the target's uid, when its pod spec does not say    │
+│ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
+│                                              seat, named by claim or by volume name. MOUNTPATH   │
+│                                              defaults to the application container's own, which  │
+│                                              Patch mode requires it to equal. Repeatable         │
+│ --new                                        add a container even if one is running (its name is │
+│                                              permanent)                                          │
+│ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
+│                                              an /etc/passwd entry for the target's uid, which is │
+│                                              what sshd needs to let anyone log in, and the only  │
+│                                              way to get one on a live pod. Off by default: it    │
+│                                              drops the target's own group                        │
+│ --no-seat-identity                           do not mount the pod's podbench-home volume, which  │
+│                                              is otherwise mounted by convention when the pod     │
+│                                              declares it and keeps everything the seat writes    │
+│                                              off the workload's ephemeral-storage budget. The    │
+│                                              podbench-identity volume is never mounted by        │
+│                                              attach: it needs a subPath per file, which an       │
+│                                              ephemeral container may not have - use              │
+│                                              --seat-gid-root for the seat's /etc/passwd entry    │
+│ --no-probe                                   skip capreport; the report then says nothing was    │
+│                                              measured                                            │
+│ --resize                    MEMORY           raise the target's memory limit in place first,     │
+│                                              e.g. 6Gi                                            │
+│ --identity                  KEY              ssh key to authorise in the seat and name in the    │
+│                                              generated stanza                                    │
+│                                              [default: ~/.ssh/id_ed25519]                        │
+│ --ssh-user                  NAME             login name to put in the stanza                     │
+│ --host-alias                NAME             ssh Host name for the seat                          │
+│ --print-config                               print the ssh stanza instead of writing it to the   │
+│                                              config dir                                          │
+│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --namespace         -n      NAMESPACE        namespace (default: the kubeconfig context's own)   │
+│ --context                   NAME             kubeconfig context                                  │
+│ --kubectl                   BIN              kubectl binary to use [default: kubectl]            │
+│ --config-dir                DIR              where the generated ssh config and known_hosts live │
+│                                              (default ~/.podbench)                               │
+│ --help                                       Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Notes:
 
 * `pod` accepts `pod/NAME` or a bare `NAME`.
-* `--image` has no default of its own to print: the launcher asks for the image
+* `--image` has no fixed default to print: the launcher asks for the image
   built from its own version — `ghcr.io/gilesknap/podbench:<launcher version>`,
   and `:main` when the launcher is a dev build off a checkout. `--image` wins
   over `PODBENCH_IMAGE`, which wins over that. See
@@ -224,11 +238,28 @@ Regenerate the ssh stanza for a seat that is already running, without touching
 the pod.
 
 ```
-usage: podbench ssh-config [-h] [--identity IDENTITY] [--ssh-user SSH_USER]
-                           [--host-alias HOST_ALIAS] [--print-config]
-                           [-n NAMESPACE] [--context CONTEXT]
-                           [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
-                           pod
+
+ Usage: podbench ssh-config [OPTIONS] {POD}
+
+ regenerate the ssh stanza for an existing session
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    POD      <str>  pod/NAME or a bare NAME [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
+│                                    stanza                                                        │
+│                                    [default: ~/.ssh/id_ed25519]                                  │
+│ --ssh-user              NAME       login name to put in the stanza                               │
+│ --host-alias            NAME       ssh Host name for the seat                                    │
+│ --print-config                     print the ssh stanza instead of writing it to the config dir  │
+│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
+│ --context               NAME       kubeconfig context                                            │
+│ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
+│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
+│                                    ~/.podbench)                                                  │
+│ --help                             Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Fails if there is no running podbench container in the pod.
@@ -239,9 +270,22 @@ Every podbench container in one pod, including dead ones whose names remain
 burnt.
 
 ```
-usage: podbench status [-h] [-n NAMESPACE] [--context CONTEXT]
-                       [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
-                       pod
+
+ Usage: podbench status [OPTIONS] {POD}
+
+ the podbench containers in one pod and what each supports
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    POD      <str>  pod/NAME or a bare NAME [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context's own)               │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `list`
@@ -249,8 +293,19 @@ usage: podbench status [-h] [-n NAMESPACE] [--context CONTEXT]
 The same, across the namespace.
 
 ```
-usage: podbench list [-h] [-n NAMESPACE] [--context CONTEXT]
-                     [--kubectl KUBECTL] [--config-dir CONFIG_DIR]
+
+ Usage: podbench list [OPTIONS]
+
+ every pod in the namespace carrying a podbench container
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context's own)               │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `dev`
@@ -258,42 +313,38 @@ usage: podbench list [-h] [-n NAMESPACE] [--context CONTEXT]
 Author a sacrificial dev pod from a target's spec — Iterate mode.
 
 ```
-usage: podbench dev [-h] [-n NAMESPACE] [--context CONTEXT]
-                    [--container CONTAINER] [--name NAME] [--image IMAGE]
-                    [--port PORT] [--take-traffic] [--cutover SERVICE]
-                    [--identity IDENTITY] [--config-dir CONFIG_DIR]
-                    [--host-alias HOST_ALIAS] [--delete] [--timeout TIMEOUT]
-                    [--dry-run]
-                    pod
 
-positional arguments:
-  pod                   the pod to clone, or the dev pod to delete
+ Usage: podbench dev [OPTIONS] {POD}
 
-options:
-  -h, --help            show this help message and exit
-  -n NAMESPACE, --namespace NAMESPACE
-                        namespace (default: default)
-  --context CONTEXT     kubeconfig context
-  --container CONTAINER
-                        container to take over
-  --name NAME           dev pod name (default: <pod>-podbench)
-  --image IMAGE         podbench image
-  --port PORT           the port your app serves
-  --take-traffic        copy the origin's labels so the dev pod shares Service
-                        traffic with it. Off by default: joining a production
-                        Service silently is a foot-cannon
-  --cutover SERVICE     point SERVICE exclusively at the dev pod, recording
-                        its selector for an exact restore at teardown
-  --identity IDENTITY   ssh key to authorise in the sidecar and name in the
-                        generated stanza (default ~/.ssh/id_ed25519)
-  --config-dir CONFIG_DIR
-                        where the generated ssh config and known_hosts live
-                        (default ~/.podbench)
-  --host-alias HOST_ALIAS
-                        ssh Host name for the sidecar
-  --delete              tear the dev pod down
-  --timeout TIMEOUT     seconds to wait
-  --dry-run             print the authored pod instead of creating it
+ create or delete the dev pod (runs on the laptop)
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    POD      <str>  the pod to clone, or the dev pod to delete [required]                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --namespace     -n      NAMESPACE  namespace [default: default]                                  │
+│ --context               NAME       kubeconfig context                                            │
+│ --container             NAME       container to take over                                        │
+│ --name                  NAME       dev pod name (default: POD-podbench)                          │
+│ --image                 REF        podbench image (default: the image built from this launcher's │
+│                                    version)                                                      │
+│ --port                  PORT       the port your app serves                                      │
+│ --take-traffic                     copy the origin's labels so the dev pod shares Service        │
+│                                    traffic with it. Off by default: joining a production Service │
+│                                    silently is a foot-cannon                                     │
+│ --cutover               SERVICE    point SERVICE exclusively at the dev pod, recording its       │
+│                                    selector for an exact restore at teardown                     │
+│ --identity              KEY        ssh key to authorise in the sidecar and name in the generated │
+│                                    stanza                                                        │
+│                                    [default: ~/.ssh/id_ed25519]                                  │
+│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
+│                                    ~/.podbench)                                                  │
+│ --host-alias            NAME       ssh Host name for the sidecar                                 │
+│ --delete                           tear the dev pod down                                         │
+│ --timeout               SECONDS    seconds to wait [default: 120.0]                              │
+│ --dry-run                          print the authored pod instead of creating it                 │
+│ --help                             Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Notes:
@@ -344,10 +395,31 @@ podbench attach myapp-0 --mount myapp-venv --new
 seat, where the claim is already in this process's own mount namespace.
 
 ```
-usage: podbench patch [-h] [--print-values] [--app APP]
-                      [--venv-path VENV_PATH] [--size SIZE]
-                      [--app-image APP_IMAGE] [--uid UID] [--gid GID]
-                      {init,apply,status,consolidate} ...
+
+ Usage: podbench patch [OPTIONS] COMMAND [ARGS]...
+
+ Durable in-place fixes: a venv on a claim, every change a commit, and a status command that will
+ not let a patched pod go unnoticed.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --print-values              emit the helm values an application's chart needs, and exit          │
+│ --app                 NAME  application name, for --print-values                                 │
+│ --venv-path           PATH  the application's venv path, for --print-values                      │
+│ --size                SIZE  claim size, for --print-values [default: 2Gi]                        │
+│ --app-image           REF   image the seeding initContainer runs, for --print-values             │
+│                             [default: <the application's own image>]                             │
+│ --uid                 UID   the application container's uid, for --print-values                  │
+│                             [default: <the application's runAsUser>]                             │
+│ --gid                 GID   the application container's gid, for --print-values                  │
+│                             [default: <the application's runAsGroup>]                            │
+│ --help                      Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ init         verify the seeded claim, clone the source, editable-install                         │
+│ apply        commit the change on the claim and roll the workload                                │
+│ status       every patched pod in the namespace, and its drift                                   │
+│ consolidate  push the claim's checkout as a branch for the rebuild                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 | Sub-verb | Does |
@@ -392,19 +464,19 @@ Name the mechanism that denies ptrace in this container. The launcher runs it
 automatically after every attach; run it yourself when something changes.
 
 ```
-usage: capreport [-h] [--container-id CONTAINER_ID] [--json] [pid]
 
-Name the mechanism that denies ptrace in this container.
+ Usage: capreport [OPTIONS] [PID]
 
-positional arguments:
-  pid                   target pid; discovered from the target container id if
-                        omitted
+ Name the mechanism that denies ptrace in this container.
 
-options:
-  -h, --help            show this help message and exit
-  --container-id CONTAINER_ID
-                        target container id (default: $PODBENCH_TARGET_CID)
-  --json                emit the stable JSON form instead of the human report
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      <int>  target pid; discovered from the target container id if omitted               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id        ID  target container id (default: $PODBENCH_TARGET_CID)                    │
+│ --json                    emit the stable JSON form instead of the human report                  │
+│ --help                    Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 **Exit codes are the interface**, so a shell script can branch without parsing:
@@ -428,17 +500,17 @@ List the processes in the pod's shared PID namespace and say which container
 owns each.
 
 ```
-usage: podbench pids [-h] [--container-id CONTAINER_ID] [--targets] [--json]
 
-List the processes in this pod's shared PID namespace, and say which container
-owns each one.
+ Usage: podbench pids [OPTIONS]
 
-options:
-  -h, --help            show this help message and exit
-  --container-id CONTAINER_ID
-                        target container id (default: $PODBENCH_TARGET_CID)
-  --targets             list only the target container's processes
-  --json                emit the stable JSON form instead of the table
+ List the processes in this pod's shared PID namespace, and say which container owns each one.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id        ID  target container id (default: $PODBENCH_TARGET_CID)                    │
+│ --targets                 list only the target container's processes                             │
+│ --json                    emit the stable JSON form instead of the table                         │
+│ --help                    Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Attribution substring-matches the target's container runtime ID against
@@ -452,36 +524,32 @@ gdb, with sysroot, source path and auto-load path set in the one order that
 produces a correct backtrace.
 
 ```
-usage: podbench dbg [-h] [--container-id CONTAINER_ID] [--source-dir DIR]
-                    [--no-debuginfod] [--run] [--dry-run] [--launch ...]
-                    [pid]
 
-Run gdb against a process in another container of this pod, with the sysroot,
-source path and auto-load path set in the order that produces a correct
-backtrace.
+ Usage: podbench dbg [OPTIONS] [PID]
 
-positional arguments:
-  pid                   pid to attach to; discovered from the container id if
-                        omitted
+ Run gdb against a process in another container of this pod, with the sysroot, source path and
+ auto-load path set in the order that produces a correct backtrace.
 
-options:
-  -h, --help            show this help message and exit
-  --container-id CONTAINER_ID
-                        target container id used to discover the pid (default:
-                        $PODBENCH_TARGET_CID)
-  --source-dir DIR      extra source directory, wired with gdb's `directory`.
-                        debuginfod serves symbols but no sources on Debian, so
-                        this is how source text outside the target's rootfs is
-                        found. Repeatable.
-  --no-debuginfod       do not enable debuginfod (it needs ca-certificates and
-                        network)
-  --run                 with --launch, start the program immediately
-  --dry-run, --print-commands
-                        print the generated gdb commands and exit, without
-                        probing or starting gdb
-  --launch ...          debug a program gdb starts itself instead of
-                        attaching. Needs no capability. Consumes the rest of
-                        the command line, so put other flags first.
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      <int>  pid to attach to; discovered from the container id if omitted                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id                    ID       target container id used to discover the pid          │
+│                                            (default: $PODBENCH_TARGET_CID)                       │
+│ --source-dir                      DIR      extra source directory, wired with gdb's `directory`. │
+│                                            debuginfod serves symbols but no sources on Debian,   │
+│                                            so this is how source text outside the target's       │
+│                                            rootfs is found. Repeatable                           │
+│ --no-debuginfod                            do not enable debuginfod (it needs ca-certificates    │
+│                                            and network)                                          │
+│ --run                                      with --launch, start the program immediately          │
+│ --dry-run,--print-commands                 print the generated gdb commands and exit, without    │
+│                                            probing or starting gdb                               │
+│ --launch                          PROGRAM  debug a program gdb starts itself instead of          │
+│                                            attaching. Needs no capability. Consumes the rest of  │
+│                                            the command line, so put other flags first            │
+│ --help                                     Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 `--launch` consumes the remainder of the command line, so any other flag must
@@ -492,17 +560,21 @@ come first. See [Debug with gdb](../how-to/debug-with-gdb.md).
 Populate the dev pod's workspace: clone, sync, editable install.
 
 ```
-usage: podbench dev-bootstrap [-h] --repo REPO [--ref REF] [--dir DIR]
-                              [--python PYTHON] [--no-sync] [--no-editable]
 
-options:
-  -h, --help       show this help message and exit
-  --repo REPO      git URL to clone
-  --ref REF        branch, tag or commit to check out
-  --dir DIR        checkout directory (must be in this container)
-  --python PYTHON  CPython version for uv to use
-  --no-sync        skip uv sync --frozen
-  --no-editable    skip uv pip install -e .
+ Usage: podbench dev-bootstrap [OPTIONS]
+
+ clone, sync and editable-install (runs in the pod)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --repo               URL      git URL to clone [required]                                     │
+│    --ref                REF      branch, tag or commit to check out                              │
+│    --dir                DIR      checkout directory (must be in this container)                  │
+│                                  [default: /workspace/src]                                       │
+│    --python             VERSION  CPython version for uv to use                                   │
+│    --no-sync                     skip uv sync --frozen                                           │
+│    --no-editable                 skip uv pip install -e .                                        │
+│    --help                        Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 "must be in this container" is enforced, not advisory: a checkout under
@@ -515,20 +587,21 @@ Relaunch the workload from the debug container and verify that your child owns
 the port.
 
 ```
-usage: podbench run [-h] --port PORT [--workspace WORKSPACE] [--dir DIR]
-                    [--timeout TIMEOUT]
-                    [command ...]
 
-positional arguments:
-  command               the command, after `--`
+ Usage: podbench run [OPTIONS] [COMMAND]...
 
-options:
-  -h, --help            show this help message and exit
-  --port PORT           the port it must serve
-  --workspace WORKSPACE
-                        workspace root
-  --dir DIR             working directory (default: workspace)
-  --timeout TIMEOUT     seconds to verify
+ relaunch the app and verify it (runs in the pod)
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [COMMAND]...      <str>  the command, after `--`                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --port             PORT     the port it must serve [required]                                 │
+│    --workspace        DIR      workspace root [default: /workspace]                              │
+│    --dir              DIR      working directory (default: workspace)                            │
+│    --timeout          SECONDS  seconds to verify [default: 15.0]                                 │
+│    --help                      Show this message and exit.                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Installed on `PATH` as `podbench-run`. Exits non-zero when the port is not owned
@@ -541,13 +614,16 @@ nothing in any log to say so.
 Stop it, by recorded pid.
 
 ```
-usage: podbench stop [-h] [--workspace WORKSPACE] [--grace GRACE]
 
-options:
-  -h, --help            show this help message and exit
-  --workspace WORKSPACE
-                        workspace root
-  --grace GRACE         seconds before SIGKILL
+ Usage: podbench stop [OPTIONS]
+
+ stop the recorded child (runs in the pod)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --workspace        DIR      workspace root [default: /workspace]                                 │
+│ --grace            SECONDS  seconds before SIGKILL [default: 5.0]                                │
+│ --help                      Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Installed on `PATH` as `podbench-stop`. Never `pkill -f`: under
@@ -560,24 +636,21 @@ The debug container's PID 1. The launcher sets it as the container's command;
 you should not need to run it yourself.
 
 ```
-usage: podbench agent [-h] [--ensure-only] [--self-check] [--print-host-key]
-                      [--print-login-user] [--no-self-check]
-                      [--idle-interval IDLE_INTERVAL]
 
-Prepare the debug container for ssh and idle as its PID 1.
+ Usage: podbench agent [OPTIONS]
 
-options:
-  -h, --help            show this help message and exit
-  --ensure-only         prepare the container and exit instead of idling
-  --self-check          run the startup checks and exit; non-zero if any fails
-  --print-host-key      print the host public key for the launcher's
-                        known_hosts
-  --print-login-user    print the login name sshd will resolve for this uid;
-                        non-zero with the reason on stderr when there is none
-  --no-self-check       skip the startup checks (they cost a subprocess and
-                        ~0.2 s)
-  --idle-interval IDLE_INTERVAL
-                        seconds between reap sweeps while idling
+ Prepare the debug container for ssh and idle as its PID 1.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --ensure-only                      prepare the container and exit instead of idling              │
+│ --self-check                       run the startup checks and exit; non-zero if any fails        │
+│ --print-host-key                   print the host public key for the launcher's known_hosts      │
+│ --print-login-user                 print the login name sshd will resolve for this uid; non-zero │
+│                                    with the reason on stderr when there is none                  │
+│ --no-self-check                    skip the startup checks (they cost a subprocess and ~0.2 s)   │
+│ --idle-interval           SECONDS  seconds between reap sweeps while idling [default: 30.0]      │
+│ --help                             Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Every step is *ensure*, never *create*: running it twice against the same

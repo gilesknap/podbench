@@ -45,7 +45,6 @@ the same mechanism ``kubectl rollout restart`` uses.
 
 from __future__ import annotations
 
-import argparse
 import json
 import shlex
 import sys
@@ -54,8 +53,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Annotated, Any, Protocol, cast
 
+import typer
+
+from .cli import new_app, require_subcommand, run
 from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
 from .launcher import CONTAINER_BASE, current_namespace, running_seat
 from .model import (
@@ -1700,150 +1702,71 @@ def _as_int(value: Any) -> int | None:
 # -- CLI -------------------------------------------------------------------
 
 
-def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("-n", "--namespace", default=None)
-    parser.add_argument("--context", default=None)
-    parser.add_argument("--kubectl", default="kubectl", help="kubectl binary to use")
-
-
-def _add_target(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("target", help="pod/NAME, deployment/NAME or statefulset/NAME")
-    parser.add_argument(
+_Target = Annotated[
+    str,
+    typer.Argument(
+        metavar="TARGET", help="pod/NAME, deployment/NAME or statefulset/NAME"
+    ),
+]
+_Venv = Annotated[
+    str,
+    typer.Option(
         "--venv",
-        required=True,
+        metavar="PATH",
         help="the mountPath the claim is mounted at, i.e. the application's venv path",
-    )
-    parser.add_argument(
-        "--container", default=None, help="the application container (default: first)"
-    )
-    parser.add_argument(
+    ),
+]
+_Container = Annotated[
+    str | None,
+    typer.Option(
+        "--container",
+        metavar="NAME",
+        help="the application container (default: first)",
+    ),
+]
+_Seat = Annotated[
+    str | None,
+    typer.Option(
         "--seat",
-        default=None,
+        metavar="NAME",
         help="the podbench container that mounts the same claim "
         f"(default: the running {CONTAINER_BASE}-N)",
-    )
-    parser.add_argument(
+    ),
+]
+_Local = Annotated[
+    bool,
+    typer.Option(
         "--local",
-        action="store_true",
         help="reach the claim through this process's own filesystem instead of "
         "through the seat — for running the command from inside the seat's own "
         "terminal, where the claim is already mounted at --venv",
-    )
-    parser.add_argument("--author", default=None, help='"Name <email>" for the commit')
-    _add_common(parser)
+    ),
+]
+_Author = Annotated[
+    str | None,
+    typer.Option("--author", metavar="AUTHOR", help='"Name <email>" for the commit'),
+]
+_Namespace = Annotated[
+    str | None,
+    typer.Option(
+        "-n",
+        "--namespace",
+        metavar="NAMESPACE",
+        help="namespace (default: the kubeconfig context's own)",
+    ),
+]
+_Context = Annotated[
+    str | None, typer.Option("--context", metavar="NAME", help="kubeconfig context")
+]
+_KubectlBinary = Annotated[
+    str, typer.Option("--kubectl", metavar="BIN", help="kubectl binary to use")
+]
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="podbench patch",
-        description=(
-            "Durable in-place fixes: a venv on a claim, every change a commit, "
-            "and a status command that will not let a patched pod go unnoticed."
-        ),
-    )
-    parser.add_argument(
-        "--print-values",
-        action="store_true",
-        help="emit the helm values an application's chart needs, and exit",
-    )
-    parser.add_argument(
-        "--app", default=None, help="application name, for --print-values"
-    )
-    parser.add_argument(
-        "--venv-path",
-        default=None,
-        help="the application's venv path, for --print-values",
-    )
-    parser.add_argument("--size", default="2Gi", help="claim size, for --print-values")
-    parser.add_argument(
-        "--app-image",
-        default="<the application's own image>",
-        help="image the seeding initContainer runs, for --print-values",
-    )
-    # Left as placeholders when unset, so that a snippet pasted without reading
-    # it fails at `helm install` rather than deploying an identity for the wrong
-    # uid — which fails later, in the dark, as a login that is simply refused.
-    parser.add_argument(
-        "--uid",
-        default="<the application's runAsUser>",
-        help="the application container's uid, for --print-values",
-    )
-    parser.add_argument(
-        "--gid",
-        default="<the application's runAsGroup>",
-        help="the application container's gid, for --print-values",
-    )
-    # Not required: `patch --print-values` is a legitimate whole command line.
-    sub = parser.add_subparsers(dest="command", required=False)
-
-    init_parser = sub.add_parser(
-        "init", help="verify the seeded claim, clone the source, editable-install"
-    )
-    init_parser.add_argument("--repo", required=True, help="git URL to clone")
-    init_parser.add_argument("--ref", default=None, help="branch or tag to clone")
-    init_parser.add_argument(
-        "--base-commit",
-        default=None,
-        help="the commit the released image was built from (default: cloned HEAD)",
-    )
-    init_parser.add_argument(
-        "--no-install",
-        dest="install",
-        action="store_false",
-        help="skip the editable install (the application image has no pip)",
-    )
-    _add_target(init_parser)
-
-    apply_parser = sub.add_parser(
-        "apply", help="commit the change on the claim and roll the workload"
-    )
-    apply_parser.add_argument("-m", "--message", required=True, help="commit message")
-    apply_parser.add_argument(
-        "--no-bounce",
-        dest="bounce",
-        action="store_false",
-        help="leave the running process alone; the patch takes effect on the "
-        "next restart",
-    )
-    _add_target(apply_parser)
-
-    status_parser = sub.add_parser(
-        "status", help="every patched pod in the namespace, and its drift"
-    )
-    status_parser.add_argument(
-        "--no-probe",
-        dest="probe",
-        action="store_false",
-        help="do not exec to measure the interpreter of a changed image",
-    )
-    status_parser.add_argument(
-        "--python", default=DEFAULT_PYTHON, help="interpreter to measure"
-    )
-    _add_common(status_parser)
-
-    consolidate_parser = sub.add_parser(
-        "consolidate", help="push the claim's checkout as a branch for the rebuild"
-    )
-    consolidate_parser.add_argument("--branch", required=True, help="branch to push")
-    consolidate_parser.add_argument("--remote", default="origin")
-    consolidate_parser.add_argument(
-        "--dry-run",
-        dest="push",
-        action="store_false",
-        help="say what would be pushed without pushing it",
-    )
-    _add_target(consolidate_parser)
-    return parser
-
-
-def _store_for(kube: Kubectl, parsed: argparse.Namespace, pod: str) -> PatchStore:
-    if cast(bool, parsed.local):
+def _store_for(kube: Kubectl, pod: str, *, seat: str | None, local: bool) -> PatchStore:
+    if local:
         return LocalStore()
-    return PodStore(
-        kube=kube,
-        pod=pod,
-        container=seat_container(kube, pod, cast(str | None, parsed.seat)),
-    )
+    return PodStore(kube=kube, pod=pod, container=seat_container(kube, pod, seat))
 
 
 def _report(actions: Sequence[str]) -> int:
@@ -1852,65 +1775,261 @@ def _report(actions: Sequence[str]) -> int:
     return 0
 
 
-def _cmd_init(kube: Kubectl, parsed: argparse.Namespace) -> int:
-    target = resolve_target(
-        kube, cast(str, parsed.target), container=cast(str | None, parsed.container)
-    )
-    store = _store_for(kube, parsed, target.pod.name)
-    _, actions = init(
-        kube,
-        store,
-        target,
-        venv=cast(str, parsed.venv),
-        repo=cast(str, parsed.repo),
-        ref=cast(str | None, parsed.ref),
-        base_commit=cast(str | None, parsed.base_commit),
-        author=cast(str | None, parsed.author),
-        install=cast(bool, parsed.install),
-    )
-    return _report(actions)
+def _kubectl(
+    namespace: str | None, context: str | None, binary: str, runner: Runner | None
+) -> Kubectl:
+    if namespace is None:
+        namespace = current_namespace(binary=binary, context=context, runner=runner)
+    return Kubectl(namespace, context=context, binary=binary, runner=runner)
 
 
-def _cmd_apply(kube: Kubectl, parsed: argparse.Namespace) -> int:
-    target = resolve_target(
-        kube, cast(str, parsed.target), container=cast(str | None, parsed.container)
-    )
-    store = _store_for(kube, parsed, target.pod.name)
-    _, actions = apply_patch(
-        kube,
-        store,
-        target,
-        venv=cast(str, parsed.venv),
-        message=cast(str, parsed.message),
-        author=cast(str | None, parsed.author),
-        bounce=cast(bool, parsed.bounce),
-    )
-    return _report(actions)
+def _build_app(runner: Runner | None) -> typer.Typer:
+    app = new_app()
 
+    @app.callback(invoke_without_command=True)
+    def root(
+        ctx: typer.Context,
+        print_values: Annotated[
+            bool,
+            typer.Option(
+                "--print-values",
+                help="emit the helm values an application's chart needs, and exit",
+            ),
+        ] = False,
+        app_name: Annotated[
+            str | None,
+            typer.Option(
+                "--app", metavar="NAME", help="application name, for --print-values"
+            ),
+        ] = None,
+        venv_path: Annotated[
+            str | None,
+            typer.Option(
+                "--venv-path",
+                metavar="PATH",
+                help="the application's venv path, for --print-values",
+            ),
+        ] = None,
+        size: Annotated[
+            str,
+            typer.Option(
+                "--size", metavar="SIZE", help="claim size, for --print-values"
+            ),
+        ] = "2Gi",
+        app_image: Annotated[
+            str,
+            typer.Option(
+                "--app-image",
+                metavar="REF",
+                help="image the seeding initContainer runs, for --print-values",
+            ),
+        ] = "<the application's own image>",
+        # Left as placeholders when unset, so that a snippet pasted without
+        # reading it fails at `helm install` rather than deploying an identity
+        # for the wrong uid — which fails later, in the dark, as a login that is
+        # simply refused.
+        uid: Annotated[
+            str,
+            typer.Option(
+                "--uid",
+                metavar="UID",
+                help="the application container's uid, for --print-values",
+            ),
+        ] = "<the application's runAsUser>",
+        gid: Annotated[
+            str,
+            typer.Option(
+                "--gid",
+                metavar="GID",
+                help="the application container's gid, for --print-values",
+            ),
+        ] = "<the application's runAsGroup>",
+    ) -> None:
+        """Durable in-place fixes: a venv on a claim, every change a commit, and
+        a status command that will not let a patched pod go unnoticed.
+        """
+        if print_values:
+            if app_name is None or venv_path is None:
+                print(
+                    "podbench: --print-values needs --app NAME and --venv-path PATH",
+                    file=sys.stderr,
+                )
+                raise typer.Exit(2)
+            print(
+                values_snippet(
+                    app_name,
+                    venv_path,
+                    image=app_image,
+                    size=size,
+                    uid=uid,
+                    gid=gid,
+                )
+            )
+            raise typer.Exit(0)
+        # `patch --print-values` is a legitimate whole command line, so the
+        # subcommand is only required once that flag has been ruled out.
+        require_subcommand(ctx)
 
-def _cmd_consolidate(kube: Kubectl, parsed: argparse.Namespace) -> int:
-    target = resolve_target(
-        kube, cast(str, parsed.target), container=cast(str | None, parsed.container)
+    # `init_command`/`consolidate_command`, not `init`/`consolidate`: the
+    # module-level functions of those names are what they call, and a same-named
+    # closure would shadow them into a recursion.
+    @app.command(
+        name="init",
+        help="verify the seeded claim, clone the source, editable-install",
     )
-    store = _store_for(kube, parsed, target.pod.name)
-    _, actions = consolidate(
-        kube,
-        store,
-        target,
-        venv=cast(str, parsed.venv),
-        branch=cast(str, parsed.branch),
-        remote=cast(str, parsed.remote),
-        push=cast(bool, parsed.push),
-    )
-    return _report(actions)
+    def init_command(
+        target: _Target,
+        repo: Annotated[
+            str, typer.Option("--repo", metavar="URL", help="git URL to clone")
+        ],
+        venv: _Venv,
+        ref: Annotated[
+            str | None,
+            typer.Option("--ref", metavar="REF", help="branch or tag to clone"),
+        ] = None,
+        base_commit: Annotated[
+            str | None,
+            typer.Option(
+                "--base-commit",
+                metavar="SHA",
+                help="the commit the released image was built from "
+                "(default: cloned HEAD)",
+            ),
+        ] = None,
+        no_install: Annotated[
+            bool,
+            typer.Option(
+                "--no-install",
+                help="skip the editable install (the application image has no pip)",
+            ),
+        ] = False,
+        container: _Container = None,
+        seat: _Seat = None,
+        local: _Local = False,
+        author: _Author = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        kube = _kubectl(namespace, context, kubectl, runner)
+        resolved = resolve_target(kube, target, container=container)
+        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
+        _, actions = init(
+            kube,
+            store,
+            resolved,
+            venv=venv,
+            repo=repo,
+            ref=ref,
+            base_commit=base_commit,
+            author=author,
+            install=not no_install,
+        )
+        raise typer.Exit(_report(actions))
 
+    @app.command(help="commit the change on the claim and roll the workload")
+    def apply(
+        target: _Target,
+        message: Annotated[
+            str,
+            typer.Option("-m", "--message", metavar="TEXT", help="commit message"),
+        ],
+        venv: _Venv,
+        no_bounce: Annotated[
+            bool,
+            typer.Option(
+                "--no-bounce",
+                help="leave the running process alone; the patch takes effect "
+                "on the next restart",
+            ),
+        ] = False,
+        container: _Container = None,
+        seat: _Seat = None,
+        local: _Local = False,
+        author: _Author = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        kube = _kubectl(namespace, context, kubectl, runner)
+        resolved = resolve_target(kube, target, container=container)
+        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
+        _, actions = apply_patch(
+            kube,
+            store,
+            resolved,
+            venv=venv,
+            message=message,
+            author=author,
+            bounce=not no_bounce,
+        )
+        raise typer.Exit(_report(actions))
 
-def _cmd_status(kube: Kubectl, parsed: argparse.Namespace) -> int:
-    rows = status_rows(
-        kube, probe=cast(bool, parsed.probe), python=cast(str, parsed.python)
+    @app.command(help="every patched pod in the namespace, and its drift")
+    def status(
+        no_probe: Annotated[
+            bool,
+            typer.Option(
+                "--no-probe",
+                help="do not exec to measure the interpreter of a changed image",
+            ),
+        ] = False,
+        python: Annotated[
+            str,
+            typer.Option("--python", metavar="BIN", help="interpreter to measure"),
+        ] = DEFAULT_PYTHON,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        kube = _kubectl(namespace, context, kubectl, runner)
+        rows = status_rows(kube, probe=not no_probe, python=python)
+        print(format_status(rows))
+        raise typer.Exit(0 if all(row.health.ok for row in rows) else 1)
+
+    @app.command(
+        name="consolidate",
+        help="push the claim's checkout as a branch for the rebuild",
     )
-    print(format_status(rows))
-    return 0 if all(row.health.ok for row in rows) else 1
+    def consolidate_command(
+        target: _Target,
+        branch: Annotated[
+            str, typer.Option("--branch", metavar="NAME", help="branch to push")
+        ],
+        venv: _Venv,
+        remote: Annotated[
+            str, typer.Option("--remote", metavar="NAME", help="git remote to push to")
+        ] = "origin",
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run", help="say what would be pushed without pushing it"
+            ),
+        ] = False,
+        container: _Container = None,
+        seat: _Seat = None,
+        local: _Local = False,
+        author: _Author = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        del author  # accepted for symmetry; this verb writes no commit
+        kube = _kubectl(namespace, context, kubectl, runner)
+        resolved = resolve_target(kube, target, container=container)
+        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
+        _, actions = consolidate(
+            kube,
+            store,
+            resolved,
+            venv=venv,
+            branch=branch,
+            remote=remote,
+            push=not dry_run,
+        )
+        raise typer.Exit(_report(actions))
+
+    return app
 
 
 def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
@@ -1921,54 +2040,12 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     patch" is a thing a facility wants to be able to test, not read.
     """
     argv = list(sys.argv[1:] if args is None else args)
-    # The central dispatcher keeps the verb in argv; this parser's subcommands
-    # are the *sub*-verbs, so the leading `patch` is consumed here.
+    # The central dispatcher keeps the verb in argv; this app's subcommands are
+    # the *sub*-verbs, so the leading `patch` is consumed here.
     if argv and argv[0] == "patch":
         argv = argv[1:]
-    parser = _build_parser()
-    parsed = parser.parse_args(argv)
-
-    if cast(bool, parsed.print_values):
-        app = cast(str | None, parsed.app)
-        venv = cast(str | None, parsed.venv_path)
-        if app is None or venv is None:
-            print(
-                "podbench: --print-values needs --app NAME and --venv-path PATH",
-                file=sys.stderr,
-            )
-            return 2
-        print(
-            values_snippet(
-                app,
-                venv,
-                image=cast(str, parsed.app_image),
-                size=cast(str, parsed.size),
-                uid=cast(str, parsed.uid),
-                gid=cast(str, parsed.gid),
-            )
-        )
-        return 0
-
-    command = cast(str | None, parsed.command)
-    if command is None:
-        parser.print_help()
-        return 2
-
-    namespace = cast(str | None, parsed.namespace)
-    context = cast(str | None, parsed.context)
-    binary = cast(str, parsed.kubectl)
-    if namespace is None:
-        namespace = current_namespace(binary=binary, context=context, runner=runner)
-    kube = Kubectl(namespace, context=context, binary=binary, runner=runner)
-
     try:
-        if command == "init":
-            return _cmd_init(kube, parsed)
-        if command == "apply":
-            return _cmd_apply(kube, parsed)
-        if command == "consolidate":
-            return _cmd_consolidate(kube, parsed)
-        return _cmd_status(kube, parsed)
+        return run(_build_app(runner), argv, prog="podbench patch")
     except (PatchError, KubectlError, ValueError) as error:
         print(f"podbench: {error}", file=sys.stderr)
         return 2

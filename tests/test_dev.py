@@ -1298,8 +1298,7 @@ def test_cli_reports_a_refusal_without_a_traceback(
 def test_cli_run_will_not_relaunch_without_being_told_the_port():
     # The port is what the pre-flight and the ownership check are about, so
     # there is no default for it.
-    with pytest.raises(SystemExit):
-        dev.main(["run"])
+    assert dev.main(["run"]) == 2
 
 
 def test_run_without_a_command_is_refused(tmp_path: Path):
