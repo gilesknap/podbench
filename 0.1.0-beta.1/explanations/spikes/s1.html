@@ -1,0 +1,1305 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand &#8212; podbench 0.1.0b1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=e4e59774"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=30646c52"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/spikes/s1';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0b1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="S2 — vscode-server inside an ephemeral container" href="s2.html" />
+    <link rel="prev" title="Podbench — Phase 0 gate report" href="phase0-report.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0b1" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../design-brief.html">Podbench</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../security.html">Security model</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../spikes.html">Phase 0 spikes</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+</ul>
+</details></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../explanations.html" class="nav-link">Explanations</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../spikes.html" class="nav-link">Phase 0 spikes</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="s1-ssh-transport-sshd-i-over-kubectl-exec-as-proxycommand">
+<h1>S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand<a class="headerlink" href="#s1-ssh-transport-sshd-i-over-kubectl-exec-as-proxycommand" title="Link to this heading">#</a></h1>
+<p><strong>Verdict:</strong> PASS
+<strong>Date:</strong> 2026-08-15  (cluster: k3s v1.34, mixed arm64/amd64)</p>
+<section id="what-was-tested">
+<h2>What was tested<a class="headerlink" href="#what-was-tested" title="Link to this heading">#</a></h2>
+<p>The headline Podbench connection path — a full OpenSSH transport whose only carrier is
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, with no port-forward, no Service, and no pod IP reachability:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Host</span> <span class="n">podbench</span><span class="o">-</span><span class="n">target</span>
+  <span class="n">ProxyCommand</span> <span class="n">kubectl</span> <span class="o">-</span><span class="n">n</span> <span class="n">podbench</span><span class="o">-</span><span class="n">s1</span> <span class="n">exec</span> <span class="o">-</span><span class="n">i</span> <span class="n">podbench</span><span class="o">-</span><span class="n">target</span> <span class="o">-</span><span class="n">c</span> <span class="n">podbench</span> <span class="o">--</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">sbin</span><span class="o">/</span><span class="n">sshd</span> <span class="o">-</span><span class="n">i</span> <span class="o">-</span><span class="n">e</span>
+  <span class="n">User</span> <span class="n">root</span>
+</pre></div>
+</div>
+<p>Everything ran in namespace <code class="docutils literal notranslate"><span class="pre">podbench-s1</span></code> against one pod, <code class="docutils literal notranslate"><span class="pre">podbench-target</span></code>
+(<code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code>, <code class="docutils literal notranslate"><span class="pre">sleep</span> <span class="pre">infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">nodeSelector:</span> <span class="pre">kubernetes.io/arch=amd64</span></code>,
+scheduled to <code class="docutils literal notranslate"><span class="pre">nuc2</span></code>), with an <strong>ephemeral</strong> debug container <code class="docutils literal notranslate"><span class="pre">podbench</span></code> attached via
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--target=app</span></code>. openssh-server <code class="docutils literal notranslate"><span class="pre">1:9.2p1-2+deb12u10</span></code> was <code class="docutils literal notranslate"><span class="pre">apt-get</span></code>-installed
+into the running ephemeral container. Local client: OpenSSH 9.6p1 in the devcontainer.</p>
+<p>Tested, in order:</p>
+<ol class="arabic simple">
+<li><p>Remote command execution, exit-code propagation.</p></li>
+<li><p>Interactive PTY session (<code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-tt</span></code>), full login banner + <code class="docutils literal notranslate"><span class="pre">/dev/pts/0</span></code>.</p></li>
+<li><p>Binary-clean transfer: <code class="docutils literal notranslate"><span class="pre">scp</span></code>, <code class="docutils literal notranslate"><span class="pre">sftp</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">'cat</span> <span class="pre">&gt;</span> <span class="pre">f'</span></code> (stdin), <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">'cat</span> <span class="pre">f'</span></code> (stdout) — 3 MiB random.</p></li>
+<li><p>Concurrency: 3-way and 8-way simultaneous sessions, each over its own <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>.</p></li>
+<li><p><strong>stdio framing matrix</strong> — 8 ProxyCommand variants isolating why <code class="docutils literal notranslate"><span class="pre">-e</span></code> is required, plus a
+sshd-free minimal experiment that identifies the actual mechanism (see Findings §2).</p></li>
+<li><p>Latency (8 cold connections) and throughput (64 MiB each way), plus <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> reuse.</p></li>
+<li><p>Robustness: 90 s and 600 s idle; hard transport kill; <strong>stalled</strong> transport with and without
+<code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span></code>.</p></li>
+<li><p>VS Code Remote-SSH requirements: &gt;1 MiB <code class="docutils literal notranslate"><span class="pre">bash</span> <span class="pre">-c</span></code> stdout streaming (8 MiB + a 14.9 MiB
+byte-exact hash check), plus a <strong>real</strong> end-to-end bootstrap — downloaded and ran
+<code class="docutils literal notranslate"><span class="pre">vscode-server</span></code> 1.133.0 inside the pod through the ssh transport, reached its HTTP endpoint
+and completed a <strong>WebSocket 101 upgrade</strong> over <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-R</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-D</span></code> (SOCKS) and agent forwarding (<code class="docutils literal notranslate"><span class="pre">-A</span></code>) over the transport.</p></li>
+<li><p>Minimal working <code class="docutils literal notranslate"><span class="pre">sshd_config</span></code>; <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code>, <code class="docutils literal notranslate"><span class="pre">UsePAM</span></code>, <code class="docutils literal notranslate"><span class="pre">PidFile</span></code>, <code class="docutils literal notranslate"><span class="pre">LogLevel</span></code> behaviour.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> under a <strong>non-root</strong> uid (uid 1000 via <code class="docutils literal notranslate"><span class="pre">setpriv</span></code>).</p></li>
+</ol>
+</section>
+<section id="exact-commands-that-worked">
+<h2>Exact commands that worked<a class="headerlink" href="#exact-commands-that-worked" title="Link to this heading">#</a></h2>
+<section id="namespace-target-pod-ephemeral-debug-container">
+<h3>Namespace, target pod, ephemeral debug container<a class="headerlink" href="#namespace-target-pod-ephemeral-debug-container" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>create<span class="w"> </span>ns<span class="w"> </span>podbench-s1
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">target.yaml</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Pod</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">podbench-target</span>
+<span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">podbench-s1</span>
+<span class="w">  </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="nv">podbench-target</span><span class="p p-Indicator">}</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">nodeSelector</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">kubernetes.io/arch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">amd64</span>
+<span class="w">  </span><span class="nt">containers</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">app</span>
+<span class="w">      </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">debian:bookworm-slim</span>
+<span class="w">      </span><span class="nt">imagePullPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">IfNotPresent</span>
+<span class="w">      </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;/bin/sh&quot;</span><span class="p p-Indicator">,</span><span class="s">&quot;-c&quot;</span><span class="p p-Indicator">,</span><span class="s">&quot;sleep</span><span class="nv"> </span><span class="s">infinity&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">resources</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">requests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">cpu</span><span class="p">:</span><span class="w"> </span><span class="nv">50m</span><span class="p p-Indicator">,</span><span class="nt"> memory</span><span class="p">:</span><span class="w"> </span><span class="nv">64Mi</span><span class="p p-Indicator">}</span>
+<span class="w">        </span><span class="nt">limits</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">cpu</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;2&quot;</span><span class="p p-Indicator">,</span><span class="nt"> memory</span><span class="p">:</span><span class="w"> </span><span class="nv">1Gi</span><span class="p p-Indicator">}</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>target.yaml
+timeout<span class="w"> </span><span class="m">180</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">wait</span><span class="w"> </span>--for<span class="o">=</span><span class="nv">condition</span><span class="o">=</span>Ready<span class="w"> </span>pod/podbench-target<span class="w"> </span>--timeout<span class="o">=</span>170s
+
+<span class="c1"># --custom takes a FILE PATH, not inline JSON (see Deviations)</span>
+cat<span class="w"> </span>&gt;<span class="w"> </span>custom-profile.json<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">{&quot;securityContext&quot;:{&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}}}</span>
+<span class="s">EOF</span>
+
+timeout<span class="w"> </span><span class="m">240</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span>debug<span class="w"> </span>podbench-target<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--image<span class="o">=</span>debian:bookworm-slim<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--image-pull-policy<span class="o">=</span>IfNotPresent<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--container<span class="o">=</span>podbench<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--target<span class="o">=</span>app<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--profile<span class="o">=</span>general<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--custom<span class="o">=</span>custom-profile.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--<span class="w"> </span>sleep<span class="w"> </span>infinity
+</pre></div>
+</div>
+</section>
+<section id="provision-sshd-inside-the-ephemeral-container">
+<h3>Provision sshd inside the ephemeral container<a class="headerlink" href="#provision-sshd-inside-the-ephemeral-container" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ssh-keygen<span class="w"> </span>-t<span class="w"> </span>ed25519<span class="w"> </span>-N<span class="w"> </span><span class="s2">&quot;&quot;</span><span class="w"> </span>-f<span class="w"> </span>./s1_id_ed25519<span class="w"> </span>-C<span class="w"> </span>podbench-s1
+
+timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;</span>
+<span class="s1">  export DEBIAN_FRONTEND=noninteractive</span>
+<span class="s1">  apt-get update -qq &amp;&amp; apt-get install -y -qq openssh-server&#39;</span>
+
+<span class="nv">PUB</span><span class="o">=</span><span class="k">$(</span>cat<span class="w"> </span>s1_id_ed25519.pub<span class="k">)</span>
+timeout<span class="w"> </span><span class="m">120</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">  ssh-keygen -A</span>
+<span class="s2">  mkdir -p /root/.ssh /run/sshd          # /run/sshd is MANDATORY (privsep dir)</span>
+<span class="s2">  chmod 700 /root/.ssh; chmod 0755 /run/sshd</span>
+<span class="s2">  printf &#39;%s\n&#39; &#39;</span><span class="nv">$PUB</span><span class="s2">&#39; &gt; /root/.ssh/authorized_keys</span>
+<span class="s2">  chmod 600 /root/.ssh/authorized_keys&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="minimal-working-sshd-config">
+<h3>Minimal working sshd_config<a class="headerlink" href="#minimal-working-sshd-config" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>-i<span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;cat &gt; /etc/ssh/sshd_config.minimal&#39;</span><span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">HostKey /etc/ssh/ssh_host_ed25519_key</span>
+<span class="s">PermitRootLogin prohibit-password</span>
+<span class="s">AuthorizedKeysFile /root/.ssh/authorized_keys</span>
+<span class="s">UsePAM no</span>
+<span class="s">Subsystem sftp /usr/lib/openssh/sftp-server</span>
+<span class="s">EOF</span>
+
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>/usr/sbin/sshd<span class="w"> </span>-t<span class="w"> </span>-f<span class="w"> </span>/etc/ssh/sshd_config.minimal<span class="w">   </span><span class="c1"># -&gt; CONFIG_OK</span>
+</pre></div>
+</div>
+<p>Five lines. No <code class="docutils literal notranslate"><span class="pre">PidFile</span></code> directive is needed (<code class="docutils literal notranslate"><span class="pre">-i</span></code> mode never writes one — verified:
+<code class="docutils literal notranslate"><span class="pre">/run/sshd.pid</span></code> absent after many sessions). <code class="docutils literal notranslate"><span class="pre">UsePAM</span> <span class="pre">no</span></code> works and removes the PAM
+dependency entirely. Debian’s stock <code class="docutils literal notranslate"><span class="pre">/etc/ssh/sshd_config</span></code> also works unmodified.</p>
+</section>
+<section id="the-ssh-client-config-that-works">
+<h3>The ssh client config that works<a class="headerlink" href="#the-ssh-client-config-that-works" title="Link to this heading">#</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Host</span> <span class="n">podbench</span><span class="o">-</span><span class="n">target</span>
+  <span class="n">HostName</span> <span class="n">podbench</span><span class="o">-</span><span class="n">target</span>
+  <span class="n">User</span> <span class="n">root</span>
+  <span class="n">IdentityFile</span> <span class="o">/</span><span class="nb">abs</span><span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">s1_id_ed25519</span>
+  <span class="n">IdentitiesOnly</span> <span class="n">yes</span>
+  <span class="n">StrictHostKeyChecking</span> <span class="n">no</span>
+  <span class="n">UserKnownHostsFile</span> <span class="o">/</span><span class="nb">abs</span><span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">s1_known_hosts</span>
+  <span class="n">ProxyCommand</span> <span class="n">kubectl</span> <span class="o">-</span><span class="n">n</span> <span class="n">podbench</span><span class="o">-</span><span class="n">s1</span> <span class="n">exec</span> <span class="o">-</span><span class="n">i</span> <span class="n">podbench</span><span class="o">-</span><span class="n">target</span> <span class="o">-</span><span class="n">c</span> <span class="n">podbench</span> <span class="o">--</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">sbin</span><span class="o">/</span><span class="n">sshd</span> <span class="o">-</span><span class="n">i</span> <span class="o">-</span><span class="n">e</span> <span class="o">-</span><span class="n">f</span> <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">ssh</span><span class="o">/</span><span class="n">sshd_config</span><span class="o">.</span><span class="n">minimal</span> <span class="o">-</span><span class="n">o</span> <span class="n">LogLevel</span><span class="o">=</span><span class="n">ERROR</span>
+</pre></div>
+</div>
+</section>
+<section id="a-remote-command-b-pty-exit-codes">
+<h3>(a) remote command, (b) PTY, exit codes<a class="headerlink" href="#a-remote-command-b-pty-exit-codes" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span>hostname
+podbench-target
+$<span class="w"> </span>ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span>hostname<span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="p">|</span><span class="w"> </span>od<span class="w"> </span>-c<span class="w">   </span><span class="c1"># stdout is clean</span>
+<span class="m">0000000</span><span class="w">   </span>p<span class="w">   </span>o<span class="w">   </span>d<span class="w">   </span>b<span class="w">   </span>e<span class="w">   </span>n<span class="w">   </span>c<span class="w">   </span>h<span class="w">   </span>-<span class="w">   </span>t<span class="w">   </span>a<span class="w">   </span>r<span class="w">   </span>g<span class="w">   </span>e<span class="w">   </span>t<span class="w">  </span><span class="se">\n</span>
+
+$<span class="w"> </span><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;tty\nexit\n&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>ssh<span class="w"> </span>-tt<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target
+...<span class="w"> </span>full<span class="w"> </span>Debian<span class="w"> </span>login<span class="w"> </span>banner<span class="w"> </span>...
+root@podbench-target:~#<span class="w"> </span>tty
+/dev/pts/0
+root@podbench-target:~#<span class="w"> </span><span class="nb">exit</span>
+<span class="nb">logout</span>
+
+$<span class="w"> </span>ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;exit 42&#39;</span><span class="p">;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="nv">$?</span>
+<span class="m">42</span>
+</pre></div>
+</div>
+</section>
+<section id="c-binary-clean-transfer-all-four-paths-identical-sha256">
+<h3>(c) binary-clean transfer — all four paths, identical sha256<a class="headerlink" href="#c-binary-clean-transfer-all-four-paths-identical-sha256" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>head<span class="w"> </span>-c<span class="w"> </span><span class="m">3145728</span><span class="w"> </span>/dev/urandom<span class="w"> </span>&gt;<span class="w"> </span>blob.bin<span class="w">        </span><span class="c1"># b2df03aa...c87df</span>
+scp<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>blob.bin<span class="w"> </span>podbench-target:/tmp/blob.bin
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;sha256sum /tmp/blob.bin&#39;</span><span class="w">      </span><span class="c1"># b2df03aa...c87df</span>
+
+sftp<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>-b<span class="w"> </span>-<span class="w"> </span>podbench-target<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">get /tmp/blob.bin blob.down.bin</span>
+<span class="s">EOF</span>
+sha256sum<span class="w"> </span>blob.down.bin<span class="w">                                        </span><span class="c1"># b2df03aa...c87df</span>
+
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;cat &gt; /tmp/blob2.bin&#39;</span><span class="w"> </span>&lt;<span class="w"> </span>blob.bin
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;sha256sum /tmp/blob2.bin&#39;</span><span class="w">     </span><span class="c1"># b2df03aa...c87df</span>
+
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;cat /tmp/blob.bin&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>blob3.bin
+sha256sum<span class="w"> </span>blob3.bin<span class="w">                                            </span><span class="c1"># b2df03aa...c87df</span>
+</pre></div>
+</div>
+</section>
+<section id="d-concurrency-8-simultaneous-sessions">
+<h3>(d) concurrency — 8 simultaneous sessions<a class="headerlink" href="#d-concurrency-8-simultaneous-sessions" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="k">for</span><span class="w"> </span>i<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>seq<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">8</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span><span class="o">(</span><span class="w"> </span>ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span><span class="s2">&quot;echo S</span><span class="nv">$i</span><span class="s2">-\$\$; sleep 8; echo E</span><span class="nv">$i</span><span class="s2">&quot;</span><span class="w"> </span>&gt;<span class="w"> </span>conc_<span class="nv">$i</span>.txt<span class="w"> </span><span class="o">)</span><span class="w"> </span><span class="p">&amp;</span>
+<span class="k">done</span>
+sleep<span class="w"> </span><span class="m">4</span>
+kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;ps -eo args --no-headers | grep -c &quot;[s]shd:&quot;&#39;</span><span class="w">    </span><span class="c1"># -&gt; 9 (8 sessions + the probe&#39;s own)</span>
+<span class="nb">wait</span>
+<span class="c1"># all 8 files contain both their S and E lines: 8/8</span>
+</pre></div>
+</div>
+</section>
+<section id="latency-and-throughput">
+<h3>Latency and throughput<a class="headerlink" href="#latency-and-throughput" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="k">for</span><span class="w"> </span>i<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="k">$(</span>seq<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">8</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span><span class="nv">s</span><span class="o">=</span><span class="k">$(</span>date<span class="w"> </span>+%s.%N<span class="k">)</span><span class="p">;</span><span class="w"> </span>ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span>true<span class="p">;</span><span class="w"> </span><span class="nv">e</span><span class="o">=</span><span class="k">$(</span>date<span class="w"> </span>+%s.%N<span class="k">)</span>
+<span class="w">  </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$e</span><span class="s2"> - </span><span class="nv">$s</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>bc
+<span class="k">done</span>
+</pre></div>
+</div>
+</section>
+<section id="controlmaster-6x-speedup-one-kubectl-exec-for-many-sessions">
+<h3>ControlMaster (6x speedup, one kubectl exec for many sessions)<a class="headerlink" href="#controlmaster-6x-speedup-one-kubectl-exec-for-many-sessions" title="Link to this heading">#</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="n">ControlMaster</span> <span class="n">auto</span>
+  <span class="n">ControlPath</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">s1cm</span><span class="o">/%</span><span class="n">C</span>          <span class="c1"># MUST be short: sun_path limit is 108 bytes</span>
+  <span class="n">ControlPersist</span> <span class="mi">120</span>
+</pre></div>
+</div>
+</section>
+<section id="robustness-probes">
+<h3>Robustness probes<a class="headerlink" href="#robustness-probes" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 90 s and 600 s idle, keepalives explicitly disabled</span>
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>-o<span class="w"> </span><span class="nv">ServerAliveInterval</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>-o<span class="w"> </span><span class="nv">TCPKeepAlive</span><span class="o">=</span>no<span class="w"> </span>podbench-target<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;echo START_$(date +%s); sleep 600; echo AFTER_IDLE600_$(date +%s)&#39;</span>
+
+<span class="c1"># hard transport kill: SIGKILL the ProxyCommand mid-session</span>
+<span class="nb">kill</span><span class="w"> </span>-9<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>/tmp/s1_proxy.pid<span class="k">)</span><span class="s2">&quot;</span>
+
+<span class="c1"># stalled transport: SIGSTOP the ProxyCommand mid-session</span>
+<span class="nb">kill</span><span class="w"> </span>-STOP<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>/tmp/s1_proxy.pid<span class="k">)</span><span class="s2">&quot;</span>
+ssh<span class="w"> </span>-o<span class="w"> </span><span class="nv">ServerAliveInterval</span><span class="o">=</span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span><span class="nv">ServerAliveCountMax</span><span class="o">=</span><span class="m">3</span><span class="w"> </span>...
+</pre></div>
+</div>
+</section>
+<section id="vs-code-remote-ssh-end-to-end-real-vscode-server-not-a-simulation">
+<h3>VS Code Remote-SSH end-to-end (real vscode-server, not a simulation)<a class="headerlink" href="#vs-code-remote-ssh-end-to-end-real-vscode-server-not-a-simulation" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. large stdout through a non-interactive `bash -c` — byte-exact</span>
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_e<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;bash -c &quot;seq 1 2000000&quot;&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>s1_seq.txt
+sha256sum<span class="w"> </span>s1_seq.txt<span class="w"> </span><span class="p">;</span><span class="w"> </span>seq<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">2000000</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sha256sum
+<span class="c1"># d2d7c0abc3eb76d91b0b5a2702e92a9f2908269c9c1b3604bdfe2521c71d6274  (both) - 14,888,896 bytes</span>
+
+<span class="c1"># 2. server bootstrap, piped script over ssh — exactly the Remote-SSH shape</span>
+cat<span class="w"> </span>&gt;<span class="w"> </span>bootstrap.sh<span class="w"> </span><span class="s">&lt;&lt;&#39;EOS&#39;</span>
+<span class="s">set -e</span>
+<span class="s">export DEBIAN_FRONTEND=noninteractive</span>
+<span class="s">command -v curl &gt;/dev/null || apt-get install -y -qq curl ca-certificates &gt;/dev/null 2&gt;&amp;1</span>
+<span class="s">mkdir -p /root/.vscode-server/bin &amp;&amp; cd /root/.vscode-server</span>
+<span class="s">curl -fsSL -o server.tar.gz &quot;https://update.code.visualstudio.com/latest/server-linux-x64/stable&quot;</span>
+<span class="s">tar -xzf server.tar.gz</span>
+<span class="s">./vscode-server-linux-x64/bin/code-server --version</span>
+<span class="s">EOS</span>
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;bash -s&#39;</span><span class="w"> </span>&lt;<span class="w"> </span>bootstrap.sh
+<span class="c1"># -&gt; 224,027,728 byte tarball downloaded from inside the pod; version 1.133.0</span>
+<span class="c1">#    commit a5b500951314efd502d07465bd138dfbd714a960</span>
+
+<span class="c1"># 3. start it, detached, on pod loopback</span>
+<span class="nv">COMMIT</span><span class="o">=</span>a5b500951314efd502d07465bd138dfbd714a960
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">  mv /root/.vscode-server/vscode-server-linux-x64 /root/.vscode-server/bin/</span><span class="nv">$COMMIT</span>
+<span class="s2">  nohup /root/.vscode-server/bin/</span><span class="nv">$COMMIT</span><span class="s2">/bin/code-server \</span>
+<span class="s2">    --accept-server-license-terms --telemetry-level off \</span>
+<span class="s2">    --host 127.0.0.1 --port 9922 --without-connection-token --start-server \</span>
+<span class="s2">    &gt;/tmp/vscode-server.log 2&gt;&amp;1 &amp;</span>
+<span class="s2">  sleep 12; tail -20 /tmp/vscode-server.log&quot;</span>
+<span class="c1"># -&gt; &quot;Server bound to 127.0.0.1:9922 (IPv4)&quot; / &quot;Extension host agent started.&quot;</span>
+<span class="c1">#    and it SURVIVES session close (still listening on a later connection)</span>
+
+<span class="c1"># 4. reach it through the ssh tunnel — HTTP and WebSocket</span>
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>-N<span class="w"> </span>-L<span class="w"> </span><span class="m">19922</span>:127.0.0.1:9922<span class="w"> </span>podbench-target<span class="w"> </span><span class="p">&amp;</span>
+curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:19922/version
+<span class="c1"># a5b500951314efd502d07465bd138dfbd714a960     (HTTP 200)</span>
+curl<span class="w"> </span>-s<span class="w"> </span>-i<span class="w"> </span>-H<span class="w"> </span><span class="s1">&#39;Connection: Upgrade&#39;</span><span class="w"> </span>-H<span class="w"> </span><span class="s1">&#39;Upgrade: websocket&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">     </span>-H<span class="w"> </span><span class="s1">&#39;Sec-WebSocket-Version: 13&#39;</span><span class="w"> </span>-H<span class="w"> </span><span class="s1">&#39;Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">     </span><span class="s1">&#39;http://127.0.0.1:19922/?reconnectionToken=x&amp;reconnection=false&amp;skipWebSocketFrames=false&#39;</span>
+<span class="c1"># HTTP/1.1 101 Switching Protocols</span>
+<span class="c1"># Upgrade: websocket</span>
+<span class="c1"># Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=</span>
+</pre></div>
+</div>
+</section>
+<section id="r-d-and-agent-forwarding">
+<h3>-R, -D and agent forwarding<a class="headerlink" href="#r-d-and-agent-forwarding" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>-N<span class="w"> </span>-D<span class="w"> </span><span class="m">11080</span><span class="w"> </span>podbench-target<span class="w"> </span><span class="p">&amp;</span>
+curl<span class="w"> </span>-s<span class="w"> </span>--socks5-hostname<span class="w"> </span><span class="m">127</span>.0.0.1:11080<span class="w"> </span>http://127.0.0.1:9911/<span class="w">     </span><span class="c1"># HELLO_FROM_POD_HTTP</span>
+
+python3<span class="w"> </span>-m<span class="w"> </span>http.server<span class="w"> </span><span class="m">18099</span><span class="w"> </span>--bind<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span><span class="p">&amp;</span><span class="w">                       </span><span class="c1"># on the devcontainer</span>
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>-N<span class="w"> </span>-R<span class="w"> </span><span class="m">18100</span>:127.0.0.1:18099<span class="w"> </span>podbench-target<span class="w"> </span><span class="p">&amp;</span>
+ssh<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;python3 -c &quot;import urllib.request;print(urllib.request.urlopen(\&quot;http://127.0.0.1:18100/\&quot;,timeout=8).status)&quot;&#39;</span>
+<span class="c1"># 200</span>
+
+<span class="nb">eval</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>ssh-agent<span class="w"> </span>-s<span class="k">)</span><span class="s2">&quot;</span><span class="p">;</span><span class="w"> </span>ssh-add<span class="w"> </span>s1_id_ed25519
+ssh<span class="w"> </span>-A<span class="w"> </span>-F<span class="w"> </span>s1_cfg_min<span class="w"> </span>podbench-target<span class="w"> </span><span class="s1">&#39;echo $SSH_AUTH_SOCK; ls -l $SSH_AUTH_SOCK&#39;</span>
+<span class="c1"># SSH_AUTH_SOCK=/tmp/ssh-RPH4ceNbtL/agent.5365   srwxr-xr-x 1 root root 0 ...</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="findings">
+<h2>Findings<a class="headerlink" href="#findings" title="Link to this heading">#</a></h2>
+<section id="the-headline-path-works-exactly-as-the-brief-writes-it">
+<h3>1. The headline path works, exactly as the brief writes it<a class="headerlink" href="#the-headline-path-works-exactly-as-the-brief-writes-it" title="Link to this heading">#</a></h3>
+<p>Every task in the brief passed. Remote commands, PTY sessions, <code class="docutils literal notranslate"><span class="pre">scp</span></code>/<code class="docutils literal notranslate"><span class="pre">sftp</span></code>, stdin/stdout
+binary pipes, exit codes, 8-way concurrency, <code class="docutils literal notranslate"><span class="pre">-L</span></code>/<code class="docutils literal notranslate"><span class="pre">-R</span></code>/<code class="docutils literal notranslate"><span class="pre">-D</span></code> forwarding, agent forwarding,
+<code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> multiplexing, and a real vscode-server bootstrap all work over a transport
+whose entire carrier is <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. <code class="docutils literal notranslate"><span class="pre">stdout</span></code> is byte-exact in both directions
+(sha256 verified on 3 MiB random and 14.9 MiB deterministic payloads).</p>
+</section>
+<section id="e-is-required-and-the-reason-is-not-what-the-brief-implies">
+<h3>2. <code class="docutils literal notranslate"><span class="pre">-e</span></code> IS required — and the reason is NOT what the brief implies<a class="headerlink" href="#e-is-required-and-the-reason-is-not-what-the-brief-implies" title="Link to this heading">#</a></h3>
+<p>The brief treats <code class="docutils literal notranslate"><span class="pre">-e</span></code> as “log to stderr so stderr noise does not pollute the SSH stream”.
+That framing is wrong in an important way. The measured behaviour:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>ProxyCommand</p></th>
+<th class="head"><p>result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-e</span></code></p></td>
+<td><p><strong>works</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-E</span> <span class="pre">/tmp/sshd.log</span></code></p></td>
+<td><p><strong>works</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span></code> (syslog)</p></td>
+<td><p><strong>FAILS</strong>, reproducibly</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'/usr/sbin/sshd</span> <span class="pre">-i'</span></code> (shell <strong>forks</strong>, stays alive)</p></td>
+<td><p><strong>works</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i'</span></code></p></td>
+<td><p><strong>FAILS</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-e</span> <span class="pre">2&gt;&amp;1'</span></code> (stderr merged into stdout)</p></td>
+<td><p><strong>FAILS</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--</span> <span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'echo</span> <span class="pre">hello;</span> <span class="pre">exec</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-e'</span></code> (pre-banner stdout noise)</p></td>
+<td><p><strong>works</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Failure text in every failing case, identical:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">command</span> <span class="n">terminated</span> <span class="k">with</span> <span class="n">exit</span> <span class="n">code</span> <span class="mi">255</span>
+<span class="n">ssh_dispatch_run_fatal</span><span class="p">:</span> <span class="n">Connection</span> <span class="n">to</span> <span class="n">UNKNOWN</span> <span class="n">port</span> <span class="mi">65535</span><span class="p">:</span> <span class="n">Broken</span> <span class="n">pipe</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-vv</span></code> shows the handshake dying at <code class="docutils literal notranslate"><span class="pre">debug1:</span> <span class="pre">expecting</span> <span class="pre">SSH2_MSG_KEX_ECDH_REPLY</span></code> — i.e. the
+server side vanishes immediately after KEXINIT, before any auth.</p>
+<p><strong>Root cause, isolated with a sshd-free experiment.</strong> The CRI exec stream is torn down when
+the exec’d process closes or replaces its <strong>stderr</strong>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># A: control — stderr left alone</span>
+<span class="o">(</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span>one<span class="p">;</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">4</span><span class="p">;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span>two<span class="w"> </span><span class="o">)</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>-i<span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;exec cat&#39;</span>
+one
+two<span class="w">                </span><span class="c1"># both arrive</span>
+
+<span class="c1"># B: stderr replaced with /dev/null  (exactly what sshd does without -e/-E)</span>
+<span class="o">(</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span>one<span class="p">;</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">4</span><span class="p">;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span>two<span class="w"> </span><span class="o">)</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>-i<span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;exec 2&gt;/dev/null; exec cat&#39;</span>
+one<span class="w">                </span><span class="c1"># &quot;two&quot; is SILENTLY LOST, rc=0</span>
+
+<span class="c1"># C: stderr closed outright</span>
+<span class="o">(</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span>one<span class="p">;</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">4</span><span class="p">;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span>two<span class="w"> </span><span class="o">)</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>podbench-s1<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>-i<span class="w"> </span>podbench-target<span class="w"> </span>-c<span class="w"> </span>podbench<span class="w"> </span>--<span class="w"> </span>sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;exec 2&gt;&amp;-; exec cat&#39;</span>
+one<span class="w">                </span><span class="c1"># same silent truncation, rc=0</span>
+</pre></div>
+</div>
+<p><strong>Measured:</strong> closing/replacing fd 2 in an exec’d process silently kills the exec stream on
+this cluster (experiments A/B/C above, plus the full matrix).
+<strong>Inferred (consistent with every observation, from OpenSSH’s inetd path):</strong> sshd’s
+<code class="docutils literal notranslate"><span class="pre">server_accept_inetd()</span></code> calls <code class="docutils literal notranslate"><span class="pre">stdfd_devnull(1,</span> <span class="pre">1,</span> <span class="pre">!log_stderr)</span></code>, so without <code class="docutils literal notranslate"><span class="pre">-e</span></code>/<code class="docutils literal notranslate"><span class="pre">-E</span></code> it
+points fd 2 at <code class="docutils literal notranslate"><span class="pre">/dev/null</span></code>; the CRI stderr pipe reaches EOF and containerd tears the <em>whole</em>
+exec session down, killing stdin/stdout mid-KEX. <code class="docutils literal notranslate"><span class="pre">-E</span> <span class="pre">&lt;file&gt;</span></code> works because sshd’s option
+parser falls <code class="docutils literal notranslate"><span class="pre">-E</span></code> through to <code class="docutils literal notranslate"><span class="pre">-e</span></code>, also setting <code class="docutils literal notranslate"><span class="pre">log_stderr</span> <span class="pre">=</span> <span class="pre">1</span></code>, so fd 2 survives.
+<code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'sshd</span> <span class="pre">-i'</span></code> (no <code class="docutils literal notranslate"><span class="pre">exec</span></code>) works because the parent shell keeps fd 2 open on sshd’s behalf.</p>
+<p>Two consequences the brief does not anticipate:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">-e</span></code> is load-bearing for fd-2 <em>ownership</em>, not for log routing.</strong> Any future change that
+“cleans up” the logging (e.g. <code class="docutils literal notranslate"><span class="pre">&gt;/dev/null</span> <span class="pre">2&gt;&amp;1</span></code> in a wrapper, or a wrapper that closes stderr)
+will break the transport in a way that looks like a network fault.</p></li>
+<li><p><strong>Case B/C fail silently with rc=0 and no diagnostic.</strong> This exact mode — an exec whose
+stderr gets closed — will silently truncate any <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> stream, not just ssh.</p></li>
+</ul>
+</section>
+<section id="what-actually-pollutes-the-stream-and-what-does-not">
+<h3>3. What actually pollutes the stream, and what does not<a class="headerlink" href="#what-actually-pollutes-the-stream-and-what-does-not" title="Link to this heading">#</a></h3>
+<ul>
+<li><p><strong>Merging sshd’s stderr into stdout is fatal</strong> (<code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">sshd</span> <span class="pre">-i</span> <span class="pre">-e</span> <span class="pre">2&gt;&amp;1'</span></code>) — log lines land
+mid-protocol and the client dies with the same <code class="docutils literal notranslate"><span class="pre">Broken</span> <span class="pre">pipe</span></code>.</p></li>
+<li><p><strong>Pre-banner stdout noise is tolerated</strong>, per RFC 4253 §4.2. Measured exactly:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>lines printed before sshd starts</p></th>
+<th class="head"><p>result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1 / 10 / 1023</p></td>
+<td><p>works</p></td>
+</tr>
+<tr class="row-odd"><td><p>1024</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">banner</span> <span class="pre">exchange:</span> <span class="pre">Connection</span> <span class="pre">to</span> <span class="pre">UNKNOWN</span> <span class="pre">port</span> <span class="pre">65535:</span> <span class="pre">invalid</span> <span class="pre">format</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>2000</p></td>
+<td><p>same</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>So a debug image whose entrypoint prints a MOTD is fine up to 1023 lines. Anything a
+wrapper writes to stdout <em>after</em> sshd starts is fatal.</p>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">-it</span></code> (with <code class="docutils literal notranslate"><span class="pre">-t</span></code>) did not break here — but only by luck.</strong> In a non-tty
+context kubectl printed <code class="docutils literal notranslate"><span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">use</span> <span class="pre">a</span> <span class="pre">TTY</span> <span class="pre">-</span> <span class="pre">input</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">a</span> <span class="pre">terminal</span> <span class="pre">or</span> <span class="pre">the</span> <span class="pre">right</span> <span class="pre">kind</span> <span class="pre">of</span> <span class="pre">file</span></code> on stderr and fell back to non-tty, so the session worked. When a <strong>real</strong> TTY was
+forced onto the ProxyCommand (<code class="docutils literal notranslate"><span class="pre">script</span> <span class="pre">-q</span> <span class="pre">-c</span> <span class="pre">&quot;kubectl</span> <span class="pre">exec</span> <span class="pre">-it</span> <span class="pre">...&quot;</span> <span class="pre">/dev/null</span></code>), the ssh
+client <strong>hung indefinitely</strong> and had to be killed at the 2-minute mark. <code class="docutils literal notranslate"><span class="pre">-t</span></code> must never
+appear in the ProxyCommand.</p></li>
+<li><p>With <code class="docutils literal notranslate"><span class="pre">-e</span></code>, sshd’s own log lines appear on the <em>ssh client’s</em> stderr
+(<code class="docutils literal notranslate"><span class="pre">Accepted</span> <span class="pre">publickey</span> <span class="pre">for</span> <span class="pre">root</span> <span class="pre">from</span> <span class="pre">UNKNOWN</span> <span class="pre">port</span> <span class="pre">65535</span> <span class="pre">...</span></code>). This is harmless for a human
+but is noise a Remote-SSH client parses. <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span></code> (or <code class="docutils literal notranslate"><span class="pre">QUIET</span></code>/<code class="docutils literal notranslate"><span class="pre">FATAL</span></code>) gives
+<strong>zero</strong> stderr bytes and still keeps fd 2 open — verified.</p></li>
+</ul>
+</section>
+<section id="latency-and-throughput-are-good-enough-for-interactive-work">
+<h3>4. Latency and throughput are good enough for interactive work<a class="headerlink" href="#latency-and-throughput-are-good-enough-for-interactive-work" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>measurement</p></th>
+<th class="head"><p>value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">...</span> <span class="pre">true</span></code>, cold connection, 8 runs</p></td>
+<td><p>0.320 – 0.377 s (median ≈ 0.345 s)</p></td>
+</tr>
+<tr class="row-odd"><td><p>bare <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">...</span> <span class="pre">true</span></code>, 3 runs</p></td>
+<td><p>0.151 – 0.157 s</p></td>
+</tr>
+<tr class="row-even"><td><p>ssh overhead over raw exec</p></td>
+<td><p>≈ 0.19 s</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">...</span> <span class="pre">true</span></code> over an established <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code></p></td>
+<td><p><strong>0.058 – 0.062 s</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>64 MiB pod → client</p></td>
+<td><p>2.50 s (≈ 26 MB/s)</p></td>
+</tr>
+<tr class="row-odd"><td><p>64 MiB client → pod</p></td>
+<td><p>4.94 s (≈ 13 MB/s)</p></td>
+</tr>
+<tr class="row-even"><td><p>RSS per live session (<code class="docutils literal notranslate"><span class="pre">sshd:</span> <span class="pre">root&#64;notty</span></code>)</p></td>
+<td><p>≈ 10–11 MB</p></td>
+</tr>
+<tr class="row-odd"><td><p>30 sequential cold connections (churn)</p></td>
+<td><p><strong>0/30 failures</strong>, mean 0.323 s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>No process leaks: after ~60 sessions (churn + concurrency + forwarding tests) the devcontainer
+had zero orphaned <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> processes beyond the ones still intentionally running, and the
+pod had exactly one <code class="docutils literal notranslate"><span class="pre">sshd:</span></code> process (the still-open idle test). Sessions tear down cleanly on
+both sides.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> is a ~6x win on connection setup and collapses N sessions onto <strong>one</strong>
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, which also removes N-fold apiserver exec load.</p>
+</section>
+<section id="robustness">
+<h3>5. Robustness<a class="headerlink" href="#robustness" title="Link to this heading">#</a></h3>
+<ul>
+<li><p><strong>Idle:</strong> a session with <code class="docutils literal notranslate"><span class="pre">ServerAliveInterval=0</span></code> and <code class="docutils literal notranslate"><span class="pre">TCPKeepAlive=no</span></code> survived <strong>90 s</strong>
+and <strong>600 s</strong> of complete silence and then delivered its trailing output. There is no
+short idle timeout on the k3s exec path. Observed:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">START_1786791739</span>
+<span class="n">AFTER_IDLE600_1786792339</span>      <span class="c1"># exactly 600 s later, rc=0, no reconnect</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Hard transport loss</strong> (SIGKILL the ProxyCommand): detected <strong>instantly</strong> (0 s),
+<code class="docutils literal notranslate"><span class="pre">client_loop:</span> <span class="pre">send</span> <span class="pre">disconnect:</span> <span class="pre">Broken</span> <span class="pre">pipe</span></code>, <code class="docutils literal notranslate"><span class="pre">rc=255</span></code>. Clean failure, no hang.</p></li>
+<li><p><strong>Stalled transport</strong> (SIGSTOP the ProxyCommand — the pipe stays open but nothing flows,
+which is what an apiserver/konnectivity hiccup looks like):</p>
+<ul class="simple">
+<li><p>without keepalives: <strong>ssh hangs forever</strong> (killed by an external 100 s timeout, <code class="docutils literal notranslate"><span class="pre">rc=124</span></code>).</p></li>
+<li><p>with <code class="docutils literal notranslate"><span class="pre">ServerAliveInterval=5</span> <span class="pre">ServerAliveCountMax=3</span></code>: detected in <strong>19 s</strong>,
+<code class="docutils literal notranslate"><span class="pre">Timeout,</span> <span class="pre">server</span> <span class="pre">podbench-target</span> <span class="pre">not</span> <span class="pre">responding.</span></code>, <code class="docutils literal notranslate"><span class="pre">rc=255</span></code>.</p></li>
+</ul>
+<p>So <code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span></code> is not optional — it is the <em>only</em> thing that distinguishes a
+wedged transport from a long-running quiet command.</p>
+</li>
+<li><p><strong>Pod deleted mid-session:</strong> detected <strong>instantly</strong> (0 s) and cleanly —
+<code class="docutils literal notranslate"><span class="pre">command</span> <span class="pre">terminated</span> <span class="pre">with</span> <span class="pre">exit</span> <span class="pre">code</span> <span class="pre">137</span></code> from kubectl, then
+<code class="docutils literal notranslate"><span class="pre">client_loop:</span> <span class="pre">send</span> <span class="pre">disconnect:</span> <span class="pre">Broken</span> <span class="pre">pipe</span></code>, <code class="docutils literal notranslate"><span class="pre">rc=255</span></code>. No hang, no zombie exec.</p></li>
+<li><p>Sessions are fully independent: each one is its own <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> and its own <code class="docutils literal notranslate"><span class="pre">sshd</span></code>
+process, so there is no shared <code class="docutils literal notranslate"><span class="pre">MaxStartups</span></code>/<code class="docutils literal notranslate"><span class="pre">MaxSessions</span></code> ceiling and one dead session
+cannot take out another. (With <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> this is traded away deliberately — one
+transport death takes all multiplexed channels.)</p></li>
+</ul>
+</section>
+<section id="vs-code-remote-ssh-needs-more-than-plain-ssh-and-it-all-works">
+<h3>6. VS Code Remote-SSH needs more than plain ssh, and it all works<a class="headerlink" href="#vs-code-remote-ssh-needs-more-than-plain-ssh-and-it-all-works" title="Link to this heading">#</a></h3>
+<p>Beyond a working <code class="docutils literal notranslate"><span class="pre">ssh</span></code>, Remote-SSH needs (a) a large non-interactive <code class="docutils literal notranslate"><span class="pre">bash</span> <span class="pre">-c</span></code> stdout stream
+for the bootstrap script, (b) working <strong>local port forwarding</strong> to reach the server it starts,
+and (c) <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> reuse. All three verified:</p>
+<ul class="simple">
+<li><p>8 MiB base64 and a 14.9 MiB <code class="docutils literal notranslate"><span class="pre">seq</span> <span class="pre">1</span> <span class="pre">2000000</span></code> both streamed byte-exact through
+<code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">'bash</span> <span class="pre">-c</span> <span class="pre">&quot;...&quot;'</span></code>.</p></li>
+<li><p>The real <code class="docutils literal notranslate"><span class="pre">vscode-server</span></code> 1.133.0 (224 MB tarball, downloaded by the pod itself over cluster
+egress) started on pod loopback, <strong>survived session close</strong> (<code class="docutils literal notranslate"><span class="pre">nohup</span></code>+<code class="docutils literal notranslate"><span class="pre">&amp;</span></code> detaches cleanly
+from the dying exec session), served <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/version</span></code> → 200 through <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code>, and completed a
+<strong>WebSocket <code class="docutils literal notranslate"><span class="pre">101</span> <span class="pre">Switching</span> <span class="pre">Protocols</span></code></strong> handshake through the same tunnel. That is the exact
+channel the VS Code UI uses.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-R</span></code> and <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-D</span></code> also work, so VS Code’s “forward a port from the remote” feature and
+any SOCKS-based tooling are available too.</p></li>
+</ul>
+</section>
+<section id="sshd-i-prerequisites-in-a-scratch-container">
+<h3>7. <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> prerequisites in a scratch container<a class="headerlink" href="#sshd-i-prerequisites-in-a-scratch-container" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> must exist.</strong> Without it every connection dies with
+<code class="docutils literal notranslate"><span class="pre">Missing</span> <span class="pre">privilege</span> <span class="pre">separation</span> <span class="pre">directory:</span> <span class="pre">/run/sshd</span></code> (also <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-t</span></code> fails). This is the
+single most likely image-build omission — <code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">openssh-server</span></code> creates it, but
+a <code class="docutils literal notranslate"><span class="pre">mkdir</span> <span class="pre">/run</span></code> tmpfs remount or a distroless/scratch layout will not.</p></li>
+<li><p><strong>Host keys must exist</strong> (<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span> <span class="pre">-A</span></code>), otherwise there is nothing to offer at KEX.</p></li>
+<li><p><strong>No PidFile is written</strong> in <code class="docutils literal notranslate"><span class="pre">-i</span></code> mode — <code class="docutils literal notranslate"><span class="pre">PidFile</span> <span class="pre">none</span></code> is unnecessary.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">UsePAM</span> <span class="pre">no</span></code> works</strong>, so the image needs no PAM stack. Debian’s default <code class="docutils literal notranslate"><span class="pre">UsePAM</span> <span class="pre">yes</span></code> also
+works when the package’s PAM files are present.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PermitRootLogin</span> <span class="pre">prohibit-password</span></code> (Debian’s default) is sufficient for key auth as root.</p></li>
+<li><p>RBAC needed: <code class="docutils literal notranslate"><span class="pre">create</span> <span class="pre">pods/exec</span></code> plus <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> in the namespace. Nothing else — no
+Services, no NetworkPolicy holes, no pod IP reachability.</p></li>
+</ul>
+</section>
+<section id="sshd-i-works-as-a-non-root-uid-and-then-needs-no-privsep-dir-at-all">
+<h3>8. <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> works as a NON-ROOT uid, and then needs no privsep dir at all<a class="headerlink" href="#sshd-i-works-as-a-non-root-uid-and-then-needs-no-privsep-dir-at-all" title="Link to this heading">#</a></h3>
+<p>Tested by running sshd under uid 1000 via <code class="docutils literal notranslate"><span class="pre">setpriv</span></code> (approximating a debug container with
+<code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">1000</span></code>, i.e. a PSA-<code class="docutils literal notranslate"><span class="pre">restricted</span></code> namespace):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ProxyCommand</span> <span class="n">kubectl</span> <span class="o">-</span><span class="n">n</span> <span class="n">podbench</span><span class="o">-</span><span class="n">s1</span> <span class="n">exec</span> <span class="o">-</span><span class="n">i</span> <span class="n">podbench</span><span class="o">-</span><span class="n">target</span> <span class="o">-</span><span class="n">c</span> <span class="n">podbench</span> <span class="o">--</span> \
+  <span class="n">setpriv</span> <span class="o">--</span><span class="n">reuid</span><span class="o">=</span><span class="mi">1000</span> <span class="o">--</span><span class="n">regid</span><span class="o">=</span><span class="mi">1000</span> <span class="o">--</span><span class="n">clear</span><span class="o">-</span><span class="n">groups</span> \
+  <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">sbin</span><span class="o">/</span><span class="n">sshd</span> <span class="o">-</span><span class="n">i</span> <span class="o">-</span><span class="n">e</span> <span class="o">-</span><span class="n">f</span> <span class="o">/</span><span class="n">home</span><span class="o">/</span><span class="n">dev</span><span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">sshd_config</span>
+</pre></div>
+</div>
+<p>with a user-owned config:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">HostKey</span> <span class="o">/</span><span class="n">home</span><span class="o">/</span><span class="n">dev</span><span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">ssh_host_ed25519_key</span>
+<span class="n">AuthorizedKeysFile</span> <span class="o">/</span><span class="n">home</span><span class="o">/</span><span class="n">dev</span><span class="o">/.</span><span class="n">ssh</span><span class="o">/</span><span class="n">authorized_keys</span>
+<span class="n">UsePAM</span> <span class="n">no</span>
+<span class="n">StrictModes</span> <span class="n">no</span>
+<span class="n">PidFile</span> <span class="n">none</span>
+<span class="n">Subsystem</span> <span class="n">sftp</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">openssh</span><span class="o">/</span><span class="n">sftp</span><span class="o">-</span><span class="n">server</span>
+</pre></div>
+</div>
+<p>Result: remote command (<code class="docutils literal notranslate"><span class="pre">uid=1000(dev)</span> <span class="pre">gid=1000(dev)</span></code>, <code class="docutils literal notranslate"><span class="pre">pwd=/home/dev</span></code>), <code class="docutils literal notranslate"><span class="pre">scp</span></code> (rc=0) and a
+PTY session (<code class="docutils literal notranslate"><span class="pre">/dev/pts/0</span></code>) all worked — <strong>with <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> deleted</strong>. sshd skips privilege
+separation when it is not root, so the privsep directory is a root-only requirement.
+Re-verified in the same breath: with <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> still absent, the <strong>root</strong> ProxyCommand
+failed immediately (<code class="docutils literal notranslate"><span class="pre">Connection</span> <span class="pre">closed</span> <span class="pre">by</span> <span class="pre">UNKNOWN</span> <span class="pre">port</span> <span class="pre">65535</span></code>).</p>
+<p>This matters a lot for the product: Podbench does not need a root debug container to provide
+the ssh transport. Root is only needed for the <em>debugging</em> capabilities (ptrace, <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>),
+not for the connection path.</p>
+</section>
+</section>
+<section id="deviations-from-the-brief">
+<h2>Deviations from the brief<a class="headerlink" href="#deviations-from-the-brief" title="Link to this heading">#</a></h2>
+<ol class="arabic">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--custom</span></code> takes a file path, not inline JSON.</strong> The brief’s phrasing
+(”<code class="docutils literal notranslate"><span class="pre">--custom</span></code> profile JSON <code class="docutils literal notranslate"><span class="pre">{...}</span></code>”) reads as inline. It is not:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">error</span><span class="p">:</span> <span class="n">must</span> <span class="k">pass</span> <span class="n">a</span> <span class="n">container</span> <span class="n">spec</span> <span class="n">json</span> <span class="n">file</span> <span class="k">for</span> <span class="n">custom</span> <span class="n">profile</span><span class="p">:</span>
+<span class="nb">open</span> <span class="p">{</span><span class="s2">&quot;securityContext&quot;</span><span class="p">:{</span><span class="s2">&quot;capabilities&quot;</span><span class="p">:{</span><span class="s2">&quot;add&quot;</span><span class="p">:[</span><span class="s2">&quot;SYS_PTRACE&quot;</span><span class="p">]}}}:</span> <span class="n">no</span> <span class="n">such</span> <span class="n">file</span> <span class="ow">or</span> <span class="n">directory</span>
+</pre></div>
+</div>
+<p>Podbench’s CLI must write the profile to a temp file (or use <code class="docutils literal notranslate"><span class="pre">--profile=</span></code> + a manifest patch).</p>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">-e</span></code> is not about log tidiness — it is about keeping fd 2 open so the CRI exec stream
+stays alive.</strong> See Findings §2. <code class="docutils literal notranslate"><span class="pre">-E</span> <span class="pre">&lt;file&gt;</span></code> is equally valid (it implies <code class="docutils literal notranslate"><span class="pre">log_stderr=1</span></code>),
+and <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span></code> gives both a live fd 2 and a silent stderr. Any implementation
+that wraps sshd and redirects/closes stderr will break the transport with a misleading
+“Broken pipe”. This is the single most valuable thing this spike found.</p></li>
+<li><p><strong>A wrapper shell that does not <code class="docutils literal notranslate"><span class="pre">exec</span></code> masks the bug.</strong> <code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'/usr/sbin/sshd</span> <span class="pre">-i'</span></code> works
+even without <code class="docutils literal notranslate"><span class="pre">-e</span></code>, purely because the parent shell holds fd 2. If Podbench ships a wrapper
+script, this will hide the fd-2 requirement in testing and then surface it the day someone
+adds <code class="docutils literal notranslate"><span class="pre">exec</span></code> for tidiness. Pin the invocation and add a regression test.</p></li>
+<li><p><strong>The brief’s ProxyCommand omits <code class="docutils literal notranslate"><span class="pre">-n</span> <span class="pre">&lt;namespace&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">-f</span> <span class="pre">&lt;sshd_config&gt;</span></code>.</strong> In practice the
+generated config needs at least the namespace; and pointing at a dedicated
+<code class="docutils literal notranslate"><span class="pre">sshd_config</span></code> (rather than mutating the distro one) keeps the image’s normal sshd usable.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ControlPath</span></code> length matters.</strong> <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code> under a long scratch path failed with
+<code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span> <span class="pre">('...'</span> <span class="pre">&gt;=</span> <span class="pre">108</span> <span class="pre">bytes)</span></code> — the AF_UNIX <code class="docutils literal notranslate"><span class="pre">sun_path</span></code> limit. Podbench must
+put control sockets somewhere short (<code class="docutils literal notranslate"><span class="pre">/tmp/&lt;short&gt;/%C</span></code>), not next to the kubeconfig or in a
+workspace directory.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">-t</span></code> is a latent footgun, not an obvious error.</strong> It “works” from a script
+(kubectl silently degrades to non-tty) and hangs forever from a terminal. Users
+hand-editing the generated ssh config will hit this. Podbench should refuse <code class="docutils literal notranslate"><span class="pre">-t</span></code>.</p></li>
+<li><p><strong>The brief assumes plain ssh is the bar; VS Code additionally needs port forwarding.</strong>
+<code class="docutils literal notranslate"><span class="pre">-L</span></code> is mandatory (that is how the UI reaches the server) and it works — which is what makes
+the “no port-forward, no pod IP” claim hold: the <em>ssh</em> connection carries the VS Code
+traffic, so <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">port-forward</span></code> is genuinely unnecessary.</p></li>
+<li><p><strong>Everything here lives in an ephemeral container, which cannot be restarted or removed.</strong>
+The apt-installed sshd, host keys and <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code> are lost if the pod restarts, and
+the ephemeral container spec is immutable. Fine for a spike; for the product this argues for
+a purpose-built image rather than runtime <code class="docutils literal notranslate"><span class="pre">apt-get</span></code>, and for accepting that a pod restart
+means re-attaching a new debug container (with <strong>new host keys</strong> — see below).</p></li>
+<li><p><strong>Host key identity is unsolved.</strong> <code class="docutils literal notranslate"><span class="pre">ssh-keygen</span> <span class="pre">-A</span></code> generates fresh keys per attach, and the
+<code class="docutils literal notranslate"><span class="pre">Host</span></code> alias is arbitrary, so <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> either warns on every new pod or must be
+bypassed. This spike used <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code> + a throwaway <code class="docutils literal notranslate"><span class="pre">UserKnownHostsFile</span></code>.
+A real design needs either a per-pod <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> keyed on pod UID, or a host key
+delivered from a Secret so it is stable across re-attaches. Not covered by the brief.</p></li>
+</ol>
+</section>
+<section id="recommendations-for-implementation">
+<h2>Recommendations for implementation<a class="headerlink" href="#recommendations-for-implementation" title="Link to this heading">#</a></h2>
+<ol class="arabic">
+<li><p><strong>Ship this ProxyCommand shape:</strong></p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ProxyCommand</span> <span class="n">kubectl</span> <span class="o">-</span><span class="n">n</span> <span class="o">&lt;</span><span class="n">ns</span><span class="o">&gt;</span> <span class="n">exec</span> <span class="o">-</span><span class="n">i</span> <span class="o">&lt;</span><span class="n">pod</span><span class="o">&gt;</span> <span class="o">-</span><span class="n">c</span> <span class="n">podbench</span> <span class="o">--</span> \
+  <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">sbin</span><span class="o">/</span><span class="n">sshd</span> <span class="o">-</span><span class="n">i</span> <span class="o">-</span><span class="n">e</span> <span class="o">-</span><span class="n">f</span> <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">podbench</span><span class="o">/</span><span class="n">sshd_config</span> <span class="o">-</span><span class="n">o</span> <span class="n">LogLevel</span><span class="o">=</span><span class="n">ERROR</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">-i</span></code> and <code class="docutils literal notranslate"><span class="pre">-e</span></code> are both mandatory. <code class="docutils literal notranslate"><span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span></code> keeps the client’s stderr clean for
+Remote-SSH while preserving the fd-2 lifeline. Never <code class="docutils literal notranslate"><span class="pre">-t</span></code>. Never redirect sshd’s stderr.
+Add a unit/e2e test that asserts the transport dies without <code class="docutils literal notranslate"><span class="pre">-e</span></code>, so the reason is documented
+in code.</p>
+</li>
+<li><p><strong>Bake into the image, do not <code class="docutils literal notranslate"><span class="pre">apt-get</span></code> at runtime:</strong> <code class="docutils literal notranslate"><span class="pre">openssh-server</span></code>, <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code>
+(created at container start, since <code class="docutils literal notranslate"><span class="pre">/run</span></code> is often tmpfs), a 5-line
+<code class="docutils literal notranslate"><span class="pre">/etc/podbench/sshd_config</span></code>, and the sftp subsystem binary (needed for <code class="docutils literal notranslate"><span class="pre">scp</span></code>/<code class="docutils literal notranslate"><span class="pre">sftp</span></code>, which
+VS Code also uses for file upload).</p></li>
+<li><p><strong>Default the generated ssh config to:</strong></p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ServerAliveInterval</span> <span class="mi">15</span>
+<span class="n">ServerAliveCountMax</span> <span class="mi">3</span>
+<span class="n">ControlMaster</span> <span class="n">auto</span>
+<span class="n">ControlPath</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">cm</span><span class="o">/%</span><span class="n">C</span>
+<span class="n">ControlPersist</span> <span class="mi">10</span><span class="n">m</span>
+<span class="n">IdentitiesOnly</span> <span class="n">yes</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span></code> converts an invisible hang into a 45 s failure; <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> cuts
+per-command latency from 345 ms to 58 ms and collapses apiserver exec load. Create
+<code class="docutils literal notranslate"><span class="pre">/tmp/podbench-cm</span></code> (mode 0700) at config-generation time and keep the path short.</p>
+</li>
+<li><p><strong>Deliver the host key from a Secret</strong>, mounted into the debug container, so the pod’s
+identity is stable across re-attaches; then <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">yes</span></code> becomes usable and
+the tool stops teaching users to disable host verification. Failing that, set
+<code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> to the pod UID and manage <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> entries programmatically.</p></li>
+<li><p><strong>Do not expose a Service or port-forward for the VS Code server.</strong> <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code> over this
+transport carries both HTTP and WebSocket correctly, which is the whole security argument
+of the design; it is empirically sound.</p></li>
+<li><p><strong>Treat “no stderr” as the tripwire.</strong> Because a closed CRI stderr silently truncates the
+stream with <code class="docutils literal notranslate"><span class="pre">rc=0</span></code>, add a startup self-check: run <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">-i</span> <span class="pre">...</span> <span class="pre">--</span> <span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">cat'</span></code>
+with a delayed second line and confirm both lines return before declaring the pod ready.</p></li>
+<li><p><strong>Do not require a root debug container for the transport.</strong> Findings §8 shows <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code>
+works fine as uid 1000 with a user-owned host key and config, and then does not need
+<code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> at all. Make the sshd config path and host-key location user-relative
+(<code class="docutils literal notranslate"><span class="pre">$HOME/.podbench/</span></code>) so the same image serves both root and PSA-<code class="docutils literal notranslate"><span class="pre">restricted</span></code> deployments;
+gate only the ptrace/<code class="docutils literal notranslate"><span class="pre">/proc</span></code> features on root.</p></li>
+<li><p><strong>Follow-up spikes worth running:</strong> (a) an actual PSA-<code class="docutils literal notranslate"><span class="pre">restricted</span></code> namespace end-to-end
+(this namespace carried no PSA labels, so <code class="docutils literal notranslate"><span class="pre">runAsNonRoot</span></code>/<code class="docutils literal notranslate"><span class="pre">seccompProfile</span></code> admission was
+never exercised — only the non-root <em>runtime</em> behaviour was); (b) behaviour when the pod is
+deleted or evicted mid-session and how Remote-SSH’s reconnect handles it; (c) whether
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> through konnectivity/an API gateway (rather than this flat k3s path) changes
+the stall/idle numbers in §5.</p></li>
+</ol>
+</section>
+<section id="what-was-left-behind">
+<h2>What was left behind<a class="headerlink" href="#what-was-left-behind" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Namespace <code class="docutils literal notranslate"><span class="pre">podbench-s1</span></code> — <strong>left in place</strong>, as instructed. Verified empty:
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">-n</span> <span class="pre">podbench-s1</span> <span class="pre">get</span> <span class="pre">all</span></code> → <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">resources</span> <span class="pre">found</span></code>. It has no PSA labels.</p></li>
+<li><p>Pod <code class="docutils literal notranslate"><span class="pre">podbench-target</span></code> (and its ephemeral <code class="docutils literal notranslate"><span class="pre">podbench</span></code> container) — <strong>deleted</strong>. It was the only
+object ever created. Nothing else in the cluster was created, modified or deleted; no other
+namespace, no node setting, no ArgoCD-managed resource was touched. Only read-only
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get/auth</span> <span class="pre">can-i/top</span></code> and <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> into my own pod were used elsewhere.</p></li>
+<li><p>No leftover local <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> processes; <code class="docutils literal notranslate"><span class="pre">/tmp/s1cm</span></code> (ControlMaster sockets) removed.</p></li>
+<li><p>Local scratch artifacts under
+<code class="docutils literal notranslate"><span class="pre">/tmp/claude-0/.../scratchpad/spikes/</span></code> prefixed <code class="docutils literal notranslate"><span class="pre">s1_</span></code> (keypair <code class="docutils literal notranslate"><span class="pre">s1_id_ed25519{,.pub}</span></code>,
+ssh configs <code class="docutils literal notranslate"><span class="pre">s1_cfg_*</span></code>, logs). Note: this scratchpad is shared with other concurrent spikes
+and a non-prefixed <code class="docutils literal notranslate"><span class="pre">ssh_config</span></code> written early on was clobbered by another agent mid-run —
+all S1 files were renamed with an <code class="docutils literal notranslate"><span class="pre">s1_</span></code> prefix afterwards.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="phase0-report.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Podbench — Phase 0 gate report</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="s2.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">S2 — vscode-server inside an ephemeral container</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-was-tested">What was tested</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exact-commands-that-worked">Exact commands that worked</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#namespace-target-pod-ephemeral-debug-container">Namespace, target pod, ephemeral debug container</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#provision-sshd-inside-the-ephemeral-container">Provision sshd inside the ephemeral container</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimal-working-sshd-config">Minimal working sshd_config</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ssh-client-config-that-works">The ssh client config that works</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-remote-command-b-pty-exit-codes">(a) remote command, (b) PTY, exit codes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#c-binary-clean-transfer-all-four-paths-identical-sha256">(c) binary-clean transfer — all four paths, identical sha256</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#d-concurrency-8-simultaneous-sessions">(d) concurrency — 8 simultaneous sessions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#latency-and-throughput">Latency and throughput</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#controlmaster-6x-speedup-one-kubectl-exec-for-many-sessions">ControlMaster (6x speedup, one kubectl exec for many sessions)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#robustness-probes">Robustness probes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vs-code-remote-ssh-end-to-end-real-vscode-server-not-a-simulation">VS Code Remote-SSH end-to-end (real vscode-server, not a simulation)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#r-d-and-agent-forwarding">-R, -D and agent forwarding</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#findings">Findings</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-headline-path-works-exactly-as-the-brief-writes-it">1. The headline path works, exactly as the brief writes it</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#e-is-required-and-the-reason-is-not-what-the-brief-implies">2. <code class="docutils literal notranslate"><span class="pre">-e</span></code> IS required — and the reason is NOT what the brief implies</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-actually-pollutes-the-stream-and-what-does-not">3. What actually pollutes the stream, and what does not</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#latency-and-throughput-are-good-enough-for-interactive-work">4. Latency and throughput are good enough for interactive work</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#robustness">5. Robustness</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vs-code-remote-ssh-needs-more-than-plain-ssh-and-it-all-works">6. VS Code Remote-SSH needs more than plain ssh, and it all works</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sshd-i-prerequisites-in-a-scratch-container">7. <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> prerequisites in a scratch container</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sshd-i-works-as-a-non-root-uid-and-then-needs-no-privsep-dir-at-all">8. <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> works as a NON-ROOT uid, and then needs no privsep dir at all</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deviations-from-the-brief">Deviations from the brief</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recommendations-for-implementation">Recommendations for implementation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-was-left-behind">What was left behind</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0b1/docs/explanations/spikes/s1.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../../_sources/explanations/spikes/s1.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
