@@ -14,6 +14,9 @@ env:
   # https://github.com/pytest-dev/pytest/issues/2042
   PY_IGNORE_IMPORTMISMATCH: "1"
   UV_PYTHON: ${{ inputs.python-version }}
+  # Kept equal to _helm.yml's pin and the Dockerfile's HELM_VERSION: a chart
+  # that renders in one has to render the same way in the others.
+  HELM_VERSION_TO_INSTALL: 3.17.1
 
 jobs:
   run:
@@ -28,6 +31,15 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.0
+
+      # tests/test_chart_contract.py skips itself when helm is absent, and helm
+      # is what actually enforces values.schema.json. Without this step the
+      # schema tests reported "passed" in CI while never having run — the exact
+      # silent-skip this suite exists to prevent.
+      - name: Install helm
+        uses: Azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION_TO_INSTALL }}
 
       - name: Run tests
         run: uv run --locked tox -e tests

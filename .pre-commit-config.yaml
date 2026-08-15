@@ -38,6 +38,21 @@ repos:
         entry: uv sync
         files: ^(uv\.lock|pyproject\.toml)$
 
+  # Charts/podbench/values.schema.json is generated, never hand-written. It is
+  # what makes helm refuse `--set rbac.iterat=true` at install time instead of
+  # producing a release that silently grants nothing.
+  #
+  # The hook is a shim around a helm plugin rather than a self-contained
+  # environment, so helm and `helm plugin install
+  # https://github.com/losisin/helm-values-schema-json` both have to be present
+  # — the Dockerfile's developer stage installs them here, `_tox.yml` in CI.
+  - repo: https://github.com/losisin/helm-values-schema-json
+    rev: v2.5.0
+    hooks:
+      - id: helm-schema
+        args: [--config, Charts/podbench/.schema.config.yaml]
+        files: ^Charts/podbench/(values\.yaml|example\.values\.yaml|\.schema\.config\.yaml|values\.schema\.json)$
+
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:

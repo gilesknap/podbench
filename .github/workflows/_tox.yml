@@ -5,7 +5,18 @@ on:
         type: string
         description: What to run under tox
         required: true
+      helm:
+        type: boolean
+        description: Install helm and the schema plugin the pre-commit hooks need
+        default: false
 
+env:
+  HELM_VERSION_TO_INSTALL: 3.17.1
+  # Pinned to the `rev` of the losisin/helm-values-schema-json hook in
+  # .pre-commit-config.yaml: the hook runs whatever plugin it finds, so a
+  # drifting version here regenerates the schema differently from a developer's
+  # devcontainer and the run fails on a diff nobody wrote.
+  HELM_SCHEMA_PLUGIN_VERSION: v2.5.0
 
 jobs:
   run:
@@ -14,6 +25,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      # The helm-schema pre-commit hook is a shim around a helm plugin rather
+      # than a self-contained environment, so it fails outright when helm or the
+      # plugin is missing. Opt-in because the linkcheck job shares this workflow
+      # and needs neither.
+      - name: Install helm
+        if: inputs.helm
+        uses: Azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION_TO_INSTALL }}
+
+      - name: Install the helm schema plugin
+        if: inputs.helm
+        run: |
+          helm plugin install https://github.com/losisin/helm-values-schema-json \
+            --version "${HELM_SCHEMA_PLUGIN_VERSION}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.0

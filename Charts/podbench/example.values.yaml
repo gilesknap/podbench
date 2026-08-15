@@ -1,0 +1,37 @@
+# Item shapes for the three lists in values.yaml that default to `[]`.
+#
+# This file is never installed and never rendered. `helm schema` reads it as a
+# second values file (see .schema.config.yaml) purely so that the generated
+# schema knows what one entry looks like — an empty list on its own infers
+# nothing, so a typo inside `rbac.subjects[0]` would sail through the very
+# check the schema exists to make.
+#
+# Keep every field a real one: what is written here *becomes* the accepted
+# vocabulary, and `noAdditionalProperties` refuses anything omitted.
+
+rbac:
+  subjects:
+    # Passed through verbatim to the RoleBinding, so these are the RBAC API's
+    # own field names, not podbench's.
+    - kind: Group # @schema required;enum:[User, Group, ServiceAccount]
+      name: developers # @schema required
+      apiGroup: rbac.authorization.k8s.io
+      # ServiceAccount subjects are namespaced and carry an empty apiGroup;
+      # User and Group subjects have no namespace at all.
+      namespace: ""
+
+patchVenv:
+  claims:
+    - name: myapp # @schema required
+      size: 2Gi
+      storageClassName: ""
+
+seatIdentity:
+  apps:
+    - name: myapp # @schema required
+      # The template calls `required` on both of these as well, so a missing one
+      # already fails the render; declaring them here moves the refusal to
+      # `helm install --set`, where the mistake is still on screen.
+      uid: 1000 # @schema required
+      gid: 1000 # @schema required
+      configMapName: ""

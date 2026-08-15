@@ -5,7 +5,41 @@ FROM ghcr.io/diamondlightsource/ubuntu-devcontainer:resolute AS developer
 # Add any system dependencies for the developer/build environment here
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
     graphviz \
+    curl \
+    ca-certificates \
     && apt-get dist-clean
+
+# helm, and the schema plugin the `helm-schema` pre-commit hook shells out to.
+#
+# The base image carries neither, which until now meant `just helm` failed and
+# tests/test_chart_contract.py skipped itself in every devcontainer as well as in
+# CI - a chart test that never runs. The hook makes it load-bearing: it
+# regenerates Charts/podbench/values.schema.json, and with the plugin absent it
+# fails the commit outright rather than skipping.
+#
+# Both versions are pinned: the plugin to the hook's `rev` in
+# .pre-commit-config.yaml, because a different plugin generates a different
+# schema and the disagreement surfaces in CI as a diff nobody wrote, and helm to
+# the workflows' HELM_VERSION_TO_INSTALL, so a chart that renders here renders
+# the same way there.
+#
+# The tarball is checked against the digest helm publishes beside it before
+# anything is extracted. Piping curl straight into tar cannot do that - the
+# archive is unpacked as it arrives, so by the time a bad download is noticed it
+# has already been written - and a release artefact that lands unverified in
+# every developer's image and every CI container is the wrong place to save two
+# lines.
+ARG HELM_VERSION=v3.17.1
+RUN arch="$(dpkg --print-architecture)" \
+    && tarball="helm-${HELM_VERSION}-linux-${arch}.tar.gz" \
+    && curl -fsSL "https://get.helm.sh/${tarball}" -o "/tmp/${tarball}" \
+    && curl -fsSL "https://get.helm.sh/${tarball}.sha256sum" -o "/tmp/${tarball}.sha256sum" \
+    && (cd /tmp && sha256sum -c "${tarball}.sha256sum") \
+    && tar -xz -C /tmp -f "/tmp/${tarball}" \
+    && mv /tmp/linux-*/helm /usr/local/bin/helm \
+    && rm -rf /tmp/linux-* "/tmp/${tarball}" "/tmp/${tarball}.sha256sum" \
+    && helm plugin install https://github.com/losisin/helm-values-schema-json \
+    --version v2.5.0
 
 # The build stage installs the context into the venv
 FROM developer AS build
