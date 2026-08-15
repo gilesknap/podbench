@@ -51,10 +51,10 @@ That builds the launcher from the repository head, so it is a dev build — see
 *The image*, below, for which image such a launcher asks for.
 :::
 
-That is the whole setup. `uvx` resolves the wheel from PyPI and runs it; because
-podbench declares no runtime dependencies there is nothing else to resolve, and
-nothing is installed — no environment you have to manage, and nothing on your
-`PATH`.
+That is the whole setup. `uvx` resolves the wheel from PyPI and runs it;
+podbench declares one runtime dependency — its CLI, typer — so that is four
+small pure-Python wheels alongside it and nothing else, and nothing is
+installed — no environment you have to manage, and nothing on your `PATH`.
 
 It is not quite "nothing on disk": uv keeps the environment in its own cache
 (`uv cache dir`), which is what makes the second run fast. That has one

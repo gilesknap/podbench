@@ -26,16 +26,18 @@ from the spec it asked for.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
+
+import typer
 
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
+from .cli import new_app, require_subcommand, run
 from .kubectl import (
     EphemeralContainerError,
     Kubectl,
@@ -1831,115 +1833,334 @@ def spec_env(container: Mapping[str, Any]) -> dict[str, str]:
 # -- CLI --------------------------------------------------------------------
 
 
-def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("-n", "--namespace", default=None)
-    parser.add_argument("--context", default=None)
-    parser.add_argument("--kubectl", default="kubectl", help="kubectl binary to use")
-    parser.add_argument(
+_Pod = Annotated[str, typer.Argument(metavar="POD", help="pod/NAME or a bare NAME")]
+_Namespace = Annotated[
+    str | None,
+    typer.Option(
+        "-n",
+        "--namespace",
+        metavar="NAMESPACE",
+        help="namespace (default: the kubeconfig context's own)",
+    ),
+]
+_Context = Annotated[
+    str | None, typer.Option("--context", metavar="NAME", help="kubeconfig context")
+]
+_KubectlBinary = Annotated[
+    str, typer.Option("--kubectl", metavar="BIN", help="kubectl binary to use")
+]
+_ConfigDir = Annotated[
+    str | None,
+    typer.Option(
         "--config-dir",
-        default=None,
+        metavar="DIR",
         help="where the generated ssh config and known_hosts live "
         f"(default {DEFAULT_CLIENT_DIR})",
-    )
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="podbench",
-        description="Land a development seat inside a pod and say what it can do.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    attach_parser = sub.add_parser(
-        "attach", help="add or reconnect a podbench container and print the report"
-    )
-    attach_parser.add_argument("pod")
-    attach_parser.add_argument("--target", default=None, help="workload container name")
-    attach_parser.add_argument("--image", default=None)
-    attach_parser.add_argument(
-        "--target-uid",
-        type=int,
-        default=None,
-        help="the target's uid, when its pod spec does not say",
-    )
-    attach_parser.add_argument(
-        "--mount",
-        action="append",
-        default=None,
-        metavar="CLAIM:MOUNTPATH",
-        help="mount a volume the pod already declares into the seat, named by "
-        "claim or by volume name. MOUNTPATH defaults to the application "
-        "container's own, which Patch mode requires it to equal. Repeatable",
-    )
-    attach_parser.add_argument(
-        "--new",
-        dest="force_new",
-        action="store_true",
-        help="add a container even if one is running (its name is permanent)",
-    )
-    attach_parser.add_argument(
-        "--seat-gid-root",
-        action="store_true",
-        help="land the seat with runAsGroup: 0 so it can register an "
-        "/etc/passwd entry for the target's uid, which is what sshd needs to "
-        "let anyone log in, and the only way to get one on a live pod. Off by "
-        "default: it drops the target's own group",
-    )
-    attach_parser.add_argument(
-        "--no-seat-identity",
-        dest="seat_identity",
-        action="store_false",
-        help="do not mount the pod's podbench-home volume, which is otherwise "
-        "mounted by convention when the pod declares it and keeps everything "
-        "the seat writes off the workload's ephemeral-storage budget. The "
-        "podbench-identity volume is never mounted by attach: it needs a "
-        "subPath per file, which an ephemeral container may not have - use "
-        "--seat-gid-root for the seat's /etc/passwd entry",
-    )
-    attach_parser.add_argument(
-        "--no-probe",
-        dest="probe",
-        action="store_false",
-        help="skip capreport; the report then says nothing was measured",
-    )
-    attach_parser.add_argument(
-        "--resize",
-        default=None,
-        metavar="MEMORY",
-        help="raise the target's memory limit in place first, e.g. 6Gi",
-    )
-    attach_parser.add_argument("--identity", default=DEFAULT_IDENTITY)
-    attach_parser.add_argument("--ssh-user", default=None)
-    attach_parser.add_argument("--host-alias", default=None)
-    attach_parser.add_argument(
+    ),
+]
+_Identity = Annotated[
+    str,
+    typer.Option(
+        "--identity",
+        metavar="KEY",
+        help="ssh key to authorise in the seat and name in the generated stanza",
+    ),
+]
+_SshUser = Annotated[
+    str | None,
+    typer.Option("--ssh-user", metavar="NAME", help="login name to put in the stanza"),
+]
+_HostAlias = Annotated[
+    str | None,
+    typer.Option("--host-alias", metavar="NAME", help="ssh Host name for the seat"),
+]
+_PrintConfig = Annotated[
+    bool,
+    typer.Option(
         "--print-config",
-        action="store_true",
         help="print the ssh stanza instead of writing it to the config dir",
-    )
-    attach_parser.add_argument("--timeout", type=float, default=120.0)
-    _add_common(attach_parser)
+    ),
+]
 
-    ssh_parser = sub.add_parser(
-        "ssh-config", help="regenerate the ssh stanza for an existing session"
-    )
-    ssh_parser.add_argument("pod")
-    ssh_parser.add_argument("--identity", default=DEFAULT_IDENTITY)
-    ssh_parser.add_argument("--ssh-user", default=None)
-    ssh_parser.add_argument("--host-alias", default=None)
-    ssh_parser.add_argument("--print-config", action="store_true")
-    _add_common(ssh_parser)
 
-    status_parser = sub.add_parser(
-        "status", help="the podbench containers in one pod and what each supports"
-    )
-    status_parser.add_argument("pod")
-    _add_common(status_parser)
+def _kubectl(
+    namespace: str | None, context: str | None, binary: str, runner: Runner | None
+) -> Kubectl:
+    """The one Kubectl every verb here talks through.
 
-    list_parser = sub.add_parser(
-        "list", help="every pod in the namespace carrying a podbench container"
+    The namespace is resolved from the kubeconfig only when the flag did not
+    give one, because that lookup is a ``kubectl`` call and every verb would
+    otherwise pay for it twice.
+    """
+    if namespace is None:
+        namespace = current_namespace(binary=binary, context=context, runner=runner)
+    return Kubectl(namespace, context=context, binary=binary, runner=runner)
+
+
+def _build_app(runner: Runner | None) -> typer.Typer:
+    app = new_app()
+
+    @app.callback(invoke_without_command=True)
+    def root(ctx: typer.Context) -> None:
+        """Land a development seat inside a pod and say what it can do."""
+        require_subcommand(ctx)
+
+    # `attach_command`, not `attach`: the module-level :func:`attach` is what
+    # it calls, and a same-named closure would shadow it into a recursion.
+    @app.command(
+        name="attach",
+        help="add or reconnect a podbench container and print the report",
     )
-    _add_common(list_parser)
-    return parser
+    def attach_command(
+        pod: _Pod,
+        target: Annotated[
+            str | None,
+            typer.Option("--target", metavar="NAME", help="workload container name"),
+        ] = None,
+        image: Annotated[
+            str | None,
+            typer.Option(
+                "--image",
+                metavar="REF",
+                # Not the resolved value: DEFAULT_IMAGE is derived from this
+                # launcher's own version, so printing it here would advertise
+                # `:main` from a checkout as though it were the release tag.
+                help=f"debug image (default: ${IMAGE_ENV}, else the image "
+                "built from this launcher's version)",
+            ),
+        ] = None,
+        target_uid: Annotated[
+            int | None,
+            typer.Option(
+                "--target-uid",
+                metavar="UID",
+                help="the target's uid, when its pod spec does not say",
+            ),
+        ] = None,
+        mount: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--mount",
+                metavar="CLAIM:MOUNTPATH",
+                help="mount a volume the pod already declares into the seat, "
+                "named by claim or by volume name. MOUNTPATH defaults to the "
+                "application container's own, which Patch mode requires it to "
+                "equal. Repeatable",
+            ),
+        ] = None,
+        force_new: Annotated[
+            bool,
+            typer.Option(
+                "--new",
+                help="add a container even if one is running (its name is permanent)",
+            ),
+        ] = False,
+        seat_gid_root: Annotated[
+            bool,
+            typer.Option(
+                "--seat-gid-root",
+                help="land the seat with runAsGroup: 0 so it can register an "
+                "/etc/passwd entry for the target's uid, which is what sshd "
+                "needs to let anyone log in, and the only way to get one on a "
+                "live pod. Off by default: it drops the target's own group",
+            ),
+        ] = False,
+        no_seat_identity: Annotated[
+            bool,
+            typer.Option(
+                "--no-seat-identity",
+                help="do not mount the pod's podbench-home volume, which is "
+                "otherwise mounted by convention when the pod declares it and "
+                "keeps everything the seat writes off the workload's "
+                "ephemeral-storage budget. The podbench-identity volume is "
+                "never mounted by attach: it needs a subPath per file, which an "
+                "ephemeral container may not have - use --seat-gid-root for the "
+                "seat's /etc/passwd entry",
+            ),
+        ] = False,
+        no_probe: Annotated[
+            bool,
+            typer.Option(
+                "--no-probe",
+                help="skip capreport; the report then says nothing was measured",
+            ),
+        ] = False,
+        resize: Annotated[
+            str | None,
+            typer.Option(
+                "--resize",
+                metavar="MEMORY",
+                help="raise the target's memory limit in place first, e.g. 6Gi",
+            ),
+        ] = None,
+        identity: _Identity = DEFAULT_IDENTITY,
+        ssh_user: _SshUser = None,
+        host_alias: _HostAlias = None,
+        print_config: _PrintConfig = False,
+        timeout: Annotated[
+            float,
+            typer.Option(
+                "--timeout", metavar="SECONDS", help="seconds to wait for the seat"
+            ),
+        ] = 120.0,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+        config_dir: _ConfigDir = None,
+    ) -> None:
+        kube = _kubectl(namespace, context, kubectl, runner)
+        key_path, public_key = read_public_key(identity)
+        name = resolve_pod_name(pod)
+        chosen = image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
+
+        # Resize before attaching, not after: the headroom has to exist before
+        # vscode-server starts allocating into a limit podbench cannot reserve.
+        if resize is None:
+            resize_note = RESIZE_WARNING
+        else:
+            workload = target_container_name(kube.get_pod(name), target)
+            resize_note = try_resize(kube, name, workload, resize)
+
+        session = attach(
+            kube,
+            name,
+            target=target,
+            image=chosen,
+            public_key=public_key,
+            target_uid=target_uid,
+            mounts=mount or (),
+            force_new=force_new,
+            seat_gid_root=seat_gid_root,
+            seat_identity=not no_seat_identity,
+            probe=not no_probe,
+            timeout=timeout,
+        )
+        session = replace(session, warnings=(*session.warnings, resize_note))
+        print(format_session(session))
+        print()
+        print(
+            _emit(
+                kube,
+                session,
+                identity=key_path,
+                config_dir=config_dir,
+                host_alias=host_alias,
+                ssh_user=ssh_user,
+                print_config=print_config,
+            ).note
+        )
+        raise typer.Exit(0)
+
+    @app.command(
+        name="ssh-config", help="regenerate the ssh stanza for an existing session"
+    )
+    def ssh_config(
+        pod: _Pod,
+        identity: _Identity = DEFAULT_IDENTITY,
+        ssh_user: _SshUser = None,
+        host_alias: _HostAlias = None,
+        print_config: _PrintConfig = False,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+        config_dir: _ConfigDir = None,
+    ) -> None:
+        kube = _kubectl(namespace, context, kubectl, runner)
+        key_path, _ = read_public_key(identity)
+        name = resolve_pod_name(pod)
+        pod_json = kube.get_pod(name)
+        seat = running_seat(pod_json)
+        if seat is None:
+            raise LauncherError(
+                f"no running podbench container in {kube.namespace}/{name}; "
+                "run `podbench attach` first"
+            )
+        reference = ContainerRef(PodRef(kube.namespace, name), seat.name)
+        session = Session(
+            seat=reference,
+            workload=seat.target or target_container_name(pod_json),
+            rung=seat.rung,
+            reused=True,
+            uid=seat.uid,
+            home=seat.home,
+            identity_mounted=seat.identity_mounted,
+            # Asked again rather than assumed: this command exists to regenerate
+            # a stanza from another machine, where nothing of the original
+            # attach is in hand.
+            ssh=probe_ssh_identity(kube, reference),
+        )
+        print(
+            _emit(
+                kube,
+                session,
+                identity=key_path,
+                config_dir=config_dir,
+                host_alias=host_alias,
+                ssh_user=ssh_user,
+                print_config=print_config,
+            ).note
+        )
+        raise typer.Exit(0)
+
+    @app.command(help="the podbench containers in one pod and what each supports")
+    def status(
+        pod: _Pod,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+        config_dir: _ConfigDir = None,
+    ) -> None:
+        del config_dir  # accepted for symmetry; this verb writes no ssh config
+        kube = _kubectl(namespace, context, kubectl, runner)
+        name = resolve_pod_name(pod)
+        present = seats(kube.get_pod(name))
+        if not present:
+            print(f"no podbench containers in {kube.namespace}/{name}")
+            raise typer.Exit(0)
+        print(format_seats(PodRef(kube.namespace, name), present))
+        raise typer.Exit(0)
+
+    @app.command(
+        name="list", help="every pod in the namespace carrying a podbench container"
+    )
+    def list_pods(
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+        config_dir: _ConfigDir = None,
+    ) -> None:
+        del config_dir  # accepted for symmetry; this verb writes no ssh config
+        kube = _kubectl(namespace, context, kubectl, runner)
+        found = list_seats(kube)
+        if not found:
+            print(f"no podbench containers in namespace {kube.namespace}")
+            raise typer.Exit(0)
+        print("\n".join(format_seats(pod, present) for pod, present in found))
+        raise typer.Exit(0)
+
+    return app
+
+
+def _emit(
+    kubectl: Kubectl,
+    session: Session,
+    *,
+    identity: str,
+    config_dir: str | None,
+    host_alias: str | None,
+    ssh_user: str | None,
+    print_config: bool,
+) -> SshSeat:
+    """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
+    return emit_ssh_config(
+        kubectl,
+        session,
+        identity=identity,
+        config_dir=config_dir,
+        host_alias=host_alias,
+        user=ssh_user,
+        print_config=print_config,
+    )
 
 
 def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
@@ -1947,29 +2168,15 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
 
     ``runner`` is the seam the tests use; the CLI passes none and the calls go
     to the real ``kubectl``, which is what makes auth the kubeconfig's problem
-    and not podbench's.
+    and not podbench's. It is also why the app is built here rather than at
+    import time: every command closes over it.
 
     A degraded seat is a success. Returning non-zero for "the cluster would not
     grant SYS_PTRACE" would make the honest capability report look like a
     failure, which is exactly the outcome the brief asks for instead.
     """
-    parsed = _build_parser().parse_args(args)
-    namespace: str | None = cast(str | None, parsed.namespace)
-    context: str | None = cast(str | None, parsed.context)
-    binary: str = cast(str, parsed.kubectl)
-    if namespace is None:
-        namespace = current_namespace(binary=binary, context=context, runner=runner)
-    kubectl = Kubectl(namespace, context=context, binary=binary, runner=runner)
-
     try:
-        command = cast(str, parsed.command)
-        if command == "attach":
-            return _cmd_attach(kubectl, parsed)
-        if command == "ssh-config":
-            return _cmd_ssh_config(kubectl, parsed)
-        if command == "status":
-            return _cmd_status(kubectl, parsed)
-        return _cmd_list(kubectl)
+        return run(_build_app(runner), args, prog="podbench")
     except (
         LauncherError,
         KubectlError,
@@ -1978,105 +2185,3 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     ) as error:
         print(f"podbench: {error}", file=sys.stderr)
         return 2
-
-
-def _cmd_attach(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
-    identity, public_key = read_public_key(cast(str, parsed.identity))
-    pod = resolve_pod_name(cast(str, parsed.pod))
-    image = cast(str | None, parsed.image) or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
-
-    # Resize before attaching, not after: the headroom has to exist before
-    # vscode-server starts allocating into a limit podbench cannot reserve.
-    resize = cast(str | None, parsed.resize)
-    if resize is None:
-        resize_note = RESIZE_WARNING
-    else:
-        workload = target_container_name(
-            kubectl.get_pod(pod), cast(str | None, parsed.target)
-        )
-        resize_note = try_resize(kubectl, pod, workload, resize)
-
-    session = attach(
-        kubectl,
-        pod,
-        target=cast(str | None, parsed.target),
-        image=image,
-        public_key=public_key,
-        target_uid=cast(int | None, parsed.target_uid),
-        mounts=cast(list[str] | None, parsed.mount) or (),
-        force_new=cast(bool, parsed.force_new),
-        seat_gid_root=cast(bool, parsed.seat_gid_root),
-        seat_identity=cast(bool, parsed.seat_identity),
-        probe=cast(bool, parsed.probe),
-        timeout=cast(float, parsed.timeout),
-    )
-    session = replace(session, warnings=(*session.warnings, resize_note))
-    print(format_session(session))
-    print()
-    print(_emit(kubectl, session, parsed, identity).note)
-    return 0
-
-
-def _cmd_ssh_config(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
-    identity, _ = read_public_key(cast(str, parsed.identity))
-    pod = resolve_pod_name(cast(str, parsed.pod))
-    pod_json = kubectl.get_pod(pod)
-    seat = running_seat(pod_json)
-    if seat is None:
-        raise LauncherError(
-            f"no running podbench container in {kubectl.namespace}/{pod}; "
-            "run `podbench attach` first"
-        )
-    reference = ContainerRef(PodRef(kubectl.namespace, pod), seat.name)
-    session = Session(
-        seat=reference,
-        workload=seat.target or target_container_name(pod_json),
-        rung=seat.rung,
-        reused=True,
-        uid=seat.uid,
-        home=seat.home,
-        identity_mounted=seat.identity_mounted,
-        # Asked again rather than assumed: this command exists to regenerate a
-        # stanza from another machine, where nothing of the original attach is
-        # in hand.
-        ssh=probe_ssh_identity(kubectl, reference),
-    )
-    print(_emit(kubectl, session, parsed, identity).note)
-    return 0
-
-
-def _emit(
-    kubectl: Kubectl,
-    session: Session,
-    parsed: argparse.Namespace,
-    identity: str,
-) -> SshSeat:
-    """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
-    return emit_ssh_config(
-        kubectl,
-        session,
-        identity=identity,
-        config_dir=cast(str | None, parsed.config_dir),
-        host_alias=cast(str | None, parsed.host_alias),
-        user=cast(str | None, parsed.ssh_user),
-        print_config=cast(bool, parsed.print_config),
-    )
-
-
-def _cmd_status(kubectl: Kubectl, parsed: argparse.Namespace) -> int:
-    pod = resolve_pod_name(cast(str, parsed.pod))
-    present = seats(kubectl.get_pod(pod))
-    if not present:
-        print(f"no podbench containers in {kubectl.namespace}/{pod}")
-        return 0
-    print(format_seats(PodRef(kubectl.namespace, pod), present))
-    return 0
-
-
-def _cmd_list(kubectl: Kubectl) -> int:
-    found = list_seats(kubectl)
-    if not found:
-        print(f"no podbench containers in namespace {kubectl.namespace}")
-        return 0
-    print("\n".join(format_seats(pod, present) for pod, present in found))
-    return 0

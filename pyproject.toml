@@ -13,7 +13,11 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 description = "debugging container for kubernetes pods"
-dependencies = [] # Add project dependencies here, e.g. ["click", "numpy"]
+# The one runtime dependency, and it is the CLI. typer pulls click and rich,
+# which is the whole point: the help a developer reads at 3 a.m. is part of the
+# product. Everything podbench does to a cluster still goes through `kubectl`,
+# so this buys no opinion about how to talk to Kubernetes.
+dependencies = ["typer>=0.12"]
 dynamic = ["version"]
 license.file = "LICENSE"
 readme = "README.md"
@@ -52,6 +56,10 @@ version_file = "src/podbench/_version.py"
 [tool.pyright]
 typeCheckingMode = "strict"
 reportMissingImports = false # Ignore missing stubs in imported modules
+# Typer registers a command by decorating a nested function, whose name is then
+# never read again. pyright cannot see the registration, so it calls every
+# command in the package dead code.
+reportUnusedFunction = false
 
 [tool.pytest.ini_options]
 # Run pytest with all our checkers, and don't spam us with massive tracebacks on error

@@ -51,11 +51,12 @@ PyPI, uses your kubeconfig, and puts nothing on your `PATH`.
 
 ## Run it
 
-The launcher is a pure-stdlib Python package with **no runtime dependencies**,
-so `uvx` resolves and runs it in one cold start, with nothing installed and
-nothing on your `PATH` afterwards (uv does keep the environment in its own
-cache, so an unpinned `uvx podbench` reuses that version until you ask for
-`podbench@latest`):
+The launcher's **only runtime dependency is its CLI**, so `uvx` resolves and
+runs it in one cold start, with nothing installed and nothing on your `PATH`
+afterwards (uv does keep the environment in its own cache, so an unpinned
+`uvx podbench` reuses that version until you ask for `podbench@latest`).
+Everything it does to a cluster goes through `kubectl`; there is no client
+library:
 
 ```
 $ uvx podbench --version

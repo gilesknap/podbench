@@ -20,7 +20,6 @@ Exit codes are :class:`~podbench.model.Verdict`'s values — 0 live attach,
 
 from __future__ import annotations
 
-import argparse
 import ctypes
 import json
 import os
@@ -28,8 +27,11 @@ import signal
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Annotated, Protocol
 
+import typer
+
+from .cli import new_app, run
 from .model import TARGET_CID_ENV, Blocker, CapabilityReport, Verdict
 from .proc import (
     DEFAULT_PROC,
@@ -648,40 +650,64 @@ def main(
     """Run the probe and print the report. Returns the verdict's exit code.
 
     ``proc`` and ``attacher`` are seams for testing against a synthetic tree;
-    the CLI passes neither.
+    the CLI passes neither, which is why the app is built here rather than at
+    import time: the command closes over them.
     """
-    parser = argparse.ArgumentParser(
-        prog="capreport",
-        description="Name the mechanism that denies ptrace in this container.",
-    )
-    parser.add_argument(
-        "pid",
-        nargs="?",
-        type=int,
-        default=None,
-        help="target pid; discovered from the target container id if omitted",
-    )
-    parser.add_argument(
-        "--container-id",
-        default=None,
-        help=f"target container id (default: ${TARGET_CID_ENV})",
-    )
-    parser.add_argument(
-        "--json",
-        dest="json_output",
-        action="store_true",
-        help="emit the stable JSON form instead of the human report",
-    )
-    parsed = parser.parse_args(args)
+    app = new_app()
 
-    pid: int | None = parsed.pid
+    @app.command()
+    def capreport(
+        pid: Annotated[
+            int | None,
+            typer.Argument(
+                metavar="[PID]",
+                help="target pid; discovered from the target container id if omitted",
+            ),
+        ] = None,
+        container_id: Annotated[
+            str | None,
+            typer.Option(
+                "--container-id",
+                metavar="ID",
+                help=f"target container id (default: ${TARGET_CID_ENV})",
+            ),
+        ] = None,
+        json_output: Annotated[
+            bool,
+            typer.Option(
+                "--json", help="emit the stable JSON form instead of the human report"
+            ),
+        ] = False,
+    ) -> None:
+        """Name the mechanism that denies ptrace in this container."""
+        raise typer.Exit(
+            _run(
+                pid,
+                container_id,
+                json_output=json_output,
+                proc=proc,
+                attacher=attacher,
+            )
+        )
+
+    return run(app, args, prog="capreport")
+
+
+def _run(
+    pid: int | None,
+    container_id: str | None,
+    *,
+    json_output: bool,
+    proc: Path,
+    attacher: Attacher | None,
+) -> int:
     notes: list[str] = []
     if pid is None:
-        pid, discovery_notes = _discover_target(parsed.container_id, proc=proc)
+        pid, discovery_notes = _discover_target(container_id, proc=proc)
         notes.extend(discovery_notes)
 
     report = probe(pid, proc=proc, attacher=attacher, extra_notes=notes)
-    print(format_report(report, parsed.json_output))
+    print(format_report(report, json_output))
     return report.verdict.value
 
 

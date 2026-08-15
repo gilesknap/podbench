@@ -203,9 +203,12 @@ the same answer on both sides. Two implementations would be two answers.
   `dev-bootstrap`, `podbench-run` and `podbench-stop` are one-line wrappers on
   `PATH`.
 
-There are **no runtime dependencies** — argparse and the stdlib. The launcher
-shells out to `kubectl` on purpose, so authentication, contexts and credential
-plugins are inherited rather than reimplemented.
+There is **one runtime dependency, and it is the CLI** — typer, which brings
+click and rich. The help a developer reads at 3 a.m. is part of the product, and
+four small pure-Python wheels is what that costs on a cold `uvx` start.
+Everything else is the stdlib. In particular there is no Kubernetes client: the
+launcher shells out to `kubectl` on purpose, so authentication, contexts and
+credential plugins are inherited rather than reimplemented.
 
 Running the launcher from the index rather than from an install has one
 consequence worth stating: its version can change between two attaches with no

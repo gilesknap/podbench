@@ -330,9 +330,7 @@ def test_pids_json_records_the_fallback_warning(
 
 def test_pids_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     # CI smoke-tests this, so a broken parser fails there rather than in a pod.
-    with pytest.raises(SystemExit) as exc:
-        pids_main(["--help"])
-    assert exc.value.code == 0
+    assert pids_main(["--help"]) == 0
     assert "pids" in capsys.readouterr().out
 
 
@@ -430,8 +428,11 @@ def test_dbg_launch_never_probes_or_attaches(tmp_path: Path) -> None:
 def test_dbg_launch_without_a_program_is_a_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The parser's own refusal, not a hand-written one: --launch is declared as
+    # taking a PROGRAM, and only the program's *arguments* are lifted out of
+    # argv before parsing.
     assert dbg_main(["--launch"], runner=RecordingRunner()) == 2
-    assert "needs a program" in capsys.readouterr().err
+    assert "--launch" in capsys.readouterr().err
 
 
 def test_dbg_warns_when_the_exe_link_is_unreadable(
@@ -477,6 +478,6 @@ def test_main_dispatches_both_subcommands(
 
 
 def test_main_requires_a_subcommand() -> None:
-    with pytest.raises(SystemExit) as exc:
-        main([])
-    assert exc.value.code == 2
+    # A usage error, not a success: `podbench` alone must not look like a
+    # command that ran.
+    assert main([]) == 2
