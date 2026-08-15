@@ -1,0 +1,16 @@
+# Changes here will be overwritten by Copier
+_commit: 5.4.0
+_src_path: git@github.com:diamondlightsource/python-copier-template
+author_email: gilesknap@gmail.com
+author_name: Giles Knap
+description: debugging container for kubernetes pods
+distribution_name: podbench
+docker: true
+docs_type: sphinx
+git_platform: github.com
+github_org: gilesknap
+package_name: podbench
+pypi: false
+repo_name: podbench
+strict_typing: true
+type_checker: pyright
