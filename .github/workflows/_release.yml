@@ -6,10 +6,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download artifacts
+      # Named rather than "download everything", because `files: "*"` below
+      # attaches whatever happens to be in the workdir. `_container.yml` hands
+      # its per-architecture image digests between jobs as artifacts holding a
+      # zero-byte file named after the digest; GitHub rejects a zero-byte
+      # release asset ("size must be greater than or equal to 1") and fails the
+      # whole step, so a release job that hoovers up every artifact breaks the
+      # moment an unrelated job uses one to pass state.
+      - name: Download the wheel and sdist
         uses: actions/download-artifact@v8
         with:
-          merge-multiple: true
+          name: dist
+
+      - name: Download the built docs
+        uses: actions/download-artifact@v8
+        with:
+          name: docs
 
       - name: Zip up docs
         run: |

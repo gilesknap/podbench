@@ -169,6 +169,12 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY_IMAGE }}
+          # metadata-action's default is `latest=auto`, which adds `latest` to
+          # any `type=ref,event=tag` build — it has no idea the tag is a
+          # prerelease. That silently beat the `enable=` guard below on
+          # 0.1.0-beta.1 and moved `latest` onto the beta. Turning the flavour
+          # off leaves the explicit rule as the only thing that can emit it.
+          flavor: latest=false
           # `main` and `sha-` tags let a cluster track the tip of the default
           # branch during development, and `main` is also what a launcher built
           # off a checkout asks for (podbench.model.FLOATING_TAG), so it has to
@@ -182,6 +188,22 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
             type=raw,value=main,enable={{is_default_branch}}
             type=sha,format=long,enable={{is_default_branch}}
+
+      # Asserted rather than trusted: the tag list is assembled by an action
+      # whose defaults have already put `latest` on a prerelease once, and the
+      # only place that mistake shows up is the registry, days later, on the
+      # machine of whoever pulled an unpinned image.
+      - name: Refuse to move `latest` onto a prerelease
+        if: github.ref_type == 'tag' && contains(github.ref_name, '-')
+        env:
+          TAGS: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          if jq -e '.["tag-names"] | index("latest")' <<< "$TAGS" > /dev/null; then
+            echo "::error::$GITHUB_REF_NAME is a prerelease, but the computed" \
+                 "tags include \`latest\`: $(jq -c '.["tag-names"]' <<< "$TAGS")"
+            exit 1
+          fi
 
       - name: Log in to GitHub Docker Registry
         uses: docker/login-action@v4
