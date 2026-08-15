@@ -150,6 +150,11 @@ jobs:
         if: github.ref_type == 'tag'
         uses: astral-sh/setup-uv@v10.0.0
 
+      # `prerelease` comes from the same parse, because "does the tag contain a
+      # hyphen" is a fact about *our* SemVer tag convention, not about
+      # prereleases: PEP 440's normal form has no separator at all (1.0.0rc1),
+      # so a tag in that spelling would read as final to a string test and take
+      # `latest` with it. This guard has already been wrong once; ask the parser.
       - name: Normalise the tag the way PyPI will
         id: ver
         if: github.ref_type == 'tag'
@@ -159,10 +164,10 @@ jobs:
           # command substitution used as an argument, so folding this into the
           # `echo` would let an unparseable tag pass silently as `pep440=`,
           # publishing a release the launcher's own version cannot name.
-          pep440=$(uv run --no-project --with packaging python -c \
-            'import sys; from packaging.version import Version; print(Version(sys.argv[1]))' \
+          parsed=$(uv run --no-project --with packaging python -c \
+            'import sys; from packaging.version import Version; v = Version(sys.argv[1]); print(f"pep440={v}"); print(f"prerelease={str(v.is_prerelease).lower()}")' \
             "$GITHUB_REF_NAME")
-          echo "pep440=$pep440" >> "$GITHUB_OUTPUT"
+          echo "$parsed" >> "$GITHUB_OUTPUT"
 
       - name: Create tags for publishing image
         id: meta
@@ -180,12 +185,12 @@ jobs:
           # off a checkout asks for (podbench.model.FLOATING_TAG), so it has to
           # keep moving with every default-branch push. The git tag, its PEP 440
           # spelling and — for a final release only — `latest` are the released
-          # artefacts. A SemVer prerelease always carries a hyphen, and moving
-          # `latest` onto one would hand it to every unpinned user.
+          # artefacts. Moving `latest` onto a prerelease would hand it to every
+          # unpinned user, so the verdict comes from `packaging`, above.
           tags: |
             type=ref,event=tag
             type=raw,value=${{ steps.ver.outputs.pep440 }},enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && steps.ver.outputs.prerelease == 'false' }}
             type=raw,value=main,enable={{is_default_branch}}
             type=sha,format=long,enable={{is_default_branch}}
 
@@ -194,7 +199,7 @@ jobs:
       # only place that mistake shows up is the registry, days later, on the
       # machine of whoever pulled an unpinned image.
       - name: Refuse to move `latest` onto a prerelease
-        if: github.ref_type == 'tag' && contains(github.ref_name, '-')
+        if: github.ref_type == 'tag' && steps.ver.outputs.prerelease == 'true'
         env:
           TAGS: ${{ steps.meta.outputs.json }}
         run: |

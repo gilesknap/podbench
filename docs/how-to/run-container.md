@@ -41,8 +41,9 @@ launcher's version — uses PEP 440 (`1.0.0b1`). Either tag pulls the same image
 :::{note}
 Tags published before this scheme (`0.1.0-alpha.1` … `0.1.0-alpha.6`) carry the
 SemVer spelling only. A launcher installed from one of those git tags asks for
-its PEP 440 spelling, `0.1.0a6`, which was never pushed; pass `--image
-ghcr.io/gilesknap/podbench:0.1.0-alpha.6` when running one.
+its own PEP 440 spelling — `0.1.0-alpha.4` becomes `0.1.0a4` — which was never
+pushed; pass the SemVer tag of that same release, e.g. `--image
+ghcr.io/gilesknap/podbench:0.1.0-alpha.4`.
 :::
 
 You normally never pull it yourself. `podbench attach` names it in the
