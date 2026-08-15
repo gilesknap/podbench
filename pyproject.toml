@@ -62,6 +62,12 @@ addopts = """
     """
 # https://iscinumpy.gitlab.io/post/bound-version-constraints/#watch-for-warnings
 filterwarnings = "error"
+# Registered centrally as well as in tests/e2e/conftest.py: filterwarnings turns
+# PytestUnknownMarkWarning into a collection error, so an unregistered mark is
+# not a warning here, it is a failure.
+markers = [
+    "e2e: needs a real cluster; skipped unless PODBENCH_E2E=1 (see tests/e2e/README.md)",
+]
 # Doctest python code in docs, python code in src docstrings, test functions in tests
 testpaths = "docs src tests"
 

@@ -1,0 +1,48 @@
+# The cluster the e2e job runs against.
+#
+#   kind create cluster --config kind.yaml
+#   kind load docker-image ghcr.io/gilesknap/podbench:<tag> --name podbench-e2e
+#   PODBENCH_E2E=1 PODBENCH_IMAGE=... pytest tests/e2e
+#
+# Deliberately small. The suite's job is to catch a refactor breaking one of the
+# five mechanisms the phase-0 spikes measured, not to reproduce a production
+# topology, and every extra node is another image pull on a cold runner.
+#
+# Two nodes rather than one, though: a single-node kind cluster schedules
+# everything on the control plane, and podbench's capability probe reports a
+# per-node verdict on purpose. Report §3.13 found Yama's ptrace_scope differing
+# between nodes of the *same* architecture on the spike cluster — two arm64
+# nodes disagreed with each other — so a cluster where "the node" is a constant
+# would make it impossible to notice if podbench ever started caching a
+# cluster-wide answer.
+#
+# What is NOT here, and why:
+#
+# * No `ptrace_scope` tuning. kind nodes are containers sharing the host
+#   kernel, so Yama is whatever the runner has (GitHub's ubuntu images ship
+#   `kernel.yama.ptrace_scope=1`). That is the interesting case — the one where
+#   CAP_SYS_PTRACE is doing real work — and forcing it to 0 would make the S3
+#   test pass for the wrong reason.
+#
+# * No Pod Security Admission configuration. S5 labels its own scratch
+#   namespace `pod-security.kubernetes.io/enforce=restricted`, which is how a
+#   real cluster does it and keeps the enforcement scoped to the one test that
+#   wants it. A cluster-wide default would break every other test's target pod.
+#
+# * No `InPlacePodVerticalScaling` feature gate. `kubectl patch pod
+#   --subresource resize` is how podbench makes room for itself before
+#   attaching (report §3.9), and it is beta-on-by-default in current
+#   Kubernetes; naming the gate explicitly would fail cluster creation on a
+#   version where it has graduated. If the resize path ever gets its own e2e
+#   test, pin `kindest/node` to a version known to carry it rather than adding
+#   a gate here.
+#
+# * No registry mirror or `containerdConfigPatches`. The image under test is
+#   side-loaded with `kind load docker-image`, which is why the e2e job never
+#   needs registry credentials; the demo apps pull public images directly.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: podbench-e2e
+nodes:
+  - role: control-plane
+  - role: worker

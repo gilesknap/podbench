@@ -1,0 +1,112 @@
+# A genuinely distroless C target, buildable with no local container runtime.
+#
+# Lifted from spike S3 (docs/explanations/spikes/s3.md §0, "Namespace + target
+# pod (distroless, no image build)") and changed only where the spike hard-coded
+# its own namespace or node.
+#
+# The trick that makes this work in CI is the initContainer: the source lives in
+# a ConfigMap, an initContainer running debian:bookworm-slim compiles it with
+# `-g -O0` into a shared emptyDir, and the *runtime* container is
+# gcr.io/distroless/cc-debian12 — which has no shell, no gdb and no libc
+# headers, and so is a real proof that podbench debugs a target that cannot help
+# it. No image is built and nothing is pushed, so the whole thing runs on a
+# runner that has only kubectl.
+#
+# The pod is deliberately left running as root and with no securityContext: this
+# manifest is the *full-rung* target, and S5's restricted-namespace case is
+# authored in tests/e2e/test_s5_ladder.py instead.
+#
+# Applied with `kubectl apply -n <scratch namespace> -f distroless-c.yaml`, so
+# no namespace is named here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: victim-src
+data:
+  # Three nested frames and a struct, so a backtrace has something to say
+  # beyond `main`: the S3 test asserts on the function names of the middle
+  # frames, which is what proves the sysroot and the `file` command landed.
+  victim.c: |
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <unistd.h>
+    #include <math.h>
+
+    struct work { int id; double value; char label[32]; };
+
+    static double transform(struct work *w) {
+      double r = sqrt((double)w->id) * w->value;
+      return r;
+    }
+    static int compute(int n, struct work *w) {
+      w->id = n;
+      w->value = (double)n * 1.5;
+      snprintf(w->label, sizeof(w->label), "item-%d", n);
+      double t = transform(w);
+      return (int)t;
+    }
+    static void outer_loop(void) {
+      struct work w; int i = 0;
+      for (;;) {
+        memset(&w, 0, sizeof(w));
+        int v = compute(i, &w);
+        printf("tick %d -> %d (%s)\n", i, v, w.label); fflush(stdout);
+        i++; sleep(2);
+      }
+    }
+    int main(int argc, char **argv) {
+      (void)argc; (void)argv;
+      printf("victim starting, pid=%d\n", (int)getpid()); fflush(stdout);
+      outer_loop(); return 0;
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: victim
+  labels:
+    app: victim
+spec:
+  # Never: a crashed target must leave a corpse to attach to rather than a new
+  # pid under a new pod ip halfway through a test.
+  restartPolicy: Never
+  volumes:
+    - name: app
+      emptyDir: {}
+    - name: src
+      configMap:
+        name: victim-src
+  initContainers:
+    - name: build
+      image: debian:bookworm-slim
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -ex
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends gcc libc6-dev
+          mkdir -p /app/src
+          cp /src/victim.c /app/src/victim.c
+          cd /app/src && gcc -g -O0 -o /app/victim victim.c -lm
+      volumeMounts:
+        - name: app
+          mountPath: /app
+        - name: src
+          mountPath: /src
+  containers:
+    # No /bin/sh, no gdb, no libc headers. The e2e test asserts that, so that a
+    # future "simplification" to a debian runtime cannot quietly turn this into
+    # a test of the easy case.
+    - name: victim
+      image: gcr.io/distroless/cc-debian12
+      imagePullPolicy: IfNotPresent
+      command: ["/app/victim"]
+      volumeMounts:
+        - name: app
+          mountPath: /app
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
