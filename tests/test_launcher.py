@@ -12,7 +12,8 @@ that only the second burns a container name.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,8 +32,11 @@ from podbench.launcher import (
     forget_ssh_config,
     format_session,
     main,
+    match_pod_names,
     parse_mount,
     plan_ladder,
+    pod_choices,
+    resolve_pod,
     resolve_pod_name,
     seats,
     ssh_config_path,
@@ -86,6 +90,9 @@ def pod_document(
     ephemeral_statuses: Sequence[dict[str, Any]] = (),
     volumes: Sequence[dict[str, Any]] = (),
     volume_mounts: Sequence[dict[str, Any]] = (),
+    created: str = "2026-08-15T09:00:00Z",
+    phase: str = "Running",
+    ready: bool = True,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -98,7 +105,12 @@ def pod_document(
     return {
         "apiVersion": "v1",
         "kind": "Pod",
-        "metadata": {"name": name, "namespace": "demo", "uid": POD_UID},
+        "metadata": {
+            "name": name,
+            "namespace": "demo",
+            "uid": POD_UID,
+            "creationTimestamp": created,
+        },
         "spec": {
             "nodeName": "node02",
             "containers": [workload],
@@ -106,8 +118,13 @@ def pod_document(
             "ephemeralContainers": [dict(entry) for entry in ephemeral],
         },
         "status": {
+            "phase": phase,
             "containerStatuses": [
-                {"name": container, "containerID": f"containerd://{TARGET_CID}"}
+                {
+                    "name": container,
+                    "containerID": f"containerd://{TARGET_CID}",
+                    "ready": ready,
+                }
             ],
             "ephemeralContainerStatuses": [dict(s) for s in ephemeral_statuses],
         },
@@ -148,6 +165,7 @@ class FakeCluster:
         self,
         pod: dict[str, Any],
         *,
+        others: Sequence[dict[str, Any]] = (),
         psa_denies_ptrace: bool = False,
         kubelet_refuses_root: bool = False,
         kubelet_refuses_root_image: bool = False,
@@ -158,6 +176,11 @@ class FakeCluster:
         patch_error: str | None = None,
     ) -> None:
         self.pod = pod
+        # The other pods in the namespace, which only the pod-name resolution
+        # ever looks at: everything else here happens to one pod, and a
+        # namespace with one pod in it cannot tell a substring match from a
+        # name.
+        self.others = [dict(other) for other in others]
         self.psa_denies_ptrace = psa_denies_ptrace
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
@@ -202,8 +225,15 @@ class FakeCluster:
         if rest[:1] == ["config"]:
             return _ok("demo\n")
         if rest[:2] == ["get", "pods"]:
-            return _ok(json.dumps({"items": [self.pod]}))
+            return _ok(json.dumps({"items": [self.pod, *self.others]}))
         if rest[:2] == ["get", "pod"]:
+            found = self._named(rest[2])
+            if found is None:
+                # The API server's own words, because resolution reads the exit
+                # code and everything else here reads the message.
+                return _fail(
+                    f'Error from server (NotFound): pods "{rest[2]}" not found'
+                )
             if any(item.startswith("--subresource=") for item in rest):
                 return _ok(
                     json.dumps(
@@ -215,7 +245,9 @@ class FakeCluster:
                         }
                     )
                 )
-            return _ok(json.dumps(self.pod))
+            if rest[-2:] == ["-o", "name"]:
+                return _ok(f"pod/{rest[2]}\n")
+            return _ok(json.dumps(found))
         if rest[:2] == ["replace", "--raw"]:
             return self._add_ephemeral(stdin)
         if rest[:1] == ["exec"]:
@@ -227,6 +259,12 @@ class FakeCluster:
         raise AssertionError(f"unexpected kubectl call: {list(argv)}")
 
     # -- pod document ------------------------------------------------------
+
+    def _named(self, name: str) -> dict[str, Any] | None:
+        for pod in (self.pod, *self.others):
+            if cast(dict[str, Any], pod["metadata"])["name"] == name:
+                return pod
+        return None
 
     def _ephemeral_specs(self) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], self.pod["spec"]["ephemeralContainers"])
@@ -1380,6 +1418,224 @@ def test_forgetting_the_last_pinned_key_removes_the_file(tmp_path: Path) -> None
     assert forget_known_hosts("podbench-abc", known_hosts)
     assert not known_hosts.exists()
     assert not forget_known_hosts("podbench-abc", known_hosts)
+
+
+# -- choosing which pod the user meant --------------------------------------
+
+NOW = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
+"""Three hours after every pod_document is created, so the age column is fixed."""
+
+
+def namespace_of(*names: str, **overrides: Any) -> FakeCluster:
+    """A namespace whose pods differ only in name, for the matching tests."""
+    first, *rest = names
+    return FakeCluster(
+        pod_document(name=first, **overrides),
+        others=[pod_document(name=name, **overrides) for name in rest],
+    )
+
+
+def answers(*lines: str) -> Callable[[], str]:
+    """The prompt's reader, spelled as a script rather than a terminal.
+
+    An exhausted script raises ``StopIteration`` rather than blocking, so a
+    prompt loop that never accepts an answer fails the test instead of hanging
+    it.
+    """
+    return iter(lines).__next__
+
+
+def test_an_exact_name_wins_outright_and_never_lists_the_namespace() -> None:
+    # `api` is a substring of `api-canary`, and typing it in full is still not a
+    # question. It is also answered by one `get pod`, which is what keeps the
+    # long form working for a user whose RBAC has get on pods but not list.
+    cluster = namespace_of("api", "api-canary")
+    assert resolve_pod(kubectl_for(cluster), "api", interactive=False) == "api"
+    assert not any("pods" in call for call in cluster.calls)
+
+
+def test_the_pod_slash_name_form_still_resolves(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = namespace_of("api-7f9", "web-3c1")
+    kube = kubectl_for(cluster)
+    assert resolve_pod(kube, "pod/api-7f9", interactive=False) == "api-7f9"
+    # And the kind prefix is stripped before the substring search too, so
+    # `pod/api` narrows exactly as `api` does.
+    assert resolve_pod(kube, "pod/api", interactive=False) == "api-7f9"
+    assert "api-7f9" in capsys.readouterr().err
+
+
+def test_one_substring_hit_resolves_and_says_what_it_resolved_to(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = namespace_of("web-6c9d7f4b8b-hq2vn", "api-7f9")
+    name = resolve_pod(kubectl_for(cluster), "hq2", interactive=False)
+    assert name == "web-6c9d7f4b8b-hq2vn"
+    # On stderr, so a redirected stdout still carries only the report.
+    err = capsys.readouterr().err
+    assert "web-6c9d7f4b8b-hq2vn" in err
+    assert capsys.readouterr().out == ""
+
+
+def test_several_hits_are_listed_with_enough_to_choose_by(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = FakeCluster(
+        pod_document(
+            name="api-7f9",
+            ephemeral=[{"name": "podbench-1"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        others=[pod_document(name="api-canary", phase="Pending", ready=False)],
+    )
+    name = resolve_pod(
+        kubectl_for(cluster),
+        "api",
+        interactive=True,
+        ask=answers("2"),
+        now=NOW,
+    )
+    assert name == "api-canary"
+    listing = capsys.readouterr().err
+    # Name alone is not a choice: the whole point of the prompt is the columns
+    # beside it, including the seat that is already there.
+    assert "1.  api-7f9     1/1    Running  3h   podbench-1" in listing
+    assert "2.  api-canary  0/1    Pending  3h   -" in listing
+
+
+def test_the_prompt_takes_a_name_or_a_narrower_substring_too() -> None:
+    cluster = namespace_of("api-7f9", "api-canary")
+    kube = kubectl_for(cluster)
+    assert (
+        resolve_pod(kube, "api", interactive=True, ask=answers("api-canary"))
+        == "api-canary"
+    )
+    assert resolve_pod(kube, "api", interactive=True, ask=answers("7f9")) == "api-7f9"
+
+
+def test_an_answer_that_is_still_ambiguous_is_asked_again(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = namespace_of("api-7f9", "api-canary", "web-3c1")
+    name = resolve_pod(
+        kubectl_for(cluster), "api", interactive=True, ask=answers("nope", "api", "1")
+    )
+    assert name == "api-7f9"
+    err = capsys.readouterr().err
+    assert "'nope' is not one of the choices" in err
+    assert "'api' still matches 2 of them" in err
+
+
+def test_an_empty_answer_cancels_rather_than_picking_the_first() -> None:
+    # Every verb behind this mutates a pod permanently, so a shrug is not a
+    # default.
+    cluster = namespace_of("api-7f9", "api-canary")
+    with pytest.raises(LauncherError, match="no pod chosen"):
+        resolve_pod(kubectl_for(cluster), "api", interactive=True, ask=answers(""))
+
+
+def test_no_argument_offers_every_pod_in_the_namespace_not_only_seats() -> None:
+    # The difference between this and `podbench list`: list enumerates the pods
+    # that already carry a seat, and this one enumerates the pods that could.
+    cluster = namespace_of("api-7f9", "web-3c1")
+    name = resolve_pod(kubectl_for(cluster), None, interactive=True, ask=answers("2"))
+    assert name == "web-3c1"
+
+
+def test_nothing_matches_names_the_namespace_and_shows_what_is_there() -> None:
+    cluster = namespace_of("api-7f9", "web-3c1")
+    with pytest.raises(LauncherError) as caught:
+        resolve_pod(kubectl_for(cluster), "postgres", interactive=False)
+    message = str(caught.value)
+    assert "'postgres'" in message
+    assert "namespace demo" in message
+    assert "api-7f9" in message and "web-3c1" in message
+
+
+def empty_namespace(
+    argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+) -> CommandResult:
+    """A namespace kubectl finds nothing in — the one shape FakeCluster, which
+    is built around a pod, cannot express."""
+    if list(argv[-3:]) == ["pods", "-o", "json"]:
+        return CommandResult(tuple(argv), 0, json.dumps({"items": []}), "")
+    return CommandResult(tuple(argv), 1, "", "Error from server (NotFound)")
+
+
+def test_an_empty_namespace_says_so_rather_than_prompting_for_nothing() -> None:
+    kube = Kubectl("demo", runner=empty_namespace)
+    with pytest.raises(LauncherError, match="namespace demo has no pods"):
+        resolve_pod(kube, None, interactive=True, ask=answers("1"))
+
+
+def test_a_pipe_is_refused_with_the_candidates_rather_than_hung() -> None:
+    # The case that matters: podbench is scripted and run over ssh, where a
+    # prompt is not a prompt but a hang.
+    cluster = namespace_of("api-7f9", "api-canary")
+    with pytest.raises(LauncherError) as caught:
+        resolve_pod(kubectl_for(cluster), "api", interactive=False)
+    message = str(caught.value)
+    assert "not a tty" in message
+    assert "api-7f9" in message and "api-canary" in message
+    assert "name one exactly" in message
+
+
+def test_no_prompt_refuses_on_a_terminal_too() -> None:
+    cluster = namespace_of("api-7f9", "api-canary")
+    with pytest.raises(LauncherError, match="--no-prompt was given"):
+        resolve_pod(
+            kubectl_for(cluster),
+            "api",
+            prompt=False,
+            interactive=True,
+            ask=answers("1"),
+        )
+
+
+def test_the_verbs_share_one_seam(capsys: pytest.CaptureFixture[str]) -> None:
+    cluster = FakeCluster(
+        pod_document(
+            name="api-7f9",
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        others=[pod_document(name="web-3c1")],
+    )
+    assert main(["status", "7f9", "-n", "demo"], runner=cluster) == 0
+    captured = capsys.readouterr()
+    assert "demo/api-7f9" in captured.out
+    assert "api-7f9" in captured.err
+
+
+def test_an_ambiguous_verb_argument_exits_non_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # pytest's stdin is not a tty, which is the same shape as the CI job and the
+    # ssh session this has to refuse rather than hang in.
+    cluster = namespace_of("api-7f9", "api-canary")
+    assert main(["status", "api", "-n", "demo"], runner=cluster) == 2
+    assert "api-canary" in capsys.readouterr().err
+
+
+def test_no_prompt_is_a_flag_on_the_verbs_that_take_a_pod(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = namespace_of("api-7f9", "api-canary")
+    assert main(["status", "--no-prompt", "-n", "demo"], runner=cluster) == 2
+    assert "--no-prompt was given" in capsys.readouterr().err
+
+
+def test_matching_prefers_an_exact_name_over_every_substring() -> None:
+    assert match_pod_names(["web", "web-canary"], "web") == ["web"]
+    assert match_pod_names(["web", "web-canary"], "web-") == ["web-canary"]
+
+
+def test_an_unreadable_creation_stamp_costs_a_column_not_the_listing() -> None:
+    cluster = namespace_of("api-7f9", created="last tuesday")
+    (choice,) = pod_choices(kubectl_for(cluster), now=NOW)
+    assert choice.age == "?"
 
 
 # -- status, list, resize, namespace ----------------------------------------

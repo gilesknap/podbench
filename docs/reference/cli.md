@@ -84,6 +84,47 @@ podbench shells out to `kubectl` deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
 credential and no client library.
 
+(naming-the-pod)=
+## Naming the pod
+
+`attach`, `ssh-config` and `status` take a `POD`, and none of them needs the
+whole name. Resolution is the same in all three:
+
+| you type | what happens |
+|---|---|
+| the full name, or `pod/NAME` | used as typed, in one `kubectl get pod` — an exact name is never ambiguous, even when it is also a substring of another pod's name |
+| a substring matching **one** pod | resolved to that pod, and the name it resolved to is echoed on stderr |
+| a substring matching **several** | the matches are listed and you are asked which |
+| nothing at all | every pod in the namespace is listed and you are asked which |
+| a substring matching **none** | an error naming the namespace searched, with what is in it |
+
+```
+$ podbench attach api -n demo
+'api' matches 2 pods in namespace demo
+      NAME        READY  STATUS   AGE  PODBENCH
+  1.  api-7f9     1/1    Running  3h   podbench-1
+  2.  api-canary  0/1    Pending  3h   -
+which one? [number or name, empty to cancel] 1
+```
+
+The listing carries what you choose *by*: ready containers, status, age, and the
+podbench container already in the pod — which is the difference between landing
+a seat and reconnecting to yours. Answer with the number, the name, or a longer
+substring; an empty line cancels.
+
+The prompt is only ever offered on a terminal. **When stdin is not a tty — a
+script, a CI job, an `ssh host podbench ...` — a prompt would be a hang**, so
+podbench prints the same listing, explains that it will not ask, and exits `2`.
+`--no-prompt` asks for that behaviour on a terminal too. Both the listing and
+the "matched" echo go to **stderr**, so a redirected stdout still holds only the
+report.
+
+Resolution lists every pod in the namespace, which is not what `podbench list`
+does: `list` shows the pods that already carry a podbench container, and
+resolution offers the pods that could. A fully typed name is answered without
+listing at all, so `attach` still works with RBAC that grants `get` on pods but
+not `list`.
+
 ---
 
 ## Cluster-side verbs
@@ -95,12 +136,13 @@ what that seat can actually do.
 
 ```
 
- Usage: podbench attach [OPTIONS] {POD}
+ Usage: podbench attach [OPTIONS] [POD]
 
  add or reconnect a podbench container and print the report
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      <str>  pod/NAME or a bare NAME [required]                                          │
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Omitted, or matching more than │
+│                   one pod, lists the namespace and asks                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --target                    NAME             workload container name                             │
@@ -138,6 +180,9 @@ what that seat can actually do.
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
+│                                              refused with the candidates instead. Already        │
+│                                              implied when stdin is not a tty                     │
 │ --namespace         -n      NAMESPACE        namespace (default: the kubeconfig context's own)   │
 │ --context                   NAME             kubeconfig context                                  │
 │ --kubectl                   BIN              kubectl binary to use [default: kubectl]            │
@@ -149,7 +194,8 @@ what that seat can actually do.
 
 Notes:
 
-* `pod` accepts `pod/NAME` or a bare `NAME`.
+* `pod` accepts `pod/NAME`, a bare `NAME`, a substring of one, or nothing at
+  all — see {ref}`Naming the pod <naming-the-pod>`.
 * `--image` has no fixed default to print: the launcher asks for the image
   built from its own version — `ghcr.io/gilesknap/podbench:<launcher version>`,
   and `:main` when the launcher is a dev build off a checkout. `--image` wins
@@ -239,12 +285,13 @@ the pod.
 
 ```
 
- Usage: podbench ssh-config [OPTIONS] {POD}
+ Usage: podbench ssh-config [OPTIONS] [POD]
 
  regenerate the ssh stanza for an existing session
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      <str>  pod/NAME or a bare NAME [required]                                          │
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Omitted, or matching more than │
+│                   one pod, lists the namespace and asks                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
@@ -253,6 +300,9 @@ the pod.
 │ --ssh-user              NAME       login name to put in the stanza                               │
 │ --host-alias            NAME       ssh Host name for the seat                                    │
 │ --print-config                     print the ssh stanza instead of writing it to the config dir  │
+│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
+│                                    with the candidates instead. Already implied when stdin is    │
+│                                    not a tty                                                     │
 │ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
 │ --context               NAME       kubeconfig context                                            │
 │ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
@@ -271,14 +321,18 @@ burnt.
 
 ```
 
- Usage: podbench status [OPTIONS] {POD}
+ Usage: podbench status [OPTIONS] [POD]
 
  the podbench containers in one pod and what each supports
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      <str>  pod/NAME or a bare NAME [required]                                          │
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Omitted, or matching more than │
+│                   one pod, lists the namespace and asks                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --no-prompt                      never ask which pod: an ambiguous or missing POD is refused     │
+│                                  with the candidates instead. Already implied when stdin is not  │
+│                                  a tty                                                           │
 │ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context's own)               │
 │ --context             NAME       kubeconfig context                                              │
 │ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
@@ -705,5 +759,5 @@ stream.
 |---|---|
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
 | `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); or `patch status` found a pod needing attention |
-| `2` | a launcher error, a `patch` error, or `podbench` with no verb |
+| `2` | a launcher error, a `patch` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), or `podbench` with no verb |
 | `0` / `10` / `20` | `capreport` only: the capability verdict |
