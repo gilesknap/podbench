@@ -1,0 +1,1854 @@
+"""Patch mode: an emergency fix that outlives the session, and its provenance.
+
+Patch mode is the one place podbench asks for deploy-time cooperation, and the
+one place it deliberately *inverts* an earlier rule. Everywhere else the design
+refuses to fight the kubelet: Iterate mode runs on a sacrificial clone precisely
+because killing PID 1 gets you pristine image code back. Here the venv lives on
+a PVC that outlives the container, so pristine image code is no longer what a
+restart yields — **the restart is the relaunch mechanism**, probes and all.
+
+The mount also dissolves the constraint that shapes :mod:`podbench.dev`. The
+seat mounts the same claim at the same ``mountPath`` as the application, so the
+venv and the checkout resolve identically on both sides and an editable install
+is finally not straddling two mount namespaces (report §3.17 is about the case
+where it does).
+
+Three things the PVC does *not* fix, and which this module exists to make
+visible rather than leave to be discovered:
+
+1. **The PVC venv shadows the image's.** An image upgrade under a live patch
+   mount keeps running the old venv, and an interpreter bump breaks it outright
+   — the ``bin/python`` symlink on the volume points at an interpreter path in
+   the *image*, which is not on the volume. So the manifest records the
+   interpreter exactly (from ``pyvenv.cfg``, which is on the volume) and
+   ``status`` measures the live one instead of assuming.
+2. **Single replica only.** The claim is ReadWriteOnce, so a second replica
+   either cannot schedule or, with RWX, races on the same checkout. ``init``
+   and ``apply`` refuse a multi-replica target rather than half-patch a
+   Deployment.
+3. **A stale PVC silently reverts provenance.** Once a patch is consolidated
+   and the new image rolls out, a PVC left mounted keeps the *old* code running
+   under a version string that claims to contain the fix. ``status`` calls that
+   out by name.
+
+Provenance is therefore not decoration: every patch is a git commit, a manifest
+on the volume records what it was made against, and the pod carries an
+annotation saying it is patched. ``status`` is the point of the whole mode —
+silently-diverged pods are the risk it must never create.
+
+Where the provenance is written is itself a design decision. Pod annotations do
+not survive the reschedule that Patch mode *relies on*, so the annotations go on
+the workload's pod template when there is one: they then propagate to every pod
+the controller makes, and the template edit is also what rolls the workload —
+the same mechanism ``kubectl rollout restart`` uses.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from enum import Enum
+from pathlib import Path
+from typing import Any, Protocol, cast
+
+from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
+from .launcher import CONTAINER_BASE, current_namespace, running_seat
+from .model import PodRef, as_dict
+
+__all__ = [
+    "APPLIED_ANNOTATION",
+    "MANIFEST_ANNOTATION",
+    "MANIFEST_FILENAME",
+    "MANIFEST_VERSION",
+    "MAX_RECORDED_COMMITS",
+    "METADATA_FILES",
+    "PATCHED_ANNOTATION",
+    "InterpreterProbe",
+    "LocalStore",
+    "ManifestVersionError",
+    "MultiReplicaError",
+    "PatchCommit",
+    "PatchError",
+    "PatchHealth",
+    "PatchManifest",
+    "PatchRow",
+    "PatchStore",
+    "PatchTarget",
+    "PodStore",
+    "annotate",
+    "apply_patch",
+    "assess",
+    "changed_paths",
+    "checkout_path",
+    "consolidate",
+    "drift_commits",
+    "format_status",
+    "init",
+    "install_argv",
+    "interpreter_warning",
+    "main",
+    "manifest_annotations",
+    "manifest_from_pod",
+    "manifest_path",
+    "metadata_changed",
+    "normalise_interpreter",
+    "parse_log",
+    "parse_pyvenv_cfg",
+    "probe_interpreter",
+    "replica_count",
+    "resolve_target",
+    "seat_container",
+    "status_rows",
+    "values_snippet",
+]
+
+MANIFEST_FILENAME = ".podbench-patch.json"
+"""The manifest, at the root of the claim — which is to say inside the venv.
+
+The claim is mounted *over* the application's venv path, so the venv directory
+and the volume root are the same directory. There is nowhere else on the volume
+to put it.
+"""
+
+MANIFEST_VERSION = 1
+"""Schema version written by this podbench.
+
+Read leniently and written strictly: a manifest with a lower version (or none at
+all, which is version 0) loads with defaults for what it lacks, because a future
+podbench will meet volumes written by this one and by whatever came before it. A
+*higher* version is refused outright — guessing at fields we have never seen is
+how a fix silently loses its provenance.
+"""
+
+PATCHED_ANNOTATION = "podbench.dev/patched"
+"""Cheap marker. ``kubectl get pods -l`` cannot select on annotations, but this
+keeps the "is this pod patched?" question answerable by eye and by grep."""
+
+MANIFEST_ANNOTATION = "podbench.dev/patch-manifest"
+"""The manifest itself, so ``status`` needs one ``get pods`` and no exec."""
+
+APPLIED_ANNOTATION = "podbench.dev/patch-applied-at"
+"""A timestamp that changes on every apply.
+
+Patching a pod template with an unchanged body is a no-op and no rollout
+happens, which would leave the fix on the volume and the old process running.
+This is the same trick ``kubectl rollout restart`` uses.
+"""
+
+MAX_RECORDED_COMMITS = 20
+"""How many commits the manifest carries verbatim.
+
+Annotations share a 256 KB budget with everything else on the object, and a long
+beamtime can accumulate a lot of patches. The count of commits ahead is recorded
+separately so the drift figure stays exact even when the list is truncated.
+"""
+
+METADATA_FILES: tuple[str, ...] = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "MANIFEST.in",
+)
+"""Files whose change invalidates an editable install.
+
+An editable install is a path redirection: new *code* is picked up for free, but
+a new entry point, a renamed package or a changed ``[project]`` table is baked
+into the ``.dist-info`` at install time and needs the installer run again.
+"""
+
+DEFAULT_PYTHON = "python3"
+"""What ``status`` runs in the application container to measure its interpreter.
+
+With a venv-based image this usually resolves to the venv's own ``bin/python3``
+— which is on the PVC, and whose symlink into the image is exactly the thing an
+interpreter bump breaks. Either outcome is informative: a version, or a failure
+to execute at all.
+"""
+
+LOG_SEPARATOR = "\x1f"
+_LOG_FORMAT = f"--pretty=format:%H{LOG_SEPARATOR}%s"
+
+_WORKLOAD_KINDS: dict[str, str] = {
+    "deployment": "deployment",
+    "deployments": "deployment",
+    "deploy": "deployment",
+    "statefulset": "statefulset",
+    "statefulsets": "statefulset",
+    "sts": "statefulset",
+}
+
+
+class PatchError(RuntimeError):
+    """Patch mode refused to do something, and says why."""
+
+
+class MultiReplicaError(PatchError):
+    """The target runs more than one replica, which v1 does not support."""
+
+
+class ManifestVersionError(PatchError):
+    """A manifest written by a newer podbench than this one."""
+
+
+# -- the manifest ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PatchCommit:
+    """One commit on the PVC checkout that the released image does not have."""
+
+    sha: str
+    subject: str
+
+    @property
+    def short(self) -> str:
+        """The abbreviated sha, for tables.
+
+        >>> PatchCommit("0123456789abcdef", "fix the thing").short
+        '0123456'
+        """
+        return self.sha[:7]
+
+
+@dataclass(frozen=True)
+class PatchManifest:
+    """What a patch was made against, recorded on the volume that carries it.
+
+    Every field is defaulted so that a manifest written by an older schema
+    version loads rather than raising: the missing fields become empty, and
+    :attr:`schema_version` records what was actually read so a reader can say
+    "written by an older podbench" instead of silently inventing provenance.
+    """
+
+    venv: str = ""
+    checkout: str = ""
+    repo: str = ""
+    base_image: str = ""
+    base_image_digest: str = ""
+    """The ``imageID`` of the container when the patch was made. Compared
+    against the live one to detect an image upgrade under the mount."""
+
+    interpreter: str = ""
+    """The venv's interpreter version, read from ``pyvenv.cfg`` on the volume."""
+
+    container: str = ""
+    commit: str = ""
+    base_commit: str = ""
+    """The commit the released image was built from; drift is measured from it."""
+
+    author: str = ""
+    timestamp: str = ""
+    ahead: int = 0
+    commits: tuple[PatchCommit, ...] = ()
+    consolidated_branch: str | None = None
+    schema_version: int = MANIFEST_VERSION
+
+    def to_mapping(self) -> dict[str, Any]:
+        """The JSON form. Explicit rather than ``asdict``: this document is a
+        wire format between podbench versions, so its keys are chosen, not
+        derived from whatever the dataclass happens to be called today."""
+        return {
+            "version": MANIFEST_VERSION,
+            "venv": self.venv,
+            "checkout": self.checkout,
+            "repo": self.repo,
+            "baseImage": self.base_image,
+            "baseImageDigest": self.base_image_digest,
+            "interpreter": self.interpreter,
+            "container": self.container,
+            "commit": self.commit,
+            "baseCommit": self.base_commit,
+            "author": self.author,
+            "timestamp": self.timestamp,
+            "ahead": self.ahead,
+            "commits": [
+                {"sha": commit.sha, "subject": commit.subject}
+                for commit in self.commits
+            ],
+            "consolidatedBranch": self.consolidated_branch,
+        }
+
+    def to_json(self) -> str:
+        """Compact JSON, because this also goes into an annotation."""
+        return json.dumps(self.to_mapping(), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> PatchManifest:
+        """Load a manifest, tolerating anything this schema once lacked.
+
+        >>> PatchManifest.from_mapping({"commit": "abc"}).schema_version
+        0
+        >>> PatchManifest.from_mapping({"version": 1, "ahead": 2}).ahead
+        2
+        """
+        version = _as_int(payload.get("version")) or 0
+        if version > MANIFEST_VERSION:
+            raise ManifestVersionError(
+                f"this patch manifest is schema version {version}; this podbench "
+                f"understands up to {MANIFEST_VERSION}. Upgrade podbench rather "
+                "than overwriting it — the fields it does not know about are "
+                "somebody's provenance."
+            )
+        commits = tuple(
+            PatchCommit(
+                sha=_as_str(as_dict(entry).get("sha")) or "",
+                subject=_as_str(as_dict(entry).get("subject")) or "",
+            )
+            for entry in _as_list(payload.get("commits"))
+        )
+        return cls(
+            venv=_as_str(payload.get("venv")) or "",
+            checkout=_as_str(payload.get("checkout")) or "",
+            repo=_as_str(payload.get("repo")) or "",
+            base_image=_as_str(payload.get("baseImage")) or "",
+            base_image_digest=_as_str(payload.get("baseImageDigest")) or "",
+            interpreter=_as_str(payload.get("interpreter")) or "",
+            container=_as_str(payload.get("container")) or "",
+            commit=_as_str(payload.get("commit")) or "",
+            base_commit=_as_str(payload.get("baseCommit")) or "",
+            author=_as_str(payload.get("author")) or "",
+            timestamp=_as_str(payload.get("timestamp")) or "",
+            ahead=_as_int(payload.get("ahead")) or len(commits),
+            commits=commits,
+            consolidated_branch=_as_str(payload.get("consolidatedBranch")),
+            schema_version=version,
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> PatchManifest:
+        """Load from the JSON written by :meth:`to_json`."""
+        parsed: object = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise PatchError("patch manifest is not a JSON object")
+        return cls.from_mapping(cast(dict[str, Any], parsed))
+
+    @property
+    def stale_schema(self) -> bool:
+        """Whether this came off the volume in an older schema version."""
+        return self.schema_version < MANIFEST_VERSION
+
+
+def manifest_path(venv: str) -> str:
+    """Where the manifest lives for a claim mounted at ``venv``.
+
+    >>> manifest_path("/opt/venv")
+    '/opt/venv/.podbench-patch.json'
+    """
+    return f"{venv.rstrip('/')}/{MANIFEST_FILENAME}"
+
+
+def checkout_path(venv: str) -> str:
+    """Where the source checkout lives on the claim.
+
+    Inside the venv directory, which looks odd until you remember the claim is
+    mounted *over* the venv path and so there is no other directory on the
+    volume. Being on the volume is the whole requirement: the editable install's
+    path redirection has to survive the restart too.
+
+    >>> checkout_path("/opt/venv/")
+    '/opt/venv/src'
+    """
+    return f"{venv.rstrip('/')}/src"
+
+
+def manifest_annotations(manifest: PatchManifest) -> dict[str, str]:
+    """The annotations that mark a pod (or pod template) as patched."""
+    return {
+        PATCHED_ANNOTATION: "true",
+        MANIFEST_ANNOTATION: manifest.to_json(),
+        APPLIED_ANNOTATION: manifest.timestamp,
+    }
+
+
+def manifest_from_pod(pod_json: Mapping[str, Any]) -> PatchManifest | None:
+    """The manifest a pod's annotations carry, or ``None`` if it has none."""
+    annotations = as_dict(as_dict(pod_json.get("metadata")).get("annotations"))
+    raw = _as_str(annotations.get(MANIFEST_ANNOTATION))
+    if raw is None:
+        return None
+    return PatchManifest.from_json(raw)
+
+
+# -- reaching the volume ---------------------------------------------------
+
+
+class PatchStore(Protocol):
+    """How patch mode reaches the claim's filesystem and a git on it.
+
+    The claim is only ever mounted in the cluster, so the default is
+    :class:`PodStore` — every read, write and git invocation goes through the
+    seat container, which mounts the same claim at the same path. The local
+    implementation exists for the case where podbench is already *in* that
+    container, and it is what the tests use with a temp directory standing in
+    for the volume.
+    """
+
+    def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
+        """Run a command with the claim visible. Paths are absolute."""
+        ...
+
+    def read_text(self, path: str) -> str | None:
+        """The file's contents, or ``None`` if it does not exist."""
+        ...
+
+    def write_text(self, path: str, text: str) -> None:
+        """Create or replace a file."""
+        ...
+
+    def exists(self, path: str) -> bool:
+        """Whether a path exists on the claim."""
+        ...
+
+
+@dataclass
+class LocalStore:
+    """A claim mounted in this very process's mount namespace.
+
+    Used when podbench runs inside the seat container, and by the tests against
+    a temp directory. ``runner`` is the seam: no test ever forks a real git.
+    """
+
+    runner: Runner = run_subprocess
+
+    def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
+        result = self.runner(argv)
+        if check and result.returncode != 0:
+            raise PatchError(
+                f"{' '.join(argv)} exited {result.returncode}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        return result
+
+    def read_text(self, path: str) -> str | None:
+        target = Path(path)
+        if not target.is_file():
+            return None
+        return target.read_text()
+
+    def write_text(self, path: str, text: str) -> None:
+        Path(path).write_text(text)
+
+    def exists(self, path: str) -> bool:
+        return Path(path).exists()
+
+
+@dataclass(frozen=True)
+class PodStore:
+    """A claim reached through ``kubectl exec`` into the seat container.
+
+    The seat is podbench's own image, so a shell and a git are guaranteed there;
+    the application container is assumed to have neither, and in Patch mode it
+    is quite likely to be distroless.
+    """
+
+    kube: Kubectl
+    pod: str
+    container: str
+
+    def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
+        return self.kube.exec_(self.pod, argv, container=self.container, check=check)
+
+    def read_text(self, path: str) -> str | None:
+        result = self.run(["cat", path], check=False)
+        return result.stdout if result.returncode == 0 else None
+
+    def write_text(self, path: str, text: str) -> None:
+        # Through a shell redirect rather than a heredoc: the payload is JSON and
+        # goes over stdin, so nothing in it can be read as shell syntax.
+        self.kube.exec_(
+            self.pod,
+            ["sh", "-c", f"cat > {shlex.quote(path)}"],
+            container=self.container,
+            stdin=text,
+        )
+
+    def exists(self, path: str) -> bool:
+        return self.run(["test", "-e", path], check=False).returncode == 0
+
+
+def read_manifest(store: PatchStore, venv: str) -> PatchManifest | None:
+    """The manifest on the claim, or ``None`` if the claim has never been used."""
+    text = store.read_text(manifest_path(venv))
+    if text is None:
+        return None
+    return PatchManifest.from_json(text)
+
+
+def write_manifest(store: PatchStore, manifest: PatchManifest) -> None:
+    """Record the manifest on the claim it describes."""
+    store.write_text(manifest_path(manifest.venv), manifest.to_json() + "\n")
+
+
+# -- interpreters ----------------------------------------------------------
+
+
+def parse_pyvenv_cfg(text: str) -> dict[str, str]:
+    """Parse ``pyvenv.cfg``, which is key/value and not quite INI.
+
+    >>> parse_pyvenv_cfg("home = /usr/local/bin\\nversion = 3.12.7\\n")["version"]
+    '3.12.7'
+    """
+    parsed: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def normalise_interpreter(text: str) -> str:
+    """Reduce anything that names a CPython version to just the version.
+
+    ``python -V`` says ``Python 3.12.7``, ``pyvenv.cfg`` says ``3.12.7``, and
+    ``version_info`` says ``3.12.7.final.0``. They have to be comparable.
+
+    >>> normalise_interpreter("Python 3.12.7")
+    '3.12.7'
+    >>> normalise_interpreter("3.12.7.final.0")
+    '3.12.7'
+    >>> normalise_interpreter("")
+    ''
+    """
+    token = text.strip().split()[-1] if text.strip() else ""
+    parts = token.split(".")
+    numeric: list[str] = []
+    for part in parts:
+        if not part.isdigit():
+            break
+        numeric.append(part)
+    return ".".join(numeric[:3])
+
+
+def _feature_version(version: str) -> str:
+    """``major.minor``, the granularity at which a venv breaks.
+
+    >>> _feature_version("3.12.7")
+    '3.12'
+    """
+    return ".".join(normalise_interpreter(version).split(".")[:2])
+
+
+def interpreter_warning(recorded: str, observed: str) -> str | None:
+    """What to say about a venv whose interpreter no longer matches the image.
+
+    A venv is bound to one ``major.minor``: its ``lib/pythonX.Y/site-packages``
+    is not on the new interpreter's path and its compiled extensions are built
+    against the old ABI. A micro bump is survivable and merely worth noting.
+
+    >>> interpreter_warning("3.12.7", "3.12.7") is None
+    True
+    >>> "will not import" in (interpreter_warning("3.11.9", "3.12.7") or "")
+    True
+    """
+    if not recorded or not observed:
+        return None
+    if normalise_interpreter(recorded) == normalise_interpreter(observed):
+        return None
+    if _feature_version(recorded) != _feature_version(observed):
+        return (
+            f"the patched venv was built for Python {_feature_version(recorded)} "
+            f"but the container now runs {_feature_version(observed)}: the venv's "
+            "site-packages will not import, and the pod is running on whatever "
+            "the interpreter finds instead. Retire the claim or rebuild the venv."
+        )
+    return (
+        f"the venv records Python {normalise_interpreter(recorded)} and the "
+        f"container now runs {normalise_interpreter(observed)}; same feature "
+        "release, so imports still resolve, but compiled extensions were built "
+        "against the older micro version."
+    )
+
+
+@dataclass(frozen=True)
+class InterpreterProbe:
+    """What running the interpreter in the application container reported."""
+
+    ok: bool
+    version: str | None
+    detail: str
+
+
+def probe_interpreter(
+    kube: Kubectl, pod: str, container: str, *, python: str = DEFAULT_PYTHON
+) -> InterpreterProbe:
+    """Measure the interpreter the application container actually runs now.
+
+    Not inferred from the image tag: with the claim mounted over the venv, the
+    ``python`` on ``PATH`` is usually the venv's own shim, whose symlink points
+    at an interpreter path *in the image*. If an upgrade moved that path the
+    exec fails outright, and that failure is the most direct possible evidence
+    of the shadowing risk this mode carries.
+    """
+    result = kube.exec_(pod, [python, "-V"], container=container, check=False)
+    if result.returncode != 0:
+        return InterpreterProbe(
+            ok=False,
+            version=None,
+            detail=(result.stderr.strip() or result.stdout.strip() or "exec failed"),
+        )
+    reported = (result.stdout or result.stderr).strip()
+    return InterpreterProbe(
+        ok=True, version=normalise_interpreter(reported), detail=reported
+    )
+
+
+# -- git on the claim ------------------------------------------------------
+
+
+def parse_log(text: str) -> tuple[PatchCommit, ...]:
+    """Read ``git log`` in this module's own format.
+
+    ``%x1f`` rather than a printable separator, because a commit subject may
+    contain any printable character and a patch commit's subject is written by
+    somebody in a hurry at 3am.
+
+    >>> parse_log("abc\\x1ffix the thing\\ndef\\x1fand another")
+    (PatchCommit(sha='abc', subject='fix the thing'), PatchCommit(sha='def', subject='and another'))
+    """  # noqa: E501
+    commits: list[PatchCommit] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        sha, separator, subject = line.partition(LOG_SEPARATOR)
+        if not separator:
+            continue
+        commits.append(PatchCommit(sha=sha.strip(), subject=subject.strip()))
+    return tuple(commits)
+
+
+def drift_commits(
+    store: PatchStore, checkout: str, base_commit: str
+) -> tuple[PatchCommit, ...]:
+    """Commits on the claim's checkout that the released image does not have.
+
+    Newest first, which is the order ``git log`` gives and the order a reader
+    wants: the last thing somebody did to the running code is the first line.
+    """
+    if not base_commit:
+        return ()
+    result = store.run(
+        ["git", "-C", checkout, "log", _LOG_FORMAT, f"{base_commit}..HEAD"],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise PatchError(
+            f"cannot measure drift from {base_commit[:12]}: "
+            f"{result.stderr.strip() or result.stdout.strip()}. The manifest's "
+            "base commit is not in this checkout — was the claim seeded from a "
+            "different repository?"
+        )
+    return parse_log(result.stdout)
+
+
+def metadata_changed(paths: Sequence[str]) -> bool:
+    """Whether a commit touched anything an editable install baked in.
+
+    >>> metadata_changed(["src/app/main.py"])
+    False
+    >>> metadata_changed(["pyproject.toml", "src/app/main.py"])
+    True
+    """
+    names = {Path(path).name for path in paths}
+    return any(name in names for name in METADATA_FILES)
+
+
+def changed_paths(
+    store: PatchStore, checkout: str, previous: str, head: str
+) -> tuple[str, ...]:
+    """The paths the checkout's history moved between two commits.
+
+    This is what decides whether the editable install has to be run again, and
+    it is keyed on the *commits* rather than on whether ``apply`` found a dirty
+    working tree. Committing by hand in the seat — which is the natural thing to
+    do when the fix took three attempts — and then running ``apply`` leaves a
+    clean tree behind a moved HEAD. Guarding the packaging check on dirtiness
+    skipped it in exactly that case, and the workload then rolled with a
+    ``.dist-info`` older than the commit: a patch adding an entry point looked
+    applied and was not.
+
+    The whole range is examined and not just ``HEAD``, because several hand
+    commits can accumulate between two applies and the metadata change may be in
+    any of them. When there is no range to walk — a manifest old enough to carry
+    no commit, or a history that no longer contains the one it carries — the
+    fallback is ``HEAD``'s own paths, which over-installs rather than
+    under-installs; a redundant editable install costs seconds, a skipped one
+    costs a silently-unapplied patch.
+    """
+    if previous == head:
+        return ()
+    if previous:
+        result = store.run(
+            ["git", "-C", checkout, "diff", "--name-only", f"{previous}..{head}"],
+            check=False,
+        )
+        if result.returncode == 0:
+            return _paths(result.stdout)
+    return _paths(
+        store.run(
+            ["git", "-C", checkout, "show", "--name-only", "--pretty=format:", head],
+            check=False,
+        ).stdout
+    )
+
+
+def _paths(text: str) -> tuple[str, ...]:
+    """One path per line — ``--name-only`` output, minus git's blank lines.
+
+    Split on lines rather than on whitespace: a path containing a space is one
+    path, and ``git show --pretty=format:`` leads with an empty line.
+    """
+    return tuple(line.strip() for line in text.splitlines() if line.strip())
+
+
+def install_argv(venv: str, checkout: str) -> list[str]:
+    """The editable reinstall, run in the *application* container.
+
+    Not in the seat: the venv's ``bin/python`` is a symlink to an interpreter
+    that lives in the application image and is therefore not resolvable from
+    podbench's own image, even though the venv itself is on a volume both can
+    see. ``--no-deps`` because a patch is a code change; pulling new
+    dependencies mid-run is a release, and releases go through the pipeline.
+    """
+    return [
+        f"{venv.rstrip('/')}/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--no-deps",
+        "--no-build-isolation",
+        "-e",
+        checkout,
+    ]
+
+
+# -- targets ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PatchTarget:
+    """The single pod a patch applies to, and the workload behind it."""
+
+    pod: PodRef
+    container: str
+    image: str
+    image_digest: str
+    workload_kind: str | None = None
+    workload_name: str | None = None
+    replicas: int | None = None
+
+    @property
+    def workload(self) -> str | None:
+        """``kind/name``, or ``None`` for a pod nobody owns."""
+        if self.workload_kind is None or self.workload_name is None:
+            return None
+        return f"{self.workload_kind}/{self.workload_name}"
+
+
+def replica_count(obj: Mapping[str, Any]) -> int | None:
+    """A workload's declared replica count.
+
+    >>> replica_count({"spec": {"replicas": 3}})
+    3
+    >>> replica_count({"spec": {}}) is None
+    True
+    """
+    return _as_int(as_dict(obj.get("spec")).get("replicas"))
+
+
+def _refuse_multi_replica(kind: str, name: str, replicas: int) -> None:
+    raise MultiReplicaError(
+        f"{kind}/{name} runs {replicas} replicas and patch mode v1 supports "
+        "exactly one. The claim is ReadWriteOnce, so a second replica either "
+        "fails to schedule or — with ReadWriteMany — two pods share one "
+        "checkout and one venv, and an apply on either is a race with no "
+        "winner. Scale to 1 for the duration of the patch, or patch a "
+        "single-replica canary and let the release pipeline carry the fix to "
+        "the rest."
+    )
+
+
+def resolve_target(
+    kube: Kubectl, reference: str, *, container: str | None = None
+) -> PatchTarget:
+    """Turn ``pod/foo``, ``deployment/foo`` or ``foo`` into one patchable pod.
+
+    A workload reference is the natural one to type — patching is an operation
+    on an application, not on a pod that will be replaced by the next
+    reschedule — so both are accepted and both are checked for the single
+    replica this mode requires.
+    """
+    kind, separator, name = reference.partition("/")
+    if not separator:
+        return _target_from_pod(kube, reference, container)
+    if not name:
+        raise PatchError(f"no name in {reference!r}")
+    if kind in ("pod", "pods", "po"):
+        return _target_from_pod(kube, name, container)
+    workload_kind = _WORKLOAD_KINDS.get(kind)
+    if workload_kind is None:
+        raise PatchError(
+            f"patch mode works on pods, deployments and statefulsets, not {kind!r}"
+        )
+    return _target_from_workload(kube, workload_kind, name, container)
+
+
+def _target_from_workload(
+    kube: Kubectl, kind: str, name: str, container: str | None
+) -> PatchTarget:
+    workload = _get_json(kube, kind, name)
+    replicas = replica_count(workload)
+    if replicas is not None and replicas != 1:
+        _refuse_multi_replica(kind, name, replicas)
+    selector = as_dict(as_dict(workload.get("spec")).get("selector"))
+    labels = as_dict(selector.get("matchLabels"))
+    if not labels:
+        raise PatchError(f"{kind}/{name} has no matchLabels to find its pod by")
+    query = ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
+    result = kube.run("get", "pods", "-l", query, "-o", "json")
+    pods = [as_dict(item) for item in _as_list(_load_json(result.stdout).get("items"))]
+    live = [pod for pod in pods if _phase(pod) not in ("Succeeded", "Failed")]
+    if len(live) != 1:
+        raise PatchError(
+            f"{kind}/{name} matches {len(live)} live pods; patch mode needs "
+            "exactly one. Name the pod directly if this is a rollout in flight."
+        )
+    # The workload is already known and already checked, so the ownership walk
+    # below is skipped: repeating it would be two more API calls to rediscover
+    # the object the caller named.
+    target = _target_from_pod_json(kube, live[0], container, follow_owner=False)
+    return replace(
+        target, workload_kind=kind, workload_name=name, replicas=replicas or 1
+    )
+
+
+def _target_from_pod(kube: Kubectl, name: str, container: str | None) -> PatchTarget:
+    return _target_from_pod_json(kube, kube.get_pod(name), container)
+
+
+def _target_from_pod_json(
+    kube: Kubectl,
+    pod_json: Mapping[str, Any],
+    container: str | None,
+    *,
+    follow_owner: bool = True,
+) -> PatchTarget:
+    metadata = as_dict(pod_json.get("metadata"))
+    name = _as_str(metadata.get("name"))
+    if name is None:
+        raise PatchError("pod JSON has no metadata.name")
+    chosen = _application_container(pod_json, container)
+    image, digest = _image_of(pod_json, chosen)
+    target = PatchTarget(
+        pod=PodRef(kube.namespace, name),
+        container=chosen,
+        image=image,
+        image_digest=digest,
+    )
+    owner = _controller_of(metadata) if follow_owner else None
+    if owner is None:
+        return target
+    kind, owner_name = owner
+    if kind == "replicaset":
+        return _through_replicaset(kube, target, owner_name)
+    if kind in ("statefulset", "deployment"):
+        return _with_workload(kube, target, kind, owner_name)
+    # Something else owns it — a Job, an operator's CRD. Not refused: there is
+    # one pod and the patch is legitimate, but the annotation cannot go on a
+    # template podbench does not understand.
+    return replace(target, workload_kind=kind, workload_name=owner_name, replicas=1)
+
+
+def _through_replicaset(kube: Kubectl, target: PatchTarget, name: str) -> PatchTarget:
+    """Resolve a pod's ReplicaSet to the Deployment that owns it.
+
+    The Deployment is what has to be annotated: annotating the ReplicaSet's
+    template would be overwritten by the next rollout, and annotating the pod
+    does not survive the reschedule Patch mode depends on.
+    """
+    replicaset = _get_json(kube, "replicaset", name)
+    replicas = replica_count(replicaset)
+    if replicas is not None and replicas != 1:
+        _refuse_multi_replica("replicaset", name, replicas)
+    owner = _controller_of(as_dict(replicaset.get("metadata")))
+    if owner is not None and owner[0] == "deployment":
+        return _with_workload(kube, target, "deployment", owner[1])
+    return replace(
+        target, workload_kind="replicaset", workload_name=name, replicas=replicas or 1
+    )
+
+
+def _with_workload(
+    kube: Kubectl, target: PatchTarget, kind: str, name: str
+) -> PatchTarget:
+    workload = _get_json(kube, kind, name)
+    replicas = replica_count(workload)
+    if replicas is not None and replicas != 1:
+        _refuse_multi_replica(kind, name, replicas)
+    return replace(
+        target, workload_kind=kind, workload_name=name, replicas=replicas or 1
+    )
+
+
+def _application_container(pod_json: Mapping[str, Any], requested: str | None) -> str:
+    names = [
+        name
+        for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
+        if (name := _as_str(as_dict(entry).get("name"))) is not None
+    ]
+    if not names:
+        raise PatchError("pod has no containers")
+    if requested is None:
+        return names[0]
+    if requested not in names:
+        raise PatchError(f"container {requested!r} not in pod (has {names})")
+    return requested
+
+
+def _image_of(pod_json: Mapping[str, Any], container: str) -> tuple[str, str]:
+    for entry in _as_list(as_dict(pod_json.get("status")).get("containerStatuses")):
+        status = as_dict(entry)
+        if _as_str(status.get("name")) == container:
+            return (
+                _as_str(status.get("image")) or "",
+                _as_str(status.get("imageID")) or "",
+            )
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        spec = as_dict(entry)
+        if _as_str(spec.get("name")) == container:
+            return _as_str(spec.get("image")) or "", ""
+    return "", ""
+
+
+def _controller_of(metadata: Mapping[str, Any]) -> tuple[str, str] | None:
+    for entry in _as_list(metadata.get("ownerReferences")):
+        owner = as_dict(entry)
+        if owner.get("controller") is not True:
+            continue
+        kind = _as_str(owner.get("kind"))
+        name = _as_str(owner.get("name"))
+        if kind is not None and name is not None:
+            return kind.lower(), name
+    return None
+
+
+def _phase(pod_json: Mapping[str, Any]) -> str:
+    return _as_str(as_dict(pod_json.get("status")).get("phase")) or ""
+
+
+def seat_container(kube: Kubectl, pod: str, requested: str | None) -> str:
+    """The podbench container that mounts the same claim.
+
+    Patch mode's premise is that this container exists: it is the one with git
+    and a shell, and — because it mounts the claim at the identical mountPath —
+    the one place where the checkout and the venv resolve to the same paths the
+    application sees.
+    """
+    if requested is not None:
+        return requested
+    seat = running_seat(kube.get_pod(pod))
+    if seat is None:
+        raise PatchError(
+            f"no running podbench container in pod {pod}. Patch mode reaches the "
+            "claim through the seat, which must mount it at the same mountPath "
+            f"as the application: run `kubectl podbench attach {pod}` first, or "
+            f"pass --seat if it is named something other than {CONTAINER_BASE}-N."
+        )
+    return seat.name
+
+
+# -- health ----------------------------------------------------------------
+
+
+class PatchHealth(Enum):
+    """What ``status`` found, worst-first when it has to pick one."""
+
+    ACTIVE = "active"
+    """The patch is live and the image it was made against is still deployed."""
+
+    INTERPRETER_MISMATCH = "interpreter"
+    """The image's interpreter no longer matches the venv on the claim."""
+
+    SUPERSEDED = "superseded"
+    """Consolidated, and the image has since changed: the claim is probably
+    stale and is now the only thing keeping the old code alive."""
+
+    IMAGE_CHANGED = "image-changed"
+    """The image was upgraded under a live patch mount, so the pod is running
+    the claim's venv and not the new image's."""
+
+    UNREADABLE = "unreadable"
+    """The pod says it is patched and its manifest cannot be read."""
+
+    @property
+    def summary(self) -> str:
+        """One line for the status table."""
+        return {
+            PatchHealth.ACTIVE: "patched, base image unchanged",
+            PatchHealth.INTERPRETER_MISMATCH: "venv interpreter no longer matches",
+            PatchHealth.SUPERSEDED: "consolidated; claim is probably stale",
+            PatchHealth.IMAGE_CHANGED: "image upgraded under the patch mount",
+            PatchHealth.UNREADABLE: "marked patched, manifest unreadable",
+        }[self]
+
+    @property
+    def ok(self) -> bool:
+        """Whether this needs somebody's attention today."""
+        return self is PatchHealth.ACTIVE
+
+
+def assess(
+    manifest: PatchManifest | None,
+    *,
+    current_digest: str,
+    probe: InterpreterProbe | None = None,
+) -> tuple[PatchHealth, str]:
+    """Judge one patched pod. Pure, because this is the whole feature.
+
+    The order is deliberate: a broken interpreter beats everything, because the
+    pod is not running what anyone thinks it is; a consolidated patch on a
+    changed image beats a merely-changed image, because that one has a known
+    remedy (retire the claim).
+    """
+    if manifest is None:
+        return (
+            PatchHealth.UNREADABLE,
+            "the pod carries the patched annotation but no readable manifest; "
+            "provenance for whatever is on the claim has been lost",
+        )
+    if probe is not None and not probe.ok:
+        return (
+            PatchHealth.INTERPRETER_MISMATCH,
+            f"the venv's interpreter would not run in this container: "
+            f"{probe.detail}. The claim's bin/python points into the image, and "
+            "an image change can move it.",
+        )
+    if probe is not None and probe.version is not None:
+        warning = interpreter_warning(manifest.interpreter, probe.version)
+        if warning is not None:
+            return PatchHealth.INTERPRETER_MISMATCH, warning
+    changed = bool(
+        manifest.base_image_digest
+        and current_digest
+        and manifest.base_image_digest != current_digest
+    )
+    if changed and manifest.consolidated_branch is not None:
+        return (
+            PatchHealth.SUPERSEDED,
+            f"the patch was consolidated onto {manifest.consolidated_branch} and "
+            "the image has changed since. If the rebuild included it, the claim "
+            "is now shadowing the released fix with an older copy of it: retire "
+            "the claim and turn patchVenv off.",
+        )
+    if changed:
+        return (
+            PatchHealth.IMAGE_CHANGED,
+            f"deployed image is {current_digest.split('@')[-1][:19]}, the patch "
+            f"was made against {manifest.base_image_digest.split('@')[-1][:19]}. "
+            "The claim's venv shadows the new image's, so the upgrade has not "
+            "reached the running code.",
+        )
+    return PatchHealth.ACTIVE, f"{manifest.ahead} commit(s) ahead of the image"
+
+
+@dataclass(frozen=True)
+class PatchRow:
+    """One patched pod, as ``status`` reports it."""
+
+    pod: PodRef
+    manifest: PatchManifest | None
+    health: PatchHealth
+    detail: str
+    current_image: str = ""
+    notes: tuple[str, ...] = ()
+
+
+def status_rows(
+    kube: Kubectl, *, probe: bool = True, python: str = DEFAULT_PYTHON
+) -> list[PatchRow]:
+    """Every patched pod in the namespace, with its drift and its risks.
+
+    The manifest travels in an annotation so this is one ``get pods`` for the
+    whole namespace. The interpreter is only probed when the image has moved,
+    which is the one case where it can have broken — an exec per pod on every
+    status call would make the command too slow to run habitually, and a status
+    command nobody runs is how silently-diverged pods happen.
+    """
+    result = kube.run("get", "pods", "-o", "json")
+    rows: list[PatchRow] = []
+    for item in _as_list(_load_json(result.stdout).get("items")):
+        pod_json = as_dict(item)
+        metadata = as_dict(pod_json.get("metadata"))
+        annotations = as_dict(metadata.get("annotations"))
+        if _as_str(annotations.get(PATCHED_ANNOTATION)) != "true":
+            continue
+        name = _as_str(metadata.get("name"))
+        if name is None:
+            continue
+        pod = PodRef(kube.namespace, name)
+        notes: list[str] = []
+        manifest: PatchManifest | None
+        try:
+            manifest = manifest_from_pod(pod_json)
+        except (PatchError, ValueError) as error:
+            manifest = None
+            notes.append(str(error))
+        container = manifest.container if manifest is not None else ""
+        container = container or _application_container(pod_json, None)
+        image, digest = _image_of(pod_json, container)
+        measured: InterpreterProbe | None = None
+        if (
+            probe
+            and manifest is not None
+            and manifest.base_image_digest
+            and digest
+            and manifest.base_image_digest != digest
+        ):
+            measured = probe_interpreter(kube, name, container, python=python)
+        health, detail = assess(manifest, current_digest=digest, probe=measured)
+        if manifest is not None and manifest.stale_schema:
+            notes.append(
+                f"manifest is schema version {manifest.schema_version}; it was "
+                "written by an older podbench and some provenance may be absent"
+            )
+        rows.append(
+            PatchRow(
+                pod=pod,
+                manifest=manifest,
+                health=health,
+                detail=detail,
+                current_image=image,
+                notes=tuple(notes),
+            )
+        )
+    return rows
+
+
+def format_status(rows: Sequence[PatchRow]) -> str:
+    """The status report. Empty is a real and reassuring answer, so say it."""
+    if not rows:
+        return "no patched pods in this namespace"
+    lines: list[str] = []
+    for row in rows:
+        manifest = row.manifest
+        ahead = manifest.ahead if manifest is not None else 0
+        commit = manifest.commit[:7] if manifest is not None else "unknown"
+        flag = " " if row.health.ok else "!"
+        lines.append(
+            f"{flag} {row.pod}  +{ahead} commit(s)  {commit}  "
+            f"{row.health.value} — {row.health.summary}"
+        )
+        lines.append(f"    {row.detail}")
+        if manifest is not None:
+            lines.append(
+                f"    base {manifest.base_commit[:7] or '?'} · "
+                f"{manifest.author or 'unknown author'} · "
+                f"{manifest.timestamp or 'no timestamp'}"
+            )
+            for entry in manifest.commits:
+                lines.append(f"      {entry.short}  {entry.subject}")
+            if ahead > len(manifest.commits):
+                lines.append(
+                    f"      … and {ahead - len(manifest.commits)} more "
+                    "(the manifest keeps the most recent)"
+                )
+        for note in row.notes:
+            lines.append(f"    note: {note}")
+    return "\n".join(lines)
+
+
+# -- the workflow ----------------------------------------------------------
+
+
+def annotate(kube: Kubectl, target: PatchTarget, manifest: PatchManifest) -> str:
+    """Record the provenance where the reschedule cannot lose it.
+
+    A *merge* patch, and deliberately the opposite choice from the Service
+    cutover in :mod:`podbench.dev`: there a merge unioned two selectors and
+    silently kept the old pod in the endpointslice, whereas here union is
+    exactly right — podbench is adding three annotations to whatever else the
+    object carries, not replacing the map.
+    """
+    annotations = manifest_annotations(manifest)
+    if target.workload_kind in ("deployment", "statefulset"):
+        kube.patch(
+            cast(str, target.workload_kind),
+            cast(str, target.workload_name),
+            {"spec": {"template": {"metadata": {"annotations": annotations}}}},
+            patch_type="merge",
+        )
+        return (
+            f"annotated {target.workload} pod template; the edit rolls the "
+            "workload, which is how the patch is picked up"
+        )
+    kube.patch(
+        "pod",
+        target.pod.name,
+        {"metadata": {"annotations": annotations}},
+        patch_type="merge",
+    )
+    return (
+        f"annotated pod {target.pod.name} directly — it has no pod template, so "
+        "this provenance is lost if the pod is ever replaced"
+    )
+
+
+def _identity(store: PatchStore, checkout: str, author: str | None) -> tuple[str, str]:
+    """The name and email a patch commit is made under.
+
+    Read from the checkout's git config when the caller does not say, so the
+    provenance is whoever the seat is configured as rather than a constant. The
+    fallback is deliberately obviously-not-a-person.
+    """
+    if author is not None:
+        name, _, email = author.partition("<")
+        return name.strip() or "podbench", email.strip().rstrip(">") or "podbench@local"
+    configured = store.run(
+        ["git", "-C", checkout, "config", "--get", "user.email"], check=False
+    )
+    email = configured.stdout.strip()
+    named = store.run(
+        ["git", "-C", checkout, "config", "--get", "user.name"], check=False
+    )
+    name = named.stdout.strip()
+    return name or "podbench", email or "podbench@local"
+
+
+def _now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def init(
+    kube: Kubectl,
+    store: PatchStore,
+    target: PatchTarget,
+    *,
+    venv: str,
+    repo: str,
+    ref: str | None = None,
+    base_commit: str | None = None,
+    author: str | None = None,
+    install: bool = True,
+) -> tuple[PatchManifest, list[str]]:
+    """Prepare a claim: verify the seed, put the source on it, record the base.
+
+    The seed is *verified*, never performed. Once the claim is mounted over the
+    venv path the image's own venv is hidden behind it in every container, so
+    the only moment it can be copied is before the application container starts
+    — which is an initContainer's job, and ``--print-values`` emits one. A
+    podbench that offered to seed after the fact would be offering to copy a
+    directory it cannot see.
+    """
+    actions: list[str] = []
+    config = store.read_text(f"{venv.rstrip('/')}/pyvenv.cfg")
+    if config is None:
+        raise PatchError(
+            f"{venv}/pyvenv.cfg is missing: the claim is mounted but was never "
+            "seeded from the image's venv. Seeding has to happen in an "
+            "initContainer, before the mount hides the image's copy — run "
+            "`podbench patch --print-values` for the snippet, and note "
+            "that the initContainer must use the application's own image."
+        )
+    settings = parse_pyvenv_cfg(config)
+    interpreter = normalise_interpreter(
+        settings.get("version") or settings.get("version_info") or ""
+    )
+    actions.append(f"claim seeded, venv interpreter {interpreter or 'unknown'}")
+
+    checkout = checkout_path(venv)
+    if store.exists(f"{checkout}/.git"):
+        actions.append(f"checkout already present at {checkout}")
+    else:
+        clone = ["git", "clone"]
+        if ref is not None:
+            clone += ["--branch", ref]
+        clone += [repo, checkout]
+        store.run(clone)
+        actions.append(f"cloned {repo} to {checkout}")
+
+    resolved = (
+        base_commit
+        or store.run(["git", "-C", checkout, "rev-parse", "HEAD"]).stdout.strip()
+    )
+
+    if install:
+        actions.append(_install(kube, target, venv, checkout))
+
+    name, email = _identity(store, checkout, author)
+    manifest = PatchManifest(
+        venv=venv,
+        checkout=checkout,
+        repo=repo,
+        base_image=target.image,
+        base_image_digest=target.image_digest,
+        interpreter=interpreter,
+        container=target.container,
+        commit=resolved,
+        base_commit=resolved,
+        author=f"{name} <{email}>",
+        timestamp=_now(),
+        ahead=0,
+        commits=(),
+    )
+    write_manifest(store, manifest)
+    actions.append(f"wrote {manifest_path(venv)}")
+    actions.append(annotate(kube, target, manifest))
+    return manifest, actions
+
+
+def _install(kube: Kubectl, target: PatchTarget, venv: str, checkout: str) -> str:
+    argv = install_argv(venv, checkout)
+    result = kube.exec_(target.pod.name, argv, container=target.container, check=False)
+    if result.returncode != 0:
+        raise PatchError(
+            f"editable install failed in container {target.container}: "
+            f"{result.stderr.strip() or result.stdout.strip()}. It has to run "
+            "there and not in the seat: the venv's bin/python is a symlink into "
+            "the application image. If that image has no pip, install once at "
+            "build time and re-run with --no-install."
+        )
+    return f"editable install of {checkout} into {venv}"
+
+
+def apply_patch(
+    kube: Kubectl,
+    store: PatchStore,
+    target: PatchTarget,
+    *,
+    venv: str,
+    message: str,
+    author: str | None = None,
+    bounce: bool = True,
+) -> tuple[PatchManifest, list[str]]:
+    """Commit what is in the checkout, reinstall if needed, and roll the pod.
+
+    The commit is not optional and not a convenience: a patch that is only a
+    working-tree edit has no sha, and without a sha the manifest cannot say what
+    is running and ``consolidate`` has nothing to push.
+    """
+    actions: list[str] = []
+    manifest = read_manifest(store, venv)
+    if manifest is None:
+        raise PatchError(
+            "no patch manifest on the claim: run `patch init` first so the "
+            "commit this patch diverges from is recorded"
+        )
+    checkout = manifest.checkout or checkout_path(manifest.venv)
+
+    dirty = store.run(["git", "-C", checkout, "status", "--porcelain"]).stdout.strip()
+    if not dirty:
+        actions.append("working tree clean; nothing new to commit")
+    else:
+        store.run(["git", "-C", checkout, "add", "-A"])
+        name, email = _identity(store, checkout, author)
+        store.run(
+            [
+                "git",
+                "-C",
+                checkout,
+                "-c",
+                f"user.name={name}",
+                "-c",
+                f"user.email={email}",
+                "commit",
+                "-m",
+                message,
+            ]
+        )
+        actions.append(f"committed as {name} <{email}>")
+
+    head = store.run(["git", "-C", checkout, "rev-parse", "HEAD"]).stdout.strip()
+    commits = drift_commits(store, checkout, manifest.base_commit)
+
+    # From what the manifest last recorded to HEAD, not from what this apply
+    # happened to commit: a hand commit made in the seat moves HEAD with the
+    # tree clean, and the question "is the .dist-info still valid?" is about the
+    # commits either way.
+    changed = changed_paths(store, checkout, manifest.commit, head)
+    if metadata_changed(changed):
+        actions.append(_install(kube, target, manifest.venv, checkout))
+    elif changed:
+        actions.append("no packaging metadata changed; editable install still valid")
+
+    updated_author = manifest.author
+    if dirty:
+        name, email = _identity(store, checkout, author)
+        updated_author = f"{name} <{email}>"
+    manifest = replace(
+        manifest,
+        commit=head,
+        author=updated_author,
+        timestamp=_now(),
+        ahead=len(commits),
+        commits=commits[:MAX_RECORDED_COMMITS],
+        base_image=target.image or manifest.base_image,
+        base_image_digest=target.image_digest or manifest.base_image_digest,
+        schema_version=MANIFEST_VERSION,
+    )
+    write_manifest(store, manifest)
+    actions.append(f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}")
+    actions.append(annotate(kube, target, manifest))
+
+    if bounce:
+        actions.append(_bounce(kube, target))
+    else:
+        actions.append("not bounced; the running process still has the old code")
+    return manifest, actions
+
+
+def _bounce(kube: Kubectl, target: PatchTarget) -> str:
+    """Make the kubelet pick the patch up.
+
+    With a pod template the annotation edit has already rolled the workload, so
+    there is nothing more to do — and doing more would race the rollout. A bare
+    pod has to be deleted, and deleting a pod nobody owns destroys it, so that
+    one is refused rather than done helpfully.
+    """
+    if target.workload_kind in ("deployment", "statefulset"):
+        return "the annotation edit rolls the workload; watch `kubectl rollout status`"
+    if target.workload_kind is None:
+        return (
+            "not bounced: this pod has no controller, so deleting it would not "
+            "bring it back. Restart the application process yourself — with the "
+            "venv on the claim, the restart is the relaunch."
+        )
+    kube.delete_pod(target.pod.name)
+    return f"deleted pod {target.pod.name}; {target.workload} will replace it"
+
+
+def consolidate(
+    kube: Kubectl,
+    store: PatchStore,
+    target: PatchTarget,
+    *,
+    venv: str,
+    branch: str,
+    remote: str = "origin",
+    push: bool = True,
+) -> tuple[PatchManifest, list[str]]:
+    """Push the claim's checkout as a branch, ready for a real rebuild.
+
+    The PR itself is not opened here: that needs a forge client podbench does
+    not depend on, and a printed ``gh pr create`` is one paste. What matters is
+    that the branch exists and that the manifest — and therefore ``status`` —
+    records that this patch is on its way into an image, because that is what
+    turns a stale claim from a mystery into a named condition.
+    """
+    actions: list[str] = []
+    manifest = read_manifest(store, venv)
+    if manifest is None:
+        raise PatchError("no patch manifest on the claim; nothing to consolidate")
+    checkout = manifest.checkout or checkout_path(manifest.venv)
+    commits = drift_commits(store, checkout, manifest.base_commit)
+    if not commits:
+        raise PatchError(
+            f"the checkout is not ahead of {manifest.base_commit[:7]}: there is "
+            "no patch to consolidate. If the fix is already in the image, retire "
+            "the claim instead — see `patch status`."
+        )
+    if push:
+        store.run(["git", "-C", checkout, "push", remote, f"HEAD:refs/heads/{branch}"])
+        actions.append(f"pushed {len(commits)} commit(s) to {remote}/{branch}")
+    else:
+        actions.append(f"would push {len(commits)} commit(s) to {remote}/{branch}")
+
+    manifest = replace(
+        manifest,
+        consolidated_branch=branch,
+        timestamp=_now(),
+        ahead=len(commits),
+        commits=commits[:MAX_RECORDED_COMMITS],
+        schema_version=MANIFEST_VERSION,
+    )
+    write_manifest(store, manifest)
+    actions.append(annotate(kube, target, manifest))
+    actions.append(_retirement_checklist(branch, manifest, target))
+    return manifest, actions
+
+
+def _retirement_checklist(
+    branch: str, manifest: PatchManifest, target: PatchTarget
+) -> str:
+    workload = target.workload or f"pod/{target.pod.name}"
+    return "\n".join(
+        [
+            "",
+            "next, in order — the claim is now the only copy of this fix:",
+            f"  1. gh pr create --head {branch} --title 'consolidate patch "
+            f"{manifest.commit[:7]}'",
+            "  2. merge, and let CI build and publish the image",
+            f"  3. roll {workload} onto the new image and confirm it is healthy",
+            "  4. remove the volume/volumeMount from the application's values",
+            "  5. set patchVenv.enabled=false and delete the claim",
+            "",
+            "until step 5 the claim keeps shadowing the image's venv, and "
+            "`patch status` will report this pod as superseded.",
+        ]
+    )
+
+
+# -- helm values -----------------------------------------------------------
+
+
+def values_snippet(
+    app: str,
+    venv: str,
+    *,
+    image: str = "<the application's own image>",
+    size: str = "2Gi",
+    volumes_key: str = "extraVolumes",
+    mounts_key: str = "extraVolumeMounts",
+    init_key: str = "initContainers",
+) -> str:
+    """The two values snippets Patch mode needs, ready to paste.
+
+    Kept as small as it can be, because this is the *only* deploy-time
+    cooperation podbench ever asks for and every line of it is a line somebody
+    has to defend in review. The key names are parameters because charts differ
+    on what they call their passthroughs; the shapes underneath are plain
+    Kubernetes and do not.
+
+    The initContainer is the load-bearing part and the part that looks
+    redundant. It mounts the claim at a *staging* path, which is the only moment
+    the image's own venv is still visible: once the claim is mounted over the
+    venv path, the thing that has to be copied is behind the mount.
+    """
+    claim = f"{app}-venv"
+    return "\n".join(
+        [
+            f"# 1. values for the podbench release — creates the claim {claim}",
+            "patchVenv:",
+            "  enabled: true",
+            "  claims:",
+            f"    - name: {app}",
+            f"      size: {size}",
+            "",
+            f"# 2. values for {app}'s own chart — mounts it over {venv}",
+            "#    Add the flag your chart already has for these three lists; the",
+            "#    names below are the common convention, not a requirement.",
+            f"{volumes_key}:",
+            "  - name: podbench-patch-venv",
+            "    persistentVolumeClaim:",
+            f"      claimName: {claim}",
+            f"{mounts_key}:",
+            "  - name: podbench-patch-venv",
+            f"    mountPath: {venv}",
+            f"{init_key}:",
+            "  # Seeds an empty claim from the image's venv. It mounts the claim",
+            "  # somewhere else on purpose: at this point the image's venv is",
+            f"  # still visible at {venv}, and after the main mount it is not.",
+            "  # The image must be the application's own, or the venv is the",
+            "  # wrong one.",
+            "  - name: podbench-seed-venv",
+            f"    image: {image}",
+            '    command: ["sh", "-c"]',
+            "    args:",
+            "      - test -e /podbench-seed/pyvenv.cfg || cp -a "
+            f"{venv.rstrip('/')}/. /podbench-seed/",
+            "    volumeMounts:",
+            "      - name: podbench-patch-venv",
+            "        mountPath: /podbench-seed",
+            "",
+            "# Single replica only: the claim is ReadWriteOnce and one checkout",
+            "# cannot serve two writers. Take the flag off again — and delete the",
+            "# claim — once `patch consolidate` has been through the pipeline.",
+        ]
+    )
+
+
+# -- JSON helpers ----------------------------------------------------------
+
+
+def _load_json(text: str) -> dict[str, Any]:
+    parsed: object = json.loads(text)
+    return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else {}
+
+
+def _get_json(kube: Kubectl, kind: str, name: str) -> dict[str, Any]:
+    return _load_json(kube.run("get", kind, name, "-o", "json").stdout)
+
+
+def _as_list(value: Any) -> list[Any]:
+    return cast(list[Any], value) if isinstance(value, list) else []
+
+
+def _as_str(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+# -- CLI -------------------------------------------------------------------
+
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("-n", "--namespace", default=None)
+    parser.add_argument("--context", default=None)
+    parser.add_argument("--kubectl", default="kubectl", help="kubectl binary to use")
+
+
+def _add_target(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("target", help="pod/NAME, deployment/NAME or statefulset/NAME")
+    parser.add_argument(
+        "--venv",
+        required=True,
+        help="the mountPath the claim is mounted at, i.e. the application's venv path",
+    )
+    parser.add_argument(
+        "--container", default=None, help="the application container (default: first)"
+    )
+    parser.add_argument(
+        "--seat",
+        default=None,
+        help="the podbench container that mounts the same claim "
+        f"(default: the running {CONTAINER_BASE}-N)",
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="reach the claim through this process's own filesystem instead of "
+        "through the seat — for running the command from inside the seat's own "
+        "terminal, where the claim is already mounted at --venv",
+    )
+    parser.add_argument("--author", default=None, help='"Name <email>" for the commit')
+    _add_common(parser)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        # `podbench patch`, not `kubectl podbench patch`: the plugin entry point
+        # hands argv to launcher.main, whose subparsers do not include this verb.
+        prog="podbench patch",
+        description=(
+            "Durable in-place fixes: a venv on a claim, every change a commit, "
+            "and a status command that will not let a patched pod go unnoticed."
+        ),
+    )
+    parser.add_argument(
+        "--print-values",
+        action="store_true",
+        help="emit the helm values an application's chart needs, and exit",
+    )
+    parser.add_argument(
+        "--app", default=None, help="application name, for --print-values"
+    )
+    parser.add_argument(
+        "--venv-path",
+        default=None,
+        help="the application's venv path, for --print-values",
+    )
+    parser.add_argument("--size", default="2Gi", help="claim size, for --print-values")
+    parser.add_argument(
+        "--app-image",
+        default="<the application's own image>",
+        help="image the seeding initContainer runs, for --print-values",
+    )
+    # Not required: `patch --print-values` is a legitimate whole command line.
+    sub = parser.add_subparsers(dest="command", required=False)
+
+    init_parser = sub.add_parser(
+        "init", help="verify the seeded claim, clone the source, editable-install"
+    )
+    init_parser.add_argument("--repo", required=True, help="git URL to clone")
+    init_parser.add_argument("--ref", default=None, help="branch or tag to clone")
+    init_parser.add_argument(
+        "--base-commit",
+        default=None,
+        help="the commit the released image was built from (default: cloned HEAD)",
+    )
+    init_parser.add_argument(
+        "--no-install",
+        dest="install",
+        action="store_false",
+        help="skip the editable install (the application image has no pip)",
+    )
+    _add_target(init_parser)
+
+    apply_parser = sub.add_parser(
+        "apply", help="commit the change on the claim and roll the workload"
+    )
+    apply_parser.add_argument("-m", "--message", required=True, help="commit message")
+    apply_parser.add_argument(
+        "--no-bounce",
+        dest="bounce",
+        action="store_false",
+        help="leave the running process alone; the patch takes effect on the "
+        "next restart",
+    )
+    _add_target(apply_parser)
+
+    status_parser = sub.add_parser(
+        "status", help="every patched pod in the namespace, and its drift"
+    )
+    status_parser.add_argument(
+        "--no-probe",
+        dest="probe",
+        action="store_false",
+        help="do not exec to measure the interpreter of a changed image",
+    )
+    status_parser.add_argument(
+        "--python", default=DEFAULT_PYTHON, help="interpreter to measure"
+    )
+    _add_common(status_parser)
+
+    consolidate_parser = sub.add_parser(
+        "consolidate", help="push the claim's checkout as a branch for the rebuild"
+    )
+    consolidate_parser.add_argument("--branch", required=True, help="branch to push")
+    consolidate_parser.add_argument("--remote", default="origin")
+    consolidate_parser.add_argument(
+        "--dry-run",
+        dest="push",
+        action="store_false",
+        help="say what would be pushed without pushing it",
+    )
+    _add_target(consolidate_parser)
+    return parser
+
+
+def _store_for(kube: Kubectl, parsed: argparse.Namespace, pod: str) -> PatchStore:
+    if cast(bool, parsed.local):
+        return LocalStore()
+    return PodStore(
+        kube=kube,
+        pod=pod,
+        container=seat_container(kube, pod, cast(str | None, parsed.seat)),
+    )
+
+
+def _report(actions: Sequence[str]) -> int:
+    for action in actions:
+        print(action)
+    return 0
+
+
+def _cmd_init(kube: Kubectl, parsed: argparse.Namespace) -> int:
+    target = resolve_target(
+        kube, cast(str, parsed.target), container=cast(str | None, parsed.container)
+    )
+    store = _store_for(kube, parsed, target.pod.name)
+    _, actions = init(
+        kube,
+        store,
+        target,
+        venv=cast(str, parsed.venv),
+        repo=cast(str, parsed.repo),
+        ref=cast(str | None, parsed.ref),
+        base_commit=cast(str | None, parsed.base_commit),
+        author=cast(str | None, parsed.author),
+        install=cast(bool, parsed.install),
+    )
+    return _report(actions)
+
+
+def _cmd_apply(kube: Kubectl, parsed: argparse.Namespace) -> int:
+    target = resolve_target(
+        kube, cast(str, parsed.target), container=cast(str | None, parsed.container)
+    )
+    store = _store_for(kube, parsed, target.pod.name)
+    _, actions = apply_patch(
+        kube,
+        store,
+        target,
+        venv=cast(str, parsed.venv),
+        message=cast(str, parsed.message),
+        author=cast(str | None, parsed.author),
+        bounce=cast(bool, parsed.bounce),
+    )
+    return _report(actions)
+
+
+def _cmd_consolidate(kube: Kubectl, parsed: argparse.Namespace) -> int:
+    target = resolve_target(
+        kube, cast(str, parsed.target), container=cast(str | None, parsed.container)
+    )
+    store = _store_for(kube, parsed, target.pod.name)
+    _, actions = consolidate(
+        kube,
+        store,
+        target,
+        venv=cast(str, parsed.venv),
+        branch=cast(str, parsed.branch),
+        remote=cast(str, parsed.remote),
+        push=cast(bool, parsed.push),
+    )
+    return _report(actions)
+
+
+def _cmd_status(kube: Kubectl, parsed: argparse.Namespace) -> int:
+    rows = status_rows(
+        kube, probe=cast(bool, parsed.probe), python=cast(str, parsed.python)
+    )
+    print(format_status(rows))
+    return 0 if all(row.health.ok for row in rows) else 1
+
+
+def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
+    """Entry point for ``podbench patch <subcommand>``.
+
+    ``status`` exits non-zero when any pod needs attention, so that it is usable
+    as a shutdown-checklist assertion — "no pod is still carrying an unretired
+    patch" is a thing a facility wants to be able to test, not read.
+    """
+    argv = list(sys.argv[1:] if args is None else args)
+    # The central dispatcher keeps the verb in argv; this parser's subcommands
+    # are the *sub*-verbs, so the leading `patch` is consumed here.
+    if argv and argv[0] == "patch":
+        argv = argv[1:]
+    parser = _build_parser()
+    parsed = parser.parse_args(argv)
+
+    if cast(bool, parsed.print_values):
+        app = cast(str | None, parsed.app)
+        venv = cast(str | None, parsed.venv_path)
+        if app is None or venv is None:
+            print(
+                "podbench: --print-values needs --app NAME and --venv-path PATH",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            values_snippet(
+                app,
+                venv,
+                image=cast(str, parsed.app_image),
+                size=cast(str, parsed.size),
+            )
+        )
+        return 0
+
+    command = cast(str | None, parsed.command)
+    if command is None:
+        parser.print_help()
+        return 2
+
+    namespace = cast(str | None, parsed.namespace)
+    context = cast(str | None, parsed.context)
+    binary = cast(str, parsed.kubectl)
+    if namespace is None:
+        namespace = current_namespace(binary=binary, context=context, runner=runner)
+    kube = Kubectl(namespace, context=context, binary=binary, runner=runner)
+
+    try:
+        if command == "init":
+            return _cmd_init(kube, parsed)
+        if command == "apply":
+            return _cmd_apply(kube, parsed)
+        if command == "consolidate":
+            return _cmd_consolidate(kube, parsed)
+        return _cmd_status(kube, parsed)
+    except (PatchError, KubectlError, ValueError) as error:
+        print(f"podbench: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

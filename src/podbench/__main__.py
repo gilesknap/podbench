@@ -56,6 +56,12 @@ def _launcher(args: Sequence[str]) -> int:
     return run(args)
 
 
+def _patch(args: Sequence[str]) -> int:
+    from .patch import main as run
+
+    return run(args)
+
+
 #: Verb -> (handler, keep_verb). ``keep_verb`` is False for the two modules whose
 #: parsers were written before this dispatcher existed and so do not expect their
 #: own name in argv; the others own a subparser keyed on it and need it kept.
@@ -74,10 +80,19 @@ ENTRY_POINTS: dict[str, tuple[Callable[[Sequence[str]], int], bool]] = {
     "status": (_launcher, True),
     "list": (_launcher, True),
     "dev": (_dev, True),
+    # `patch status` is a *sub*-verb of this parser and does not collide with
+    # the launcher's own `status`.
+    "patch": (_patch, True),
 }
 
 _IN_POD = ("agent", "capreport", "pids", "dbg", "dev-bootstrap", "run", "stop")
-_LAUNCHER = ("attach", "ssh-config", "status", "list", "dev")
+_LAUNCHER = ("attach", "ssh-config", "status", "list", "dev", "patch")
+#: The subset the `kubectl-podbench` plugin routes. `kubectl_plugin` hands argv
+#: to `launcher.main`, whose subparsers are these four and no others, so `dev`
+#: and `patch` are reachable as `podbench <verb>` only. Advertising them as
+#: `kubectl podbench <verb>` would print a verb that exits 2 on `invalid
+#: choice`, which is why this tuple is separate from `_LAUNCHER`.
+_PLUGIN = ("attach", "ssh-config", "status", "list")
 
 
 def _build_parser() -> ArgumentParser:
@@ -88,9 +103,12 @@ def _build_parser() -> ArgumentParser:
             "--help` for a verb's own options."
         ),
         epilog=(
-            "cluster-side verbs (also reachable as `kubectl podbench <verb>`): "
+            "cluster-side verbs: "
             + ", ".join(_LAUNCHER)
-            + "\nin-pod verbs: "
+            + " (of these, "
+            + ", ".join(_PLUGIN)
+            + " are also reachable as `kubectl podbench <verb>`); "
+            + "in-pod verbs: "
             + ", ".join(_IN_POD)
         ),
     )
