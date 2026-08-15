@@ -1,0 +1,1091 @@
+# S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder
+
+**Verdict:** PASS
+**Date:** 2026-08-15  (cluster: k3s v1.34.6+k3s1, mixed arm64/amd64)
+
+The degraded path works and is genuinely useful, `capreport` names every blocker
+correctly in all tested configurations, and the capability ladder's admission
+behaviour is exactly as the brief hoped — but **four of the brief's assumptions are
+wrong**, two of them badly enough to change the implementation plan. See
+*Deviations*.
+
+---
+
+## What was tested
+
+Everything ran in namespace `podbench-s5` on a real k3s cluster, against target
+pods running a Python process as **UID 1000**.
+
+| # | Task | Result |
+|---|------|--------|
+| 1 | Non-root (`runAsUser:1000`) long-lived target pod | done (`victim`, `victim2`, `victim3`, `victim4`) |
+| 2 | Ephemeral container, no caps, `runAsUser:1000`; verify real CapEff | **CapEff = 0** — and see Deviation 1 |
+| 3 | Which `/proc/<pid>/*` reads survive at same UID, zero caps | full matrix below; sysroot **works** |
+| 4 | `gdb -p <pid>` same UID, no cap, yama=1 | **DENIED**, exact text captured |
+| 5 | Descendant exemption | works for **true descendants only** — see Deviation 3 |
+| 6 | `gdb ./binary` (launch, not attach), no cap | **works**, full source-level debugging |
+| 7 | `capreport` diagnostic, 3 required configs | all three verdicts correct; 2 bonus configs |
+| 8 | PSA `restricted` admission behaviour of the ladder | exact rejection strings captured; no-cap rung **is** admitted |
+| 9 | `ptrace_scope` per node | **not uniform** — see Deviation 4 |
+
+Configurations used throughout (all ephemeral containers with
+`targetContainerName: app`, so they share the target's PID namespace):
+
+| id | securityContext | uid | CapEff |
+|----|-----------------|-----|--------|
+| `dbg-a` | `runAsUser:0` + `capabilities.add:[SYS_PTRACE]` | 0 | `00000000a80c25fb` (bit 19 **set**) |
+| `dbg-b` | `runAsUser:1000`, no capabilities | 1000 | `0000000000000000` |
+| `dbg-c` | `runAsUser:0`, no capabilities | 0 | `00000000a80425fb` (bit 19 **clear**) |
+| `rung2` | full PSA-`restricted`-compliant, `runAsUser:1000` | 1000 | `0000000000000000`, `Seccomp:2`, `NoNewPrivs:1` |
+
+---
+
+## Exact commands that worked
+
+### Setup — target pod running as UID 1000 with a shared toolbox volume
+
+```yaml
+# victim2.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: victim2
+  namespace: podbench-s5
+spec:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  volumes:
+  - name: tools
+    emptyDir: {}
+  containers:
+  - name: app
+    image: docker.io/library/python:3.12-slim
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+    - {name: tools, mountPath: /tools}
+    env:
+    - name: PODBENCH_SECRET_MARKER
+      value: "s5-environ-canary"
+    command: ["python3","-u","-c"]
+    args:
+    - |
+      import time,os
+      print("victim2 pid",os.getpid(),"uid",os.getuid(),flush=True)
+      buf = bytearray(b"PODBENCH_HEAP_CANARY" * 100)
+      while True:
+          time.sleep(5)
+```
+
+```bash
+kubectl create ns podbench-s5
+kubectl apply -f victim2.yaml
+kubectl -n podbench-s5 wait --for=condition=Ready pod/victim2 --timeout=170s
+```
+
+### Adding ephemeral containers deterministically (do NOT use `kubectl debug` for this)
+
+`kubectl debug --custom` **merges** your JSON with the selected profile, and the
+default profile adds `SYS_PTRACE` behind your back (Deviation 2). To control the
+spec exactly, POST to the `ephemeralcontainers` subresource:
+
+```python
+#!/usr/bin/env python3
+# addec.py <ns> <pod> <json-file-with-one-ephemeralContainer>
+import json, subprocess, sys, tempfile, os
+ns, pod, ecfile = sys.argv[1], sys.argv[2], sys.argv[3]
+cur = json.loads(subprocess.run(
+    ["kubectl","-n",ns,"get","pod",pod,"--subresource=ephemeralcontainers","-o","json"],
+    capture_output=True, text=True, check=True).stdout)
+new = json.load(open(ecfile))
+cur.setdefault("spec",{}).setdefault("ephemeralContainers",[])
+cur["spec"]["ephemeralContainers"] = [c for c in cur["spec"]["ephemeralContainers"]
+                                       if c["name"] != new["name"]] + [new]
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    json.dump(cur, f); p = f.name
+r = subprocess.run(["kubectl","replace","--raw",
+    f"/api/v1/namespaces/{ns}/pods/{pod}/ephemeralcontainers","-f",p],
+    capture_output=True, text=True)
+os.unlink(p)
+print("RC=", r.returncode); print("STDERR:", r.stderr.strip()[:4000])
+```
+
+```json
+// ec-dbg-b.json — the no-cap, same-UID fallback rung
+{
+  "name": "dbg-b",
+  "image": "docker.io/library/ubuntu:24.04",
+  "imagePullPolicy": "IfNotPresent",
+  "command": ["sleep","infinity"],
+  "targetContainerName": "app",
+  "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+  "volumeMounts": [{"name":"tools","mountPath":"/tools"}],
+  "terminationMessagePolicy": "File"
+}
+```
+
+```bash
+python3 addec.py podbench-s5 victim2 ec-dbg-b.json
+```
+
+### Staging gdb into the toolbox from a temporary root container
+
+Ephemeral containers **can** mount pod volumes. That is how a non-root debug
+container gets a toolchain it cannot `apt-get` for itself:
+
+```bash
+# root ephemeral container "toolbuild" (no targetContainerName needed)
+kubectl -n podbench-s5 exec victim2 -c toolbuild -- bash -c '
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends gdb gcc libc6-dev >/dev/null
+mkdir -p /tools/bin /tools/lib /tools/src
+cp /usr/bin/gdb /tools/bin/
+ldd /usr/bin/gdb | awk "{for(i=1;i<=NF;i++) if(\$i ~ /^\//) print \$i}" | sort -u \
+  | while read L; do cp -Lu "$L" /tools/lib/ 2>/dev/null || true; done
+cp -a /usr/lib/python3.12 /tools/          # REQUIRED - see Finding 9
+cp -a /usr/share/gdb /tools/
+chmod -R a+rX /tools'
+
+# then, from the non-root debug container:
+export LD_LIBRARY_PATH=/tools/lib PYTHONHOME=/tools PYTHONPATH=/tools/python3.12
+/tools/bin/gdb --data-directory=/tools/gdb --version
+```
+
+### The raw PTRACE_ATTACH probe (`ptprobe`) — capreport's contract is `"<rc> <errno> <text>"`
+
+```c
+/* podbench ptprobe: PTRACE_ATTACH probe. Prints "<rc> <errno> <text>" */
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+int main(int c, char **v) {
+  pid_t t; long r; int e, isc = (c > 1 && !strcmp(v[1], "child"));
+  if (c < 2) { fprintf(stderr, "usage: ptprobe <pid>|child\n"); return 2; }
+  if (isc) { t = fork(); if (t == 0) { for(;;) pause(); } }
+  else t = atoi(v[1]);
+  errno = 0; r = ptrace(PTRACE_ATTACH, t, 0, 0); e = errno;
+  printf("%ld %d %s\n", r, r ? e : 0, r ? strerror(e) : "OK");
+  if (!r) { int st; waitpid(t, &st, 0); ptrace(PTRACE_DETACH, t, 0, 0); }
+  if (isc) { kill(t, 9); waitpid(t, 0, 0); }
+  return r ? 1 : 0;
+}
+```
+
+### Task 3 — the read-path matrix
+
+```bash
+kubectl -n podbench-s5 exec victim2 -c dbg-b -- bash -c '
+T=1
+probe() { desc="$1"; shift; out=$("$@" 2>&1 >/dev/null); rc=$?
+  [ $rc -eq 0 ] && echo "OK      $desc" || echo "FAIL($rc) $desc :: $out"; }
+probe "readlink /proc/$T/root"   readlink /proc/$T/root
+probe "ls /proc/$T/root/etc"     ls /proc/$T/root/etc
+probe "cat /proc/$T/maps"        cat /proc/$T/maps
+probe "cat /proc/$T/environ"     cat /proc/$T/environ
+probe "cat /proc/$T/cmdline"     cat /proc/$T/cmdline
+probe "ls /proc/$T/fd"           ls /proc/$T/fd
+probe "readlink /proc/$T/exe"    readlink /proc/$T/exe
+probe "cat /proc/$T/syscall"     cat /proc/$T/syscall
+probe "dd /proc/$T/mem"          dd if=/proc/$T/mem bs=1 count=1'
+```
+
+### Task 4 — `gdb -p` at same UID, no capability, yama=1
+
+```bash
+kubectl -n podbench-s5 exec victim2 -c dbg-b -- bash -c '
+export LD_LIBRARY_PATH=/tools/lib PYTHONHOME=/tools PYTHONPATH=/tools/python3.12
+/tools/bin/gdb --data-directory=/tools/gdb -q -batch -p 1'
+```
+
+Exact output (exit 1):
+
+```
+Could not attach to process.  If your uid matches the uid of the target
+process, check the setting of /proc/sys/kernel/yama/ptrace_scope, or try
+again as the root user.  For more details, see /etc/sysctl.d/10-ptrace.conf
+ptrace: Inappropriate ioctl for device.
+```
+
+### Tasks 5 and 6 — descendant, sibling, opt-in, and gdb-launch
+
+```bash
+kubectl -n podbench-s5 exec victim2 -c dbg-b -- bash -c '
+export LD_LIBRARY_PATH=/tools/lib PYTHONHOME=/tools PYTHONPATH=/tools/python3.12
+G="/tools/bin/gdb --data-directory=/tools/gdb -q -batch"
+
+echo "### 5a SIBLING: shell starts loop, gdb (a sibling) attaches"
+/tools/bin/loop >/tmp/l1.log 2>&1 & S=$!; sleep 1
+$G -p $S -ex bt 2>&1; /tools/bin/ptprobe2 $S; kill -9 $S
+
+echo "### 5b DESCENDANT: probe forks a child then PTRACE_ATTACHes it"
+/tools/bin/ptprobe2 child
+
+echo "### 5c SIBLING that called prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)"
+/tools/bin/loop_optin >/tmp/l2.log 2>&1 & S2=$!; sleep 1
+$G -p $S2 -ex bt -ex "print counter" -ex detach 2>&1; kill -9 $S2
+
+echo "### 6 LAUNCH under gdb"
+$G -ex "break work" -ex run -ex bt -ex "print x" -ex kill /tools/bin/loop'
+```
+
+The opt-in target:
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/prctl.h>
+#ifndef PR_SET_PTRACER
+#define PR_SET_PTRACER 0x59616d61
+#endif
+#ifndef PR_SET_PTRACER_ANY
+#define PR_SET_PTRACER_ANY ((unsigned long)-1)
+#endif
+volatile int counter = 0;
+int work(int x) { return x * 2; }
+int main(void) {
+  int r = prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+  printf("loop_optin pid=%d uid=%d prctl(PR_SET_PTRACER,ANY)=%d\n",
+         getpid(), getuid(), r);
+  fflush(stdout);
+  while (1) { counter = work(counter + 1); sleep(1); }
+}
+```
+
+### Task 8 — PSA ladder test
+
+```bash
+kubectl label ns podbench-s5 pod-security.kubernetes.io/enforce=restricted --overwrite
+kubectl label ns podbench-s5 pod-security.kubernetes.io/enforce-version=latest --overwrite
+python3 addec.py podbench-s5 victim4 ec-rung1.json   # root + SYS_PTRACE  -> Forbidden
+python3 addec.py podbench-s5 victim4 ec-rung2.json   # no cap, uid 1000   -> admitted
+kubectl label ns podbench-s5 pod-security.kubernetes.io/enforce=baseline --overwrite
+python3 addec.py podbench-s5 victim4 ec-rung1.json   # root + SYS_PTRACE  -> Forbidden
+kubectl label ns podbench-s5 pod-security.kubernetes.io/enforce- \
+                             pod-security.kubernetes.io/enforce-version-
+```
+
+### Task 9 — per-node Yama survey
+
+```bash
+for n in node01 node02 node03 node04 nuc2 ws03; do
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata: {name: yama-$n, namespace: podbench-s5}
+spec:
+  nodeName: $n
+  restartPolicy: Never
+  tolerations: [{operator: "Exists"}]
+  containers:
+  - name: p
+    image: docker.io/library/busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["sh","-c","echo NODE=$n arch=\$(uname -m) kernel=\$(uname -r) yama=\$(cat /proc/sys/kernel/yama/ptrace_scope 2>&1); sleep 5"]
+EOF
+done
+for n in node01 node02 node03 node04 nuc2 ws03; do kubectl -n podbench-s5 logs yama-$n; done
+```
+
+---
+
+## Findings
+
+### 1. `runAsUser: 1000` + `capabilities.add: [SYS_PTRACE]` silently yields **CapEff = 0**
+
+This is the single most dangerous configuration in the whole spike, and it is the
+exact shape that `kubectl debug --custom '{"securityContext":{"runAsUser":1000}}'`
+produces by default. Actual `/proc/self/status`:
+
+```
+Uid:	1000	1000	1000	1000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80c25fb      <-- SYS_PTRACE (bit 19) present in BOUNDING only
+CapAmb:	0000000000000000
+```
+
+The kernel grants file/ambient capabilities to non-root UIDs only via the ambient
+set, which the CRI does not populate. So `capabilities.add` on a non-root container
+lands in the **bounding** set and nowhere else. The pod is admitted, the container
+starts, everything looks right, and ptrace fails with a bare `EPERM`. This is
+precisely the mystery-EPERM the brief names as the worst field failure mode, and
+it is caused by the *launcher's own manifest*, not by the cluster.
+
+`kubectl` does warn, on stderr, in passing:
+
+```
+Warning: Non-root user is configured for the entire target Pod, and some capabilities
+granted by debug profile may not work. Please consider using "--custom" with a custom
+profile that specifies "securityContext.runAsUser: 0".
+```
+
+### 2. Read-path matrix — same UID, zero capabilities, yama=1 (`dbg-b`)
+
+Target = PID 1 (`python3`, uid 1000) in the shared PID namespace.
+
+| path | uid 1000, CapEff 0 | uid 0, CapEff 0 (no SYS_PTRACE) | uid 0 + SYS_PTRACE |
+|------|--------------------|--------------------------------|--------------------|
+| `readlink /proc/T/root` | **OK** | FAIL | OK |
+| `ls /proc/T/root/etc` (**sysroot**) | **OK** | Permission denied | OK |
+| `cat /proc/T/root/etc/os-release` | **OK** | Permission denied | OK |
+| `/proc/T/maps` | **OK** | Permission denied | OK |
+| `/proc/T/smaps` | **OK** | Permission denied | OK |
+| `/proc/T/environ` | **OK** | Permission denied | OK |
+| `/proc/T/cmdline` | **OK** | OK | OK |
+| `/proc/T/fd` | **OK** | OK | OK |
+| `/proc/T/status` | **OK** | OK | OK |
+| `readlink /proc/T/exe` | **OK** | FAIL | OK |
+| `readlink /proc/T/cwd` | **OK** | FAIL | OK |
+| `/proc/T/wchan` | **OK** | OK | OK |
+| `/proc/T/stack` | Permission denied | Permission denied | Permission denied *(needs CAP_SYS_ADMIN, not SYS_PTRACE)* |
+| `/proc/T/syscall` | Operation not permitted | Operation not permitted | **OK** |
+| `open /proc/T/mem` | **Permission denied** | Permission denied | **SUCCESS** |
+
+Proof that the sysroot really crossed the container boundary — an Ubuntu 24.04
+debug container reading the Debian target's rootfs, with **zero capabilities**:
+
+```
+--- environ canary:
+PODBENCH_SECRET_MARKER=s5-environ-canary
+--- maps head:
+6549010cd000-6549010ce000 r--p 00000000 00:4f5 2378534   /usr/local/bin/python3.12
+--- sysroot proof:
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+```
+
+The brief's claim is **confirmed with one correction**: reads use
+`PTRACE_MODE_READ`, which passes the credential check at same-UID and is *not*
+gated by Yama. But `/proc/<pid>/mem` and `/proc/<pid>/syscall` use
+`PTRACE_MODE_ATTACH`, so they are **not** in the exempt set — they fail at same UID
+with zero caps. Everything a sysroot-based debugger actually needs
+(`root/`, `maps`, `exe`, `cwd`, `fd`, `environ`) is available.
+
+### 3. Root without `CAP_SYS_PTRACE` is strictly **worse** than non-root at the target's UID
+
+`dbg-c` (uid 0, no SYS_PTRACE) can read only 3 of 6 probe paths; `dbg-b`
+(uid 1000, zero caps) reads all 6. Running the fallback debug container as root
+*costs* you the sysroot, `maps`, `environ` and `exe`. The credential check in
+`__ptrace_may_access()` compares UIDs; uid 0 is not special without the capability.
+
+### 4. Every denial returns the identical `EPERM` — hence `capreport`
+
+```
+=== dbg-b  (uid 1000, CapEff 0, same UID)
+  PTRACE_ATTACH(1)  rc=-1 errno=1 (Operation not permitted)   <- Yama
+=== dbg-c  (uid 0, CapEff 0, UID mismatch)
+  PTRACE_ATTACH(1)  rc=-1 errno=1 (Operation not permitted)   <- credential check
+=== dbg-a  (uid 0, CapEff has bit 19)
+  PTRACE_ATTACH(1)  rc=0  errno=0 (OK)
+```
+
+Two completely different root causes, one indistinguishable errno. Nothing in the
+error tells you which knob to turn. This validates the whole rationale for a
+diagnostic that reads the state directly instead of inferring it from failure.
+
+Worse, **gdb's own error message is actively misleading**. It prints
+`ptrace: Inappropriate ioctl for device.` — that is `ENOTTY`, a stale `errno` from
+an unrelated later call. The real syscall errno is `EPERM`. Anyone debugging by
+searching that string is chasing a ghost.
+
+### 5. Yama's descendant exemption is narrower than "start it yourself"
+
+| relationship | ptrace attach at uid 1000, CapEff 0, yama=1 |
+|---|---|
+| target is a **fork of the tracer process itself** | **rc=0, OK** |
+| target started by the **same shell** (sibling of gdb) | **rc=-1 EPERM** |
+| sibling that called `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` | **rc=0, full backtrace** |
+| `gdb ./binary` (`PTRACE_TRACEME` via fork/exec) | **works** |
+
+Yama requires the tracer to be an *ancestor* of the tracee. The natural workflow
+— `myprog & ; gdb -p $!` — makes gdb a **sibling**, and it is denied:
+
+```
+### 5a: SIBLING - shell starts loop, gdb (sibling) attaches
+    Could not attach to process.  If your uid matches the uid of the target
+    process, check the setting of /proc/sys/kernel/yama/ptrace_scope, or try
+    again as the root user. ...
+    -> ptprobe raw:
+    PTRACE_ATTACH(342) rc=-1 errno=1 (Operation not permitted)
+```
+
+### 6. `gdb ./binary` (launch) gives full source-level debugging with zero capabilities
+
+```
+Breakpoint 1 at 0x11d4: file /tools/src/loop.c, line 4.
+loop pid=333 uid=1000
+Breakpoint 1, work (x=1) at /tools/src/loop.c:4
+4	int work(int x) { return x * 2; }
+#0  work (x=1) at /tools/src/loop.c:4
+#1  0x0000555555555232 in main (argc=1, argv=0x7fffffffeb98) at /tools/src/loop.c:7
+$1 = 1
+$2 = 0
+Breakpoint 1, work (x=3) at /tools/src/loop.c:4
+  Num  Description       Connection           Executable
+* 1    process 333       1 (native)           /tools/bin/loop
+[Inferior 1 (process 333) killed]
+```
+
+Breakpoints, `run`, `continue`, backtrace, argument and global inspection — all of
+it, at uid 1000 with `CapEff: 0000000000000000`. **The Python/C inner loop does not
+need any capability at all.** Only *attaching to something you did not start* does.
+
+### 7. `capreport` output in the three required configurations
+
+Script at `/tmp/claude-0/-workspaces-tpi-k3s-ansible/2c9abbf4-6c26-436d-9237-a03194fe5977/scratchpad/spikes/capreport.sh`
+(embedded in full below). Exit codes: `0` = live attach, `10` = read-only
+debugging available, `20` = nothing.
+
+**(a) SYS_PTRACE granted, root** — `exit=0`
+
+```
+=============================== capreport ===============================
+TRACER
+  uid / gid                  0 / 0
+  CapEff                     00000000a80c25fb
+  CAP_SYS_PTRACE (eff)       yes   [bounding: yes, ambient mask: 0000000000000000]
+  Seccomp                    0 (disabled)
+  NoNewPrivs                 0
+  AppArmor                   cri-containerd.apparmor.d (enforce)
+  Yama ptrace_scope          1 - restricted - attach only to DESCENDANTS of the tracer, or targets that called prctl(PR_SET_PTRACER)
+TARGET (pid 1)
+  comm                       python3
+  uid                        1000
+  already traced by          0
+  AppArmor                   cri-containerd.apparmor.d (enforce)
+  /proc reads                6/6 ok - maps=ok environ=ok cmdline=ok status=ok fd=ok root/=ok
+PROBES
+  scratch attach (own child) OK
+  live attach (pid 1)        OK
+------------------------------------------------------------------------
+VERDICT: LIVE ATTACH AVAILABLE
+WHY:     PTRACE_ATTACH to pid 1 succeeded
+FIX:     none needed - gdb -p 1 will work
+READS:   all read-only paths available (sysroot, maps, environ, fd) - degraded debugging is fully usable
+=========================================================================
+```
+
+**(b) no cap, same UID as target, yama=1** — `exit=10`
+
+```
+=============================== capreport ===============================
+TRACER
+  uid / gid                  1000 / 1000
+  CapEff                     0000000000000000
+  CAP_SYS_PTRACE (eff)       no   [bounding: no, ambient mask: 0000000000000000]
+  Seccomp                    0 (disabled)
+  NoNewPrivs                 0
+  AppArmor                   cri-containerd.apparmor.d (enforce)
+  Yama ptrace_scope          1 - restricted - attach only to DESCENDANTS of the tracer, or targets that called prctl(PR_SET_PTRACER)
+TARGET (pid 1)
+  comm                       python3
+  uid                        1000
+  already traced by          0
+  AppArmor                   cri-containerd.apparmor.d (enforce)
+  /proc reads                6/6 ok - maps=ok environ=ok cmdline=ok status=ok fd=ok root/=ok
+PROBES
+  scratch attach (own child) OK
+  live attach (pid 1)        Operation not permitted
+------------------------------------------------------------------------
+VERDICT: DENIED BY YAMA (ptrace_scope=1)
+WHY:     tracer and target are both uid 1000 so the credential check passes, but Yama restricts PTRACE_ATTACH to descendants of the tracer and pid 1 is not one. This is a NODE sysctl, not a pod setting - no securityContext change fixes it.
+FIX:     EITHER add CAP_SYS_PTRACE with runAsUser:0 (CAP_SYS_PTRACE bypasses Yama - verified), OR have the target call prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) (verified to work), OR gdb-LAUNCH the program instead of attaching. Read-only debugging via /proc/1/{root,maps,environ,fd} still works at this uid.
+READS:   all read-only paths available (sysroot, maps, environ, fd) - degraded debugging is fully usable
+=========================================================================
+```
+
+**(c) no cap, DIFFERENT UID from target** — `exit=10`
+
+```
+=============================== capreport ===============================
+TRACER
+  uid / gid                  0 / 0
+  CapEff                     00000000a80425fb
+  CAP_SYS_PTRACE (eff)       no   [bounding: no, ambient mask: 0000000000000000]
+  Seccomp                    0 (disabled)
+  NoNewPrivs                 0
+  AppArmor                   cri-containerd.apparmor.d (enforce)
+  Yama ptrace_scope          1 - restricted - attach only to DESCENDANTS of the tracer, or targets that called prctl(PR_SET_PTRACER)
+TARGET (pid 1)
+  comm                       python3
+  uid                        1000
+  already traced by          0
+  AppArmor                   cri-containerd.apparmor.d (enforce)
+  /proc reads                3/6 ok - maps=DENIED environ=DENIED cmdline=ok status=ok fd=ok root/=DENIED
+PROBES
+  scratch attach (own child) OK
+  live attach (pid 1)        Operation not permitted
+------------------------------------------------------------------------
+VERDICT: DENIED: UID MISMATCH AND NO CAP_SYS_PTRACE
+WHY:     tracer uid=0, target uid=1000, and CapEff bit 19 is clear, so the kernel credential check in __ptrace_may_access() fails before Yama is even consulted. NOTE: at this uid you also lose /proc/1/{root,maps,environ,exe} - they need PTRACE_MODE_READ, which the same credential check gates.
+FIX:     EITHER add CAP_SYS_PTRACE (securityContext.capabilities.add:[SYS_PTRACE] AND runAsUser:0 - a capability added to a non-root uid lands only in the bounding set and gives CapEff=0), OR set the debug container's runAsUser to 1000 to unlock the read-only path.
+READS:   PARTIAL - maps=DENIED environ=DENIED cmdline=ok status=ok fd=ok root/=DENIED
+=========================================================================
+```
+
+**Bonus (d) — full PSA `restricted` compliance, `Seccomp:2`, `NoNewPrivs:1`** — `exit=10`
+
+Same verdict as (b); the important lines are that the scratch probe still passes,
+proving the RuntimeDefault seccomp profile does **not** block `ptrace(2)`:
+
+```
+  Seccomp                    2 (SECCOMP_MODE_FILTER (1 filter(s)) - may return EPERM/ENOSYS for ptrace)
+  NoNewPrivs                 1
+  /proc reads                6/6 ok - maps=ok environ=ok cmdline=ok status=ok fd=ok root/=ok
+PROBES
+  scratch attach (own child) OK
+  live attach (pid 1)        Operation not permitted
+VERDICT: DENIED BY YAMA (ptrace_scope=1)
+```
+
+**Bonus (e) — same manifest on arm64 `node02`** — `exit=0`, see Deviation 4:
+
+```
+  Yama ptrace_scope          absent - Yama LSM not present/readable - classic ptrace permissions
+PROBES
+  scratch attach (own child) OK
+  live attach (pid 1)        OK
+VERDICT: LIVE ATTACH AVAILABLE
+```
+
+The `python3`-ctypes fallback probe (no bundled helper binary) was exercised in a
+`python:3.12-slim` debug container and produced the identical verdict, so the
+script is not dependent on shipping a compiled helper.
+
+### 8. PSA admission — exact rejection strings
+
+The API server rejects the *whole pod update*, so the ephemeral container never
+appears. Enforcement is at `kubectl replace --raw .../ephemeralcontainers`, i.e.
+**synchronous** — the launcher gets the error immediately.
+
+`restricted`, container otherwise non-compliant (the naive rung 1):
+
+```
+Error from server (Forbidden): pods "victim4" is forbidden: violates PodSecurity
+"restricted:latest": allowPrivilegeEscalation != false (container "rung1" must set
+securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container
+"rung1" must set securityContext.capabilities.drop=["ALL"]; container "rung1" must not
+include "SYS_PTRACE" in securityContext.capabilities.add), runAsUser=0 (container
+"rung1" must not set runAsUser=0)
+```
+
+`restricted`, container compliant in **every** respect except the capability —
+this isolates the string to pattern-match on:
+
+```
+Error from server (Forbidden): pods "victim4" is forbidden: violates PodSecurity
+"restricted:latest": unrestricted capabilities (container "rung1b" must not include
+"SYS_PTRACE" in securityContext.capabilities.add)
+```
+
+`baseline` — also rejects, with **different** wording:
+
+```
+Error from server (Forbidden): pods "victim4" is forbidden: violates PodSecurity
+"baseline:latest": non-default capabilities (container "rung1" must not include
+"SYS_PTRACE" in securityContext.capabilities.add)
+```
+
+Via `kubectl debug --profile=sysadmin` the message differs again (it also trips
+`privileged`):
+
+```
+Error from server (Forbidden): pods "victim4" is forbidden: violates PodSecurity
+"restricted:latest": privileged (container "rung1k" must not set
+securityContext.privileged=true), allowPrivilegeEscalation != false (container "rung1k"
+must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities
+(container "rung1k" must set securityContext.capabilities.drop=["ALL"])
+```
+
+The **stable substring across all levels and phrasings** is:
+
+```
+must not include "SYS_PTRACE" in securityContext.capabilities.add
+```
+
+And the ladder's premise holds: **rung 2 (no capabilities, `runAsUser` matching
+the target, `drop:["ALL"]`, `allowPrivilegeEscalation:false`,
+`seccompProfile:RuntimeDefault`, `runAsNonRoot:true`) is admitted under
+`restricted:latest`** — `RC=0`, container Running, and the full degraded loop
+(gdb-launch, sysroot reads, opt-in attach) works inside it.
+
+There is a **second, asynchronous** rejection class that the launcher must also
+handle. On a pod with `runAsNonRoot: true`, a root debug container is accepted by
+the API server (`kubectl debug` exits **0**) and then fails in the kubelet:
+
+```
+dbg-root  {"waiting":{"message":"container's runAsUser breaks non-root policy
+(pod: \"victim_podbench-s5(b89a16a0-...)\", container: dbg-root)",
+"reason":"CreateContainerConfigError"}}
+```
+
+### 9. Assorted operational findings
+
+- The containerd default AppArmor profile is `cri-containerd.apparmor.d (enforce)`
+  on every container, including the ephemeral ones. It did **not** block ptrace,
+  because it permits `ptrace` between peers in the same profile — and all
+  containers share that profile name. A target with a *custom* AppArmor profile
+  would break this, which is why `capreport` reports both self and target profiles.
+- `RuntimeDefault` seccomp does **not** block `ptrace(2)`, but it **does** block
+  `personality(ADDR_NO_RANDOMIZE)`. gdb degrades with a warning and leaves ASLR on:
+  `warning: Error disabling address space randomization: Operation not permitted`.
+  Addresses are then non-reproducible run to run.
+- A gdb built with Python support **hard-fails** if its Python stdlib is missing —
+  it does not degrade. Staging only `gdb` + `ldd` libs produced
+  `Python path configuration: ... Error occurred computing Python error message. /
+  Python not initialized` and gdb refused to do anything. `/usr/lib/python3.12`
+  (~19 MB) must be shipped alongside, with `PYTHONHOME`/`PYTHONPATH` set.
+- `/proc/sys` is mounted `ro` inside containers on every node
+  (`proc /proc/sys proc ro,nosuid,nodev,noexec,relatime`), so `ptrace_scope`
+  cannot be changed from a non-privileged pod. It is genuinely a node-level knob.
+- Ephemeral containers **can** mount the pod's existing volumes. That is the only
+  practical way to get a toolchain into a non-root debug container that cannot
+  `apt-get`.
+
+---
+
+## Deviations from the brief
+
+**1. `--custom` with `runAsUser:1000` does not give you "no capabilities" — and
+adding SYS_PTRACE to a non-root container is a silent no-op.**
+The brief treats "grant SYS_PTRACE" and "run as UID 1000" as independent knobs on
+the ladder. They are not: a capability added to a container with a non-root
+`runAsUser` reaches only the **bounding** set, leaving `CapEff = 0`. Any ladder
+rung that names both `runAsUser: <non-zero>` and `capabilities.add: [SYS_PTRACE]`
+is a rung that *looks* privileged and *behaves* unprivileged. `CAP_SYS_PTRACE`
+requires `runAsUser: 0`. This must be a hard invariant in the launcher.
+
+**2. `kubectl debug --custom` merges with a profile that adds SYS_PTRACE behind
+your back.** Passing `--custom '{"securityContext":{"runAsUser":1000}}'` with
+`--target` produced a container spec of
+`{"capabilities":{"add":["SYS_PTRACE"]},"runAsUser":1000}` — the default `legacy`
+profile is applied *after* the custom JSON. Observed profile behaviour:
+
+| `--profile` | resulting securityContext with `--custom '{"runAsUser":1000}'` |
+|---|---|
+| *(default, legacy)* | `{"capabilities":{"add":["SYS_PTRACE"]},"runAsUser":1000}` |
+| `general` | `{"capabilities":{"add":["SYS_PTRACE"]},"runAsUser":1000}` |
+| `baseline` | `{"runAsUser":1000}` |
+| `restricted` | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` |
+
+Podbench must **not** build its ladder on `kubectl debug --custom`. Use the
+`ephemeralcontainers` subresource directly. (Silver lining: `--profile=restricted`
+emits exactly the rung-2 shape, so it is a correct manual fallback for users.)
+
+**3. "Yama always permits descendants" is true, but "start a process yourself and
+attach to it" is NOT a descendant relationship.** The brief's task 5 assumed the
+two are equivalent. They are not: a process started by the debug container's
+*shell* is a **sibling** of gdb, and the attach is denied with the same `EPERM`.
+Only a fork of the tracer process itself, or `gdb ./binary` (`PTRACE_TRACEME`),
+or a target that called `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)`, works. If
+Podbench's inner loop is documented as "run your program, then attach", it will
+fail on every Yama-enabled node.
+
+**4. `ptrace_scope` is not uniform across the cluster — and the difference is
+kernel flavour, not architecture.**
+
+| node | arch | kernel | `/proc/sys/kernel/yama/ptrace_scope` |
+|------|------|--------|--------------------------------------|
+| node01 | aarch64 | `6.8.0-1051-raspi` | `1` |
+| node02 | aarch64 | `6.1.0-1025-rockchip` | **file does not exist** |
+| node03 | aarch64 | `6.1.0-1025-rockchip` | **file does not exist** |
+| node04 | aarch64 | `6.1.0-1025-rockchip` | **file does not exist** |
+| nuc2 | x86_64 | `6.17.0-20-generic` | `1` |
+| ws03 | x86_64 | `7.0.0-28-generic` | `1` |
+
+The rockchip kernels do not have the Yama LSM at all, so classic ptrace rules
+apply. **Confirmed empirically, not just inferred:** the byte-identical no-cap,
+same-UID ephemeral container that reports `DENIED BY YAMA` on nuc2 reports
+`LIVE ATTACH AVAILABLE` on node02, with `PTRACE_ATTACH(1) rc=0`. Two arm64 nodes
+in the same cluster (node01 vs node02) differ from each other, so an
+arch-based heuristic would be wrong. Podbench cannot cache a cluster-wide answer
+and cannot predict from `nodeSelector`; it must probe on the node it lands on.
+
+**5. `/proc/<pid>/mem` is not part of the read-exempt set.** The brief groups
+"reads" together as passing the credential check and being Yama-exempt. True for
+`root/`, `maps`, `environ`, `fd`, `exe`, `cwd`; **false** for `mem` and `syscall`,
+which use `PTRACE_MODE_ATTACH` and are denied at same-UID/zero-cap. Any
+"read-only memory inspection" feature planned on top of `/proc/<pid>/mem` will
+not work in the degraded rung. Read from `/proc/<pid>/root/` on-disk files
+instead, or accept maps-only inspection.
+
+**6. Not tested: seccomp actually filtering `ptrace`.** `capreport` has a branch
+for it, but producing a seccomp profile that denies `ptrace` needs a
+`localhost/` profile file installed on the node, which the spike rules forbid.
+The RuntimeDefault path was tested and *allows* ptrace. The seccomp branch of
+`capreport` is therefore **unverified** and should be treated as untested code.
+
+---
+
+## Recommendations for implementation
+
+1. **Ship `capreport` and run it automatically on every session start**, printing
+   the verdict line before the user's shell prompt. The mystery-EPERM problem is
+   solved not by better error handling but by telling the user the answer before
+   they hit the wall. Its exit code (`0` attach / `10` read-only / `20` nothing)
+   is the natural input to the launcher's mode selection.
+
+2. **Make the ladder rungs valid by construction.** Two rungs only, and the
+   capability rung must be root:
+
+   - **rung 1 (full):** `runAsUser: 0` **+** `capabilities.add: [SYS_PTRACE]`.
+     Never emit `SYS_PTRACE` with a non-zero `runAsUser` — reject that combination
+     in the launcher with an explicit message rather than shipping a container
+     that silently has `CapEff: 0`.
+   - **rung 2 (degraded):** `runAsUser: <target's UID>`, `runAsGroup:
+     <target's GID>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation:
+     false`, `seccompProfile: RuntimeDefault`, `runAsNonRoot: true`. Verified
+     admitted under `restricted:latest`.
+
+   Discover the target UID first from `/proc/<pid>/status` (`cmdline`, `status`
+   and `fd` are readable even from the wrong UID) or from the target container's
+   `securityContext`, then set rung 2's `runAsUser` to match. **Do not default the
+   fallback to root** — root without the capability loses the sysroot, `maps`,
+   `environ` and `exe`, which is the entire value of the degraded mode.
+
+3. **Add ephemeral containers via `POST /api/v1/namespaces/{ns}/pods/{pod}/ephemeralcontainers`,
+   not `kubectl debug`.** The profile-merge behaviour makes `--custom` unsafe for a
+   launcher that needs an exact securityContext.
+
+4. **Handle two distinct rejection channels.** Synchronous PSA `Forbidden` from
+   the API call — match on the stable substring
+   `must not include "SYS_PTRACE" in securityContext.capabilities.add` (the
+   surrounding phrase differs between `baseline` and `restricted`) and fall
+   straight to rung 2. And asynchronous kubelet failure — after a successful API
+   call, poll `.status.ephemeralContainerStatuses[?(@.name==...)].state.waiting`
+   for `CreateContainerConfigError` with
+   `container's runAsUser breaks non-root policy`, which means the target pod sets
+   `runAsNonRoot: true` and rung 1 is impossible on it regardless of PSA. A
+   pre-flight read of the target pod's `securityContext.runAsNonRoot` lets the
+   launcher skip rung 1 rather than discover this asynchronously.
+
+5. **Document and design the inner loop around gdb-LAUNCH, not gdb-attach.**
+   Launching under gdb needs no capability anywhere and works on every node
+   tested, under PSA `restricted`. Attach is the privileged special case, not the
+   default. Where attach to an already-running process is genuinely required,
+   offer the `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` opt-in as a documented
+   one-line change to the target program — it is the only fix that works without
+   any capability or node change, and it is verified.
+
+6. **Probe per-node, never cache cluster-wide.** Given node01 and node02 disagree
+   while both being arm64, Podbench should run the `capreport` scratch probe in
+   the pod it actually landed in. Consider surfacing the node name and Yama state
+   in the session banner so a user who gets "live attach" on one run and "denied"
+   on the next understands why.
+
+7. **Package `gdb` with its Python stdlib**, or build/select a gdb without Python
+   support. A gdb missing `/usr/lib/pythonX.Y` refuses to start entirely.
+
+8. **Set expectations about ASLR under `RuntimeDefault` seccomp.** gdb cannot
+   disable address-space randomization; warn once rather than letting users
+   puzzle over shifting addresses.
+
+---
+
+## What was left behind
+
+- **Namespace `podbench-s5` — left in place and Active**, as instructed.
+- **All pods deleted**: `victim`, `victim2`, `victim3`, `victim4`,
+  `yama-node0{1..4}`, `yama-nuc2`, `yama-ws03`, `imgprobe`.
+  `kubectl -n podbench-s5 get all` returns `No resources found`.
+  All ephemeral containers went away with their pods; nothing else was created
+  (no deployments, services, PVCs or RBAC).
+- **PSA labels removed.** `pod-security.kubernetes.io/enforce=restricted` and
+  `pod-security.kubernetes.io/enforce-version=latest` were set on `podbench-s5`
+  only, later flipped to `baseline` for the second admission test, and both were
+  **removed** at the end. Final label set is
+  `{"kubernetes.io/metadata.name":"podbench-s5"}`.
+- No other namespace was read from, written to, or otherwise touched. No node
+  settings were modified; `ptrace_scope` was only ever read.
+- Artefacts on disk:
+  `.../scratchpad/spikes/capreport.sh`, `.../spikes/s5.md`,
+  plus supporting manifests and sources (`addec.py`, `ptprobe2.c`, `loop_optin.c`,
+  `victim{,2,3,4}.yaml`, `ec-*.json`, `readmatrix.sh`).
+
+---
+
+## Appendix — `capreport.sh` in full
+
+```sh
+#!/bin/sh
+# capreport - name the ptrace blocker instead of discovering it by failure.
+#
+#   usage: capreport.sh [TARGET_PID]
+#
+# Exit codes:  0 = live attach available
+#              10 = read-only debugging available (attach denied, /proc reads OK)
+#              20 = nothing available (even /proc reads denied)
+#
+# Needs a way to issue PTRACE_ATTACH. Tries, in order:
+#   $CAPREPORT_PTPROBE  ->  a bundled helper binary (preferred: no toolchain needed)
+#   python3             ->  ctypes
+#   cc/gcc              ->  compile a 25-line probe into $TMPDIR
+# If none are available the scratch probe is skipped and the report says so.
+
+TARGET="$1"
+CAP_SYS_PTRACE_BIT=19
+RC_ATTACH=0
+RC_READONLY=10
+RC_NONE=20
+
+say() { printf '%s\n' "$*"; }
+kv()  { printf '  %-26s %s\n' "$1" "$2"; }
+
+# ---------------------------------------------------------------- facts: self
+SELF_UID=$(awk '/^Uid:/{print $2}' /proc/self/status)
+SELF_GID=$(awk '/^Gid:/{print $2}' /proc/self/status)
+CAPEFF=$(awk '/^CapEff:/{print $2}' /proc/self/status)
+CAPBND=$(awk '/^CapBnd:/{print $2}' /proc/self/status)
+CAPAMB=$(awk '/^CapAmb:/{print $2}' /proc/self/status)
+SECCOMP=$(awk '/^Seccomp:/{print $2}' /proc/self/status)
+SECCOMP_N=$(awk '/^Seccomp_filters:/{print $2}' /proc/self/status)
+NNP=$(awk '/^NoNewPrivs:/{print $2}' /proc/self/status)
+
+# bit test on the 16-hex-digit capability mask, without needing 64-bit shell math
+has_cap_bit() { # $1=mask $2=bitnum
+  _m=$(printf '%s' "$1" | tr 'A-F' 'a-f' | sed 's/^0*//'); [ -z "$_m" ] && _m=0
+  _nib=$(( $2 / 4 )); _off=$(( $2 % 4 ))
+  _len=$(printf '%s' "$_m" | wc -c); _len=$(( _len ))
+  _pos=$(( _len - _nib ))
+  [ "$_pos" -le 0 ] && return 1
+  _c=$(printf '%s' "$_m" | cut -c"$_pos")
+  _v=$(printf '%d' "0x$_c")
+  [ $(( (_v >> _off) & 1 )) -eq 1 ]
+}
+if has_cap_bit "$CAPEFF" $CAP_SYS_PTRACE_BIT; then HAS_PTRACE=yes; else HAS_PTRACE=no; fi
+if has_cap_bit "$CAPBND" $CAP_SYS_PTRACE_BIT; then BND_PTRACE=yes; else BND_PTRACE=no; fi
+
+# ---------------------------------------------------------------- facts: yama
+if [ -r /proc/sys/kernel/yama/ptrace_scope ]; then
+  YAMA=$(cat /proc/sys/kernel/yama/ptrace_scope)
+else
+  YAMA=absent
+fi
+case "$YAMA" in
+  0) YAMA_MEAN="classic ptrace permissions - any same-UID attach allowed" ;;
+  1) YAMA_MEAN="restricted - attach only to DESCENDANTS of the tracer, or targets that called prctl(PR_SET_PTRACER)" ;;
+  2) YAMA_MEAN="admin-only - attach requires CAP_SYS_PTRACE" ;;
+  3) YAMA_MEAN="no attach - PTRACE_ATTACH disabled entirely, unchangeable until reboot" ;;
+  absent) YAMA_MEAN="Yama LSM not present/readable - classic ptrace permissions" ;;
+  *) YAMA_MEAN="unknown value" ;;
+esac
+
+# ------------------------------------------------------------ facts: apparmor
+AA_SELF=$(cat /proc/self/attr/current 2>/dev/null || echo "unavailable")
+[ -z "$AA_SELF" ] && AA_SELF="unconfined"
+AA_TARGET=""
+[ -n "$TARGET" ] && AA_TARGET=$(cat /proc/"$TARGET"/attr/current 2>/dev/null || echo "unreadable")
+
+case "$SECCOMP" in
+  0) SECCOMP_MEAN="disabled" ;;
+  1) SECCOMP_MEAN="SECCOMP_MODE_STRICT (ptrace WILL be killed)" ;;
+  2) SECCOMP_MEAN="SECCOMP_MODE_FILTER ($SECCOMP_N filter(s)) - may return EPERM/ENOSYS for ptrace" ;;
+  *) SECCOMP_MEAN="unknown" ;;
+esac
+
+# ------------------------------------------------------------- facts: target
+if [ -n "$TARGET" ]; then
+  if [ -r /proc/"$TARGET"/status ]; then
+    TGT_UID=$(awk '/^Uid:/{print $2}' /proc/"$TARGET"/status)
+    TGT_COMM=$(cat /proc/"$TARGET"/comm 2>/dev/null)
+    TGT_TRACER=$(awk '/^TracerPid:/{print $2}' /proc/"$TARGET"/status)
+  else
+    TGT_UID="?"; TGT_COMM="?"; TGT_TRACER="?"
+  fi
+fi
+
+# --------------------------------------------------- scratch PTRACE_ATTACH probe
+PROBE=""
+if [ -n "$CAPREPORT_PTPROBE" ] && [ -x "$CAPREPORT_PTPROBE" ]; then
+  PROBE="$CAPREPORT_PTPROBE"
+elif [ -x /usr/local/lib/podbench/ptprobe ]; then
+  PROBE=/usr/local/lib/podbench/ptprobe
+elif command -v python3 >/dev/null 2>&1; then
+  PROBE="PY"
+elif command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+  CCBIN=$(command -v cc || command -v gcc)
+  PROBE="$(mktemp -d)/ptprobe"
+  cat > "$PROBE.c" <<'CEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+int main(int c, char **v) {
+  pid_t t; long r; int e;
+  if (c > 1 && !strcmp(v[1], "child")) {
+    t = fork(); if (t == 0) { for(;;) pause(); }
+  } else { t = atoi(v[1]); }
+  errno = 0; r = ptrace(PTRACE_ATTACH, t, 0, 0); e = errno;
+  printf("%ld %d %s\n", r, e, r ? strerror(e) : "OK");
+  if (!r) { int st; waitpid(t, &st, 0); ptrace(PTRACE_DETACH, t, 0, 0); }
+  if (c > 1 && !strcmp(v[1], "child")) { kill(t, 9); waitpid(t, 0, 0); }
+  return r ? 1 : 0;
+}
+CEOF
+  "$CCBIN" -o "$PROBE" "$PROBE.c" 2>/dev/null || PROBE=""
+fi
+
+run_probe() { # $1 = pid | "child"; echoes "rc errno text"
+  case "$PROBE" in
+    "") echo "- - skipped" ;;
+    PY) python3 - "$1" <<'PYEOF'
+import ctypes, os, signal, sys, errno
+l = ctypes.CDLL(None, use_errno=True)
+l.ptrace.restype = ctypes.c_long
+l.ptrace.argtypes = [ctypes.c_long]*4
+PTRACE_ATTACH, PTRACE_DETACH = 16, 17
+arg = sys.argv[1]
+child = arg == "child"
+if child:
+    pid = os.fork()
+    if pid == 0:
+        signal.pause(); os._exit(0)
+else:
+    pid = int(arg)
+ctypes.set_errno(0)
+r = l.ptrace(PTRACE_ATTACH, pid, 0, 0)
+e = ctypes.get_errno()
+if r == 0:
+    os.waitpid(pid, 0); l.ptrace(PTRACE_DETACH, pid, 0, 0)
+if child:
+    os.kill(pid, 9)
+    try: os.waitpid(pid, 0)
+    except OSError: pass
+print(r, e, "OK" if r == 0 else os.strerror(e))
+PYEOF
+        ;;
+    *)  "$PROBE" "$1" 2>/dev/null || true ;;
+  esac
+}
+
+SCRATCH=$(run_probe child); SCRATCH_RC=$(echo "$SCRATCH" | awk '{print $1}')
+SCRATCH_TXT=$(echo "$SCRATCH" | cut -d' ' -f3-)
+REAL_RC=""; REAL_ERRNO=""; REAL_TXT=""
+if [ -n "$TARGET" ]; then
+  REAL=$(run_probe "$TARGET")
+  REAL_RC=$(echo "$REAL" | awk '{print $1}')
+  REAL_ERRNO=$(echo "$REAL" | awk '{print $2}')
+  REAL_TXT=$(echo "$REAL" | cut -d' ' -f3-)
+fi
+
+# ------------------------------------------------------------- read-path probe
+READ_OK=0; READ_TOTAL=0; READ_DETAIL=""
+if [ -n "$TARGET" ]; then
+  for f in maps environ cmdline status; do
+    READ_TOTAL=$(( READ_TOTAL + 1 ))
+    if cat /proc/"$TARGET"/$f >/dev/null 2>&1; then
+      READ_OK=$(( READ_OK + 1 )); READ_DETAIL="$READ_DETAIL $f=ok"
+    else READ_DETAIL="$READ_DETAIL $f=DENIED"; fi
+  done
+  READ_TOTAL=$(( READ_TOTAL + 2 ))
+  if ls /proc/"$TARGET"/fd >/dev/null 2>&1; then READ_OK=$(( READ_OK + 1 )); READ_DETAIL="$READ_DETAIL fd=ok"; else READ_DETAIL="$READ_DETAIL fd=DENIED"; fi
+  if ls /proc/"$TARGET"/root/ >/dev/null 2>&1; then READ_OK=$(( READ_OK + 1 )); READ_DETAIL="$READ_DETAIL root/=ok"; else READ_DETAIL="$READ_DETAIL root/=DENIED"; fi
+fi
+
+# --------------------------------------------------------------------- report
+say "=============================== capreport ==============================="
+say "TRACER"
+kv "uid / gid"            "$SELF_UID / $SELF_GID"
+kv "CapEff"               "$CAPEFF"
+kv "CAP_SYS_PTRACE (eff)" "$HAS_PTRACE   [bounding: $BND_PTRACE, ambient mask: $CAPAMB]"
+kv "Seccomp"              "$SECCOMP ($SECCOMP_MEAN)"
+kv "NoNewPrivs"           "$NNP"
+kv "AppArmor"             "$AA_SELF"
+kv "Yama ptrace_scope"    "$YAMA - $YAMA_MEAN"
+if [ -n "$TARGET" ]; then
+  say "TARGET (pid $TARGET)"
+  kv "comm"               "$TGT_COMM"
+  kv "uid"                "$TGT_UID"
+  kv "already traced by"  "$TGT_TRACER"
+  kv "AppArmor"           "$AA_TARGET"
+  kv "/proc reads"        "$READ_OK/$READ_TOTAL ok -$READ_DETAIL"
+fi
+say "PROBES"
+kv "scratch attach (own child)" "$SCRATCH_TXT"
+[ -n "$TARGET" ] && kv "live attach (pid $TARGET)" "$REAL_TXT"
+say "------------------------------------------------------------------------"
+
+# --------------------------------------------------------------------- verdict
+VERDICT=""; WHY=""; FIX=""
+if [ "$SCRATCH_RC" = "-" ]; then
+  WHY="no ptrace probe available (no bundled helper, no python3, no cc) - static checks only"
+fi
+
+if [ "$SCRATCH_RC" != "0" ] && [ "$SCRATCH_RC" != "-" ]; then
+  # Yama ALWAYS permits descendants, so a failed self-child attach is structural.
+  VERDICT="BLOCKED: ptrace(2) is unusable even on our own child"
+  if [ "$SECCOMP" = "2" ]; then
+    WHY="seccomp filter is rejecting ptrace (Seccomp=2, $SECCOMP_N filter(s)); errno was '$SCRATCH_TXT'"
+    FIX="set securityContext.seccompProfile.type=Unconfined on the debug container"
+  elif [ "$YAMA" = "3" ]; then
+    WHY="Yama ptrace_scope=3 disables PTRACE_ATTACH for everyone; not changeable without a node reboot"
+    FIX="no in-pod fix - use the read-only path (/proc/<pid>/{root,maps,fd}) or gdb-launch instead of gdb-attach"
+  elif [ "$AA_SELF" != "unconfined" ] && [ "$AA_SELF" != "unavailable" ]; then
+    WHY="likely AppArmor: this container is confined by profile '$AA_SELF' which may deny ptrace"
+    FIX="set securityContext.appArmorProfile.type=Unconfined (or annotation container.apparmor.security.beta.kubernetes.io/<c>=unconfined)"
+  else
+    WHY="unexplained - errno was '$SCRATCH_TXT'; check the container runtime's default seccomp/LSM policy"
+    FIX="try seccompProfile=Unconfined and appArmorProfile=Unconfined and re-run"
+  fi
+elif [ -z "$TARGET" ]; then
+  VERDICT="ptrace(2) usable on own descendants; no TARGET_PID given so live attach untested"
+  WHY="gdb-LAUNCH (gdb ./prog) and attaching to processes gdb itself started will work"
+  FIX="re-run as: capreport.sh <target-pid>"
+elif [ "$REAL_RC" = "0" ]; then
+  VERDICT="LIVE ATTACH AVAILABLE"
+  WHY="PTRACE_ATTACH to pid $TARGET succeeded"
+  FIX="none needed - gdb -p $TARGET will work"
+else
+  # attach to target failed but our own child was fine => credential/policy issue
+  if [ "$HAS_PTRACE" = "no" ] && [ "$SELF_UID" != "$TGT_UID" ]; then
+    VERDICT="DENIED: UID MISMATCH AND NO CAP_SYS_PTRACE"
+    WHY="tracer uid=$SELF_UID, target uid=$TGT_UID, and CapEff bit $CAP_SYS_PTRACE_BIT is clear, so the kernel credential check in __ptrace_may_access() fails before Yama is even consulted. NOTE: at this uid you also lose /proc/$TARGET/{root,maps,environ,exe} - they need PTRACE_MODE_READ, which the same credential check gates."
+    FIX="EITHER add CAP_SYS_PTRACE (securityContext.capabilities.add:[SYS_PTRACE] AND runAsUser:0 - a capability added to a non-root uid lands only in the bounding set and gives CapEff=0), OR set the debug container's runAsUser to $TGT_UID to unlock the read-only path."
+  elif [ "$HAS_PTRACE" = "no" ] && [ "$YAMA" != "0" ] && [ "$YAMA" != "absent" ]; then
+    VERDICT="DENIED BY YAMA (ptrace_scope=$YAMA)"
+    WHY="tracer and target are both uid $SELF_UID so the credential check passes, but Yama restricts PTRACE_ATTACH to descendants of the tracer and pid $TARGET is not one. This is a NODE sysctl, not a pod setting - no securityContext change fixes it."
+    FIX="EITHER add CAP_SYS_PTRACE with runAsUser:0 (CAP_SYS_PTRACE bypasses Yama - verified), OR have the target call prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) (verified to work), OR gdb-LAUNCH the program instead of attaching. Read-only debugging via /proc/$TARGET/{root,maps,environ,fd} still works at this uid."
+  elif [ "$HAS_PTRACE" = "yes" ]; then
+    VERDICT="DENIED DESPITE CAP_SYS_PTRACE"
+    WHY="CapEff has bit $CAP_SYS_PTRACE_BIT and our own child attached fine, so this is not a capability problem. Most likely AppArmor ('$AA_SELF' vs target '$AA_TARGET' - the containerd default profile only permits ptrace between peers in the SAME profile), a user-namespace boundary, or the target already being traced (TracerPid=$TGT_TRACER)."
+    FIX="check TracerPid above; if non-zero detach the other debugger. Otherwise set appArmorProfile.type=Unconfined on the debug container."
+  else
+    VERDICT="DENIED (unclassified)"
+    WHY="errno was '$REAL_TXT'; tracer uid=$SELF_UID target uid=$TGT_UID cap=$HAS_PTRACE yama=$YAMA seccomp=$SECCOMP apparmor=$AA_SELF"
+    FIX="report this combination - capreport does not model it yet"
+  fi
+fi
+
+say "VERDICT: $VERDICT"
+say "WHY:     $WHY"
+say "FIX:     $FIX"
+if [ -n "$TARGET" ]; then
+  if [ "$READ_OK" -eq "$READ_TOTAL" ]; then
+    say "READS:   all read-only paths available (sysroot, maps, environ, fd) - degraded debugging is fully usable"
+  elif [ "$READ_OK" -gt 0 ]; then
+    say "READS:   PARTIAL -$READ_DETAIL"
+  else
+    say "READS:   none - even /proc inspection is denied"
+  fi
+fi
+say "========================================================================="
+
+if [ "$REAL_RC" = "0" ]; then exit $RC_ATTACH; fi
+if [ -n "$TARGET" ] && [ "$READ_OK" -gt 0 ]; then exit $RC_READONLY; fi
+[ -z "$TARGET" ] && exit $RC_ATTACH
+exit $RC_NONE
+```

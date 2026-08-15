@@ -1,0 +1,1035 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Debug with gdb &#8212; podbench 0.1.0a4 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=11bc7906"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'how-to/debug-with-gdb';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0a4';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Iterate on Python" href="iterate-on-python.html" />
+    <link rel="prev" title="Contribute to the project" href="contribute.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0a4" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="attach-to-a-pod.html">Attach to a pod</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contribute.html">Contribute to the project</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Debug with gdb</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iterate-on-python.html">Iterate on Python</a></li>
+<li class="toctree-l1"><a class="reference internal" href="run-container.html">The container image</a></li>
+<li class="toctree-l1"><a class="reference internal" href="vscode-remote-ssh.html">VS Code Remote-SSH</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../how-to.html" class="nav-link">How-to Guides</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Debug with gdb</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="debug-with-gdb">
+<h1>Debug with gdb<a class="headerlink" href="#debug-with-gdb" title="Link to this heading">#</a></h1>
+<p>Take a <strong>distroless</strong> container — no shell, no gdb, no libc headers, nothing to
+exec into — and land on a breakpoint with source shown and locals readable. Ten
+minutes, most of it image pulls.</p>
+<p>Everything here is driven by <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, the helper on the debug container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.
+<code class="docutils literal notranslate"><span class="pre">dbg</span></code> is not <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span></code>: it fixes seven commands in one order, and the order is a
+correctness property rather than a preference. Setting the sysroot <em>after</em>
+attaching gives you a backtrace that looks entirely believable and is wrong.</p>
+<section id="a-distroless-target">
+<h2>1. A distroless target<a class="headerlink" href="#a-distroless-target" title="Link to this heading">#</a></h2>
+<p>An initContainer compiles the program into an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>; the distroless
+container runs it. No local build, no registry.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl create namespace podbench-gdb
+$ kubectl -n podbench-gdb apply -f - &lt;&lt;&#39;YAML&#39;
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: victim-src
+data:
+  victim.c: |
+    #include &lt;stdio.h&gt;
+    #include &lt;stdlib.h&gt;
+    #include &lt;string.h&gt;
+    #include &lt;unistd.h&gt;
+    #include &lt;math.h&gt;
+
+    struct work { int id; double value; char label[32]; };
+
+    static double transform(struct work *w) {
+      double r = sqrt((double)w-&gt;id) * w-&gt;value;
+      return r;
+    }
+    static int compute(int n, struct work *w) {
+      w-&gt;id = n;
+      w-&gt;value = (double)n * 1.5;
+      snprintf(w-&gt;label, sizeof(w-&gt;label), &quot;item-%d&quot;, n);
+      double t = transform(w);
+      return (int)t;
+    }
+    static void outer_loop(void) {
+      struct work w; int i = 0;
+      for (;;) {
+        memset(&amp;w, 0, sizeof(w));
+        int v = compute(i, &amp;w);
+        printf(&quot;tick %d -&gt; %d (%s)\n&quot;, i, v, w.label); fflush(stdout);
+        i++; sleep(2);
+      }
+    }
+    int main(int argc, char **argv) {
+      printf(&quot;victim starting, pid=%d\n&quot;, (int)getpid()); fflush(stdout);
+      outer_loop(); return 0;
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: victim
+  labels: {app: victim}
+spec:
+  restartPolicy: Never
+  volumes:
+    - {name: app, emptyDir: {}}
+    - {name: src, configMap: {name: victim-src}}
+  initContainers:
+    - name: build
+      image: debian:bookworm-slim
+      command: [&quot;/bin/sh&quot;, &quot;-c&quot;]
+      args:
+        - |
+          set -ex
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends gcc libc6-dev
+          mkdir -p /app/src
+          cp /src/victim.c /app/src/victim.c
+          cd /app/src &amp;&amp; gcc -g -O0 -o /app/victim victim.c -lm
+      volumeMounts:
+        - {name: app, mountPath: /app}
+        - {name: src, mountPath: /src}
+  containers:
+    - name: victim
+      image: gcr.io/distroless/cc-debian12
+      command: [&quot;/app/victim&quot;]
+      volumeMounts: [{name: app, mountPath: /app}]
+YAML
+$ kubectl -n podbench-gdb wait --for=condition=Ready pod/victim --timeout=300s
+</pre></div>
+</div>
+<p>Confirm there is genuinely no shell in there:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl -n podbench-gdb exec victim -c victim -- /bin/sh -c &#39;echo hi&#39;
+error: Internal error occurred: error executing command in container:
+failed to exec in container: ... exec: &quot;/bin/sh&quot;: stat /bin/sh: no such file or directory
+</pre></div>
+</div>
+<p>Note the source is left at <code class="docutils literal notranslate"><span class="pre">/app/src/victim.c</span></code> <strong>inside the target’s rootfs</strong>.
+That is not incidental — see <em>Where source text actually comes from</em> below.</p>
+</section>
+<section id="attach-the-seat">
+<h2>2. Attach the seat<a class="headerlink" href="#attach-the-seat" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl podbench attach pod/victim -n podbench-gdb
+</pre></div>
+</div>
+<p>Check the report says <code class="docutils literal notranslate"><span class="pre">[x]</span> <span class="pre">live</span> <span class="pre">attach</span></code>. If it does not, skip to
+<em>Without SYS_PTRACE</em> below — you still get source-level
+debugging, just not of the already-running process.</p>
+<p>Then ssh in with the alias it printed.</p>
+</section>
+<section id="find-the-process">
+<h2>3. Find the process<a class="headerlink" href="#find-the-process" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-gdb-victim
+root@victim:~# pids
+PID  UID  TARGET  CONTAINER      COMM    CMDLINE
+1    0    yes     87d20e23a1b4   victim  /app/victim
+38   0    no      7206c89bf0e1   sleep   sleep infinity
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">pids</span></code> is not <code class="docutils literal notranslate"><span class="pre">ps</span></code>. Under a shared PID namespace every process in the pod is
+visible — including other podbench sessions’ — so attribution keys off the
+target’s container runtime ID, which the launcher injected as
+<code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code>. The rules that look obvious are all wrong: “the target is
+PID 1” breaks under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> (PID 1 is <code class="docutils literal notranslate"><span class="pre">/pause</span></code>), and
+matching mount namespaces breaks there too.</p>
+<p>If the <code class="docutils literal notranslate"><span class="pre">TARGET</span></code> column is a guess rather than a fact, <code class="docutils literal notranslate"><span class="pre">pids</span></code> says so.</p>
+</section>
+<section id="attach-gdb">
+<h2>4. Attach gdb<a class="headerlink" href="#attach-gdb" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># dbg 1</span>
+</pre></div>
+</div>
+<p>With no argument at all, <code class="docutils literal notranslate"><span class="pre">dbg</span></code> discovers the pid from the target container ID.
+Before starting gdb it runs the capability probe, so if attach is going to be
+denied you are told <em>which mechanism</em> denies it rather than being handed an
+<code class="docutils literal notranslate"><span class="pre">EPERM</span></code>.</p>
+<p>What it feeds gdb, in this order — see it without starting gdb using
+<code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--dry-run</span> <span class="pre">1</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">set</span> <span class="n">pagination</span> <span class="n">off</span>
+<span class="nb">set</span> <span class="n">sysroot</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
+<span class="n">directory</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
+<span class="n">add</span><span class="o">-</span><span class="n">auto</span><span class="o">-</span><span class="n">load</span><span class="o">-</span><span class="n">safe</span><span class="o">-</span><span class="n">path</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
+<span class="nb">set</span> <span class="n">debuginfod</span> <span class="n">enabled</span> <span class="n">on</span>
+<span class="n">file</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">app</span><span class="o">/</span><span class="n">victim</span>
+<span class="n">attach</span> <span class="mi">1</span>
+</pre></div>
+</div>
+<p>Every line earns its place:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Command</p></th>
+<th class="head"><p>Why</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>gdb resolves the <em>target’s</em> loader and shared libraries, not the debug image’s. gdb 13’s default sysroot is <code class="docutils literal notranslate"><span class="pre">target:</span></code>, which needs <code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code> and fails loudly without it</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code></p></td>
+<td><p>sysroot does <strong>not</strong> cover source lookup. This is what turns <code class="docutils literal notranslate"><span class="pre">victim.c:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code> into real source text</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code></p></td>
+<td><p>setting a sysroot makes gdb decline to auto-load the target’s <code class="docutils literal notranslate"><span class="pre">libthread_db.so.1</span></code> — no <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code>, no per-thread backtraces. Narrow, never <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">auto-load</span> <span class="pre">safe-path</span> <span class="pre">/</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">debuginfod</span> <span class="pre">enabled</span> <span class="pre">on</span></code></p></td>
+<td><p>symbols for stripped binaries and system libraries. Symbols only — see below</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root$(readlink</span> <span class="pre">/proc/&lt;pid&gt;/exe)</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>this is what recovers the <em>user</em> frames. A trailing <code class="docutils literal notranslate"> <span class="pre">(deleted)</span></code> is stripped</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="breakpoint-source-step">
+<h2>5. Breakpoint, source, step<a class="headerlink" href="#breakpoint-source-step" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>(gdb) break compute
+Breakpoint 1 at 0x575fbad351f4: file victim.c, line 19.
+(gdb) continue
+Continuing.
+
+Breakpoint 1, compute (n=23, w=0x7ffc633f7600) at victim.c:19
+19	      w-&gt;id = n;
+(gdb) bt
+#0  compute (n=23, w=0x7ffc633f7600) at victim.c:19
+#1  0x0000575fbad35297 in outer_loop () at victim.c:31
+#2  0x0000575fbad3531b in main (argc=1, argv=0x7ffc633f7778) at victim.c:42
+(gdb) next
+20	      w-&gt;value = (double)n * 1.5;
+(gdb) print *w
+$1 = {id = 23, value = 0, label = &#39;\000&#39; &lt;repeats 31 times&gt;}
+(gdb) info source
+Current source file is victim.c
+Compilation directory is /app/src
+Located in /proc/1/root/app/src/victim.c
+</pre></div>
+</div>
+<p>That last block is the check that matters. <code class="docutils literal notranslate"><span class="pre">Located</span> <span class="pre">in</span> <span class="pre">/proc/1/root/app/src/victim.c</span></code> is a single, clean sysroot prefix — the field a
+DAP client hands to the editor.</p>
+<p>Detach and leave the workload running:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">(</span><span class="n">gdb</span><span class="p">)</span> <span class="n">detach</span>
+<span class="p">(</span><span class="n">gdb</span><span class="p">)</span> <span class="n">quit</span>
+</pre></div>
+</div>
+</section>
+<section id="where-source-text-actually-comes-from">
+<h2>Where source text actually comes from<a class="headerlink" href="#where-source-text-actually-comes-from" title="Link to this heading">#</a></h2>
+<p>Be clear-eyed about this: <strong>debuginfod delivers symbols, not sources, on Debian
+and Ubuntu targets.</strong> Both halves of that were measured.</p>
+<ul>
+<li><p>Symbols work, and they are cheap: a fully symbolised, source-line-annotated
+backtrace across coreutils <em>and</em> glibc for a stripped binary cost <strong>4.7 MB</strong>
+of <code class="docutils literal notranslate"><span class="pre">~/.cache/debuginfod_client</span></code>, and it works <em>through</em> the sysroot including
+for distroless libraries.</p></li>
+<li><p>Sources fail, twice over, and both causes are fatal on their own:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Download</span> <span class="n">failed</span><span class="p">:</span> <span class="n">Invalid</span> <span class="n">argument</span><span class="o">.</span>  <span class="n">Continuing</span> <span class="n">without</span> <span class="n">source</span> <span class="n">file</span> <span class="o">./</span><span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span><span class="o">.</span>
+<span class="mi">142</span>	<span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span><span class="p">:</span> <span class="n">Inappropriate</span> <span class="n">ioctl</span> <span class="k">for</span> <span class="n">device</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>Debian’s <code class="docutils literal notranslate"><span class="pre">-dbgsym</span></code> packages carry <code class="docutils literal notranslate"><span class="pre">DW_AT_comp_dir</span> <span class="pre">:</span> <span class="pre">.</span></code> from
+reproducible-builds normalisation, and the debuginfod protocol requires an
+absolute path, so gdb’s <code class="docutils literal notranslate"><span class="pre">./src/sleep.c</span></code> is rejected client-side with <code class="docutils literal notranslate"><span class="pre">EINVAL</span></code>.
+And the server has no sources anyway: <code class="docutils literal notranslate"><span class="pre">/buildid/&lt;id&gt;/debuginfo</span></code> returns
+<strong>200</strong>, <code class="docutils literal notranslate"><span class="pre">/buildid/&lt;id&gt;/source/src/sleep.c</span></code> returns <strong>404</strong>.</p>
+</li>
+</ul>
+<p>Fedora/RHEL debuginfod <em>is</em> known to serve sources. Debian and Ubuntu targets
+will not. So source text has to come from one of these, and you have to pick
+one deliberately:</p>
+<ol class="arabic">
+<li><p><strong>Source in the target image</strong> — what the demo above does. Ship
+<code class="docutils literal notranslate"><span class="pre">/app/src</span></code> in the workload image (or on a volume) and <code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> finds it with no path mapping at all. Simplest, and the
+only option that needs nothing on the client.</p></li>
+<li><p><strong>A checkout in the debug container.</strong> Clone the source into the seat and
+point <code class="docutils literal notranslate"><span class="pre">dbg</span></code> at it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># git clone https://github.com/you/app /workspace/src</span>
+<span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># dbg --source-dir /workspace/src 1</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--source-dir</span></code> is repeatable and is wired with gdb’s <code class="docutils literal notranslate"><span class="pre">directory</span></code>. gdb searches
+the most recently added directory first, so your checkout wins over the
+target’s rootfs.</p>
+</li>
+<li><p><strong>Client-side mapping</strong> to a checkout on your laptop, via <code class="docutils literal notranslate"><span class="pre">sourceFileMap</span></code> in
+<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> — see below. This is the only one that keeps a full clone off
+the pod, and it is also the least proven.</p></li>
+</ol>
+<p>None of these is a finished design. Source provisioning for Observe mode is an
+open problem, not a solved one.</p>
+</section>
+<section id="vs-code-attach-templates">
+<h2>VS Code attach templates<a class="headerlink" href="#vs-code-attach-templates" title="Link to this heading">#</a></h2>
+<p>These go in <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> <strong>in the remote window</strong> — the debug adapter
+runs inside the debug container, next to gdb, so every path below is a path in
+that container.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>gdb’s DAP/MI mode has not been tested against podbench. The gdb command
+sequence above was verified from the CLI. The VS Code C++ extension consumes
+<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code>’s <code class="docutils literal notranslate"><span class="pre">fullname</span></code>, which is exactly the field the wrong source-mapping
+approach corrupts, so if paths come out doubled (<code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root/…</span></code>)
+that is the failure to look for.</p>
+</div>
+<section id="c-c-with-ms-vscode-cpptools-gdb">
+<h3>C/C++ with <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> (gdb)<a class="headerlink" href="#c-c-with-ms-vscode-cpptools-gdb" title="Link to this heading">#</a></h3>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.2.0&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;configurations&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;podbench: attach to the workload&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cppdbg&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;request&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;attach&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;processId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;program&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/victim&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;MIMode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gdb&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;miDebuggerPath&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/usr/bin/gdb&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;setupCommands&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;set sysroot /proc/1/root&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;directory /proc/1/root&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;add-auto-load-safe-path /proc/1/root&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;set debuginfod enabled on&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">      </span><span class="p">],</span>
+<span class="w">      </span><span class="nt">&quot;sourceFileMap&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;/app/src&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/src&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;/workspace/build&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/workspace/src&quot;</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Two things are load-bearing. <code class="docutils literal notranslate"><span class="pre">program</span></code> must be the <strong>sysroot-prefixed</strong> path, or
+gdb reads the debug image’s idea of the binary. And <code class="docutils literal notranslate"><span class="pre">setupCommands</span></code> run before
+the attach, which is the ordering the CLI sequence depends on — do not move the
+sysroot line into a post-attach hook.</p>
+<p><code class="docutils literal notranslate"><span class="pre">sourceFileMap</span></code> keys are the compilation directories recorded in the DWARF
+(<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code> prints them as <em>Compilation directory</em>); values are where those
+directories can be read from <em>in the debug container</em>.</p>
+</section>
+<section id="rust-with-vadimcn-vscode-lldb-codelldb">
+<h3>Rust with <code class="docutils literal notranslate"><span class="pre">vadimcn.vscode-lldb</span></code> (CodeLLDB)<a class="headerlink" href="#rust-with-vadimcn-vscode-lldb-codelldb" title="Link to this heading">#</a></h3>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.2.0&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;configurations&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;podbench: attach to the Rust workload&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;lldb&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;request&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;attach&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;program&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/myapp&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;sourceMap&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;/app/src&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/proc/1/root/app/src&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;/rustc/&lt;commit-hash&gt;&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/workspace/rust-src/library&quot;</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;initCommands&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="s2">&quot;settings set target.exec-search-paths /proc/1/root/usr/lib /proc/1/root/lib&quot;</span>
+<span class="w">      </span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>CodeLLDB spells the key <code class="docutils literal notranslate"><span class="pre">sourceMap</span></code>, not <code class="docutils literal notranslate"><span class="pre">sourceFileMap</span></code>. lldb has no exact
+analogue of gdb’s <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> for <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, so the executable path
+must be sysroot-prefixed explicitly and the library search paths set by hand.
+The <code class="docutils literal notranslate"><span class="pre">/rustc/&lt;commit-hash&gt;</span></code> key is what <code class="docutils literal notranslate"><span class="pre">rustc</span></code> bakes into standard-library debug
+info; <code class="docutils literal notranslate"><span class="pre">rustup</span> <span class="pre">component</span> <span class="pre">add</span> <span class="pre">rust-src</span></code> provides the right-hand side.</p>
+</section>
+</section>
+<section id="the-wrong-sysroot-failure-verbatim">
+<h2>The wrong-sysroot failure, verbatim<a class="headerlink" href="#the-wrong-sysroot-failure-verbatim" title="Link to this heading">#</a></h2>
+<p>This is the most dangerous failure in this whole workflow, because it does not
+look like a failure. <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/</span></code> against a target whose glibc differs from
+the debug image’s (here Ubuntu 24.04’s 2.39 against the image’s 2.36):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1">### WRONG: set sysroot /</span>
+<span class="mh">0x000077f6377dcb7a</span> <span class="ow">in</span> <span class="n">wcsxfrm_l</span> <span class="p">()</span> <span class="kn">from</span><span class="w"> </span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="c1">#2  0x00005c459789e35f in outer_loop () at victim.c:29        &lt;- wrong line, too</span>
+<span class="c1">#5  0x00005c45978a0d80 in __frame_dummy_init_array_entry ()</span>
+
+<span class="c1">### RIGHT: set sysroot /proc/1/root</span>
+<span class="mh">0x000077f6377dcb7a</span> <span class="ow">in</span> <span class="n">clock_nanosleep</span> <span class="p">()</span> <span class="kn">from</span><span class="w"> </span><span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="c1">#3  0x00005c459789e35c in outer_loop () at victim.c:35</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">clock_nanosleep</span></code> reported as <code class="docutils literal notranslate"><span class="pre">wcsxfrm_l</span></code>, interleaved frames, and even the
+<em>user-code line number</em> wrong. Against a Debian-12 distroless target the bug is
+<strong>invisible</strong>, because both glibcs share a build ID and the backtrace comes out
+correct — a matched debug image hides this rather than fixing it. <code class="docutils literal notranslate"><span class="pre">dbg</span></code> is what
+makes it impossible.</p>
+</section>
+<section id="three-anti-patterns">
+<h2>Three anti-patterns<a class="headerlink" href="#three-anti-patterns" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code>.</strong> It makes gdb’s default <code class="docutils literal notranslate"><span class="pre">target:</span></code> sysroot work with zero
+configuration, which is exactly why someone rediscovers it every year. It also
+breaks <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> (<code class="docutils literal notranslate"><span class="pre">Expected</span> <span class="pre">absolute</span> <span class="pre">pathname</span> <span class="pre">for</span> <span class="pre">libpthread</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">inferior,</span> <span class="pre">but</span> <span class="pre">got</span> <span class="pre">target:/lib/…</span></code>), is container-escape-adjacent and is
+rejected by any restricted Pod Security Standard. podbench never asks for it.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">substitute-path</span> <span class="pre">/</span> <span class="pre">/proc/&lt;pid&gt;/root/</span></code>.</strong> It functions, but gdb
+re-applies the substitution on display and emits
+<code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root/proc/1/root/…</span></code> — which is the string a DAP client
+hands to your editor. Use <code class="docutils literal notranslate"><span class="pre">directory</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> after <code class="docutils literal notranslate"><span class="pre">attach</span></code>.</strong> Libraries get fixed up on the fly, so it
+looks like it worked; the main executable does not, and the frames above libc
+come back as <code class="docutils literal notranslate"><span class="pre">??</span> <span class="pre">()</span></code>.</p></li>
+</ul>
+</section>
+<section id="without-sys-ptrace">
+<h2>Without <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code><a class="headerlink" href="#without-sys-ptrace" title="Link to this heading">#</a></h2>
+<p>Losing the capability costs exactly one thing: attach to an <strong>already running</strong>
+process. Full source-level debugging survives, because gdb starting the program
+itself needs no capability and is exempt from Yama:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># dbg --launch ./myprog --some-flag</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> consumes the rest of the command line, so put any other <code class="docutils literal notranslate"><span class="pre">dbg</span></code> flags
+before it. Add <code class="docutils literal notranslate"><span class="pre">--run</span></code> to start the program immediately.</p>
+<p><code class="docutils literal notranslate"><span class="pre">dbg</span></code> will tell you this itself when attach is denied — it names the mechanism
+and points at the alternative:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>dbg: cannot attach to pid 1: yama-scope
+  Yama&#39;s ptrace_scope forbids attaching to a non-descendant...
+  verdict: read-only debugging available
+  the target&#39;s rootfs, maps and environ are still readable, so `pids` and
+  read-only inspection work.
+  ptrace-free alternative: `dbg --launch ./yourprog [args]`. gdb forks the
+  inferior itself, which needs no capability and is not subject to Yama.
+  to keep attaching to this process, the target can opt in with one line:
+  prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY).
+</pre></div>
+</div>
+<p>That last line is worth knowing: the natural workflow <code class="docutils literal notranslate"><span class="pre">myprog</span> <span class="pre">&amp;</span> <span class="pre">;</span> <span class="pre">gdb</span> <span class="pre">-p</span> <span class="pre">$!</span></code>
+makes gdb a <strong>sibling</strong>, which Yama denies at <code class="docutils literal notranslate"><span class="pre">ptrace_scope=1</span></code>. A sibling that
+called <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code> is attachable with zero
+capabilities. It is a one-line, capability-free, node-change-free opt-in for a
+program you control.</p>
+</section>
+<section id="gotchas">
+<h2>Gotchas<a class="headerlink" href="#gotchas" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>ASLR cannot be disabled.</strong> <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp permits <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code> but
+blocks <code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code>, so gdb warns <code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">disabling</span> <span class="pre">address</span> <span class="pre">space</span> <span class="pre">randomization</span></code> and addresses vary run to run. Set breakpoints by symbol.</p></li>
+<li><p><strong>Attach works on one node and not the next.</strong> Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code> is a
+node-level knob and differs by kernel <em>flavour</em>, not by architecture — two
+arm64 nodes in the same cluster disagreed in testing. podbench probes per
+node and prints the node name for this reason.</p></li>
+<li><p><strong>A target already being traced</strong> refuses with the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code> as a policy
+denial, because a tracee has exactly one tracer. <code class="docutils literal notranslate"><span class="pre">capreport</span></code> reports
+<code class="docutils literal notranslate"><span class="pre">already-traced</span></code> when it can tell.</p></li>
+<li><p><strong>Multithreaded targets are unproven.</strong> <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> loaded and <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code> listed the single LWP in testing; a genuinely multithreaded target
+was never tried. Nor was a target in a user namespace.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">elfutils</span></code>/<code class="docutils literal notranslate"><span class="pre">binutils</span></code> are in the image</strong> — <code class="docutils literal notranslate"><span class="pre">readelf</span> <span class="pre">--debug-dump=info</span></code> and
+<code class="docutils literal notranslate"><span class="pre">eu-readelf</span></code> are how a build-ID miss gets diagnosed.</p></li>
+</ul>
+</section>
+<section id="clean-up">
+<h2>Clean up<a class="headerlink" href="#clean-up" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl delete namespace podbench-gdb
+</pre></div>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="contribute.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Contribute to the project</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="iterate-on-python.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Iterate on Python</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#a-distroless-target">1. A distroless target</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-the-seat">2. Attach the seat</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#find-the-process">3. Find the process</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-gdb">4. Attach gdb</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakpoint-source-step">5. Breakpoint, source, step</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-source-text-actually-comes-from">Where source text actually comes from</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#vs-code-attach-templates">VS Code attach templates</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#c-c-with-ms-vscode-cpptools-gdb">C/C++ with <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> (gdb)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rust-with-vadimcn-vscode-lldb-codelldb">Rust with <code class="docutils literal notranslate"><span class="pre">vadimcn.vscode-lldb</span></code> (CodeLLDB)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-wrong-sysroot-failure-verbatim">The wrong-sysroot failure, verbatim</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#three-anti-patterns">Three anti-patterns</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#without-sys-ptrace">Without <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gotchas">Gotchas</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clean-up">Clean up</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0a4/docs/how-to/debug-with-gdb.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/how-to/debug-with-gdb.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
