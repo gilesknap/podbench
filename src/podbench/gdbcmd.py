@@ -395,16 +395,27 @@ def _split_launch(args: Sequence[str] | None) -> tuple[list[str], list[str]]:
     a command line typed at a terminal and one passed in as a list are split the
     same way.
 
+    Both spellings of the option have to be recognised. ``--launch=./prog``
+    carries the program in the same token, so the tail starts one place earlier
+    than in the separated form; missing that spelling sent ``--fast`` to click,
+    which refused it as an unknown option.
+
     >>> _split_launch(["--dry-run", "--launch", "./prog", "--fast"])
     (['--dry-run', '--launch', './prog'], ['--fast'])
+    >>> _split_launch(["--dry-run", "--launch=./prog", "--fast"])
+    (['--dry-run', '--launch=./prog'], ['--fast'])
     >>> _split_launch(["603", "--dry-run"])
     (['603', '--dry-run'], [])
     """
     argv = list(sys.argv[1:] if args is None else args)
-    if "--launch" not in argv:
-        return argv, []
-    program = argv.index("--launch") + 1
-    return argv[: program + 1], argv[program + 1 :]
+    for index, token in enumerate(argv):
+        if token == "--launch":
+            # The program name is the next token, and belongs to click so that
+            # a missing one is its error message rather than ours.
+            return argv[: index + 2], argv[index + 2 :]
+        if token.startswith("--launch="):
+            return argv[: index + 1], argv[index + 1 :]
+    return argv, []
 
 
 def _pids_command(*, proc: Path) -> _Command:
