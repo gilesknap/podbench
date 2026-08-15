@@ -209,7 +209,9 @@ def workspace(kubectl: KubectlCli, dev_pod: DevPod, sources: dict[str, str]) -> 
         container=sidecar,
         timeout=BOOTSTRAP_TIMEOUT,
     )
-    assert "pip install -e ." in result.stdout, result.stdout + result.stderr
+    # dev-bootstrap echoes each command it runs to stderr, not stdout: progress
+    # is not output, and a caller piping stdout wants the app's, not ours.
+    assert "pip install -e ." in result.stderr, result.stdout + result.stderr
     return dev_pod
 
 
