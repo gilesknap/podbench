@@ -22,12 +22,22 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
 # schema and the disagreement surfaces in CI as a diff nobody wrote, and helm to
 # the workflows' HELM_VERSION_TO_INSTALL, so a chart that renders here renders
 # the same way there.
+#
+# The tarball is checked against the digest helm publishes beside it before
+# anything is extracted. Piping curl straight into tar cannot do that - the
+# archive is unpacked as it arrives, so by the time a bad download is noticed it
+# has already been written - and a release artefact that lands unverified in
+# every developer's image and every CI container is the wrong place to save two
+# lines.
 ARG HELM_VERSION=v3.17.1
-RUN curl -fsSL \
-    "https://get.helm.sh/helm-${HELM_VERSION}-linux-$(dpkg --print-architecture).tar.gz" \
-    | tar -xz -C /tmp \
+RUN arch="$(dpkg --print-architecture)" \
+    && tarball="helm-${HELM_VERSION}-linux-${arch}.tar.gz" \
+    && curl -fsSL "https://get.helm.sh/${tarball}" -o "/tmp/${tarball}" \
+    && curl -fsSL "https://get.helm.sh/${tarball}.sha256sum" -o "/tmp/${tarball}.sha256sum" \
+    && (cd /tmp && sha256sum -c "${tarball}.sha256sum") \
+    && tar -xz -C /tmp -f "/tmp/${tarball}" \
     && mv /tmp/linux-*/helm /usr/local/bin/helm \
-    && rm -rf /tmp/linux-* \
+    && rm -rf /tmp/linux-* "/tmp/${tarball}" "/tmp/${tarball}.sha256sum" \
     && helm plugin install https://github.com/losisin/helm-values-schema-json \
     --version v2.5.0
 
