@@ -16,6 +16,14 @@ jobs:
           # Need this to get version number from last tag
           fetch-depth: 0
 
+      # podbench must run on both the amd64 and arm64 nodes of a mixed cluster,
+      # so the published image is a multi-arch manifest. QEMU provides the arm64
+      # emulation for the cross build below.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v4
@@ -28,37 +36,57 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `load: true` cannot export a multi-arch manifest to the docker daemon, so
+      # the smoke test is built for the native runner arch only. The multi-arch
+      # manifest is produced by the push step, which reuses these cache layers.
       - name: Build and export to Docker local cache
         uses: docker/build-push-action@v7
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
-          # Need load and tags so we can test it below
+          platforms: linux/amd64
           load: true
           tags: tag_for_testing
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Test cli works in cached runtime image
         run: docker run --rm tag_for_testing --version
+
+      # The image is only useful in a cluster, so exercise the in-image helpers
+      # too: they are the surface `kubectl podbench` drives once attached.
+      - name: Test in-image helpers are present and self-report
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint capreport tag_for_testing --json
+          docker run --rm --entrypoint pids tag_for_testing --help
+          docker run --rm --entrypoint sh tag_for_testing -c 'command -v gdb sshd uv git'
 
       - name: Create tags for publishing image
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # `main` and `sha-` tags let a cluster track the tip of the default
+          # branch during development; `latest` and the tag itself are the
+          # released artefacts.
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=main,enable={{is_default_branch}}
+            type=sha,format=long,enable={{is_default_branch}}
 
-      - name: Push cached image to container registry
-        if: inputs.publish && github.ref_type == 'tag'
+      - name: Push multi-arch image to container registry
+        if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
         uses: docker/build-push-action@v7
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
-        # This does not build the image again, it will find the image in the
-        # Docker cache and publish it
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
