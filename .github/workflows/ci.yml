@@ -14,6 +14,14 @@ jobs:
     uses: ./.github/workflows/_tox.yml
     with:
       tox: pre-commit,type-checking
+      # pre-commit regenerates Charts/podbench/values.schema.json, which needs
+      # helm and the schema plugin on the runner.
+      helm: true
+    # This job now fetches and executes a third-party helm plugin, so cap the
+    # token it does that with. `_tox.yml` only checks out and runs tox, so read
+    # is all it can want.
+    permissions:
+      contents: read
 
   test:
     strategy:
@@ -70,8 +78,10 @@ jobs:
     permissions:
       id-token: write
 
+  # `helm` is in the needs list because the release attaches the chart's
+  # generated values.schema.json, which that job uploads.
   release:
-    needs: [dist, test, docs]
+    needs: [dist, test, docs, helm]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_release.yml
     permissions:

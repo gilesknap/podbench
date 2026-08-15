@@ -216,6 +216,28 @@ From a checkout, the same values work against the chart directory:
 are separate flags because they are genuinely different levels of trust. The
 chart also carries the optional scratch PVC for Iterate-mode workspaces.
 
+The chart ships a `values.schema.json`, so a misspelt `--set` is refused by
+`helm` rather than accepted and dropped:
+
+```
+$ helm upgrade --install podbench ./Charts/podbench --set rbac.iterat=true
+Error: values don't meet the specifications of the schema(s) in the following chart(s):
+podbench:
+- at '/rbac': additional properties 'iterat' not allowed
+```
+
+Without it that install would have succeeded, granted the observe verbs only,
+and the mistake would have surfaced at `podbench dev` as an RBAC error naming a
+verb you thought you had. If you keep your values in a file, the same schema
+drives editor completion — every release attaches `values.schema.json`, so point
+at the one matching the chart version you deploy:
+
+```yaml
+# yaml-language-server: $schema=https://github.com/gilesknap/podbench/releases/download/0.1.0-alpha.6/values.schema.json
+rbac:
+  create: true
+```
+
 **Nothing in that chart is required to use podbench.** Observe and Iterate mode
 work against any pod from any chart, unmodified — that is the design principle
 the tool is built on.

@@ -1,4 +1,11 @@
+# yaml-language-server: $schema=values.schema.json
+
 # Default values for podbench.
+#
+# This file, plus the `# @schema` comments in it, generates values.schema.json
+# (see .schema.config.yaml); helm then refuses a mistyped key at install time
+# rather than at attach time. The lists that default to `[]` get their item
+# shape from example.values.yaml, since an empty list infers nothing.
 #
 # Nothing here is required to *use* podbench: Observe and Iterate mode work
 # against any pod, from any chart, completely unmodified — that is the design
@@ -20,7 +27,7 @@ image:
   # of a security team than "privileged", and is only writable against a pinned,
   # published image.
   tag: ""
-  pullPolicy: IfNotPresent
+  pullPolicy: IfNotPresent # @schema enum:[Always, IfNotPresent, Never]
 
 rbac:
   # Create a Role granting the verbs podbench needs. Off by default: a cluster
@@ -60,6 +67,7 @@ scratchPvc:
   name: "" # defaults to <release>-scratch
   size: 20Gi
   storageClassName: ""
+  # @schema itemEnum:[ReadWriteOnce, ReadOnlyMany, ReadWriteMany, ReadWriteOncePod]
   accessModes:
     - ReadWriteOnce
 
@@ -122,5 +130,11 @@ seatIdentity:
   #     configMapName: "" # defaults to <name>-podbench-identity
   apps: []
 
+# Free-form, so the schema only constrains them to the string values Kubernetes
+# accepts for a label or an annotation — `noAdditionalProperties` would
+# otherwise turn an empty map into "no keys allowed". A number therefore needs
+# `--set-string`, which is what the API server wants anyway.
+# @schema additionalProperties: {type: string}
 commonLabels: {}
+# @schema additionalProperties: {type: string}
 commonAnnotations: {}
