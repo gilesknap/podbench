@@ -45,9 +45,10 @@ class Verb(NamedTuple):
     """One row of the dispatch table, and one line of the top-level help."""
 
     handler: Callable[[Sequence[str]], int]
-    #: False for the two modules whose parsers were written before this
-    #: dispatcher existed and so do not expect their own name in argv; the
-    #: others own a subcommand keyed on it and need it kept.
+    #: False for a module whose parser is a single command and so does not
+    #: expect its own name in argv - typer collapses a one-command app into the
+    #: app itself. The others own a subcommand keyed on the verb and need it
+    #: kept.
     keep_verb: bool
     help: str
     panel: str
@@ -67,6 +68,12 @@ def _capreport(args: Sequence[str]) -> int:
 
 def _gdbcmd(args: Sequence[str]) -> int:
     from .gdbcmd import main as run_verb
+
+    return run_verb(args)
+
+
+def _doctor(args: Sequence[str]) -> int:
+    from .doctor import main as run_verb
 
     return run_verb(args)
 
@@ -92,7 +99,15 @@ def _patch(args: Sequence[str]) -> int:
 #: Verb -> everything this level knows about it. Ordered, because that is the
 #: order the two help panels list them in.
 ENTRY_POINTS: dict[str, Verb] = {
-    # Laptop side: `podbench ...`.
+    # Laptop side: `podbench ...`. `doctor` leads because under `uvx` there is
+    # no install step to hang first-run setup on, so it is the verb that has to
+    # be findable before the first attach rather than after it fails.
+    "doctor": Verb(
+        _doctor,
+        False,
+        "check this machine can attach, and name what stops it",
+        LAPTOP,
+    ),
     "attach": Verb(
         _launcher,
         True,
