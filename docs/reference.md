@@ -6,6 +6,7 @@ Technical reference material including APIs and release notes.
 :maxdepth: 1
 :glob:
 
+reference/cli
 API <_api/podbench>
 genindex
 Release Notes <https://github.com/gilesknap/podbench/releases>
