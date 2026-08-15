@@ -24,7 +24,8 @@ It is recommended that developers use a [vscode devcontainer](https://code.visua
 
 `Charts/podbench/values.schema.json` is **generated, never hand-edited**: a
 pre-commit hook regenerates it from `values.yaml` and `example.values.yaml`. That
-hook is a shim around a helm plugin, so a checkout outside the devcontainer needs
+hook is a shim around a helm plugin — the devcontainer image installs both it and
+`helm`, and a checkout outside the devcontainer needs
 `helm plugin install https://github.com/losisin/helm-values-schema-json` before
 `pre-commit run --all-files` will pass. Add a value by editing `values.yaml` —
 including the `# @schema` comment if it needs an enum or an item shape — and

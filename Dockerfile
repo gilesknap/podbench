@@ -5,15 +5,30 @@ FROM ghcr.io/diamondlightsource/ubuntu-devcontainer:resolute AS developer
 # Add any system dependencies for the developer/build environment here
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
     graphviz \
+    curl \
+    ca-certificates \
     && apt-get dist-clean
 
-# The helm-schema pre-commit hook regenerates Charts/podbench/values.schema.json
-# and is a shim around a helm *plugin*: with the plugin missing it fails the
-# commit outright rather than skipping, so it belongs in the image next to helm
-# itself. Keep the version pinned to the hook's `rev` in
-# .pre-commit-config.yaml — a different plugin generates a different schema, and
-# the disagreement surfaces in CI as a diff nobody wrote.
-RUN helm plugin install https://github.com/losisin/helm-values-schema-json \
+# helm, and the schema plugin the `helm-schema` pre-commit hook shells out to.
+#
+# The base image carries neither, which until now meant `just helm` failed and
+# tests/test_chart_contract.py skipped itself in every devcontainer as well as in
+# CI - a chart test that never runs. The hook makes it load-bearing: it
+# regenerates Charts/podbench/values.schema.json, and with the plugin absent it
+# fails the commit outright rather than skipping.
+#
+# Both versions are pinned: the plugin to the hook's `rev` in
+# .pre-commit-config.yaml, because a different plugin generates a different
+# schema and the disagreement surfaces in CI as a diff nobody wrote, and helm to
+# the workflows' HELM_VERSION_TO_INSTALL, so a chart that renders here renders
+# the same way there.
+ARG HELM_VERSION=v3.17.1
+RUN curl -fsSL \
+    "https://get.helm.sh/helm-${HELM_VERSION}-linux-$(dpkg --print-architecture).tar.gz" \
+    | tar -xz -C /tmp \
+    && mv /tmp/linux-*/helm /usr/local/bin/helm \
+    && rm -rf /tmp/linux-* \
+    && helm plugin install https://github.com/losisin/helm-values-schema-json \
     --version v2.5.0
 
 # The build stage installs the context into the venv

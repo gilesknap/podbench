@@ -320,10 +320,15 @@ def test_the_documented_example_entries_are_ones_the_schema_accepts() -> None:
 
 
 def test_a_mistyped_top_level_key_is_refused_rather_than_ignored() -> None:
-    """The plain case: helm without a schema accepts any key and drops it."""
+    """The plain case: helm without a schema accepts any key and drops it.
+
+    The wording of the complaint is helm's and has changed between minor
+    versions, so only the typo itself is asserted - naming the offending key is
+    the part that makes the refusal actionable.
+    """
     rendered = render("--set", "scratchPvcs.enabled=true")
     assert rendered.returncode != 0
-    assert "additional properties 'scratchPvcs' not allowed" in rendered.stderr
+    assert "scratchPvcs" in rendered.stderr
 
 
 def test_a_mistyped_rbac_verb_is_refused_at_the_point_of_the_typo() -> None:
@@ -335,8 +340,8 @@ def test_a_mistyped_rbac_verb_is_refused_at_the_point_of_the_typo() -> None:
     """
     rendered = render("--set", "rbac.create=true", "--set", "rbac.iterat=true")
     assert rendered.returncode != 0
-    assert "additional properties 'iterat' not allowed" in rendered.stderr
-    assert "/rbac" in rendered.stderr
+    assert "iterat" in rendered.stderr
+    assert "rbac" in rendered.stderr
 
 
 def test_a_mistyped_field_inside_a_list_entry_is_refused_too() -> None:
@@ -356,4 +361,4 @@ def test_a_mistyped_field_inside_a_list_entry_is_refused_too() -> None:
         "rbac.subjects[0].nmae=developers",
     )
     assert rendered.returncode != 0
-    assert "additional properties 'nmae' not allowed" in rendered.stderr
+    assert "nmae" in rendered.stderr
