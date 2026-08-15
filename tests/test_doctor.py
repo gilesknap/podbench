@@ -505,6 +505,20 @@ def test_the_cli_returns_the_reports_exit_code(
     assert "BLOCKERS: attach" in capsys.readouterr().out
 
 
+def test_a_usage_error_is_2_and_measures_nothing(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The third documented exit code, pinned here and not only at the dispatcher
+    # because what matters about it is local: a mistyped flag must not reach
+    # `diagnose`. A verb that asked the cluster and wrote to ~/.ssh on its way
+    # to rejecting the command line would have done the work anyway.
+    machine = FakeMachine()
+    assert main(["--not-a-flag"], runner=machine, which=machine.which) == 2
+    assert machine.calls == []
+    assert not (home / ".ssh" / "config").exists()
+    assert "--not-a-flag" in capsys.readouterr().err
+
+
 def test_the_cli_fixes_only_when_asked(home: Path) -> None:
     machine = FakeMachine()
     assert main([], runner=machine, which=machine.which) == 1
