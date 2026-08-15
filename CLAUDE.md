@@ -67,11 +67,37 @@ reasoned, and the failure modes are silent.
 - `Charts/podbench/` — the chart (scratch PVC, RBAC, Patch-mode venv mount).
 - `docs/explanations/spikes/` — the findings notes, kept verbatim as evidence.
 
+## Skills
+
+Two areas have enough non-obvious, hard-won rules to be worth reading before you
+touch them. Both are in `.claude/skills/`:
+
+- **`ephemeral-containers`** — what the API will and will not let an ephemeral
+  container do. Read before changing `spec.py`, `launcher.py`, or anything that
+  authors a container spec.
+- **`ssh-over-exec`** — the transport's invariants, every one of which fails
+  silently or misleadingly. Read before touching `sshcfg.py` or `agent.py`.
+
 ## Testing
 
 - Unit tests must not touch a cluster: build synthetic `/proc` trees and fixture pod
   JSON, and monkeypatch anything that shells out.
 - Cluster/e2e tests are separate and opt-in; they mirror the spikes so that S1-S5
-  become regression tests.
+  become regression tests. CI runs them on kind.
 - No docker, podman or kind in the devcontainer — images are built by CI. To get an
   image to test against the cluster, push a tag.
+- On a **mixed-architecture** cluster with a single-arch image, pin the suite:
+  `PODBENCH_E2E_NODE_SELECTOR=kubernetes.io/arch=amd64`. Without it the probe pod
+  lands where the image cannot run and everything skips.
+
+## Two environment foot-guns
+
+Both cost real time in this repo's first session, and neither announces itself.
+
+- **`UV_PROJECT_ENVIRONMENT` is exported by the devcontainer**, pointing at another
+  project's cache venv. A bare `uv run` in this repo silently loses ruff, pyright and
+  pytest partway through a session. Use `just`, which pins it, or
+  `export UV_PROJECT_ENVIRONMENT=$PWD/.venv` before `uv run --no-sync ...`.
+- **`pre-commit run --all-files` only sees git-tracked files.** It passes locally
+  while CI fails, because the offending files were still untracked when it ran.
+  `git add` first, then run it.
