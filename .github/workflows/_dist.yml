@@ -29,6 +29,17 @@ jobs:
       - name: Check for packaging errors
         run: uvx twine check --strict dist/*
 
+      # Running from a throwaway environment with an empty cache is the headline
+      # of #1, so this is the launchability smoke test. `--no-index` is what
+      # makes it also test "no runtime dependencies": without it uv would
+      # happily resolve and download anything the wheel declared and still exit
+      # 0. With zero dependencies the local wheel needs no index at all, so a
+      # single added requirement turns this step red.
+      - name: Test the wheel is launchable with uvx from a cold cache
+        run: |
+          set -euo pipefail
+          UV_CACHE_DIR=$(mktemp -d) uvx --no-index --from dist/*.whl podbench --version
+
       - name: Install produced wheel
         run: python -m pip install dist/*.whl
 

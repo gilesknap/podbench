@@ -57,7 +57,19 @@ jobs:
 
   dist:
     uses: ./.github/workflows/_dist.yml
-  
+
+  # `container` is a hard prerequisite, not a nicety: the wheel's version *is*
+  # the image tag the launcher will ask for (podbench.model.image_tag_for), and
+  # a PyPI upload cannot be redone. Publishing a wheel whose image was never
+  # pushed hands every user an ImagePullBackOff in an ephemeral container that
+  # cannot be restarted.
+  pypi:
+    needs: [dist, test, container]
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/_pypi.yml
+    permissions:
+      id-token: write
+
   release:
     needs: [dist, test, docs]
     if: github.ref_type == 'tag'
