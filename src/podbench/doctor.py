@@ -37,6 +37,7 @@ from . import __version__
 from .cli import new_app, run
 from .kubectl import Kubectl, Runner, run_subprocess
 from .launcher import (
+    CONFIG_D,
     DEFAULT_CLIENT_DIR,
     DEFAULT_IDENTITY,
     client_dir,
@@ -513,7 +514,7 @@ def check_config_dir(directory: Path, *, fix: bool) -> Check:
     first stanza. It is checked because the ``Include`` glob is the thing that
     has to name it, and a reader comparing the two wants both in front of them.
     """
-    config_d = directory / "config.d"
+    config_d = directory / CONFIG_D
     fixed: str | None = None
     if fix and not config_d.is_dir():
         config_d.mkdir(mode=0o700, parents=True, exist_ok=True)
