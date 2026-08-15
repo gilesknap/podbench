@@ -280,6 +280,40 @@ class Kubectl:
         result = self.run("get", "pod", name, "-o", "json")
         return _parse_json_object(result.stdout, result.argv)
 
+    def pod_exists(self, name: str) -> bool:
+        """Whether a pod of exactly this name is there, in one cheap call.
+
+        ``-o name`` rather than ``-o json`` because the answer is the exit code:
+        this is asked before every substring search, to let a fully typed pod
+        name resolve without listing the namespace at all. That matters for more
+        than speed — a user whose RBAC grants ``get`` on pods but not ``list``
+        could always name a pod outright, and must keep being able to.
+
+        Any failure reads as "not this pod": kubectl distinguishes a 404 from a
+        403 only in text, and the caller's next step (list the namespace) will
+        surface the real refusal in kubectl's own words.
+        """
+        return self.run("get", "pod", name, "-o", "name", check=False).returncode == 0
+
+    def list_pods(self) -> list[dict[str, Any]]:
+        """Every pod in the namespace, as the full JSON documents.
+
+        One lister, because podbench has two questions to ask of the same
+        output — which pods carry a podbench container
+        (:func:`podbench.launcher.list_seats`) and which pod the user meant
+        (:func:`podbench.launcher.resolve_pod`) — and a second ``get pods``
+        spelled slightly differently is a second thing to keep true.
+        """
+        result = self.run("get", "pods", "-o", "json")
+        items = _parse_json_object(result.stdout, result.argv).get("items")
+        if not isinstance(items, list):
+            return []
+        return [
+            cast(dict[str, Any], item)
+            for item in cast(list[Any], items)
+            if isinstance(item, dict)
+        ]
+
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:
         """A pod subresource's JSON, e.g. ``ephemeralcontainers``."""
         result = self.run(

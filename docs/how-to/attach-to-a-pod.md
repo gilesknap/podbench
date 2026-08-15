@@ -25,11 +25,41 @@ heavier than looking belongs in a dev pod
 ## Attach, and re-attach
 
 ```
-$ podbench attach pod/web-6c9d7f4b8b-hq2vn -n demo
+$ podbench attach web -n demo
+'web' matched pod web-6c9d7f4b8b-hq2vn
 ```
 
-`pod/NAME` and a bare `NAME` are both accepted. Namespace defaults to your
-current context's.
+**You do not have to type the whole name.** `POD` is matched as a substring
+against the pods in the namespace: one hit is used and echoed, as above. An
+exact name — `pod/NAME` or a bare `NAME` — is always taken as typed, even when
+it is also a substring of another pod's name. Namespace defaults to your current
+context's.
+
+When more than one pod matches — or you name none at all and the namespace holds
+more than one — podbench lists what it found and asks:
+
+```
+$ podbench attach -n demo
+3 pods in namespace demo
+      NAME                   READY  STATUS   AGE  PODBENCH
+  1.  web-6c9d7f4b8b-hq2vn   1/1    Running  3h   podbench-1
+  2.  web-6c9d7f4b8b-t4xz9   1/1    Running  3h   -
+  3.  postgres-0             1/1    Running  6d   -
+which one? [number or name, empty to cancel] 2
+```
+
+The `PODBENCH` column is the seat that is already in the pod, so you can tell
+"reconnect to mine" from "land a new one" before choosing. Answer with the
+number, the name, or a longer substring.
+
+A namespace holding a single pod is not a choice, so it is not a question:
+`podbench attach -n demo` resolves to that pod and says which, the same echo any
+other single match gets.
+
+In a script, a CI job or over `ssh host podbench ...` there is nobody to answer,
+and a prompt would be a hang. podbench detects that stdin is not a tty, prints
+the same listing, and exits `2` instead of waiting. `--no-prompt` asks for the
+same refusal on a terminal.
 
 Running it again **reconnects** to the running podbench container rather than
 adding a second one. That is not an optimisation: ephemeral containers cannot be
@@ -44,7 +74,7 @@ podbench needs to know *which* container's PID namespace to join and whose UID
 to match:
 
 ```
-$ podbench attach pod/web-... --target api
+$ podbench attach web --target api
 ```
 
 Without `--target` it picks the pod's first container. On a multi-container pod,
@@ -87,7 +117,7 @@ Two things it cannot do, so do not plan on them: `/proc/<pid>/mem` and
 ## Making memory headroom first
 
 ```
-$ podbench attach pod/web-... --resize 6Gi
+$ podbench attach web --resize 6Gi
 ```
 
 This raises the **target container's** memory limit in place
@@ -107,8 +137,8 @@ rest.
 ## Getting the ssh stanza again
 
 ```
-$ podbench ssh-config pod/web-... -n demo
-$ podbench ssh-config pod/web-... -n demo --print-config
+$ podbench ssh-config web -n demo
+$ podbench ssh-config web -n demo --print-config
 ```
 
 `ssh-config` regenerates the stanza for a seat that is already running, without
@@ -145,8 +175,8 @@ To make host keys survive, deliver one from a Secret via
 ## Seeing what is out there
 
 ```
-$ podbench status pod/web-... -n demo    # every seat in one pod
-$ podbench list -n demo                  # every seat in the namespace
+$ podbench status web -n demo  # every seat in one pod
+$ podbench list -n demo        # every pod in the namespace carrying one
 ```
 
 `status` shows dead containers too, because their names remain burnt.

@@ -29,8 +29,9 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -95,12 +96,14 @@ __all__ = [
     "Feature",
     "LadderStep",
     "LauncherError",
+    "PodChoice",
     "SeatIdentity",
     "SeatInfo",
     "Session",
     "SshSeat",
     "attach",
     "capability_report_from_json",
+    "choose_pod",
     "client_dir",
     "current_namespace",
     "declared_volumes",
@@ -109,14 +112,20 @@ __all__ = [
     "features",
     "forget_known_hosts",
     "forget_ssh_config",
+    "format_age",
+    "format_pod_choices",
     "format_session",
     "list_seats",
     "main",
+    "match_pod_choices",
+    "match_pod_names",
     "parse_mount",
     "plan_ladder",
+    "pod_choices",
     "probe_ssh_identity",
     "read_public_key",
     "resolve_mounts",
+    "resolve_pod",
     "resolve_pod_name",
     "run_capreport",
     "ssh_unavailable_note",
@@ -1766,13 +1775,15 @@ def current_namespace(
 
 
 def list_seats(kubectl: Kubectl) -> list[tuple[PodRef, list[SeatInfo]]]:
-    """Every pod in the namespace that carries a podbench container."""
-    result = kubectl.run("get", "pods", "-o", "json")
-    parsed: object = json.loads(result.stdout)
-    items = _as_list(as_dict(parsed if isinstance(parsed, dict) else {}).get("items"))
+    """Every pod in the namespace that carries a podbench container.
+
+    Which is *not* what :func:`resolve_pod` lists: this is the fleet of seats
+    podbench already landed, and that is every pod a seat could be landed in.
+    Both read the same ``kubectl get pods`` through
+    :meth:`podbench.kubectl.Kubectl.list_pods`.
+    """
     found: list[tuple[PodRef, list[SeatInfo]]] = []
-    for item in items:
-        pod_json = as_dict(item)
+    for pod_json in kubectl.list_pods():
         name = _entry_name(as_dict(pod_json.get("metadata")))
         if name is None:
             continue
@@ -1792,6 +1803,322 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo]) -> str:
         )
         lines.append(f"  {'':<12} {seat.detail}")
     return "\n".join(lines)
+
+
+# -- choosing which pod the user meant --------------------------------------
+
+
+@dataclass(frozen=True)
+class PodChoice:
+    """One pod in the namespace, with enough beside its name to choose by.
+
+    A name on its own is not a choice: two replicas of one deployment differ by
+    a hash, and which of them is worth a seat is decided by whether it is
+    running, whether its containers came up, and how long it has been there. So
+    the listing carries what ``kubectl get pods`` carries, plus the one column
+    kubectl cannot know — the podbench container already in there, which turns
+    "add a seat" into "reconnect to mine".
+    """
+
+    name: str
+    ready: str
+    """``ready/total`` containers, as the pod's own status reports them."""
+
+    status: str
+    age: str
+    seat: str | None = None
+    """The running podbench container's name, or ``None``."""
+
+
+def pod_choices(kubectl: Kubectl, *, now: datetime | None = None) -> list[PodChoice]:
+    """Every pod in the namespace, in the order the API server returned them.
+
+    ``now`` is injected so a test can assert an age without owning the clock.
+    """
+    reference = now if now is not None else datetime.now(UTC)
+    choices: list[PodChoice] = []
+    for pod_json in kubectl.list_pods():
+        metadata = as_dict(pod_json.get("metadata"))
+        name = _entry_name(metadata)
+        if name is None:
+            continue
+        running = running_seat(pod_json)
+        choices.append(
+            PodChoice(
+                name=name,
+                ready=_ready_containers(pod_json),
+                status=_pod_status(pod_json),
+                age=_age_of(_as_str(metadata.get("creationTimestamp")), reference),
+                seat=running.name if running is not None else None,
+            )
+        )
+    return choices
+
+
+def match_pod_names(names: Sequence[str], query: str) -> list[str]:
+    """The names ``query`` selects: the exact one if there is one, else every
+    name containing it.
+
+    Exact wins *outright* rather than merely ranking first, because a pod whose
+    full name someone typed is never a question — and a deployment's pods are
+    named by extending one prefix, so ``web`` is routinely a substring of the
+    replicas of ``web`` as well as the name of something else entirely.
+
+    Case-folded because an RFC 1123 label is lower-case already, so the only
+    thing case sensitivity can do here is refuse a name the user shouted.
+
+    >>> match_pod_names(["api", "api-canary"], "api")
+    ['api']
+    >>> match_pod_names(["api-7f9", "api-canary"], "API")
+    ['api-7f9', 'api-canary']
+    >>> match_pod_names(["api-7f9"], "web")
+    []
+    """
+    exact = [name for name in names if name == query]
+    if exact:
+        return exact
+    lowered = query.lower()
+    return [name for name in names if lowered in name.lower()]
+
+
+def match_pod_choices(choices: Sequence[PodChoice], query: str) -> list[PodChoice]:
+    """:func:`match_pod_names`, keeping the rows rather than the names."""
+    selected = set(match_pod_names([choice.name for choice in choices], query))
+    return [choice for choice in choices if choice.name in selected]
+
+
+def format_pod_choices(choices: Sequence[PodChoice]) -> str:
+    """The numbered listing the prompt offers, and the refusal quotes.
+
+    Numbered even when nothing will read a number back: a non-interactive
+    refusal prints the same table, and a user who then re-runs with a name is
+    reading the column their eye already found.
+    """
+    rows = [
+        (
+            f"{index}.",
+            choice.name,
+            choice.ready,
+            choice.status,
+            choice.age,
+            choice.seat or "-",
+        )
+        for index, choice in enumerate(choices, start=1)
+    ]
+    header = ("", "NAME", "READY", "STATUS", "AGE", "PODBENCH")
+    widths = [max(len(row[column]) for row in (header, *rows)) for column in range(6)]
+    lines: list[str] = []
+    for row in (header, *rows):
+        cells = [cell.ljust(width) for cell, width in zip(row, widths, strict=True)]
+        lines.append(("  " + "  ".join(cells)).rstrip())
+    return "\n".join(lines)
+
+
+def choose_pod(choices: Sequence[PodChoice], ask: Callable[[], str]) -> PodChoice:
+    """Prompt until ``ask`` yields one of ``choices``, and return it.
+
+    A number or a name, because both are in front of the user and neither is
+    obviously the one they will reach for. A name is put through
+    :func:`match_pod_names` too, so narrowing a five-pod list by typing more of
+    the prefix works the way the argument did.
+
+    An empty line, or the EOF a closed stdin gives, is a cancellation and not a
+    default: the verbs this feeds all mutate a pod, and "just pick the first
+    one" is the wrong guess to make on someone's behalf.
+    """
+    while True:
+        try:
+            answer = ask().strip()
+        except EOFError:
+            answer = ""
+        if not answer:
+            raise LauncherError("no pod chosen")
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1]
+        narrowed = match_pod_choices(choices, answer)
+        if len(narrowed) == 1:
+            return narrowed[0]
+        _say(
+            f"{answer!r} is not one of the choices"
+            if not narrowed
+            else f"{answer!r} still matches {len(narrowed)} of them"
+        )
+
+
+def resolve_pod(
+    kubectl: Kubectl,
+    reference: str | None,
+    *,
+    prompt: bool = True,
+    ask: Callable[[], str] | None = None,
+    interactive: bool | None = None,
+    now: datetime | None = None,
+) -> str:
+    """The pod every verb that takes one goes through: what did the user mean?
+
+    ``reference`` is ``pod/NAME``, a bare ``NAME``, a substring of one, or
+    ``None`` for "show me what there is". The order is the whole design:
+
+    * an exact name is answered by a single ``get pod`` and never listed, so the
+      long form stays as cheap and as privilege-light as it always was;
+    * one substring hit resolves silently but is echoed, because a tool that
+      picks a pod for you and does not say which has picked it for the next
+      person too;
+    * anything else is a question, and a question needs the listing to answer
+      from.
+
+    ``interactive`` defaults to whether stdin is a tty, and that default is the
+    load-bearing one. podbench is run from scripts and over ssh, where a prompt
+    is not a prompt but a hang — so a namespace-wide listing and a non-zero exit
+    is the honest answer there, and ``--no-prompt`` says the same thing on a
+    terminal. ``ask`` is the seam the tests drive; it is never the real
+    :func:`input` unless the caller has decided prompting is possible.
+    """
+    query = resolve_pod_name(reference) if reference is not None else None
+    if query is not None and kubectl.pod_exists(query):
+        return query
+
+    choices = pod_choices(kubectl, now=now)
+    if not choices:
+        raise LauncherError(f"namespace {kubectl.namespace} has no pods")
+    matches = choices if query is None else match_pod_choices(choices, query)
+    if not matches:
+        raise LauncherError(
+            f"no pod in namespace {kubectl.namespace} is named {query!r} or has "
+            f"it in its name. What is there:\n{format_pod_choices(choices)}"
+        )
+    if len(matches) == 1:
+        # Echoed, not assumed: the name is about to appear in a ProxyCommand, in
+        # an ssh alias and in the pod's permanent spec, and the user typed four
+        # characters of it — or, with no POD at all, none of it, which is the
+        # case that most needs saying out loud.
+        _say(
+            f"the only pod in namespace {kubectl.namespace} is {matches[0].name}"
+            if query is None
+            else f"{query!r} matched pod {matches[0].name}"
+        )
+        return matches[0].name
+
+    if not prompt or not (
+        interactive if interactive is not None else sys.stdin.isatty()
+    ):
+        raise LauncherError(_ambiguous(kubectl.namespace, query, matches, prompt))
+    _say(
+        f"{len(matches)} pods in namespace {kubectl.namespace}"
+        if query is None
+        else f"{query!r} matches {len(matches)} pods in namespace {kubectl.namespace}"
+    )
+    _say(format_pod_choices(matches))
+    _say("which one? [number or name, empty to cancel]")
+    return choose_pod(matches, ask if ask is not None else _read_line).name
+
+
+def _ambiguous(
+    namespace: str, query: str | None, matches: Sequence[PodChoice], prompt: bool
+) -> str:
+    """The refusal that stands in for the prompt when nobody can answer it."""
+    why = (
+        "--no-prompt was given"
+        if not prompt
+        else "stdin is not a tty, so podbench will not prompt"
+    )
+    asked = (
+        f"namespace {namespace} has {len(matches)} pods and none was named"
+        if query is None
+        else f"{query!r} matches {len(matches)} pods in namespace {namespace}"
+    )
+    return (
+        f"{asked}, and {why}:\n{format_pod_choices(matches)}\n"
+        "  name one exactly, or give a substring that matches only one."
+    )
+
+
+def _read_line() -> str:
+    """One line from the terminal, with the prompt already on stderr.
+
+    :func:`input` writes its own prompt to *stdout*, which is where the
+    capability report goes; a caller redirecting stdout to a file would then be
+    asked a question they cannot see.
+    """
+    return input()
+
+
+def _say(message: str) -> None:
+    """Resolution chatter goes to stderr, so stdout stays the report."""
+    print(message, file=sys.stderr)
+
+
+def _ready_containers(pod_json: Mapping[str, Any]) -> str:
+    statuses = [
+        as_dict(entry)
+        for entry in _as_list(as_dict(pod_json.get("status")).get("containerStatuses"))
+    ]
+    declared = _as_list(as_dict(pod_json.get("spec")).get("containers"))
+    total = len(declared) or len(statuses)
+    ready = sum(1 for status in statuses if status.get("ready") is True)
+    return f"{ready}/{total}"
+
+
+def _pod_status(pod_json: Mapping[str, Any]) -> str:
+    """What the pod is doing, in one word, as ``kubectl get pods`` says it.
+
+    The phase alone is not it: a pod stuck in ``ImagePullBackOff`` or
+    ``CrashLoopBackOff`` is ``Pending``/``Running`` by phase, and the reason is
+    the thing that decides whether attaching to it is worth the attempt. Only
+    the first waiting container is quoted — this is a column, not the diagnosis,
+    and ``podbench status`` is where the diagnosis lives.
+    """
+    if as_dict(pod_json.get("metadata")).get("deletionTimestamp") is not None:
+        return "Terminating"
+    status = as_dict(pod_json.get("status"))
+    for entry in _as_list(status.get("containerStatuses")):
+        waiting = as_dict(as_dict(as_dict(entry).get("state")).get("waiting"))
+        reason = _as_str(waiting.get("reason"))
+        if reason is not None:
+            return reason
+    return _as_str(status.get("phase")) or "Unknown"
+
+
+def _age_of(timestamp: str | None, now: datetime) -> str:
+    """``creationTimestamp`` as an age, or ``?`` when it cannot be read.
+
+    Unreadable is not an error: the pod is still a pod the user may want, and a
+    listing that refuses to print because one row has an odd stamp is worse than
+    one column of it saying so.
+    """
+    if timestamp is None:
+        return "?"
+    try:
+        created = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return "?"
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return format_age((now - created).total_seconds())
+
+
+def format_age(seconds: float) -> str:
+    """A duration in the largest unit that fits.
+
+    Coarser than kubectl's two-unit form on purpose: this column exists to tell
+    a pod that restarted a minute ago from one that has been up a week, and a
+    second unit widens every row for a digit nobody chooses by.
+
+    >>> format_age(45)
+    '45s'
+    >>> format_age(3 * 3600 + 900)
+    '3h'
+    >>> format_age(9 * 86400)
+    '9d'
+    """
+    seconds = max(seconds, 0.0)
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
 
 
 # -- JSON helpers -----------------------------------------------------------
@@ -1839,7 +2166,22 @@ def spec_env(container: Mapping[str, Any]) -> dict[str, str]:
 # -- CLI --------------------------------------------------------------------
 
 
-_Pod = Annotated[str, typer.Argument(metavar="POD", help="pod/NAME or a bare NAME")]
+_Pod = Annotated[
+    str | None,
+    typer.Argument(
+        metavar="POD",
+        help="pod/NAME, a bare NAME, or any substring of one. Anything that "
+        "does not settle on a single pod lists the namespace and asks",
+    ),
+]
+_NoPrompt = Annotated[
+    bool,
+    typer.Option(
+        "--no-prompt",
+        help="never ask which pod: an ambiguous or missing POD is refused with "
+        "the candidates instead. Already implied when stdin is not a tty",
+    ),
+]
 _Namespace = Annotated[
     str | None,
     typer.Option(
@@ -1918,7 +2260,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         help="add or reconnect a podbench container and print the report",
     )
     def attach_command(
-        pod: _Pod,
+        pod: _Pod = None,
         target: Annotated[
             str | None,
             typer.Option("--target", metavar="NAME", help="workload container name"),
@@ -2009,14 +2351,18 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--timeout", metavar="SECONDS", help="seconds to wait for the seat"
             ),
         ] = 120.0,
+        no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
         kube = _kubectl(namespace, context, kubectl, runner)
+        # Before the namespace is listed: a missing key refuses this attach
+        # whichever pod is chosen, and asking someone to pick one first would
+        # spend their answer on it.
         key_path, public_key = read_public_key(identity)
-        name = resolve_pod_name(pod)
+        name = resolve_pod(kube, pod, prompt=not no_prompt)
         chosen = image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
 
         # Resize before attaching, not after: the headroom has to exist before
@@ -2061,11 +2407,12 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         name="ssh-config", help="regenerate the ssh stanza for an existing session"
     )
     def ssh_config(
-        pod: _Pod,
+        pod: _Pod = None,
         identity: _Identity = DEFAULT_IDENTITY,
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
+        no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
@@ -2073,7 +2420,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = _kubectl(namespace, context, kubectl, runner)
         key_path, _ = read_public_key(identity)
-        name = resolve_pod_name(pod)
+        name = resolve_pod(kube, pod, prompt=not no_prompt)
         pod_json = kube.get_pod(name)
         seat = running_seat(pod_json)
         if seat is None:
@@ -2110,7 +2457,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
 
     @app.command(help="the podbench containers in one pod and what each supports")
     def status(
-        pod: _Pod,
+        pod: _Pod = None,
+        no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
@@ -2118,7 +2466,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         del config_dir  # accepted for symmetry; this verb writes no ssh config
         kube = _kubectl(namespace, context, kubectl, runner)
-        name = resolve_pod_name(pod)
+        name = resolve_pod(kube, pod, prompt=not no_prompt)
         present = seats(kube.get_pod(name))
         if not present:
             print(f"no podbench containers in {kube.namespace}/{name}")
