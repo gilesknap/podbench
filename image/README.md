@@ -69,8 +69,8 @@ packages. Another version costs one `uv python install X` — 2.3 s in S4.
 
 ## Size budget
 
-Image, measured with `du -sm /` inside a `debian:bookworm-slim` pod on the
-cluster (arm64):
+Predicted before the image existed, by `du -sm /` inside a
+`debian:bookworm-slim` pod on the cluster (arm64):
 
 | Layer | Size |
 |---|---|
@@ -80,6 +80,10 @@ cluster (arm64):
 | \+ `uv` binary and podbench's venv | tens of MiB |
 
 ≈ 450–500 MiB uncompressed, inside the brief's ~700 MiB Phase 1 budget.
+
+**Measured on the built image**, `0.1.0b4` amd64, in a seat on the cluster
+(2026-08-16), excluding what lands at runtime: **494 MiB**, of which `/python` is
+95 MiB and `/app` 10 MiB. The prediction held.
 
 What lands *at runtime* is much larger, and disk — not memory — is the
 constraint (report 4.2):
@@ -95,6 +99,11 @@ constraint (report 4.2):
 
 The brief's "~1 GB" Observe budget is already exceeded by the stock server
 alone. Restate it as ~1.5 GB, or trim.
+
+Those were projections from S2, which never ran a GUI client. Measured since, in
+a seat carrying a real Remote-SSH session (amd64, 2026-08-16):
+`~/.vscode-server` is **1215 MiB**. The 1.1–1.3 GB figure was right, and it is a
+per-seat cost on the workload's ephemeral-storage budget.
 
 ### The trim list
 
@@ -181,9 +190,29 @@ sets `UsePAM no` and sshd then supplies its own compiled-in `PATH`.
 
 ## Verification status
 
-**The image has never been built.** There is no docker, podman, buildx, kind or
-hadolint in this devcontainer, so what follows is what *was* verified, on a real
-cluster, in namespace `podbench-s0` (throwaway pods, since deleted):
+**The image is built and published by CI on every push**, and has been run
+against real clusters. It is still never built *here* — there is no docker,
+podman, buildx, kind or hadolint in this devcontainer — so an in-image change is
+tested by pushing the branch and pulling the prerelease image CI publishes for
+it (`tests/e2e/README.md`).
+
+What CI verifies on every build, per architecture:
+
+* each arch builds on a runner of that arch, never under emulation, so the
+  smoke tests below are a real execution of the artefact that gets published;
+* `podbench --version` runs — as the final `RUN` of the build itself, and again
+  through the entrypoint;
+* `capreport --json` and `pids --help` run through their `/usr/local/bin`
+  wrappers, and `gdb`, `sshd`, `uv` and `git` resolve on `PATH`;
+* the published manifest list is assembled from the digests that were tested,
+  rather than by a second build.
+
+On top of that, `_e2e.yml` runs S1–S5 against the image on kind, and the suite
+has been run against a live k3s cluster.
+
+The list below is what was verified *before* the first build, on a real cluster,
+in namespace `podbench-s0` (throwaway pods, since deleted). It is kept because it
+is why the package list looks the way it does:
 
 * Every apt package name resolves in the bookworm archive:
   `apt-get install --dry-run --no-install-recommends <the exact list>` → rc=0,
@@ -197,8 +226,17 @@ cluster, in namespace `podbench-s0` (throwaway pods, since deleted):
   from it as a pod command.
 * A uv-managed CPython runs on `debian:bookworm-slim` with no extra packages.
 
-Unverified until the first build: that the layers assemble (`COPY --chmod`,
-`COPY --from=<image>`), that a uv-managed interpreter built in the Ubuntu
-`developer` stage is discovered as a managed install by the runtime's newer uv,
-the true final image size, and multi-arch build on amd64 (all checks above ran
-on an arm64 node; the amd64 archive is assumed symmetric).
+Everything that section once listed as "unverified until the first build" has
+since been answered: the layers assemble, the uv-managed interpreter copied out
+of the Ubuntu `developer` stage is discovered by the runtime's newer uv, the
+final image is 494 MiB on amd64, and both architectures are built and
+smoke-tested natively rather than one being assumed symmetric with the other.
+
+Still open, and not answerable by a build:
+
+* **R3, the trim list.** Still validated only by "the server starts and serves
+  `/version`". A GUI client has since run in a seat, but never against a
+  *trimmed* server, so the trim is still not safe to make default.
+* **R4, sources for debuginfod.** Unchanged: Debian serves symbols, not sources.
+* **arm64 at large.** Both arches are built and smoke-tested, but the live
+  cluster work has been on amd64. The runtime figures above are amd64.
