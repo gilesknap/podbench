@@ -1466,7 +1466,7 @@ def test_open_configures_the_seats_home_and_opens_that(
         "ms-python.python",
         "ms-python.debugpy",
     ]
-    assert "opened /root in VS Code" in capsys.readouterr().out
+    assert "open /root over Remote-SSH" in capsys.readouterr().out
 
 
 def test_open_without_the_vs_code_cli_never_burns_a_container_name(

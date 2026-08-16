@@ -2523,7 +2523,7 @@ def _open_editor(
     *,
     editor: str,
     runner: Runner | None,
-) -> list[str]:
+) -> None:
     """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
 
     The folder is the seat's **home**, taken from the same layout the
@@ -2531,6 +2531,10 @@ def _open_editor(
     :data:`podbench.model.SEAT_HOME_VOLUME` moves it, and the guarantee that
     matters is that this is never ``/`` — the walk from there has no bottom and
     ends the seat.
+
+    Each line is printed as it arrives rather than collected: the extension
+    install bootstraps vscode-server in the seat, which is a download, and a
+    progress report that appears only once it has finished is not one.
     """
     if wiring.alias is None:
         raise EditorError(
@@ -2538,11 +2542,14 @@ def _open_editor(
             "Remote-SSH to connect to. The block above names the mechanism and "
             "the ways out; the kubectl exec helpers work now regardless."
         )
-    return open_seat(
+    open_seat(
         kubectl,
         session.seat,
         alias=wiring.alias,
         folder=seat_layout(session).home,
+        # Wrapped like every other block this verb prints: two of these notes
+        # are paragraphs rather than lines.
+        report=lambda note: print("\n".join(_paragraph(note, first="", indent="  "))),
         editor=editor,
         runner=runner,
     )
@@ -2721,14 +2728,7 @@ def _build_app(
         print(wiring.note)
         if editor is not None:
             print()
-            for note in _open_editor(
-                kube, session, wiring, editor=editor, runner=runner
-            ):
-                # Wrapped like every other block this verb prints: one of these
-                # notes carries the ephemeral-storage figures and is a paragraph
-                # rather than a line.
-                for line in _paragraph(note, first="", indent="  "):
-                    print(line)
+            _open_editor(kube, session, wiring, editor=editor, runner=runner)
         raise typer.Exit(0)
 
     @app.command(

@@ -131,35 +131,42 @@ def open_seat(
     *,
     alias: str,
     folder: str,
+    report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
     runner: Runner | None = None,
-) -> list[str]:
+) -> None:
     """Configure ``folder`` in the seat, install what it needs, and open it.
 
     ``folder`` is the caller's choice and is never ``/``: ``attach`` passes the
     seat's own home, which is where the workload is read from through
     ``/proc/<pid>/root``.
 
-    Returns the lines to print. Anything that went wrong but left the seat
-    usable is a line rather than an exception — a missing ``launch.json`` costs
-    an F5, whereas the excludes and the folder are what keep the seat alive.
+    ``report`` is called with each line **as it becomes true**, not with a list
+    at the end. The install is the reason: it bootstraps vscode-server in the
+    seat — a 214 MiB download and a 5.62 s extract measured with egress (report
+    3.8) — with its output captured for the failure message, so a namespace with
+    no route to ``update.code.visualstudio.com`` is otherwise minutes of nothing
+    at all, indistinguishable from a hang.
+
+    Anything that went wrong but left the seat usable is a line rather than an
+    exception — a missing ``launch.json`` costs an F5, whereas the excludes and
+    the folder are what keep the seat alive.
     """
     run = runner if runner is not None else run_subprocess
-    notes: list[str] = []
-    configurations = _configurations(kubectl, seat, notes)
+    configurations = _configurations(kubectl, seat, report)
     extensions = extensions_for(configurations)
 
     base = f"{folder}/{VSCODE_DIR}"
     # First, and not merely early: the excludes have to be on disk before the
     # window that starts the walk.
-    _merge_into(kubectl, seat, f"{base}/settings.json", merge_folder_settings, notes)
+    _merge_into(kubectl, seat, f"{base}/settings.json", merge_folder_settings, report)
     if configurations:
         _merge_into(
             kubectl,
             seat,
             f"{base}/launch.json",
             lambda existing: merge_launch_configs(existing, configurations),
-            notes,
+            report,
         )
     if extensions:
         _merge_into(
@@ -167,18 +174,24 @@ def open_seat(
             seat,
             f"{base}/extensions.json",
             lambda existing: merge_extensions_json(existing, extensions),
-            notes,
+            report,
         )
 
     authority = remote_authority(alias)
+    if extensions:
+        report(
+            f"installing {', '.join(extensions)} in SSH: {alias} - the first "
+            f"one bootstraps vscode-server in the seat, so this is a download "
+            f"and not just a copy ({_STORAGE_NOTE})"
+        )
     for extension in extensions:
         result = run([editor, "--remote", authority, "--install-extension", extension])
         if result.returncode != 0:
-            notes.append(f"could not install {extension}: {_detail(result.stderr)}")
+            report(f"could not install {extension}: {_detail(result.stderr)}")
             continue
-        notes.append(f"installed {extension} in SSH: {alias}")
-    if extensions:
-        notes.append(f"({_STORAGE_NOTE})")
+        # "is installed", not "installed": `code` exits 0 for "already
+        # installed" too, and this run cannot tell the two apart.
+        report(f"{extension} is installed in SSH: {alias}")
 
     result = run([editor, "--remote", authority, folder])
     if result.returncode != 0:
@@ -189,8 +202,21 @@ def open_seat(
             "an alias ssh itself resolves - `podbench doctor --fix` adds the "
             "Include line that makes podbench's stanzas visible."
         )
-    notes.append(f"opened {folder} in VS Code (Remote-SSH: {alias})")
-    return notes
+    report(f"asked VS Code to open {folder} over Remote-SSH ({alias})")
+    # Said rather than implied by an exit code, because the exit code is not
+    # evidence: the desktop `code` hands the argv to a window and returns, and
+    # the authority is resolved in that window afterwards. So the two failures
+    # a first run actually meets - no Remote - SSH extension locally, and an
+    # alias ssh cannot resolve because ~/.ssh/config never got the Include line
+    # - both arrive as a dialog there and as a zero here.
+    report(
+        "that exit code is not evidence the seat was reached: `code` returns "
+        "as soon as the window has the argv, and the connection is made in the "
+        "window. 'could not establish connection' there means the local VS Code "
+        "has no Remote - SSH extension (ms-vscode-remote.remote-ssh), or ssh "
+        "cannot resolve the alias - the Include line above, or `podbench "
+        "doctor --fix`."
+    )
 
 
 def _detail(stderr: str) -> str:
@@ -200,7 +226,7 @@ def _detail(stderr: str) -> str:
 
 
 def _configurations(
-    kubectl: Kubectl, seat: ContainerRef, notes: list[str]
+    kubectl: Kubectl, seat: ContainerRef, report: Callable[[str], None]
 ) -> list[dict[str, Any]]:
     """What ``debug-config`` would write, asked for rather than recomputed.
 
@@ -212,16 +238,16 @@ def _configurations(
         seat.pod.name, list(DEBUG_CONFIG_ARGV), container=seat.container, check=False
     )
     if result.returncode != 0:
-        notes.append(f"no launch.json: {_detail(result.stderr)}")
+        report(f"no launch.json: {_detail(result.stderr)}")
         return []
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
-        notes.append(f"no launch.json: debug-config printed no JSON ({error})")
+        report(f"no launch.json: debug-config printed no JSON ({error})")
         return []
     if not isinstance(document, dict):
-        notes.append("no launch.json: debug-config printed no JSON object")
+        report("no launch.json: debug-config printed no JSON object")
         return []
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
@@ -233,7 +259,7 @@ def _merge_into(
     seat: ContainerRef,
     path: str,
     merge: Callable[[str | None], str | None],
-    notes: list[str],
+    report: Callable[[str], None],
 ) -> None:
     """Apply ``merge`` to the seat's copy of ``path``, adding never replacing.
 
@@ -245,13 +271,13 @@ def _merge_into(
     try:
         text = merge(_read(kubectl, seat, path))
     except ValueError as error:
-        notes.append(f"{path} left exactly as it is: {error}")
+        report(f"{path} left exactly as it is: {error}")
         return
     if text is None:
-        notes.append(f"{path} already says everything podbench would")
+        report(f"{path} already says everything podbench would")
         return
     _write(kubectl, seat, path, text)
-    notes.append(f"wrote {path}")
+    report(f"wrote {path}")
 
 
 def _read(kubectl: Kubectl, seat: ContainerRef, path: str) -> str | None:

@@ -134,14 +134,20 @@ def _written_path(script: str) -> str:
 
 
 def run_open(seat: FakeSeat, *, folder: str = HOME) -> list[str]:
-    return open_seat(
+    """Every note, in the order the user saw it — ``open_seat`` reports as it
+    goes rather than returning a list at the end, because the install is a
+    download and a progress report that arrives afterwards is not one."""
+    notes: list[str] = []
+    open_seat(
         Kubectl("demo", runner=seat),
         SEAT,
         alias=ALIAS,
         folder=folder,
+        report=notes.append,
         editor="code",
         runner=seat,
     )
+    return notes
 
 
 # -- the OOM guard -----------------------------------------------------------
@@ -182,7 +188,7 @@ def test_the_folder_opened_is_the_seats_home_and_never_the_root() -> None:
         f"ssh-remote+{ALIAS}",
         HOME,
     )
-    assert f"opened {HOME}" in notes[-1]
+    assert any(f"open {HOME} over Remote-SSH" in note for note in notes)
 
 
 def test_settings_a_user_wrote_are_not_clobbered() -> None:
@@ -276,7 +282,48 @@ def test_an_install_that_fails_is_reported_and_the_folder_still_opens() -> None:
     notes = run_open(seat)
 
     assert any("could not install ms-python.python" in note for note in notes)
-    assert any("opened" in note for note in notes)
+    assert any("open /root over Remote-SSH" in note for note in notes)
+
+
+def test_the_install_is_announced_before_it_runs() -> None:
+    """It bootstraps vscode-server in the seat - a 214 MiB download with egress
+    (report 3.8), and uv-style silence without it. The output is captured for
+    the failure message, so nothing else would appear while it happened."""
+    seat = FakeSeat()
+    # Each note against the number of commands that had run when it was said.
+    timeline: list[tuple[str, int]] = []
+    open_seat(
+        Kubectl("demo", runner=seat),
+        SEAT,
+        alias=ALIAS,
+        folder=HOME,
+        report=lambda note: timeline.append((note, len(seat.calls))),
+        editor="code",
+        runner=seat,
+    )
+    announced = next(
+        calls for note, calls in timeline if note.startswith("installing ms-python")
+    )
+    assert not any("--install-extension" in call for call in seat.calls[:announced])
+
+
+def test_the_open_step_does_not_claim_the_window_connected() -> None:
+    """The desktop `code` hands the argv to a window and returns, so its exit
+    code is not evidence: the authority is resolved in the window afterwards
+    and a failure arrives there as a dialog and here as a zero."""
+    seat = FakeSeat()
+    notes = run_open(seat)
+
+    assert any("not evidence the seat was reached" in note for note in notes)
+    assert any("ms-vscode-remote.remote-ssh" in note for note in notes)
+
+
+def test_an_already_installed_extension_is_not_claimed_as_new() -> None:
+    """`code --install-extension` exits 0 for "already installed" too."""
+    seat = FakeSeat()
+    notes = run_open(seat)
+
+    assert any("ms-python.python is installed in SSH" in note for note in notes)
 
 
 # -- the two refusals --------------------------------------------------------
