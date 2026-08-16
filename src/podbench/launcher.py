@@ -1286,7 +1286,10 @@ def _seat_features(session: Session) -> tuple[Feature, Feature]:
     )
     return (
         ssh_seat,
-        Feature("exec seat (capreport, pids, dbg --launch, kubectl exec)", True),
+        Feature(
+            "exec seat (kubectl exec -- podbench capreport, pids, dbg --launch)",
+            True,
+        ),
     )
 
 
@@ -1542,8 +1545,8 @@ def ssh_unavailable_note(session: Session) -> str:
                 )
             ),
             "  the rest of the seat needs no ssh and works now:",
-            f"    kubectl exec {target} -- capreport",
-            f"    kubectl exec {target} -- pids",
+            f"    kubectl exec {target} -- podbench capreport",
+            f"    kubectl exec {target} -- podbench pids",
             f"    kubectl exec -it {target} -- bash",
         ]
     )

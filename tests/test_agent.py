@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -365,6 +366,30 @@ def test_the_way_out_is_the_one_the_container_reading_it_can_take() -> None:
     # over /etc/passwd, which is the one thing that container may not do.
     assert "which the seat mounts read-only" not in text
     assert text.index("--seat-gid-root") < text.index(SEAT_IDENTITY_VOLUME)
+
+
+@pytest.mark.parametrize("verb", ["capreport", "pids", "dbg"])
+def test_the_way_out_names_no_command_the_image_stopped_shipping(verb: str) -> None:
+    """Every verb named in a diagnostic is spelled ``podbench <verb>``.
+
+    Since #47 the image ships two files in ``/usr/local/bin``: ``podbench`` and
+    ``gdb-podbench``. A bare ``capreport`` in this text is not a shorter
+    spelling — it is ``exec: "capreport": executable file not found``, produced
+    by pasting the way out of a seat whose ssh has already failed.
+    """
+    for text in (agent.EXEC_HALF_COMMANDS, agent.NSS_WAY_OUT):
+        for index in _occurrences(text, verb):
+            assert text[:index].endswith("podbench "), (
+                f"{verb!r} at offset {index} is not spelled as a podbench verb: "
+                f"{text[max(0, index - 40) : index + 20]!r}"
+            )
+
+
+def _occurrences(text: str, word: str) -> list[int]:
+    """Offsets at which ``word`` appears as a whole word."""
+    return [
+        match.start() for match in re.finditer(rf"\b{re.escape(word)}\b(?!-)", text)
+    ]
 
 
 def test_registration_refuses_to_shadow_an_existing_login_name(

@@ -46,6 +46,7 @@ __all__ = [
     "request_stop",
     "AUTHORIZED_KEYS_FILE_ENV",
     "AUTHORIZED_KEYS_MOUNT",
+    "EXEC_HALF_COMMANDS",
     "GROUP_PATH",
     "HOME_WAY_OUT",
     "HOST_KEY_ENV",
@@ -241,10 +242,19 @@ LOGIN_SHELL = "/bin/bash"
 """Shell recorded in a registered entry. bash is in the image; a passwd entry
 naming a shell that is not would give the user a session that exits at once."""
 
+EXEC_HALF_COMMANDS = "podbench capreport, podbench pids, podbench dbg --launch"
+"""The exec-reachable half of a seat, spelled the only way it resolves.
+
+One constant because two diagnostics name it, and both are read by someone who
+is about to paste what they read. Since #47 the image ships no per-subcommand
+aliases, so a bare ``capreport`` here is not a shorter spelling of anything - it
+is `executable file not found`, in the message that was meant to be the way out.
+"""
+
 NSS_WAY_OUT = (
     "sshd resolves the login name through NSS before it will look at a key, so "
     "ssh into this seat cannot work. Everything reached by kubectl exec - "
-    "capreport, pids, dbg --launch, a shell - is unaffected. A seat that reads "
+    f"{EXEC_HALF_COMMANDS}, a shell - is unaffected. A seat that reads "
     "this is almost always an ephemeral container, and the way out for one is "
     "GID 0: land it again with "
     "`podbench attach <pod> --new --seat-gid-root` and it registers its "
@@ -1142,8 +1152,8 @@ def _run(
         _say(
             f"{failures} start-up check(s) failed; each one's reason is on a "
             "line above, and ssh into this container may be among the "
-            "casualties. Staying up: capreport, pids, dbg --launch and a "
-            "shell are reached with kubectl exec and need none of sshd."
+            f"casualties. Staying up: {EXEC_HALF_COMMANDS} and a shell are "
+            "reached with kubectl exec and need none of sshd."
         )
 
     status = reaper_status()
