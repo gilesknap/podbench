@@ -44,9 +44,13 @@ from .model import CapabilityReport, ProcInfo, Verdict
 from .probe import Attacher, probe
 from .proc import (
     DEFAULT_PROC,
+    DELETED_SUFFIX,
     ProcessListing,
     env_target_container_id,
+    read_exe,
     scan_processes,
+    strip_deleted,
+    sysroot_path,
 )
 
 __all__ = [
@@ -73,13 +77,6 @@ __all__ = [
 GdbRunner = Callable[[Sequence[str]], int]
 """How ``dbg`` finally starts gdb. A seam so tests never exec a real gdb."""
 
-DELETED_SUFFIX = " (deleted)"
-"""What the kernel appends to ``/proc/<pid>/exe`` once the binary is unlinked.
-
-Common in containers — a rebuild replaces the image layer under a running
-process — and gdb takes the whole string as a filename, so it must come off.
-"""
-
 EXIT_USAGE = 2
 """Exit code for "there is nothing to debug", matching a usage error's own."""
 
@@ -92,41 +89,6 @@ _DBG_DESCRIPTION = (
     "sysroot, source path and auto-load path set in the order that produces a "
     "correct backtrace."
 )
-
-
-def strip_deleted(path: str) -> str:
-    """Drop the kernel's ``" (deleted)"`` marker from an ``exe`` link target.
-
-    >>> strip_deleted("/app/victim (deleted)")
-    '/app/victim'
-    >>> strip_deleted("/app/victim")
-    '/app/victim'
-    """
-    return path[: -len(DELETED_SUFFIX)] if path.endswith(DELETED_SUFFIX) else path
-
-
-def sysroot_path(pid: int) -> str:
-    """The target's filesystem as seen from here.
-
-    >>> sysroot_path(597)
-    '/proc/597/root'
-    """
-    return f"/proc/{pid}/root"
-
-
-def read_exe(pid: int, *, proc: Path = DEFAULT_PROC) -> str | None:
-    """The target's executable path *inside its own rootfs*, or ``None``.
-
-    ``None`` is a real answer, not an error: reading this link takes
-    ``PTRACE_MODE_READ`` and so fails at the wrong UID (report 3.11). The
-    caller has to decide what to do without it, and losing the ``file`` command
-    is not fatal — only lossy.
-    """
-    try:
-        target = os.readlink(proc / str(pid) / "exe")
-    except OSError:
-        return None
-    return strip_deleted(target)
 
 
 def attach_commands(

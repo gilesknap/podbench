@@ -307,16 +307,31 @@ Do not hand-copy the templates below unless you have to. In the seat:
 
 ```
 root@victim:~# debug-config
+debug-config: native target, observe mode, x86_64
+debug-config: emitting gdb: native target, observe mode
+debug-config: emitting lldb: native target; CodeLLDB brings its own lldb to the seat
 debug-config written to /root/.vscode/launch.json
-then: Run and Debug -> "podbench: attach to victim"
+  Run and Debug -> "podbench: attach to victim (gdb)"
+  Run and Debug -> "podbench: attach to victim (lldb)"
 ```
 
 It fills in the pid, the sysroot-prefixed `program`, the setup ordering, the
-architecture and `miDebuggerPath` from what it can already see, which is the
-whole point: every one of those fails *silently* when wrong. `--print-config`
-emits it instead of writing it, `--output` puts it beside the folder you
-actually opened, and `--lldb` emits the CodeLLDB form. Re-running it replaces
-its own entry and leaves any hand-written configuration alone.
+architecture, `miDebuggerPath` and the mode's path mappings from what it can
+already see, which is the whole point: every one of those fails *silently* when
+wrong.
+
+**Every flavour that applies is emitted**, named for its debugger, because
+`launch.json` holds a list and VS Code's dropdown is a better chooser than a
+guess. A flavour that cannot be emitted gets a sentence naming the mechanism
+instead — `--flavour gdb|lldb|delve|debugpy` asks for one by name and makes it
+say why if it cannot. `--print-config` emits instead of writing, `--output` puts
+it beside the folder you actually opened, and re-running replaces its own
+entries and leaves any hand-written configuration alone.
+
+For a **Python** target the answer is debugpy rather than gdb, and it depends on
+the architecture as well as the language — the
+[CLI reference](../reference/cli.md) has the three axes and what each one
+changes.
 
 VS Code reads `.vscode/launch.json` from the folder that is **open**, not from
 `$HOME`. A config written to `~` when you opened `/` never appears in the Run

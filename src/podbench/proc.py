@@ -32,6 +32,7 @@ from .model import TARGET_CID_ENV, ProcInfo
 __all__ = [
     "CAP_SYS_PTRACE_BIT",
     "DEFAULT_PROC",
+    "DELETED_SUFFIX",
     "READ_MATRIX_PATHS",
     "Attribution",
     "Capabilities",
@@ -44,14 +45,18 @@ __all__ = [
     "read_cgroup",
     "read_cmdline",
     "read_comm",
+    "read_exe",
     "read_status_field",
     "read_tracer_pid",
     "read_uid",
+    "same_root",
     "scan_processes",
     "seccomp_filter_count",
     "seccomp_mode",
     "self_capabilities",
     "strip_container_scheme",
+    "strip_deleted",
+    "sysroot_path",
     "yama_scope",
 ]
 
@@ -69,6 +74,13 @@ survive at the target's UID with zero capabilities; ``cmdline``, ``status`` and
 ``fd`` survive even at the wrong UID (report §3.11). ``mem`` and ``syscall``
 are deliberately absent — they take ``PTRACE_MODE_ATTACH`` and are denied in
 the degraded rung, so counting them would understate a working setup.
+"""
+
+DELETED_SUFFIX = " (deleted)"
+"""What the kernel appends to ``/proc/<pid>/exe`` once the binary is unlinked.
+
+Common in containers — a rebuild replaces the image layer under a running
+process — and gdb takes the whole string as a filename, so it must come off.
 """
 
 _CONTAINER_ID_RE = re.compile(r"[0-9a-f]{32,}")
@@ -275,6 +287,62 @@ def _listable(path: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+def strip_deleted(path: str) -> str:
+    """Drop the kernel's ``" (deleted)"`` marker from an ``exe`` link target.
+
+    >>> strip_deleted("/app/victim (deleted)")
+    '/app/victim'
+    >>> strip_deleted("/app/victim")
+    '/app/victim'
+    """
+    return path[: -len(DELETED_SUFFIX)] if path.endswith(DELETED_SUFFIX) else path
+
+
+def sysroot_path(pid: int) -> str:
+    """The target's filesystem as seen from here.
+
+    >>> sysroot_path(597)
+    '/proc/597/root'
+    """
+    return f"/proc/{pid}/root"
+
+
+def read_exe(pid: int, *, proc: Path = DEFAULT_PROC) -> str | None:
+    """The target's executable path *inside its own rootfs*, or ``None``.
+
+    ``None`` is a real answer, not an error: reading this link takes
+    ``PTRACE_MODE_READ`` and so fails at the wrong UID (report 3.11). The
+    caller has to decide what to do without it, and losing the ``file`` command
+    is not fatal — only lossy.
+    """
+    try:
+        target = os.readlink(proc / str(pid) / "exe")
+    except OSError:
+        return None
+    return strip_deleted(target)
+
+
+def same_root(pid: int | str, *, proc: Path = DEFAULT_PROC) -> bool | None:
+    """Whether ``pid`` shares this process's mount namespace. ``None`` if unknown.
+
+    Two processes share a root inode exactly when they share a mount namespace,
+    which under ``shareProcessNamespace: true`` is the only thing that still
+    distinguishes one container from another — the pid namespace no longer
+    does, and the cgroup only says which container *started* the process.
+
+    It is the discriminator two callers need for opposite reasons: ``dev``
+    attributes a port to "this container" or "the target", and ``debug-config``
+    picks a launch shape over an attach shape, with every path mapping in the
+    emitted configuration hanging off the answer.
+    """
+    try:
+        mine = os.stat(proc / "self" / "root")
+        theirs = os.stat(proc / str(pid) / "root")
+    except OSError:
+        return None
+    return (mine.st_dev, mine.st_ino) == (theirs.st_dev, theirs.st_ino)
 
 
 def self_capabilities(*, proc: Path = DEFAULT_PROC) -> Capabilities:
