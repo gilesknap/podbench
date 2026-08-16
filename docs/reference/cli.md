@@ -506,6 +506,10 @@ probes on 'app' since the seat landed (2026-08-16T08:52:04Z)
   restarts: 0 - nothing has been killed under this seat
 ```
 
+Both `Unhealthy` message forms count: the kubelet writes `probe failed` when
+the probe answered wrongly and `probe errored` when the attempt could not be
+made at all, and both move `failureThreshold`'s counter.
+
 Three things it deliberately does not say:
 
 * **How many failures in a row.** That is the number `failureThreshold`

@@ -335,12 +335,15 @@ subPath
 
 Unhealthy
   The {term}`kubelet`'s event for a probe that failed — one reason for all three
-  probes, with the probe named only in the message. It is the *only* trace a probe
-  failure leaves, and `podbench status` reports what it says and nothing more: the
-  events are aggregated, so a `count` of two can be two failures twenty seconds
-  apart with a success between them, while `failureThreshold` counts **consecutive**
-  ones. Reporting "2 of 3" from that would be a fiction. They also expire, after the
-  API server's `--event-ttl` — an hour by default.
+  probes, with the probe named only in the message, in either of two forms:
+  `<Kind> probe failed` when the probe answered wrongly and `<Kind> probe errored`
+  when the attempt could not be made at all. Both move `failureThreshold`'s
+  counter. It is the *only* trace a probe failure leaves, and `podbench status`
+  reports what it says and nothing more: the events are aggregated, so a `count`
+  of two can be two failures twenty seconds apart with a success between them,
+  while `failureThreshold` counts **consecutive** ones. Reporting "2 of 3" from
+  that would be a fiction. They also expire, after the API server's `--event-ttl`
+  — an hour by default.
 ```
 
 ## Linux, and why ptrace says no

@@ -645,19 +645,30 @@ def _series(event: Mapping[str, Any], container: str) -> _Series | None:
     kind = _probe_kind(event.get("message"))
     if kind is None or _container_of(event) != container:
         return None
-    # The events API records a repeat in `series` and carries `eventTime`; the
-    # core one uses a top-level `count` with first/lastTimestamp. `kubectl get
-    # events` returns whichever shape the emitter wrote, so both are read
-    # rather than one assumed, and an event carrying only one usable stamp
-    # counts as a moment rather than being dropped.
+    # What arrives is core/v1: `kubectl get events` asks for that resource, and
+    # the field selector this is fetched with (`involvedObject.name`) exists
+    # nowhere else. So the shape read first is the core one - a top-level
+    # `count` with first/lastTimestamp. The events.k8s.io keys are read after
+    # it because the conversion out of the shared storage is the API server's
+    # and not ours: an aggregated record that arrived in that shape carries its
+    # repeat in `series.count`, or in `deprecatedCount` when it never
+    # aggregated, and counting six failures as one is the wrong direction to be
+    # wrong in. An event carrying only one usable stamp counts as a moment
+    # rather than being dropped.
     series = as_dict(event.get("series"))
-    last = _stamp(
+    last = _text(
         event.get("lastTimestamp"),
+        event.get("deprecatedLastTimestamp"),
         series.get("lastObservedTime"),
         event.get("eventTime"),
         event.get("firstTimestamp"),
     )
-    first = _stamp(event.get("firstTimestamp"), event.get("eventTime"), last)
+    first = _text(
+        event.get("firstTimestamp"),
+        event.get("deprecatedFirstTimestamp"),
+        event.get("eventTime"),
+        last,
+    )
     if first is None or last is None:
         return None
     first_at, last_at = _moment(first), _moment(last)
@@ -665,7 +676,9 @@ def _series(event: Mapping[str, Any], container: str) -> _Series | None:
         return None
     return _Series(
         kind=kind,
-        count=_repeats(series.get("count"), event.get("count")),
+        count=_repeats(
+            series.get("count"), event.get("count"), event.get("deprecatedCount")
+        ),
         first=first,
         first_at=first_at,
         last=last,
@@ -676,15 +689,29 @@ def _series(event: Mapping[str, Any], container: str) -> _Series | None:
 def _probe_kind(message: Any) -> ProbeKind | None:
     """Which probe an ``Unhealthy`` message is about.
 
+    The prefix stops at ``"<Kind> probe "`` because the kubelet writes *two*
+    of these under this reason: ``"%s probe failed: %s"`` when the probe
+    answered wrongly, and ``"%s probe errored: %v"`` when the attempt could not
+    be made at all — an exec the runtime timed out, a connection it could not
+    open. Both come back from the prober as a failure and both move
+    ``failureThreshold``'s counter, so matching only "failed" undercounts the
+    spend against the very threshold it is printed beside, and does it on the
+    exec-probed pods where a pause is most likely to error rather than fail.
+    Newer kubelets lengthen the errored wording again, which the shorter prefix
+    also survives; the ``ProbeWarning`` reason has its own and is filtered out
+    before this by :data:`PROBE_FAILURE_REASON`.
+
     >>> _probe_kind("Liveness probe failed: HTTP probe failed").value
     'liveness'
-    >>> _probe_kind("Readiness probe errored") is None
+    >>> _probe_kind("Readiness probe errored: rpc error: DeadlineExceeded").value
+    'readiness'
+    >>> _probe_kind("Back-off restarting failed container") is None
     True
     """
     if not isinstance(message, str):
         return None
     for kind in ProbeKind:
-        if message.startswith(f"{kind.value.capitalize()} probe failed"):
+        if message.startswith(f"{kind.value.capitalize()} probe "):
             return kind
     return None
 

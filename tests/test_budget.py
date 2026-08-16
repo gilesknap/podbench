@@ -380,9 +380,10 @@ def test_a_series_straddling_the_landing_says_so_rather_than_splitting_it() -> N
 
 
 def test_the_events_api_shape_counts_too() -> None:
-    """`kubectl get events` returns whatever the emitter wrote: an events.k8s.io
-    record carries eventTime and series, and none of firstTimestamp,
-    lastTimestamp or a top-level count."""
+    """An events.k8s.io record carries eventTime and series, and none of
+    firstTimestamp, lastTimestamp or a top-level count. `kubectl get events`
+    asks for core/v1, so this shape is insurance rather than a case that has
+    been seen - but counting four failures as one would be silent."""
     event = unhealthy("Readiness", 0, "", "")
     del event["firstTimestamp"]
     del event["lastTimestamp"]
@@ -391,6 +392,37 @@ def test_the_events_api_shape_counts_too() -> None:
     event["series"] = {"count": 4, "lastObservedTime": "2026-08-16T10:04:33Z"}
     (spend,) = probe_spend([event], APP, since=LANDED)
     assert (spend.failures, spend.last) == (4, "2026-08-16T10:04:33Z")
+
+
+def test_the_events_api_keeps_an_unaggregated_count_under_another_name() -> None:
+    """The same shape without a `series`: that record's repeat count is in
+    `deprecatedCount`, and reading only `count` reports six failures as one."""
+    event = unhealthy("Liveness", 0, "", "")
+    del event["firstTimestamp"]
+    del event["lastTimestamp"]
+    del event["count"]
+    event["eventTime"] = "2026-08-16T10:04:11Z"
+    event["deprecatedCount"] = 6
+    event["deprecatedLastTimestamp"] = "2026-08-16T10:05:11Z"
+    (spend,) = probe_spend([event], APP, since=LANDED)
+    assert (spend.failures, spend.last) == (6, "2026-08-16T10:05:11Z")
+
+
+def test_a_probe_the_kubelet_could_not_run_is_a_failure_too() -> None:
+    """The kubelet writes two Unhealthy messages: "probe failed" when the probe
+    answered wrongly and "probe errored" when the attempt could not be made -
+    an exec the runtime timed out, a connection it could not open. Both come
+    back as a failure and both move failureThreshold's counter, so counting
+    only the first undercounts the spend against the threshold printed beside
+    it, on exactly the exec-probed pods where a pause errors rather than
+    fails."""
+    errored = unhealthy("Liveness", 3, "2026-08-16T10:04:11Z", "2026-08-16T10:04:31Z")
+    errored["message"] = (
+        "Liveness probe errored: rpc error: code = DeadlineExceeded "
+        "desc = context deadline exceeded"
+    )
+    (spend,) = probe_spend([errored], APP, since=LANDED)
+    assert (spend.kind, spend.failures) == (ProbeKind.LIVENESS, 3)
 
 
 def test_an_unaggregated_event_stands_for_the_one_failure_it_is() -> None:
