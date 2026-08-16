@@ -1160,6 +1160,31 @@ def test_a_launch_only_verdict_survives_the_json_round_trip() -> None:
     assert "podbench dbg --launch" in format_session(session)
 
 
+def test_an_unmeasured_matrix_is_not_reported_as_a_refusal() -> None:
+    """An empty box is not a denied one, and the report must not say it is.
+
+    `capreport` with no target pid resolves no matrix and still verdicts
+    live_attach — no `PODBENCH_TARGET_CID`, or nothing in a cgroup matching the
+    target's container id. Deriving the tick from the reads made that shape
+    print an unticked box blaming "the mechanism that refused attach", three
+    lines above `blocker  none`.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        capreport=capreport_payload(target_pid=None, target_uid=None, proc_reads={}),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    _live, read_only, *_rest = features(session)
+    assert not read_only.available
+    assert "this is not a refusal" in read_only.reason
+    assert "refused attach" not in read_only.reason
+
+    text = format_session(session)
+    assert "no /proc reads were measured" in text
+    assert "blocker     none" in text
+
+
 def test_a_seat_that_cannot_ptrace_at_all_does_not_claim_gdb_launch() -> None:
     """`dbg --launch` used to ride along on the exec-seat tick, which is always
     true. gdb traces an inferior it forked, and here that forked attach failed."""

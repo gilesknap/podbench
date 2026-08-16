@@ -1273,11 +1273,7 @@ def features(session: Session) -> tuple[Feature, ...]:
             # consults none of them is how a seat that could read none of them
             # came to tick it (issue #51).
             report.reads_ok,
-            # Not the blocker's explanation: that paragraph is already printed
-            # against live attach, and a report that repeats itself is one
-            # people stop reading.
-            "the three paths this line names take PTRACE_MODE_READ, which the "
-            "mechanism that refused attach gates too - see the blocker below",
+            _reads_reason(report),
             # Printed whether or not the box is ticked, so the label and the
             # evidence cannot drift apart again.
             note=report.reads_summary,
@@ -1293,6 +1289,36 @@ def features(session: Session) -> tuple[Feature, ...]:
         ),
         _iterate_feature(),
         *_seat_features(session),
+    )
+
+
+def _reads_reason(report: CapabilityReport) -> str:
+    """Why the read-only box is empty — which is not always a refusal.
+
+    The reads are no longer taken from the verdict, so an empty box no longer
+    implies a denied one, and a single unconditional reason made the report
+    contradict itself: ``capreport`` with no target pid measures no matrix at
+    all and still verdicts ``LIVE_ATTACH`` (no ``PODBENCH_TARGET_CID`` in the
+    spec, or no process in a cgroup matching the target's container id), which
+    printed an unticked box blaming "the mechanism that refused attach" three
+    lines above ``blocker  none``.
+    """
+    if not report.proc_reads:
+        return (
+            "podbench capreport resolved no target pid, so these three were "
+            "never read - this is not a refusal. `podbench pids` in the seat "
+            "names the target, and `podbench capreport <pid>` measures it."
+        )
+    # Not the blocker's explanation: that paragraph is already printed against
+    # live attach, and a report that repeats itself is one people stop reading.
+    if report.blocker is Blocker.NONE:
+        return (
+            "the three paths this line names take PTRACE_MODE_READ, and at "
+            "least one of them was refused - the matrix is above"
+        )
+    return (
+        "the three paths this line names take PTRACE_MODE_READ, which the "
+        "mechanism that refused attach gates too - see the blocker below"
     )
 
 
