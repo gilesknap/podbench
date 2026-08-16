@@ -710,7 +710,7 @@ automatically after every attach; run it yourself when something changes.
 |---|---|
 | `0` | live attach available |
 | `10` | read-only debugging available (target rootfs, `maps`, `environ`; gdb-launch works) |
-| `15` | launch-only: nothing of the target is readable, but `podbench dbg --launch` works |
+| `15` | launch-only: no read-only inspection of the target, but `podbench dbg --launch` works |
 | `20` | neither; the seat itself still works |
 
 It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor

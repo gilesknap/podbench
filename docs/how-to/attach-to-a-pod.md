@@ -178,11 +178,11 @@ supports
       mechanism that refused attach gates too - see the blocker below
   [x] debug launched processes (podbench dbg --launch ./prog)
 measured
-  verdict     launch-only: `podbench dbg --launch` works; the target is closed
+  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
 ```
 
 This is the **launch-only** rung, and it is a real one — a Diamond production pod
-lands on it. Nothing of the target opens: no sysroot, no `environ`, no `maps`.
+lands on it. None of the three opens: no sysroot, no `environ`, no `maps`.
 What still works is a program the seat starts *itself*, because tracing your own
 descendant needs no capability and no Yama exemption. So go straight to
 `podbench dbg --launch ./prog` and do not spend the afternoon on a sysroot.

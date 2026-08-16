@@ -475,12 +475,11 @@ def derive_verdict(
         # 3.12), so the inner loop the report tells us to design for is intact
         # — and saying "nothing works" here would hide it.
         notes.append(
-            "the target's own /proc is closed to this seat "
+            "the reads that take PTRACE_MODE_READ went with it "
             f"({describe_reads(proc_reads)}), so a sysroot, an environ read or "
-            "a maps read will fail too; what still works is debugging a "
-            "process the seat starts itself - `podbench dbg --launch ./prog` - "
-            "which "
-            "needs no capability"
+            "a maps read is not the fallback here; what still works is "
+            "debugging a process the seat starts itself - `podbench dbg "
+            "--launch ./prog` - which needs no capability"
         )
         return Verdict.LAUNCH_ONLY, blocker, notes
     return Verdict.NONE, blocker, notes

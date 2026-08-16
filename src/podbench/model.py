@@ -296,8 +296,8 @@ class Verdict(enum.Enum):
     environment can be read — every path in :data:`PTRACE_READ_PATHS`."""
 
     LAUNCH_ONLY = 15
-    """Nothing of the target can be read, but the seat can still debug
-    processes it starts itself.
+    """Read-only inspection of the target is not available, but the seat can
+    still debug processes it starts itself.
 
     The rung between the other two, and the one a real cluster lands on: a
     Diamond production pod reported ``child_attach_ok`` with ``root``, ``maps``
@@ -306,6 +306,12 @@ class Verdict(enum.Enum):
     that does work, since tracing your own descendants needs no capability and
     no Yama exemption (report 3.12). Its value sits between them because the
     codes are ordered by how much is possible.
+
+    It is :data:`PTRACE_READ_PATHS` that are gone, not the target entirely:
+    :data:`WORLD_READ_PATHS` answer on any pod whatsoever, so `pids` still
+    names the processes. Saying "the target is closed" would be the same
+    overclaim as #51 pointing the other way, which is why every report of this
+    rung prints the matrix rather than a word for it.
     """
 
     NONE = 20
@@ -319,7 +325,7 @@ class Verdict(enum.Enum):
             Verdict.LIVE_ATTACH: "live attach available",
             Verdict.READ_ONLY: "read-only inspection of the target; no live attach",
             Verdict.LAUNCH_ONLY: (
-                "launch-only: `podbench dbg --launch` works; the target is closed"
+                "launch-only: `podbench dbg --launch` works; no read-only inspection"
             ),
             Verdict.NONE: "no access to the target process",
         }[self]

@@ -69,14 +69,16 @@ manifest
 
 launch-only
   The {term}`capreport` verdict for a seat that can debug processes *it* starts, but
-  can read nothing of the target: `/proc/<pid>/root`, `maps` and `environ` are all
-  denied, and so is attach. It is a rung of its own because the two halves of it are
+  cannot inspect the target: `/proc/<pid>/root`, `maps` and `environ` are denied, and
+  so is attach. It is a rung of its own because the two halves of it are
   independent — tracing your own descendant needs no permission at all, so
   `podbench dbg --launch ./prog` still gives breakpoints, `run` and backtraces on a
-  pod whose
-  own memory and `/proc` are shut. Reported as exit code 15. The name matters: called
+  pod whose own memory is shut. Reported as exit code 15. The name matters: called
   read-only, it sends you to a sysroot that will not open; called nothing, it hides
-  the one inner loop that works.
+  the one inner loop that works. It is the ptrace-gated paths that are gone, not the
+  whole of `/proc` — `cmdline`, `status` and `fd` need no permission and answer here
+  as they do anywhere, which is why `podbench pids` still lists the target's
+  processes.
 
 mode
   One of the three ways in. **Observe** is the `attach` verb, **Iterate** is `dev`,

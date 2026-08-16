@@ -525,15 +525,21 @@ called `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` is attachable with zero
 capabilities. It is a one-line, capability-free, node-change-free opt-in for a
 program you control.
 
-On a pod where the target's own `/proc` is shut as well — the **launch-only**
+On a pod where the ptrace-gated reads went with the attach — the **launch-only**
 verdict — the consolation line says *that* instead, because offering a sysroot
 that will not open costs a second afternoon:
 
 ```
-  verdict: launch-only: `podbench dbg --launch` works; the target is closed
-  the target's own /proc is closed too (cmdline, status and fd only; root, maps
-  and environ denied), so a sysroot, `environ` or `maps` read will fail as well.
+  verdict: launch-only: `podbench dbg --launch` works; no read-only inspection
+  the reads that take PTRACE_MODE_READ went with it (cmdline, status and fd
+  only; root, maps and environ denied), so a sysroot, `environ` or `maps` is not
+  the fallback here.
 ```
+
+The matrix is in the line because it is the honest form of the answer: `cmdline`,
+`status` and `fd` are still readable — they always are — so `podbench pids` works
+and "the target is closed" would be the same overclaim as issue #51, pointing
+the other way.
 
 `--launch` is unaffected by any of it: gdb forks the inferior and traces its own
 descendant, which no policy in play here refuses.

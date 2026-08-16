@@ -263,10 +263,13 @@ def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
     elif report.proc_reads:
         # Keyed on the matrix, not on the verdict: saying only "attach is
         # denied" leaves the reader to try the sysroot next and lose the
-        # afternoon to a second denial (issue #51).
+        # afternoon to a second denial (issue #51). The matrix goes in the line
+        # rather than a word for it, because "/proc is closed" is untrue of the
+        # world-readable half and of a matrix that lost only one gated path.
         lines.append(
-            f"  the target's own /proc is closed too ({report.reads_summary}), "
-            "so a sysroot, `environ` or `maps` read will fail as well."
+            f"  the reads that take PTRACE_MODE_READ went with it "
+            f"({report.reads_summary}), so a sysroot, `environ` or `maps` is "
+            "not the fallback here."
         )
     lines.append(
         "  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. "
