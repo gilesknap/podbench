@@ -1,0 +1,847 @@
+"""Which debugger fits this target, and — when none does — which mechanism says no.
+
+The choice is not "which language". It is **language x mode x architecture**,
+and only the first is obvious (issue #20):
+
+* **language** decides the adapter — cppdbg/gdb, CodeLLDB, delve, debugpy;
+* **mode** decides its *shape*, because a ``dev`` pod's process is a child of
+  this container and an Observe-mode target is a process in another container:
+  the first is a launch and needs no sysroot, the second is an attach and needs
+  one everywhere;
+* **architecture** decides whether the mechanism exists at all. debugpy's
+  attach-to-pid ships ``attach_linux_amd64.so`` and no arm64 equivalent, and
+  debugpy publishes no aarch64 Linux wheel, so on arm64 there is nothing to
+  install and nothing to fix.
+
+Everything is measured rather than asked: :mod:`podbench.elf` reads the target's
+own binary, ``/proc/<pid>/cmdline`` names the interpreter, ``/proc/<pid>/root``
+says whether debugpy is importable *by the target*, and the seat's own
+``/proc/self/status`` says whether it holds CAP_SYS_PTRACE.
+
+**Nothing here decides for the user.** :func:`assess` returns a verdict for
+every flavour, so ``debug-config`` can emit each configuration that applies and
+name the blocking mechanism for each that does not — the same house style as
+``capreport``, and for the same reason: four different mechanisms produce the
+same "it just doesn't work at F5", and only naming one of them saves the
+afternoon.
+
+## Why the debugpy prerequisites are in this order
+
+The live proof in issue #20 established that on amd64 — where the helper ``.so``
+does exist — pid-injection still fails twice before architecture matters:
+
+1. debugpy tells gdb to ``dlopen`` its helper by the path *the driver* sees, and
+   driver and target share a PID namespace but **not** a mount namespace. The
+   one spelling valid on both sides is ``/proc/<pid>/root/...``, which is why
+   the prerequisite is "debugpy importable by the target" and not merely
+   "debugpy installed here".
+2. debugpy invokes a bare ``gdb --nx --pid <n>``, which reads the *seat's*
+   libraries for the *target's* process. That is what ``image/bin/gdb-podbench``
+   fixes with ``-iex "set sysroot /proc/<pid>/root"``.
+
+So unmet prerequisites are reported in that order. The one exception is the
+architecture check, which is promoted to the headline whenever it fails: every
+other prerequisite has a remedy inside this pod and that one has none.
+"""
+
+from __future__ import annotations
+
+import enum
+import os
+import shutil
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .elf import ElfInfo, debugpy_helper_name, read_elf
+from .proc import (
+    DEFAULT_PROC,
+    read_cmdline,
+    read_exe,
+    same_root,
+    self_capabilities,
+    sysroot_path,
+)
+
+__all__ = [
+    "DEBUGPY_PORT",
+    "SEAT_DEBUGPY_PATH",
+    "Assessment",
+    "Debugger",
+    "Flavour",
+    "Language",
+    "Mode",
+    "Seat",
+    "Target",
+    "Which",
+    "assess",
+    "injection_command",
+    "detect_mode",
+    "format_inventory",
+    "inspect_target",
+    "inventory",
+    "survey_seat",
+]
+
+DEBUGPY_PORT = 5678
+"""debugpy's own default, and what every published launch.json example uses.
+
+``127.0.0.1`` goes with it: the seat and the app share the pod's network
+namespace, so nothing is port-forwarded or tunnelled even though they are
+separate containers.
+"""
+
+SEAT_DEBUGPY_PATH = "/opt/podbench/debugpy"
+"""Where the image installs debugpy, deliberately *not* in podbench's venv.
+
+Two reasons it is a directory of its own. podbench's wheel has exactly one
+runtime dependency and that is the CLI, an invariant ``tests/test_packaging.py``
+asserts; and this copy has to be put on ``PYTHONPATH`` by hand for the injection
+recipe, which is easier to state when it is one path rather than a venv's
+site-packages.
+"""
+
+_HELPER_RELATIVE = "debugpy/_vendored/pydevd/pydevd_attach_to_process"
+"""Where debugpy keeps the per-architecture attach helpers inside its package."""
+
+#: Interpreters worth recognising in ``/proc/<pid>/exe`` or ``argv[0]``. The
+#: value is what the process *is*, which is a different question from what its
+#: script is written in — a CPython running a C extension is still Python here,
+#: because the adapter that can see its frames is debugpy's.
+_INTERPRETERS = (
+    ("python", "python"),
+    ("pypy", "python"),
+    ("node", "node"),
+    ("nodejs", "node"),
+)
+
+_SEARCH_ROOTS = (
+    "usr/local/lib",
+    "usr/lib",
+)
+"""Where a Debian- or python-image-shaped rootfs keeps site-packages.
+
+Two fixed prefixes rather than a walk: ``/proc/<pid>/root`` is another
+container's whole filesystem, and an unbounded walk through it is exactly the
+recursive descent that OOMs a seat (skill: vscode-in-a-seat).
+"""
+
+
+class Flavour(enum.Enum):
+    """A debugger, in the spelling ``--flavour`` accepts."""
+
+    GDB = "gdb"
+    """cpptools' ``cppdbg`` driving gdb. Native code, and podbench's default."""
+
+    LLDB = "lldb"
+    """CodeLLDB. Same targets as gdb; the right answer for Rust."""
+
+    DELVE = "delve"
+    """The Go extension's ``dlv``. Goroutines and channels are its job."""
+
+    DEBUGPY = "debugpy"
+    """Python. The only flavour whose availability turns on architecture."""
+
+
+class Language(enum.Enum):
+    """What the target process runs, as far as a debugger is concerned."""
+
+    NATIVE = "native"
+    GO = "go"
+    PYTHON = "python"
+    NODE = "node"
+    UNKNOWN = "unknown"
+
+
+class Mode(enum.Enum):
+    """Whose process is being debugged, which decides the config's shape."""
+
+    OBSERVE = "observe"
+    """A process in another container: attach, sysroot, path mappings."""
+
+    DEV = "dev"
+    """A process in *this* container — a ``podbench dev`` pod, where the seat
+    owns PID 1. Launch rather than attach, and no mappings at all, because the
+    editor and the interpreter share the same inodes."""
+
+
+@dataclass(frozen=True)
+class Target:
+    """What could be learnt about the process being debugged."""
+
+    pid: int
+    language: Language
+    program: str | None
+    """The executable as the *target's own rootfs* spells it, unprefixed."""
+
+    cmdline: str = ""
+    elf: ElfInfo | None = None
+    interpreter: str | None = None
+    script: str | None = None
+    """The first non-flag argument after an interpreter — the file a Python
+    developer thinks of as "the program"."""
+
+    cwd: str | None = None
+    """The target's working directory, in its *own* rootfs's spelling."""
+
+    notes: tuple[str, ...] = ()
+
+    @property
+    def machine(self) -> str | None:
+        """The architecture the *binary* was built for.
+
+        The binary rather than the node: a pod can run an amd64 image on an
+        arm64 node under emulation, and the node label would then answer a
+        question nobody asked.
+        """
+        return None if self.elf is None else self.elf.machine
+
+    @property
+    def name(self) -> str:
+        """A short name for the configuration, as a human would say it."""
+        for candidate in (self.script, self.program):
+            if candidate:
+                return Path(candidate).name
+        return f"pid {self.pid}"
+
+    @property
+    def source_root(self) -> str | None:
+        """The directory the debuggee will report its source paths under.
+
+        The script's directory first and the working directory second: an app
+        started as ``python /src/app.py`` reports ``/src/app.py`` whatever its
+        cwd happens to be, and it is that spelling — not the cwd — that has to
+        appear on the right-hand side of a ``pathMappings`` entry.
+
+        >>> Target(1, Language.PYTHON, "/usr/bin/python3",
+        ...        script="/src/app.py", cwd="/").source_root
+        '/src'
+        """
+        if self.script and self.script.startswith("/"):
+            return str(Path(self.script).parent)
+        return self.cwd
+
+
+@dataclass(frozen=True)
+class Debugger:
+    """One row of the image's debugger inventory."""
+
+    name: str
+    present: bool
+    detail: str
+
+    def line(self) -> str:
+        """``capreport``'s one-line rendering."""
+        return f"{'yes' if self.present else 'no ':<4} {self.detail}"
+
+
+@dataclass(frozen=True)
+class Seat:
+    """What this container can bring to the target, all of it measured."""
+
+    machine: str
+    cap_sys_ptrace: bool
+    debuggers: tuple[Debugger, ...] = ()
+    debugpy_here: str | None = None
+    """Directory to put on ``PYTHONPATH`` for the driver half, if there is one."""
+
+    debugpy_there: str | None = None
+    """The target's own debugpy, spelled ``/proc/<pid>/root/...`` — the one
+    path that resolves in both mount namespaces."""
+
+    debugpy_helper: bool = False
+    """Whether the attach helper for the *target's* architecture exists."""
+
+    sysroot_gdb: bool = False
+    """Whether a bare ``gdb`` on PATH sets the sysroot before it attaches."""
+
+    listening_port: int | None = None
+    """A debugpy server already accepting connections in this pod, if any."""
+
+    def has(self, name: str) -> bool:
+        """Whether the inventory found ``name``."""
+        return any(entry.present for entry in self.debuggers if entry.name == name)
+
+
+@dataclass(frozen=True)
+class Assessment:
+    """Whether one flavour applies here, and — if not — what says no."""
+
+    flavour: Flavour
+    available: bool
+    reason: str
+    """One sentence naming the mechanism, in ``capreport``'s house style."""
+
+    remedy: str | None = None
+    detail: tuple[str, ...] = field(default_factory=tuple)
+    """Every other unmet prerequisite, so a fixed headline does not reveal a
+    second wall the user could have been told about at the same time."""
+
+    language_mismatch: bool = False
+    """This flavour debugs another language, and nothing here can change that.
+
+    Marked rather than merely worded, so the caller can stay quiet about it:
+    telling someone debugging a C binary that delve is for Go is noise, while
+    every other refusal names something they could act on.
+    """
+
+    def message(self) -> str:
+        """The full "cannot emit, and here is why" text."""
+        head = f"{self.flavour.value} unavailable: {self.reason}"
+        lines = [head, *(f"  also: {item}" for item in self.detail)]
+        if self.remedy:
+            lines.append(f"  {self.remedy}")
+        return "\n".join(lines)
+
+
+# -- what the target is ----------------------------------------------------
+
+
+def inspect_target(
+    pid: int, *, proc: Path = DEFAULT_PROC, program: str | None = None
+) -> Target:
+    """Read the target's binary and command line, and name its language.
+
+    ``program`` overrides the ``/proc/<pid>/exe`` read, which needs
+    ``PTRACE_MODE_READ`` and so fails at the wrong uid (report §3.11). An
+    unreadable exe is not fatal: the command line alone still identifies an
+    interpreter, which is the case that decides the Python flavour.
+    """
+    notes: list[str] = []
+    exe = program or read_exe(pid, proc=proc)
+    cmdline = read_cmdline(pid, proc=proc) or ""
+    if exe is None:
+        notes.append(
+            f"could not read /proc/{pid}/exe (it needs PTRACE_MODE_READ), so the "
+            "language was decided from the command line alone"
+        )
+    # The ELF is read through the sysroot: /proc/<pid>/root is the target's
+    # filesystem, and the same path unprefixed reads *this* image's copy of a
+    # binary with the same name (report §3.3). The read goes through ``proc``
+    # while the message quotes the real spelling, so a synthetic tree can stand
+    # in for /proc without the emitted paths becoming synthetic too.
+    elf = read_elf(Path(proc) / str(pid) / "root" / exe.lstrip("/")) if exe else None
+    if exe and elf is None:
+        notes.append(
+            f"{sysroot_path(pid)}{exe} could not be read as ELF, so neither the "
+            "target's architecture nor its debug info could be established"
+        )
+
+    argv = cmdline.split()
+    interpreter = _interpreter_of(exe, argv)
+    language = _language(interpreter, elf)
+    script = _script_of(argv) if interpreter else None
+    return Target(
+        pid=pid,
+        language=language,
+        program=exe,
+        cmdline=cmdline,
+        elf=elf,
+        interpreter=interpreter,
+        script=script,
+        cwd=_read_cwd(pid, proc=proc),
+        notes=tuple(notes),
+    )
+
+
+def _read_cwd(pid: int, *, proc: Path) -> str | None:
+    """The target's cwd as *it* spells it. ``None`` is a real answer.
+
+    The link is readable only with ``PTRACE_MODE_READ``, and it is read for the
+    same reason ``exe`` is: the value is a path in the target's own mount
+    namespace, so it is the right-hand side of a mapping rather than something
+    to open here.
+    """
+    try:
+        return os.readlink(proc / str(pid) / "cwd")
+    except OSError:
+        return None
+
+
+def _interpreter_of(exe: str | None, argv: Sequence[str]) -> str | None:
+    """The managed runtime this process *is*, from its exe or its ``argv[0]``.
+
+    >>> _interpreter_of("/usr/local/bin/python3.12", [])
+    'python'
+    >>> _interpreter_of("/app/victim", ["/app/victim"]) is None
+    True
+    """
+    for candidate in (exe, argv[0] if argv else None):
+        if not candidate:
+            continue
+        stem = Path(candidate).name
+        for prefix, language in _INTERPRETERS:
+            # Prefix, not equality: the exe link resolves to `python3.12`, and
+            # every point release would otherwise need its own table entry.
+            if stem == prefix or stem.startswith(prefix):
+                return language
+    return None
+
+
+def _script_of(argv: Sequence[str]) -> str | None:
+    """The script an interpreter was given, skipping its own options.
+
+    >>> _script_of(["python", "-u", "/src/demo_service.py"])
+    '/src/demo_service.py'
+    >>> _script_of(["python", "-m", "http.server"]) is None
+    True
+    """
+    rest = iter(argv[1:])
+    for token in rest:
+        if token == "-m":
+            # `-m pkg` names a module, not a file, so there is no path to map.
+            return None
+        if token.startswith("-"):
+            continue
+        return token
+    return None
+
+
+def _language(interpreter: str | None, elf: ElfInfo | None) -> Language:
+    if interpreter == "python":
+        return Language.PYTHON
+    if interpreter == "node":
+        return Language.NODE
+    if elf is None:
+        return Language.UNKNOWN
+    return Language.GO if elf.is_go else Language.NATIVE
+
+
+def detect_mode(pid: int, *, proc: Path = DEFAULT_PROC) -> Mode:
+    """Whether ``pid`` is ours (``dev``) or a neighbour's (``observe``).
+
+    Two processes share a root inode exactly when they share a mount namespace,
+    which under ``shareProcessNamespace: true`` is the only thing that still
+    distinguishes containers. A ``podbench dev`` pod relaunches the app *from*
+    the seat, so its process is on this side of that line — and that single
+    fact is what flips every path mapping in the emitted config.
+    """
+    return Mode.DEV if same_root(pid, proc=proc) else Mode.OBSERVE
+
+
+# -- what the seat has -----------------------------------------------------
+
+Which = Callable[[str], str | None]
+"""``shutil.which``, injected so the unit suite never depends on a real PATH."""
+
+
+def inventory(
+    *, which: Which = shutil.which, debugpy_root: str | None = None
+) -> tuple[Debugger, ...]:
+    """Which debuggers this image actually ships.
+
+    Printed beside the capability report on purpose: without it the emitted
+    configuration silently outruns the image, which is the failure #18 set out
+    to remove reappearing one layer up.
+    """
+    entries: list[Debugger] = []
+    for name, note in (
+        ("gdb", "cppdbg/MIMode gdb, and `dbg`"),
+        ("lldb", "CodeLLDB brings its own to the remote, so this is optional"),
+        ("dlv", "delve, for Go targets"),
+    ):
+        path = which(name)
+        entries.append(
+            Debugger(name, path is not None, f"{name}: {path or f'absent ({note})'}")
+        )
+    entries.append(Debugger("gdb-podbench", *_shim_detail(which)))
+    entries.append(Debugger("debugpy", *_debugpy_detail(debugpy_root)))
+    return tuple(entries)
+
+
+def sysroot_gdb_on_path(which: Which = shutil.which) -> bool:
+    """Whether a bare ``gdb`` resolves to the sysroot-aware wrapper.
+
+    Not "is the wrapper installed": debugpy, and anything else that shells out
+    to ``gdb --nx --pid``, gets whichever ``gdb`` PATH resolves to. A wrapper
+    sitting beside an unwrapped ``gdb`` fixes nothing, and reporting it as met
+    would be a prerequisite that reads green and is not.
+    """
+    shim = which("gdb-podbench")
+    resolved = which("gdb")
+    if shim is None or resolved is None:
+        return False
+    return os.path.realpath(resolved) == os.path.realpath(shim)
+
+
+def _shim_detail(which: Which) -> tuple[bool, str]:
+    """The inventory line for the wrapper, naming what ``gdb`` really is."""
+    shim = which("gdb-podbench")
+    if shim is None:
+        return False, "gdb-podbench: absent (bare `gdb --pid` gets no sysroot)"
+    if sysroot_gdb_on_path(which):
+        return True, f"gdb-podbench: {shim} (`gdb` on PATH is the shim)"
+    return False, (
+        f"gdb-podbench: {shim}, but `gdb` on PATH is {which('gdb')} — a tool "
+        "that shells out to `gdb --pid` still gets no sysroot"
+    )
+
+
+def _debugpy_detail(root: str | None) -> tuple[bool, str]:
+    found = _debugpy_dir(root)
+    if found is None:
+        return False, (
+            f"debugpy: absent from {root or SEAT_DEBUGPY_PATH} "
+            "(pid-injection has no driver half)"
+        )
+    helpers = sorted(
+        path.name
+        for path in (found / _HELPER_RELATIVE).glob("attach_linux_*.so")
+        if path.is_file()
+    )
+    return True, f"debugpy: {found} (attach helpers: {', '.join(helpers) or 'none'})"
+
+
+def _debugpy_dir(root: str | None) -> Path | None:
+    base = Path(root or SEAT_DEBUGPY_PATH)
+    return base if (base / "debugpy" / "__init__.py").is_file() else None
+
+
+def survey_seat(
+    target: Target,
+    *,
+    proc: Path = DEFAULT_PROC,
+    machine: str | None = None,
+    which: Which = shutil.which,
+    debugpy_root: str | None = None,
+    listening_port: int | None = None,
+) -> Seat:
+    """Gather every fact :func:`assess` needs, with no side effects.
+
+    Deliberately *not* a ptrace probe: ``capreport`` measures attach by really
+    attaching, which SIGSTOPs the workload for an instant, and authoring a
+    launch.json must not do that. The capability masks answer the only question
+    the flavours need, and they cost a read of ``/proc/self/status``.
+    """
+    here = _debugpy_dir(debugpy_root)
+    there = _target_debugpy(target.pid, proc=proc)
+    return Seat(
+        machine=machine or os.uname().machine,
+        cap_sys_ptrace=self_capabilities(proc=proc).sys_ptrace_effective,
+        debuggers=inventory(which=which, debugpy_root=debugpy_root),
+        debugpy_here=None if here is None else str(here),
+        debugpy_there=there,
+        debugpy_helper=_helper_present(here, target.machine),
+        sysroot_gdb=sysroot_gdb_on_path(which),
+        listening_port=listening_port,
+    )
+
+
+def _helper_present(here: Path | None, machine: str | None) -> bool:
+    if here is None or machine is None:
+        return False
+    return (here / _HELPER_RELATIVE / debugpy_helper_name(machine)).is_file()
+
+
+def _target_debugpy(pid: int, *, proc: Path = DEFAULT_PROC) -> str | None:
+    """Where the *target* keeps debugpy, spelled so both namespaces agree.
+
+    The returned path goes on the driver's ``PYTHONPATH``, and the string
+    debugpy then injects into the target has to resolve there too — which is
+    exactly why it is ``/proc/<pid>/root/...`` and never the seat's own copy's
+    path (issue #20's live proof, step 3).
+    """
+    root = Path(f"{proc}/{pid}/root")
+    for prefix in _SEARCH_ROOTS:
+        for parent in sorted((root / prefix).glob("python3*")):
+            for leaf in ("site-packages", "dist-packages"):
+                if (parent / leaf / "debugpy" / "__init__.py").is_file():
+                    return f"{sysroot_path(pid)}/{prefix}/{parent.name}/{leaf}"
+        # Debian's own layout puts dist-packages one level up from the versioned
+        # directory, so it is checked separately rather than folded into the
+        # glob above.
+        for leaf in ("python3/dist-packages",):
+            if (root / prefix / leaf / "debugpy" / "__init__.py").is_file():
+                return f"{sysroot_path(pid)}/{prefix}/{leaf}"
+    return None
+
+
+# -- what applies ----------------------------------------------------------
+
+
+def assess(target: Target, mode: Mode, seat: Seat) -> list[Assessment]:
+    """One verdict per flavour, in the order they are worth trying.
+
+    Every flavour is judged, including the ones that plainly do not apply, so
+    that ``--flavour delve`` against a Python process gets a sentence rather
+    than an empty file.
+    """
+    return [
+        _assess_gdb(target, mode, seat),
+        _assess_lldb(target, mode, seat),
+        _assess_delve(target, mode, seat),
+        _assess_debugpy(target, mode, seat),
+    ]
+
+
+def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
+    if target.language is Language.PYTHON:
+        return Assessment(
+            Flavour.GDB,
+            False,
+            "the target is a CPython interpreter, so gdb sees interpreter "
+            "frames and not your Python source",
+            remedy="use --flavour debugpy, or `dbg` if the interpreter itself "
+            "is what you are debugging",
+            language_mismatch=True,
+        )
+    if target.language is Language.NODE:
+        return Assessment(
+            Flavour.GDB,
+            False,
+            "the target is a Node process; podbench has no Node adapter and "
+            "gdb would show V8's frames",
+            language_mismatch=True,
+        )
+    if not seat.has("gdb"):
+        return Assessment(
+            Flavour.GDB, False, "no gdb on PATH in this seat", remedy=_IMAGE_REMEDY
+        )
+    return _no_program(Flavour.GDB, target) or Assessment(
+        Flavour.GDB, True, _gdb_reason(target, mode)
+    )
+
+
+def _no_program(flavour: Flavour, target: Target) -> Assessment | None:
+    """Refuse rather than guess when the target's binary is unknown.
+
+    cpptools, CodeLLDB and delve all require ``program``, and a wrong one is the
+    silent failure this whole module exists to prevent: it reads *this* image's
+    binary of the same name and produces an entirely believable backtrace off
+    the wrong symbols (report §3.3).
+    """
+    if target.program:
+        return None
+    return Assessment(
+        flavour,
+        False,
+        f"could not read /proc/{target.pid}/exe (it needs PTRACE_MODE_READ), so "
+        "the target's binary is unknown and `program` cannot be filled in",
+        remedy="pass --program with the path inside the target's own rootfs",
+    )
+
+
+def _gdb_reason(target: Target, mode: Mode) -> str:
+    if target.elf is None:
+        return (
+            "the target's binary could not be read, so this is gdb on the "
+            "assumption that it is native code"
+        )
+    if not target.elf.has_debug_info:
+        return "native target with no .debug_info in the binary; " + (
+            "the build-id is present, so debuginfod can still serve symbols "
+            "(report §3.2)"
+            if target.elf.has_build_id
+            else "and no build-id either, so expect addresses rather than names"
+        )
+    return f"native target, {mode.value} mode"
+
+
+def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
+    # Ruled out by a language that is *known* to be managed, never by an
+    # unknown one: reading the target's ELF needs PTRACE_MODE_READ, so on the
+    # degraded rung the language is unknown for a perfectly ordinary C binary,
+    # and withdrawing a working configuration on that basis would be the silent
+    # wrong answer in a new place.
+    if target.language in (Language.PYTHON, Language.NODE):
+        return Assessment(
+            Flavour.LLDB,
+            False,
+            f"CodeLLDB debugs native code and this target is {target.language.value}",
+            language_mismatch=True,
+        )
+    if mode is Mode.DEV:
+        # Not a shortcoming of lldb: podbench has never measured a CodeLLDB
+        # launch inside a dev pod, and emitting an unmeasured config is how a
+        # silent wrong answer gets shipped.
+        return Assessment(
+            Flavour.LLDB,
+            False,
+            "no dev-mode CodeLLDB configuration is emitted; only the attach "
+            "shape has been measured in a seat",
+            remedy="use --flavour gdb for the dev-mode launch",
+        )
+    # No image check: CodeLLDB ships its own lldb and installs it into the
+    # *remote* extension host, so the seat having none decides nothing.
+    return _no_program(Flavour.LLDB, target) or Assessment(
+        Flavour.LLDB, True, "native target; CodeLLDB brings its own lldb to the seat"
+    )
+
+
+def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
+    if target.language is not Language.GO:
+        return Assessment(
+            Flavour.DELVE,
+            False,
+            "delve debugs Go and this binary has no .gopclntab or Go build-id "
+            f"({target.language.value} target)",
+            language_mismatch=True,
+        )
+    if not seat.has("dlv"):
+        return Assessment(
+            Flavour.DELVE,
+            False,
+            "no dlv on PATH in this seat, and the Go extension runs dlv on the "
+            "remote rather than shipping one",
+            remedy=_IMAGE_REMEDY,
+        )
+    return _no_program(Flavour.DELVE, target) or Assessment(
+        Flavour.DELVE, True, f"Go target, {mode.value} mode"
+    )
+
+
+_IMAGE_REMEDY = (
+    "the image ships what `capreport` lists under DEBUGGERS; adding one is a "
+    "deliberate change to the image, not something a seat can install for the "
+    "session"
+)
+
+
+def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
+    if target.language is not Language.PYTHON:
+        return Assessment(
+            Flavour.DEBUGPY,
+            False,
+            f"debugpy debugs CPython and this target is {target.language.value}",
+            language_mismatch=True,
+        )
+    if mode is Mode.DEV:
+        if seat.debugpy_here is None:
+            return Assessment(
+                Flavour.DEBUGPY,
+                False,
+                "no debugpy in this container, and in dev mode the adapter runs "
+                "here rather than in the target",
+                remedy=f"`uv pip install debugpy`, or check {SEAT_DEBUGPY_PATH}",
+            )
+        return Assessment(
+            Flavour.DEBUGPY, True, "Python target in this container's own namespace"
+        )
+    if seat.listening_port is not None:
+        # The app called debugpy.listen() itself. Pure Python, so this path is
+        # architecture-independent and needs no capability at all.
+        return Assessment(
+            Flavour.DEBUGPY,
+            True,
+            f"a debugpy server is already listening on 127.0.0.1:"
+            f"{seat.listening_port} in this pod",
+        )
+    unmet = _injection_prerequisites(target, seat)
+    if not unmet:
+        return Assessment(
+            Flavour.DEBUGPY,
+            True,
+            "every pid-injection prerequisite is met; start the server with the "
+            "command printed below, then connect",
+        )
+    # Live-failure order, except that a structural blocker is promoted: every
+    # other prerequisite has a remedy inside this pod, and the architecture one
+    # has none anywhere (there is no arm64 wheel to install).
+    ordered = sorted(unmet, key=lambda item: not item[0])
+    _, reason, remedy = ordered[0]
+    return Assessment(
+        Flavour.DEBUGPY,
+        False,
+        reason,
+        remedy=remedy,
+        detail=tuple(item[1] for item in ordered[1:]),
+    )
+
+
+def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str, str]]:
+    """The unmet prerequisites, as ``(structural, reason, remedy)``.
+
+    In the order the live proof hit them: the dlopen path first, the sysroot
+    second, the architecture third. Reporting all of them is the point — fixing
+    the headline only to meet the next wall is the experience this replaces.
+    """
+    unmet: list[tuple[bool, str, str]] = []
+    if seat.debugpy_here is None:
+        unmet.append(
+            (
+                False,
+                "no debugpy in this seat to drive the injection",
+                f"the image installs it at {SEAT_DEBUGPY_PATH}; `capreport` "
+                "lists what this image actually has",
+            )
+        )
+    if seat.debugpy_there is None:
+        unmet.append(
+            (
+                False,
+                "debugpy is not importable by the target: the bootstrap runs "
+                "inside the target's interpreter, and debugpy injects a dlopen "
+                "of the path the *driver* sees, which the target's mount "
+                "namespace does not have",
+                "install debugpy into the app image, or bake "
+                "`debugpy.listen()` into the app - both survive a restart, "
+                "which injection does not",
+            )
+        )
+    if not seat.sysroot_gdb:
+        unmet.append(
+            (
+                False,
+                "no sysroot-aware gdb on PATH: debugpy shells out to a bare "
+                "`gdb --nx --pid`, which reads this seat's libraries for the "
+                "target's process",
+                "the image puts gdb-podbench on PATH as `gdb`; it adds "
+                '-iex "set sysroot /proc/<pid>/root", which -ex cannot do '
+                "because --pid attaches during startup",
+            )
+        )
+    # The helper is only asked about when there is a debugpy to ask: with none
+    # installed its absence says nothing about the architecture, and reporting
+    # "not published for x86_64" — which is false — would be worse than saying
+    # nothing.
+    if seat.debugpy_here is not None and not seat.debugpy_helper:
+        machine = target.machine or seat.machine
+        unmet.append(
+            (
+                True,
+                f"no {debugpy_helper_name(machine)} in this seat's debugpy: it "
+                "ships the amd64 helper alone and publishes no aarch64 Linux "
+                f"wheel at all, so on {machine} there is nothing to install",
+                "bake `debugpy.listen()` into the app image, or use "
+                "`podbench dev` - both are pure Python and work on any "
+                "architecture",
+            )
+        )
+    if not seat.cap_sys_ptrace:
+        unmet.append(
+            (
+                False,
+                "CAP_SYS_PTRACE is not in this seat's effective set, and the "
+                "injection drives gdb to attach to the target",
+                "relaunch on the `full` rung (root + SYS_PTRACE); `capreport` "
+                "names which rung this seat landed on",
+            )
+        )
+    return unmet
+
+
+def injection_command(target: Target, seat: Seat, port: int = DEBUGPY_PORT) -> str:
+    """The command that starts a debugpy server *inside* an uncooperative app.
+
+    Printed rather than run: it attaches to the workload with ptrace and leaves
+    a server running in it, which is not something authoring a launch.json may
+    do on its own. The ``PYTHONPATH`` is the whole trick — the driver has to
+    import the *target's* debugpy so that the path it injects resolves in the
+    target's mount namespace too.
+
+    >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
+    >>> seat = Seat(machine="x86_64", cap_sys_ptrace=True,
+    ...             debugpy_there="/proc/7/root/usr/lib/python3/dist-packages")
+    >>> print(injection_command(target, seat))
+    PYTHONPATH=/proc/7/root/usr/lib/python3/dist-packages \\
+      python -m debugpy --listen 127.0.0.1:5678 --pid 7
+    """
+    return (
+        f"PYTHONPATH={seat.debugpy_there or seat.debugpy_here} \\\n"
+        f"  python -m debugpy --listen 127.0.0.1:{port} --pid {target.pid}"
+    )
+
+
+def format_inventory(entries: Sequence[Debugger]) -> list[str]:
+    """The DEBUGGERS block ``capreport`` prints."""
+    return [entry.line() for entry in entries]
