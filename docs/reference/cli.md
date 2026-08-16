@@ -325,6 +325,12 @@ what that seat can actually do.
 │                                              once it lands, with the /proc and /sys excludes,    │
 │                                              this target's launch.json and only the extensions   │
 │                                              its debugger needs. Needs `code` on PATH            │
+│ --provision                                  with --open, let the seat install debugpy into the  │
+│                                              target when the target cannot import one -          │
+│                                              otherwise a stock Python workload gets no           │
+│                                              launch.json at all. Mutates the workload: ~15 MB of │
+│                                              shared ephemeral storage, needs egress from the     │
+│                                              pod, and no restart survives it                     │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -465,8 +471,36 @@ Notes:
   It cannot be combined with `--print-config`, which writes no stanza:
   `code --remote ssh-remote+<alias>` resolves the alias through ssh, and ssh
   reads the config dir. A target no debugger fits is not a failure — the
-  excludes, the folder and the terminals are the rest of the seat, and
-  `debug-config` has already named every mechanism that said no.
+  excludes, the folder and the terminals are the rest of the seat.
+
+  `debug-config`'s own stderr is relayed line by line rather than summarised.
+  It is the only thing in the run that can see the target, so its narration is
+  the diagnosis — it names every mechanism that said no, and on success it also
+  carries the injection command, which the emitted debugpy configuration needs
+  and cannot state: the entry is written once the *prerequisites* are met, and
+  nothing is listening until that command is run.
+* **`--provision`** passes through to that `debug-config` run and is the answer
+  to the commonest empty-handed case: a Python target whose image has no
+  debugpy. The injection bootstrap runs inside the target's interpreter, so
+  debugpy has to be importable *there*; without it no configuration can be
+  emitted and `--open` writes no `launch.json` at all. With the flag the seat
+  installs one into the target with `uv` first, resolved for the *target's*
+  Python version rather than the seat's.
+
+  It is opt-in and stays so. It writes ~15 MB into the workload's writable
+  layer, on an ephemeral-storage budget the seat shares with the workload and
+  **cannot reserve** — an ephemeral container may not declare `resources`
+  (report 3.9); it needs egress from the pod, since uv resolves and downloads
+  from an index; and neither the install nor the injection survives a container
+  restart. Installing debugpy into the app image, or baking `debugpy.listen()`
+  into the app, is the durable answer.
+
+  Without `--open` it is **refused**, not ignored: there is no `debug-config`
+  run for it to change, and a flag that reads as a promise to mutate the
+  workload must not quietly decline to keep it. Where the target's rootfs is
+  read-only the write fails with `EROFS` — the mount flag lives in the target's
+  mount namespace — and the seat's own `podbench debug-config --provision-dest`
+  is what points it at a writable volume instead.
 
   Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
   mode is on the **workload's** ephemeral-storage budget: a server plus one

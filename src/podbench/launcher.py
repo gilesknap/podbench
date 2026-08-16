@@ -2587,7 +2587,11 @@ _PrintConfig = Annotated[
 
 
 def _editor_for(
-    open_editor: bool, print_config: bool, which: Callable[[str], str | None]
+    open_editor: bool,
+    print_config: bool,
+    which: Callable[[str], str | None],
+    *,
+    provision: bool = False,
 ) -> str | None:
     """The editor ``--open`` will drive, or ``None`` when it was not asked for.
 
@@ -2595,8 +2599,21 @@ def _editor_for(
     instead of writing it, and ``code --remote ssh-remote+<alias>`` can only
     reach a host **ssh** resolves — so the pair would land a seat, print a
     stanza and then fail on a host that exists nowhere.
+
+    ``--provision`` without ``--open`` is refused for a harsher reason than
+    "it does nothing": the flag reads as a promise to mutate the workload, and a
+    run that silently declines to keep it is one whose target the user now
+    believes has debugpy in it.
     """
     if not open_editor:
+        if provision:
+            raise EditorError(
+                "--provision only has an effect with --open: it is a "
+                "pass-through to the debug-config run that authors launch.json, "
+                "and without --open there is no such run. To install debugpy "
+                "into the target on its own, exec the seat's own verb: "
+                "`kubectl exec -c <seat> -- podbench debug-config --provision`."
+            )
         return None
     if print_config:
         raise EditorError(
@@ -2613,6 +2630,7 @@ def _open_editor(
     wiring: SshSeat,
     *,
     editor: str,
+    provision: bool,
     runner: Runner | None,
 ) -> None:
     """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
@@ -2642,6 +2660,7 @@ def _open_editor(
         # are paragraphs rather than lines.
         report=lambda note: print("\n".join(_paragraph(note, first="", indent="  "))),
         editor=editor,
+        provision=provision,
         runner=runner,
     )
 
@@ -2758,6 +2777,17 @@ def _build_app(
                 "`code` on PATH",
             ),
         ] = False,
+        provision: Annotated[
+            bool,
+            typer.Option(
+                "--provision",
+                help="with --open, let the seat install debugpy into the target "
+                "when the target cannot import one - otherwise a stock Python "
+                "workload gets no launch.json at all. Mutates the workload: "
+                "~15 MB of shared ephemeral storage, needs egress from the pod, "
+                "and no restart survives it",
+            ),
+        ] = False,
         timeout: Annotated[
             float,
             typer.Option(
@@ -2778,7 +2808,7 @@ def _build_app(
         # Same rule, and it costs more here: an ephemeral container's name is
         # permanent, so a run that was always going to end at "no `code`" must
         # not burn one on the way.
-        editor = _editor_for(open_editor, print_config, which)
+        editor = _editor_for(open_editor, print_config, which, provision=provision)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         chosen = image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
 
@@ -2819,7 +2849,9 @@ def _build_app(
         print(wiring.note)
         if editor is not None:
             print()
-            _open_editor(kube, session, wiring, editor=editor, runner=runner)
+            _open_editor(
+                kube, session, wiring, editor=editor, provision=provision, runner=runner
+            )
             if session.probes:
                 # Last, because it is the thing they need at the instant their
                 # attention moves to the GUI, and the report that carries the

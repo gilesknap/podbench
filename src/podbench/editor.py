@@ -21,6 +21,21 @@ extensions from the configurations ``debug-config`` emits in the seat — so the
 are read from the *emitted* configurations rather than assessed a second time
 from the laptop, which could not see the target's ``/proc`` anyway.
 
+That last point is also why the seat's ``stderr`` is relayed line by line rather
+than summarised. ``debug-config`` is the only thing here that can see the
+target, so its narration *is* the diagnosis — it ends "every mechanism that said
+no is named above", and a caller that keeps the last line alone points at output
+it has just thrown away. It carries the injection command too, which a written
+``launch.json`` needs and cannot state: the configuration is emitted once the
+prerequisites are met, and nothing is listening until that command is run.
+
+``--provision`` is a pass-through to the same verb and not a default, which is
+issue #45's decision: writing ~15 MB into the workload's writable layer, on a
+budget the seat shares and cannot reserve, is the larger of the two mutations a
+config author must be asked for — the other being the ptrace
+``flavour.injection_command`` prints rather than runs. What the flag fixes is
+that the remedy was previously unreachable from the laptop at all.
+
 The order below is load-bearing. ``.vscode/settings.json`` is written **before**
 the window opens, because the watcher and the indexer start walking the moment
 it does; opening first and configuring afterwards is the race whose loser is an
@@ -42,6 +57,7 @@ from typing import Any, cast
 
 from .kubectl import Kubectl, Runner, run_subprocess
 from .model import SEAT_HOME_VOLUME, ContainerRef, as_dict
+from .provision import CAVEATS
 from .vscode import (
     extensions_for,
     merge_extensions_json,
@@ -52,6 +68,7 @@ from .vscode import (
 __all__ = [
     "DEFAULT_EDITOR",
     "EditorError",
+    "PROVISION_FLAG",
     "open_seat",
     "remote_authority",
     "resolve_editor",
@@ -81,6 +98,16 @@ found`` — which arrives here as "printed no JSON", blaming the assessment for 
 command that never ran.
 """
 
+PROVISION_FLAG = "--provision"
+"""What ``--open --provision`` appends to :data:`DEBUG_CONFIG_ARGV`.
+
+Also the string the *unprovisioned* refusal is recognised by. ``debug-config``
+names this flag in its own remedy when debugpy is the blocker and does not name
+it for any other flavour — there is no ``--provision`` for a missing delve — so
+matching on it offers the pass-through exactly where it is the answer, without
+this side of the wire guessing the target's language a second time.
+"""
+
 _REMOTE_CLI_MARKERS = ("/remote-cli/", "/.vscode-server/", "/.vscode-server-insiders/")
 """What a ``code`` that is not the desktop one looks like on disk.
 
@@ -104,6 +131,29 @@ _ABSENT = 3
 Not 1: that is what ``cat`` itself exits with when it *found* the file and could
 not read it, which is the case this whole arrangement exists to tell apart. 2
 and 127 belong to ``sh``.
+"""
+
+_PROVISION_NOTICE = (
+    "--provision: the seat will install debugpy into the target if the target "
+    "cannot import one, since the injection bootstrap runs in the target's own "
+    "interpreter. " + "; ".join(CAVEATS)
+)
+"""Said before the exec, not after: the install is a uv resolve and download.
+
+The costs are :data:`podbench.provision.CAVEATS` itself rather than a retelling,
+so the sentence the laptop prints cannot drift from the one the seat prints.
+"""
+
+_PROVISION_REMEDY = (
+    "re-run with `--open --provision` to install it from the seat first. That "
+    "is opt-in because it mutates the workload - see the costs the seat named "
+    "above - and it is undone by any restart of the target container."
+)
+"""The pass-through, offered only where the seat itself named the flag.
+
+Issue #45 settled that provisioning is not implicit; what was missing is that
+the flag lived on the in-pod verb alone, so from a laptop the remedy could be
+read and not reached.
 """
 
 _STORAGE_NOTE = (
@@ -177,6 +227,7 @@ def open_seat(
     folder: str,
     report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
+    provision: bool = False,
     runner: Runner | None = None,
 ) -> None:
     """Configure ``folder`` in the seat, install what it needs, and open it.
@@ -195,6 +246,11 @@ def open_seat(
     no route to ``update.code.visualstudio.com`` is otherwise minutes of nothing
     at all, indistinguishable from a hang.
 
+    ``provision`` is handed straight to ``debug-config`` and is the only argument
+    here that changes the *target*: it installs debugpy into the workload when
+    the workload cannot import one. Off by default for issue #45's reason, given
+    in the module docstring.
+
     Anything that went wrong but left the seat usable is a line rather than an
     exception — a missing ``launch.json`` costs an F5, whereas the excludes and
     the folder are what keep the seat alive.
@@ -209,7 +265,7 @@ def open_seat(
             f"{SEAT_HOME_VOLUME}:<path>` is what moves it."
         )
     run = runner if runner is not None else run_subprocess
-    configurations = _configurations(kubectl, seat, report)
+    configurations = _configurations(kubectl, seat, report, provision=provision)
     extensions = extensions_for(configurations)
 
     base = f"{folder}/{VSCODE_DIR}"
@@ -281,20 +337,56 @@ def _detail(stderr: str) -> str:
     return lines[-1] if lines else "it said nothing"
 
 
+def _relay(stderr: str, report: Callable[[str], None]) -> bool:
+    """Pass the seat's own narration through, one line per call.
+
+    Per line rather than as one block because ``report`` is a paragraph
+    formatter on the launcher side: it re-wraps on whitespace, so a multi-line
+    note handed over whole comes back with its newlines gone — and one of these
+    notes is the two-line injection command, whose first line ends in a
+    continuation ``\\`` that only means anything at the end of a line.
+
+    Returns whether anything was relayed, which is what tells "the seat
+    explained itself and the answer was no" from "the seat never ran".
+    """
+    lines = [line.rstrip() for line in stderr.splitlines() if line.strip()]
+    for line in lines:
+        report(line)
+    return bool(lines)
+
+
 def _configurations(
-    kubectl: Kubectl, seat: ContainerRef, report: Callable[[str], None]
+    kubectl: Kubectl,
+    seat: ContainerRef,
+    report: Callable[[str], None],
+    *,
+    provision: bool = False,
 ) -> list[dict[str, Any]]:
     """What ``debug-config`` would write, asked for rather than recomputed.
 
     A target no debugger fits is not a failure of ``--open``: the folder, the
     excludes and the terminals are the rest of the seat, and every mechanism
-    that said no was already named on ``debug-config``'s stderr.
+    that said no was named on ``debug-config``'s stderr — which is relayed here
+    whether or not a configuration came back with it, since on success it also
+    carries the injection command an emitted debugpy entry needs before anything
+    is listening for it.
     """
-    result = kubectl.exec_(
-        seat.pod.name, list(DEBUG_CONFIG_ARGV), container=seat.container, check=False
-    )
+    argv = [*DEBUG_CONFIG_ARGV, *([PROVISION_FLAG] if provision else [])]
+    if provision:
+        report(_PROVISION_NOTICE)
+    result = kubectl.exec_(seat.pod.name, argv, container=seat.container, check=False)
+    relayed = _relay(result.stderr, report)
     if result.returncode != 0:
-        report(f"no launch.json: {_detail(result.stderr)}")
+        # The last line only when there was nothing to relay - a `podbench` the
+        # image does not resolve exits 127 with sh's message and no narration,
+        # and that message is the whole diagnosis.
+        report(
+            "no launch.json: nothing above could be turned into one"
+            if relayed
+            else f"no launch.json: {_detail(result.stderr)}"
+        )
+        if not provision and PROVISION_FLAG in result.stderr:
+            report(_PROVISION_REMEDY)
         return []
     document: Any
     try:

@@ -131,6 +131,38 @@ and drives `code` only; `cursor`, `codium` and `windsurf` take the same flags
 but have not been tried, and a flatpak VS Code cannot put `code` on the host
 PATH at all.
 
+### A stock Python workload gets no `launch.json` without `--provision`
+
+`--open` does not compute the debug configuration itself: it asks the seat, and
+`debug-config` is the only thing that can see the target. On a Python app whose
+image has no debugpy that ask *refuses*, because the injection bootstrap runs in
+the target's own interpreter and therefore needs debugpy importable **there**.
+You get the excludes, the folder and the alias, and no `launch.json` at all.
+
+`--provision` is the way through:
+
+```
+podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open --provision
+```
+
+The seat then installs debugpy into the target with `uv` before authoring the
+configuration. It is opt-in and stays that way: it writes ~15 MB into the
+workload's writable layer, on an ephemeral-storage budget the seat *shares with
+the workload and cannot reserve*; it needs egress from the pod, since uv
+downloads from an index; and no container restart survives it. Without `--open`
+it is refused rather than ignored — there is no configuration run for it to
+change.
+
+Baking `debugpy.listen()` into the app image is the durable answer, and the only
+one that survives a restart. `--provision` is for the pod that is already
+misbehaving.
+
+One thing it does **not** do: start the server. The configuration is emitted as
+soon as the prerequisites are met, and nothing is listening until the injection
+runs — ptracing the workload is not something authoring a `launch.json` may do
+on its own. `--open` relays the seat's own output, so the command to run is
+printed with the rest, along with every mechanism that said no.
+
 Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
 window, a devcontainer or a Codespace, `code` on the PATH is the *remote* CLI,
 which talks to the window you are already in: it would install the extensions
