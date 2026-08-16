@@ -439,6 +439,11 @@ def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | N
     :func:`_target_debugpy` and for the same reason: a walk of another
     container's filesystem is the OOM the vscode-in-a-seat skill warns about.
 
+    *One* library directory under a prefix is evidence; two are an ambiguity,
+    and answering one of them would be the guess this module refuses to make —
+    a ``sorted()`` pick puts ``python3.10`` ahead of ``python3.9`` on top of it,
+    so the wrong answer would not even have been the plausible one.
+
     >>> _python_version("/usr/local/bin/python3.12", [], Path("/nonexistent"))
     '3.12'
     >>> _python_version(None, ["python"], Path("/nonexistent")) is None
@@ -449,10 +454,13 @@ def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | N
         if match:
             return match.group(1)
     for prefix in _SEARCH_ROOTS:
-        for parent in sorted((root / prefix).glob("python3.*")):
+        found: list[str] = []
+        for parent in (root / prefix).glob("python3.*"):
             match = _PYTHON_VERSION.match(parent.name)
-            if match:
-                return match.group(1)
+            if match and match.group(1) not in found:
+                found.append(match.group(1))
+        if found:
+            return found[0] if len(found) == 1 else None
     return None
 
 

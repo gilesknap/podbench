@@ -89,12 +89,14 @@ no egress looks like a resolver error, a restart looks like the debugger simply
 stopping, and ephemeral-storage eviction takes the *workload* with it.
 """
 
-_UNKNOWN_VERSION = "<the target's X.Y>"
+_UNKNOWN_VERSION = "'<X.Y>'"
 """Stands in when the target's Python version could not be read.
 
 Left visible on purpose: guessing the seat's own version would produce a command
 that runs, installs the wrong wheel, and degrades pydevd to pure Python without
-a word.
+a word. Quoted because the whole line is printed as a paste: bare ``<X.Y>`` is
+an input redirection, and pasting it leaves an interactive shell sitting at a
+continuation prompt instead of showing uv rejecting the version.
 """
 
 _PROBE_NAME = ".podbench-provision-probe"

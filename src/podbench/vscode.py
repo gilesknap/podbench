@@ -91,7 +91,7 @@ from .gdbcmd import (
 from .kubectl import Runner, run_subprocess
 from .model import as_dict
 from .proc import DEFAULT_PROC
-from .provision import PROVISION_DEST, provision_debugpy
+from .provision import PROVISION_DEST, provision_debugpy, target_destination
 
 __all__ = [
     "ADAPTER_CPPDBG",
@@ -880,13 +880,26 @@ def _provision(
             "`debugpy.listen()` into the app image, or use `podbench dev`"
         )
         return False
-    if seat.debugpy_there is not None and seat.debugpy_helper:
+    if seat.debugpy_there == target_destination(target.pid, dest):
+        # This flag's own destination, so it is installed over rather than kept.
+        # Nothing in an installed tree records the X.Y uv resolved it for, and
+        # `_target_debugpy` checks this path first - so a copy made for the wrong
+        # version imports fine, shadows the target's real one, and drops pydevd
+        # to pure Python silently, which is the failure the whole module is
+        # shaped around. Refusing here would leave no way to correct it.
+        _warn(
+            f"--provision: {seat.debugpy_there} is this flag's own destination, "
+            "so it is installed over rather than kept - re-running is the only "
+            "way to correct a copy resolved for the wrong X.Y, and the tree "
+            "records no version to check it against"
+        )
+    elif seat.debugpy_there is not None and seat.debugpy_helper:
         _warn(
             f"--provision: the target can already import debugpy from "
             f"{seat.debugpy_there}, so nothing is installed"
         )
         return False
-    if seat.debugpy_there is not None:
+    elif seat.debugpy_there is not None:
         # Importable but incomplete, which is the one case worth writing over:
         # the injection would get as far as the dlopen and then fail on the
         # helper the target's own copy does not have.

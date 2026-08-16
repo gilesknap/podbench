@@ -951,6 +951,13 @@ explanation. Where the rootfs is read-only there is usually still a writable
 `emptyDir` or tmpfs in the pod — `--provision-dest` puts the copy there instead,
 and is also the extra path `debug-config` searches on a later run.
 
+At that destination "already installed" is not a refusal: an installed tree
+records no version, and `--provision-dest` is searched **first**, so a copy
+resolved for the wrong `X.Y` would otherwise shadow the target's own correct one
+for the pod's lifetime. Re-running installs over it. The target's own
+site-packages is never written over — only supplemented, when its copy is
+missing the architecture helper.
+
 Only **Observe** mode needs any of this. A `dev` pod relaunches the app as the
 seat's own child in this container, where debugpy is an ordinary workspace-venv
 dependency; Hotfix mounts the same PVC over the venv at the same path in both

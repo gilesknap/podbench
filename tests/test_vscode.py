@@ -739,3 +739,77 @@ def test_provision_says_no_in_dev_mode_rather_than_installing_anyway(
     )
     assert uv.argv == []
     assert "dev mode debugs a process in this container" in capsys.readouterr().err
+
+
+def test_provision_installs_over_its_own_previous_copy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An existing tree at this flag's own destination cannot be a refusal.
+
+    Nothing in an installed tree records the X.Y uv resolved it for, and
+    ``_target_debugpy`` checks this path first — so a copy made for the wrong
+    version imports fine, shadows the target's real one, and drops pydevd to
+    pure Python silently. Re-running has to be able to correct that.
+    """
+    proc, root = provision_seat(tmp_path)
+    write_debugpy(
+        proc / str(PID) / "root" / "opt" / "podbench-debugpy",
+        helpers=["attach_linux_amd64.so"],
+    )
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+    assert code == 0
+    assert uv.argv[:3] == ["uv", "pip", "install"]
+    assert "is this flag's own destination" in capsys.readouterr().err
+
+
+def test_the_targets_own_complete_copy_is_never_written_over(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The app image's site-packages is not podbench's to install into.
+
+    It is complete, the injection would load it as it stands, and 15 MB beside
+    it buys nothing — so this one really is a refusal.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert code == 0
+    assert uv.argv == []
+    assert "can already import debugpy" in capsys.readouterr().err
+
+
+def test_an_incomplete_target_copy_gets_a_complete_one_beside_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Importable but missing the helper is the case worth writing over.
+
+    The injection would get as far as the dlopen and then fail on a helper the
+    target's own copy does not have, so a complete tree goes in at the
+    provisioned path and takes over ``PYTHONPATH`` from there.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, target_helpers=[])
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "a complete copy goes in beside it" in captured.err
+    assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in captured.err

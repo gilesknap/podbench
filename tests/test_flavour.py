@@ -107,12 +107,17 @@ def python_proc(
 
 
 def write_debugpy(root: Path, *, helpers: list[str]) -> Path:
-    """A directory shaped like an installed debugpy, with chosen helpers."""
+    """A directory shaped like an installed debugpy, with chosen helpers.
+
+    Idempotent, because ``--provision`` installs over its own destination and a
+    real ``uv pip install --target`` is quite happy to be pointed at a directory
+    that already has a tree in it.
+    """
     package = root / "debugpy"
-    package.mkdir(parents=True)
+    package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text("")
     helper_dir = package / "_vendored" / "pydevd" / "pydevd_attach_to_process"
-    helper_dir.mkdir(parents=True)
+    helper_dir.mkdir(parents=True, exist_ok=True)
     for name in helpers:
         (helper_dir / name).write_bytes(b"")
     return root
@@ -386,7 +391,27 @@ def test_an_unversioned_python_is_admitted_rather_than_guessed(
         debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
     )
     remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
-    assert "--python-version <the target's X.Y>" in remedy
+    # And the gap is shell-safe: the whole line is printed as a paste, and a
+    # bare <X.Y> is an input redirection that hangs an interactive shell on an
+    # unterminated quote instead of showing uv rejecting the version.
+    assert "--python-version '<X.Y>'" in remedy
+
+
+def test_two_library_directories_are_an_ambiguity_not_a_measurement(
+    tmp_path: Path,
+) -> None:
+    """A rootfs carrying 3.9 and 3.10 gets the gap, not the later of the two.
+
+    Sorting picks ``python3.10`` over ``python3.9``, so the guess would not even
+    have been the plausible one - and either way an installed library directory
+    is not evidence about the *running* interpreter once there are two of them.
+    """
+    proc = make_proc(tmp_path, exe="/usr/local/bin/python", cmdline="python app.py")
+    for version in ("3.9", "3.10"):
+        (proc / str(PID) / "root" / "usr" / "lib" / f"python{version}").mkdir(
+            parents=True
+        )
+    assert inspect_target(PID, proc=proc).python_version is None
 
 
 def test_the_provisioned_copy_is_found_by_one_more_fixed_path(
