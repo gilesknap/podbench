@@ -84,12 +84,17 @@ jobs:
       # letting PATH pick is deliberate: the ENV PATH puts /app/.venv/bin first,
       # so a bare `podbench` would test the venv and leave the shim - the file
       # every ssh session actually resolves - untested.
+      #
+      # `podbench` is in the `command -v` list for the other half of that: a
+      # bare name is exactly what `CAPREPORT_ARGV` and `AGENT_COMMAND` send over
+      # `kubectl exec`, which inherits the ENV PATH, so a Dockerfile that lost
+      # that line would break both with every other check still green.
       - name: Test in-pod verbs are present and self-report
         run: |
           set -euo pipefail
           docker run --rm --entrypoint /usr/local/bin/podbench tag_for_testing capreport --json
           docker run --rm --entrypoint /usr/local/bin/podbench tag_for_testing pids --help
-          docker run --rm --entrypoint sh tag_for_testing -c 'command -v gdb sshd uv git'
+          docker run --rm --entrypoint sh tag_for_testing -c 'command -v podbench gdb sshd uv git'
 
       # Pushed by digest and left untagged: a per-architecture tag would be a
       # published artefact people could pull by accident. The merge job below is
