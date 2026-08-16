@@ -1423,6 +1423,95 @@ def test_ssh_config_subcommand_regenerates_for_an_existing_session(
     assert cluster.added == []
 
 
+def stripped_root_seat() -> FakeCluster:
+    """A running root seat that reads back as the degraded rung.
+
+    The shape a mutating admission webhook leaves behind when it drops
+    ``capabilities.add`` from a full-rung seat: ``runAsUser: 0`` and nothing
+    added, which is what :func:`podbench.launcher.rung_of_spec` calls degraded.
+    A reconnect sees only the spec, so this is the seat it has to describe —
+    and it is a *root* one, whose agent chose the root layout from
+    ``os.geteuid()`` and whose login name NSS resolves as ``root``.
+    """
+    return FakeCluster(
+        pod_document(
+            uid=0,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 0}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        login_user="root",
+    )
+
+
+def test_a_root_seat_read_back_as_degraded_keeps_the_root_sshd_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured at DLS on 2026-08-16, and silent until an editor said so.
+
+    The uid decides the layout, not the rung: ``session.uid or _UNPINNED_UID``
+    read a seat pinned to uid 0 as one that pinned nothing, so the reconnect
+    named ``/tmp/podbench-home/.podbench/sshd_config`` in a container whose
+    agent had written ``/etc/podbench/sshd_config``. The landing attach got it
+    right — the ladder remembers the rung it asked for — so only the *second*
+    session broke, with ``No such file or directory`` arriving on the ssh
+    client's stderr as a Remote-SSH resolver error.
+    """
+    cluster = stripped_root_seat()
+
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--print-config",
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "-f /etc/podbench/sshd_config" in out
+    assert "/tmp/podbench-home" not in out, "the non-root home of a seat that is root"
+
+
+def test_the_login_name_is_the_one_the_seat_answered_not_the_rung_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The second half of the same reconnect, and the failure behind the fix.
+
+    The rung's default login name for anything but the full rung is
+    ``podbench``, which the agent registers only for a uid NSS cannot already
+    resolve — and uid 0 always resolves, as ``root``. So a root seat read back
+    as degraded got a stanza naming an account that does not exist, and sshd
+    refuses an unresolvable login before it looks at a key. The seat was asked
+    the question all along; the answer just went unused.
+    """
+    cluster = stripped_root_seat()
+
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--print-config",
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    assert "User root" in capsys.readouterr().out
+
+
 def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

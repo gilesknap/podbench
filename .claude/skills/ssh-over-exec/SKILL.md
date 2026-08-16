@@ -108,6 +108,26 @@ is not the problem. `ssh-keygen` cannot even mint a host key (`No user exists fo
 See the `ephemeral-containers` skill for the two mechanisms that supply an identity and
 why they differ by container kind.
 
+## The seat's uid picks the layout, and the rung is only a guess at it
+
+`SshdLayout.for_uid` puts root's config in `/etc/podbench/sshd_config` and everyone
+else's under `$HOME/.podbench/`. The agent picks with `os.geteuid()`; the launcher has to
+*predict* the same answer, because the ProxyCommand names the file by absolute path.
+Predicting from the **rung** is what broke at DLS on 2026-08-16: `rung_of_spec` reads the
+rung back off the container, a mutating admission webhook there had stripped
+`capabilities.add`, and a root seat therefore read back as the degraded rung —
+`runAsUser: 0`, nothing added. `session.uid or _UNPINNED_UID` then read that pinned 0 as
+"nothing pinned", and the stanza pointed at a non-root home the agent had never used.
+
+Two things made it hard to see. The *landing* attach was fine — the ladder remembers the
+rung it asked for — so only a reconnect broke, which reads as "it worked yesterday". And
+the ProxyCommand's error arrives on the ssh client's stderr, which VS Code reports as a
+resolver error with no path in the summary; you have to open the Remote-SSH log.
+
+Same trap for the login name: `podbench` is registered only for a uid NSS cannot already
+resolve, so a root seat is `root` and nothing else. Both now come from what the seat
+itself is — the uid pinned on it, and its own answer to `--print-login-user`.
+
 ## Host keys
 
 Fresh keys per attach would mean either `StrictHostKeyChecking no` — teaching users to
