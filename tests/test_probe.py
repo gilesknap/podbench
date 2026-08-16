@@ -331,7 +331,11 @@ def test_yama_denies_same_uid(tmp_path: Path) -> None:
 
 
 def test_uid_mismatch(tmp_path: Path) -> None:
-    """Config (c): root without the capability — 3/6 reads, credential check."""
+    """Config (c): root without the capability — 3/6 reads, credential check.
+
+    Those three reads are `cmdline`, `status` and `fd`, which need no
+    permission at all, so this is not read-only inspection: it is launch-only.
+    """
     report = probe(
         1,
         proc=make_proc(
@@ -343,10 +347,66 @@ def test_uid_mismatch(tmp_path: Path) -> None:
         ),
         attacher=attacher(),
     )
-    assert report.verdict is Verdict.READ_ONLY
+    assert report.verdict is Verdict.LAUNCH_ONLY
     assert report.blocker is Blocker.UID_MISMATCH
     assert report.proc_reads["maps"] is False
     assert report.proc_reads["status"] is True
+    assert report.reads_ok is False
+
+
+DIAMOND_READS = {
+    "root": False,
+    "maps": False,
+    "environ": False,
+    "cmdline": True,
+    "status": True,
+    "fd": True,
+}
+"""The read matrix measured on b01-1-beamline/b01-1-blueapi-0, 2026-08-16.
+
+Pinned verbatim because it is the shape that falsifies the old rule: `any` over
+these six is True, and every read that makes it True needs no permission. The
+seat that produced it was told it had "read-only inspect (/proc/<pid>/root,
+maps, environ)" (issue #51).
+"""
+
+
+def diamond_proc(tmp_path: Path) -> Path:
+    """A /proc matching :data:`DIAMOND_READS` — ptrace-gated reads gone, the
+    world-readable ones intact."""
+    proc = make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=1)
+    for name in ("maps", "environ"):
+        (proc / "1" / name).unlink()
+    (proc / "1" / "root" / "etc").rmdir()
+    (proc / "1" / "root").rmdir()
+    return proc
+
+
+def test_the_diamond_shape_is_launch_only_not_read_only(tmp_path: Path) -> None:
+    """The regression: three denied reads must outrank three free ones."""
+    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+
+    assert report.proc_reads == DIAMOND_READS
+    assert report.child_attach_ok is True
+    assert report.target_attach_ok is False
+    assert report.reads_ok is False
+    assert report.verdict is Verdict.LAUNCH_ONLY
+    assert report.verdict.value == 15
+    # The useful half of the answer, which a boolean cannot carry.
+    assert report.reads_summary == (
+        "cmdline, status and fd only; root, maps and environ denied"
+    )
+
+
+def test_the_diamond_shape_says_what_still_works(tmp_path: Path) -> None:
+    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+    text = format_report(report, False)
+    # "3/6 ok" on its own reads as half a loaf; the line beside it says which
+    # half, and that the half that landed is the free one.
+    assert "3/6 ok" in text
+    assert "read-only inspect" in text
+    assert "cmdline, status and fd only" in text
+    assert "podbench dbg --launch" in text
 
 
 def test_bounding_only_capability_is_flagged(tmp_path: Path) -> None:
@@ -544,8 +604,8 @@ def test_structural_classification(
     assert blocker is expected
 
 
-def test_no_reads_at_all_is_verdict_none() -> None:
-    verdict, blocker, _ = derive_verdict(
+def test_no_reads_but_our_own_child_attaches_is_launch_only() -> None:
+    verdict, blocker, notes = derive_verdict(
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
@@ -558,8 +618,46 @@ def test_no_reads_at_all_is_verdict_none() -> None:
         target_attach=EPERM,
         proc_reads=dict.fromkeys(("root", "maps", "environ"), False),
     )
-    assert verdict is Verdict.NONE
+    assert verdict is Verdict.LAUNCH_ONLY
     assert blocker is Blocker.UID_MISMATCH
+    assert any("podbench dbg --launch" in note for note in notes)
+
+
+def test_no_reads_and_no_ptrace_at_all_is_verdict_none() -> None:
+    """Launch-only needs the scratch attach: gdb traces an inferior it forked,
+    which is precisely the attach that failed here."""
+    verdict, blocker, _ = derive_verdict(
+        cap_sys_ptrace=False,
+        yama=3,
+        seccomp=0,
+        apparmor_self="unconfined",
+        apparmor_target="unconfined",
+        self_uid=0,
+        target_uid=1000,
+        target_pid=1,
+        child=EPERM,
+        target_attach=EPERM,
+        proc_reads=dict.fromkeys(("root", "maps", "environ"), False),
+    )
+    assert verdict is Verdict.NONE
+    assert blocker is Blocker.YAMA_SCOPE
+
+
+def test_an_unmeasured_scratch_attach_does_not_claim_launch_only() -> None:
+    verdict, _, _ = derive_verdict(
+        cap_sys_ptrace=False,
+        yama=1,
+        seccomp=0,
+        apparmor_self="unconfined",
+        apparmor_target="unconfined",
+        self_uid=0,
+        target_uid=1000,
+        target_pid=1,
+        child=AttachOutcome.skip("no libc"),
+        target_attach=AttachOutcome.skip("no libc"),
+        proc_reads=dict.fromkeys(("root", "maps", "environ"), False),
+    )
+    assert verdict is Verdict.NONE
 
 
 # ------------------------------------------------------- the ptrace backend
@@ -671,6 +769,9 @@ JSON_KEYS = {
     "child_attach_ok",
     "target_attach_ok",
     "proc_reads",
+    # The corrected boolean, so a shell branching on --json need not know which
+    # three of the six reads ptrace gates (issue #51).
+    "reads_ok",
     "notes",
     # What the image ships, beside what the kernel allows: a seat that may
     # attach but has no adapter for the target's language fails at F5 with an

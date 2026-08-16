@@ -510,7 +510,7 @@ mechanism and points at the alternative:
 ```
 podbench dbg: cannot attach to pid 1: yama-scope
   Yama's ptrace_scope forbids attaching to a non-descendant...
-  verdict: read-only debugging available
+  verdict: read-only inspection of the target; no live attach
   the target's rootfs, maps and environ are still readable, so `podbench pids`
   and read-only inspection work.
   ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. gdb forks the
@@ -524,6 +524,19 @@ makes gdb a **sibling**, which Yama denies at `ptrace_scope=1`. A sibling that
 called `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` is attachable with zero
 capabilities. It is a one-line, capability-free, node-change-free opt-in for a
 program you control.
+
+On a pod where the target's own `/proc` is shut as well — the **launch-only**
+verdict — the consolation line says *that* instead, because offering a sysroot
+that will not open costs a second afternoon:
+
+```
+  verdict: launch-only: `podbench dbg --launch` works; the target is closed
+  the target's own /proc is closed too (cmdline, status and fd only; root, maps
+  and environ denied), so a sysroot, `environ` or `maps` read will fail as well.
+```
+
+`--launch` is unaffected by any of it: gdb forks the inferior and traces its own
+descendant, which no policy in play here refuses.
 
 ## Gotchas
 

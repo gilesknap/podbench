@@ -710,6 +710,7 @@ automatically after every attach; run it yourself when something changes.
 |---|---|
 | `0` | live attach available |
 | `10` | read-only debugging available (target rootfs, `maps`, `environ`; gdb-launch works) |
+| `15` | launch-only: nothing of the target is readable, but `podbench dbg --launch` works |
 | `20` | neither; the seat itself still works |
 
 It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
@@ -718,6 +719,24 @@ scratch `PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a
 failure there is structural) and a live attach on the target; then a six-path
 `/proc` read matrix. Yama is a **node-level** knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.
+
+Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
+`PTRACE_MODE_READ`; `cmdline`, `status` and `fd` need no permission at all and are
+therefore readable on a pod where nothing else is, so they are reported and never
+counted as evidence. The JSON form carries both — the full matrix as `proc_reads`,
+and the decision as `reads_ok`:
+
+```
+$ capreport --json | jq '{verdict, reads_ok, proc_reads}'
+{
+  "verdict": "launch_only",
+  "reads_ok": false,
+  "proc_reads": {
+    "cmdline": true, "status": true, "fd": true,
+    "root": false, "maps": false, "environ": false
+  }
+}
+```
 
 A **DEBUGGERS** block sits beside the verdict, listing what the image actually
 ships — so what `debug-config` emits and what the seat can run cannot drift

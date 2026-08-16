@@ -409,6 +409,34 @@ def test_dbg_names_the_blocker_and_offers_launch(
     assert "PR_SET_PTRACER" in err
 
 
+def test_dbg_does_not_offer_a_sysroot_it_cannot_open(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On the launch-only rung the read-only consolation is itself denied.
+
+    Printing "the rootfs, maps and environ are still readable" here sends the
+    reader to a second denial, which is the failure issue #51 describes.
+    """
+    proc = make_proc(tmp_path)
+    for name in ("maps", "environ"):
+        (proc / str(TARGET_PID) / name).unlink()
+    (proc / str(TARGET_PID) / "root").rmdir()
+
+    code = dbg_main(
+        [str(TARGET_PID)],
+        proc=proc,
+        attacher=SkippedAttacher("no ptrace here"),
+        runner=RecordingRunner(),
+    )
+    assert code == Verdict.NONE.value, (
+        "nothing was measured, so launch-only cannot be claimed either"
+    )
+    err = capsys.readouterr().err
+    assert "still readable" not in err
+    assert "cmdline, status and fd only" in err
+    assert "--launch" in err
+
+
 def test_dbg_launch_never_probes_or_attaches(tmp_path: Path) -> None:
     proc = make_proc(tmp_path)
     runner = RecordingRunner()

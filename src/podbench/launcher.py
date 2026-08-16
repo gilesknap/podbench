@@ -1225,6 +1225,18 @@ class Feature:
     seat itself."""
 
 
+READS_FEATURE = "read-only inspect (/proc/<pid>/root, maps, environ)"
+"""Named once, because the label is a promise about three specific paths and
+the tick beside it is now decided by reading exactly those three."""
+
+LAUNCH_FEATURE = "debug launched processes (podbench dbg --launch ./prog)"
+"""The rung a denied pod actually keeps, given a line of its own.
+
+It used to be a clause inside the exec-seat line, which claimed it
+unconditionally — and it is not unconditional: it needs ptrace(2) to work at
+all, which is what the scratch attach measures (report 3.12)."""
+
+
 def features(session: Session) -> tuple[Feature, ...]:
     """What the landed seat supports, naming the blocker for what it does not.
 
@@ -1242,9 +1254,8 @@ def features(session: Session) -> tuple[Feature, ...]:
         unknown = "capreport did not run, so this was not measured"
         return (
             Feature("live attach (gdb -p <pid>)", False, unknown, note=deadline),
-            Feature(
-                "read-only inspect (/proc/<pid>/root, maps, environ)", False, unknown
-            ),
+            Feature(READS_FEATURE, False, unknown),
+            Feature(LAUNCH_FEATURE, False, unknown),
             _iterate_feature(),
             *_seat_features(session),
         )
@@ -1256,9 +1267,29 @@ def features(session: Session) -> tuple[Feature, ...]:
             note=deadline,
         ),
         Feature(
-            "read-only inspect (/proc/<pid>/root, maps, environ)",
-            report.verdict in (Verdict.LIVE_ATTACH, Verdict.READ_ONLY),
-            report.blocker.explanation,
+            READS_FEATURE,
+            # From the reads themselves, never from the verdict: this label
+            # names three specific paths, and deciding it from a predicate that
+            # consults none of them is how a seat that could read none of them
+            # came to tick it (issue #51).
+            report.reads_ok,
+            # Not the blocker's explanation: that paragraph is already printed
+            # against live attach, and a report that repeats itself is one
+            # people stop reading.
+            "the three paths this line names take PTRACE_MODE_READ, which the "
+            "mechanism that refused attach gates too - see the blocker below",
+            # Printed whether or not the box is ticked, so the label and the
+            # evidence cannot drift apart again.
+            note=report.reads_summary,
+        ),
+        Feature(
+            LAUNCH_FEATURE,
+            report.can_debug_launched,
+            "the seat could not ptrace even a child it forked itself, so "
+            "ptrace(2) is unusable here and gdb cannot trace an inferior it "
+            "starts either"
+            if report.child_attach_ok is False
+            else "the scratch attach was not measured, so this is not claimed",
         ),
         _iterate_feature(),
         *_seat_features(session),
@@ -1288,10 +1319,9 @@ def _seat_features(session: Session) -> tuple[Feature, Feature]:
     )
     return (
         ssh_seat,
-        Feature(
-            "exec seat (kubectl exec -- podbench capreport, pids, dbg --launch)",
-            True,
-        ),
+        # `dbg --launch` used to be listed here, under a tick that is always
+        # true. Whether it works is measured, and it has its own line now.
+        Feature("exec seat (kubectl exec -- podbench capreport, pids, dbg)", True),
     )
 
 

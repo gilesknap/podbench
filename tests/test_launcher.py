@@ -1067,10 +1067,11 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert report.verdict is Verdict.READ_ONLY
     assert report.blocker is Blocker.YAMA_SCOPE
 
-    live, read_only, iterate, ssh_seat, exec_seat = features(session)
+    live, read_only, launch, iterate, ssh_seat, exec_seat = features(session)
     assert not live.available
     assert "Yama" in live.reason
     assert read_only.available
+    assert launch.available
     assert not iterate.available
     assert ssh_seat.available
     assert exec_seat.available
@@ -1079,6 +1080,106 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert "ptrace_scope" in text
     assert "node02" in text
     assert "OOM-kill" in text, "the shared-limits warning is not optional"
+
+
+DIAMOND_READS = {
+    "root": False,
+    "maps": False,
+    "environ": False,
+    "cmdline": True,
+    "status": True,
+    "fd": True,
+}
+"""The matrix measured on b01-1-beamline/b01-1-blueapi-0, 2026-08-16 (issue #51).
+
+Pinned here as well as in ``tests/test_probe.py`` because the two halves fail
+this differently: the probe used to *derive* the wrong verdict from it, and the
+launcher used to *ignore* it and tick a box naming the three reads it says are
+gone.
+"""
+
+
+def test_the_read_only_tick_comes_from_the_reads_it_names() -> None:
+    """A seat that can read none of `root`, `maps` and `environ` must not be
+    told it can inspect them — even by an image whose verdict says read_only.
+
+    The launcher recomputes rather than trusting the verdict, so it corrects an
+    older image instead of repeating its overclaim.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="read_only",
+            exit_code=10,
+            blocker="yama-scope",
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            child_attach_ok=True,
+            target_attach_ok=False,
+            proc_reads=DIAMOND_READS,
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    _live, read_only, launch, *_rest = features(session)
+    assert not read_only.available
+    assert launch.available
+
+    text = format_session(session)
+    assert "[ ] read-only inspect" in text
+    assert "[x] debug launched processes" in text
+    # The evidence travels with the tick, so the two cannot drift apart again.
+    assert "cmdline, status and fd only; root, maps and environ denied" in text
+
+
+def test_a_launch_only_verdict_survives_the_json_round_trip() -> None:
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="launch_only",
+            exit_code=15,
+            blocker="yama-scope",
+            summary=Verdict.LAUNCH_ONLY.summary,
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            child_attach_ok=True,
+            target_attach_ok=False,
+            proc_reads=DIAMOND_READS,
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+    report = session.report
+
+    assert report is not None
+    assert report.verdict is Verdict.LAUNCH_ONLY
+    assert "podbench dbg --launch" in format_session(session)
+
+
+def test_a_seat_that_cannot_ptrace_at_all_does_not_claim_gdb_launch() -> None:
+    """`dbg --launch` used to ride along on the exec-seat tick, which is always
+    true. gdb traces an inferior it forked, and here that forked attach failed."""
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="none",
+            exit_code=20,
+            blocker="seccomp",
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            child_attach_ok=False,
+            target_attach_ok=False,
+            proc_reads=dict.fromkeys(DIAMOND_READS, False),
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    _live, read_only, launch, *_rest = features(session)
+    assert not read_only.available
+    assert not launch.available
+    assert "forked itself" in launch.reason
 
 
 PROBES: dict[str, Any] = {
@@ -2001,9 +2102,10 @@ def test_features_without_a_report_claim_nothing() -> None:
         rung=Rung.SEAT,
         reused=False,
     )
-    live, read_only, _iterate, ssh_seat, exec_seat = features(session)
+    live, read_only, launch, _iterate, ssh_seat, exec_seat = features(session)
     assert not live.available
     assert not read_only.available
+    assert not launch.available
     # The ssh half is not claimed either: nothing asked the seat whether sshd
     # can resolve a login name for the uid it ended up running as.
     assert not ssh_seat.available

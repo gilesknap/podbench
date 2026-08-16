@@ -260,6 +260,14 @@ def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
             "  the target's rootfs, maps and environ are still readable, so "
             "`podbench pids` and read-only inspection work."
         )
+    elif report.proc_reads:
+        # Keyed on the matrix, not on the verdict: saying only "attach is
+        # denied" leaves the reader to try the sysroot next and lose the
+        # afternoon to a second denial (issue #51).
+        lines.append(
+            f"  the target's own /proc is closed too ({report.reads_summary}), "
+            "so a sysroot, `environ` or `maps` read will fail as well."
+        )
     lines.append(
         "  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. "
         "gdb forks the inferior itself, which needs no capability and is not "

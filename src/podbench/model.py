@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -19,6 +20,8 @@ __all__ = [
     "DEFAULT_IMAGE",
     "FLOATING_TAG",
     "IMAGE_REPOSITORY",
+    "PTRACE_READ_PATHS",
+    "WORLD_READ_PATHS",
     "SEAT_GROUP_KEY",
     "SEAT_HOME_PATH",
     "SEAT_HOME_VOLUME",
@@ -34,7 +37,9 @@ __all__ = [
     "Rung",
     "Verdict",
     "as_dict",
+    "describe_reads",
     "image_tag_for",
+    "ptrace_reads_ok",
 ]
 
 IMAGE_REPOSITORY = "ghcr.io/gilesknap/podbench"
@@ -169,6 +174,92 @@ agreement, so it lives with the rest of them.
 """
 
 
+PTRACE_READ_PATHS = ("root", "maps", "environ")
+"""The ``/proc/<pid>`` reads that are actually gated by ``PTRACE_MODE_READ``.
+
+Report 3.11 measured the split, and it is the whole of what the degraded rung
+buys: these three (with ``exe`` and ``cwd``) survive at the target's own uid
+and are lost at any other, while :data:`WORLD_READ_PATHS` are readable by
+anyone sharing the PID namespace.
+
+So only these three may decide whether read-only inspection is available. A
+verdict taken from all six reads is taken mostly from constants — it was true
+on a Diamond pod that could read none of these (issue #51), which is the
+overclaim this split exists to make impossible.
+"""
+
+WORLD_READ_PATHS = ("cmdline", "status", "fd")
+"""Reads that need no ptrace permission at all, so they prove nothing.
+
+Kept named rather than implied: they are still worth *reporting* — "cmdline and
+status only" is a usable answer — and only worthless as evidence of capability.
+"""
+
+
+def ptrace_reads_ok(proc_reads: Mapping[str, bool]) -> bool:
+    """Whether read-only inspection of a target actually works.
+
+    Every ptrace-gated read has to have landed, because the one claim made on
+    the strength of this names all three of them, and a partial tick sends
+    someone to a sysroot that will not open. Reads that need no permission are
+    ignored entirely: see :data:`PTRACE_READ_PATHS`.
+
+    >>> ptrace_reads_ok(dict.fromkeys(PTRACE_READ_PATHS, True))
+    True
+    >>> ptrace_reads_ok({"cmdline": True, "status": True, "root": False})
+    False
+    >>> ptrace_reads_ok({"cmdline": True, "status": True})
+    False
+    """
+    # An unmeasured matrix is not a yes: `all` over an empty set is True, and
+    # that would tick the box for a probe that never ran.
+    gated = [proc_reads[name] for name in PTRACE_READ_PATHS if name in proc_reads]
+    return bool(gated) and all(gated)
+
+
+def describe_reads(proc_reads: Mapping[str, bool]) -> str:
+    """Say which ``/proc`` reads landed, in one line, without overclaiming.
+
+    A bare boolean cannot express the Diamond shape — the ptrace-gated reads
+    gone, the world-readable ones intact — and that is exactly the case where
+    the user needs to know which half they still have.
+
+    >>> describe_reads(dict.fromkeys(PTRACE_READ_PATHS, True))
+    'root, maps and environ readable'
+    >>> diamond = dict.fromkeys(PTRACE_READ_PATHS, False)
+    >>> diamond.update(dict.fromkeys(WORLD_READ_PATHS, True))
+    >>> describe_reads(diamond)
+    'cmdline, status and fd only; root, maps and environ denied'
+    >>> describe_reads({})
+    'no /proc reads were measured'
+    """
+    if not proc_reads:
+        return "no /proc reads were measured"
+    # A fixed order, not the mapping's: capreport emits the matrix in probe
+    # order and `--json` re-sorts it alphabetically on the way to the launcher,
+    # so the two halves would otherwise word the same measurement differently.
+    ordered = [
+        name for name in (*PTRACE_READ_PATHS, *WORLD_READ_PATHS) if name in proc_reads
+    ]
+    ordered += [name for name in proc_reads if name not in ordered]
+    readable = [name for name in ordered if proc_reads[name]]
+    denied = [name for name in ordered if not proc_reads[name]]
+    if not readable:
+        return f"{_names(denied)} all denied"
+    if not denied:
+        return f"{_names(readable)} readable"
+    gated = [name for name in readable if name in PTRACE_READ_PATHS]
+    kept = "readable" if gated else "only"
+    return f"{_names(readable)} {kept}; {_names(denied)} denied"
+
+
+def _names(names: Sequence[str]) -> str:
+    """``a, b and c`` — the report is read by people, not parsed."""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
 def as_dict(value: Any) -> dict[str, Any]:
     """Coerce a value out of decoded API-server JSON into a mapping.
 
@@ -199,8 +290,20 @@ class Verdict(enum.Enum):
 
     READ_ONLY = 10
     """The target's memory is off limits, but its filesystem, maps and
-    environment can be read, and processes launched from the debug container
-    can be debugged normally."""
+    environment can be read — every path in :data:`PTRACE_READ_PATHS`."""
+
+    LAUNCH_ONLY = 15
+    """Nothing of the target can be read, but the seat can still debug
+    processes it starts itself.
+
+    The rung between the other two, and the one a real cluster lands on: a
+    Diamond production pod reported ``child_attach_ok`` with ``root``, ``maps``
+    and ``environ`` all denied (issue #51). Calling that read-only sends someone
+    to a sysroot that will not open; calling it nothing hides the inner loop
+    that does work, since tracing your own descendants needs no capability and
+    no Yama exemption (report 3.12). Its value sits between them because the
+    codes are ordered by how much is possible.
+    """
 
     NONE = 20
     """Neither attach nor inspection of the target is available. The seat
@@ -211,7 +314,10 @@ class Verdict(enum.Enum):
         """A one-line description suitable for a session banner."""
         return {
             Verdict.LIVE_ATTACH: "live attach available",
-            Verdict.READ_ONLY: "read-only inspection; debug launched processes instead",
+            Verdict.READ_ONLY: "read-only inspection of the target; no live attach",
+            Verdict.LAUNCH_ONLY: (
+                "launch-only: `podbench dbg --launch` works; the target is closed"
+            ),
             Verdict.NONE: "no access to the target process",
         }[self]
 
@@ -401,3 +507,42 @@ class CapabilityReport:
     def can_attach(self) -> bool:
         """Whether gdb can attach to the workload's own processes."""
         return self.verdict is Verdict.LIVE_ATTACH
+
+    @property
+    def ptrace_reads(self) -> dict[str, bool]:
+        """Only the measured reads that :data:`PTRACE_READ_PATHS` names.
+
+        A launcher may be a version behind the image it ran, so this takes the
+        intersection rather than assuming the matrix has every key.
+        """
+        return {
+            name: self.proc_reads[name]
+            for name in PTRACE_READ_PATHS
+            if name in self.proc_reads
+        }
+
+    @property
+    def reads_ok(self) -> bool:
+        """Whether read-only inspection of the target actually works.
+
+        The launcher's tick and the probe's verdict must not be able to
+        disagree, so both go through :func:`ptrace_reads_ok` on the same
+        measurement.
+        """
+        return ptrace_reads_ok(self.proc_reads)
+
+    @property
+    def reads_summary(self) -> str:
+        """The read matrix in one line, for a report that must show its work."""
+        return describe_reads(self.proc_reads)
+
+    @property
+    def can_debug_launched(self) -> bool:
+        """Whether the seat can debug a process it starts itself.
+
+        Measured, and by the one attach that no policy may refuse: Yama and the
+        credential check both always permit a tracer's own descendant, so a
+        scratch attach that failed means ptrace(2) is unusable here and
+        ``gdb ./prog`` — which traces a child of its own — cannot work either.
+        """
+        return self.child_attach_ok is True

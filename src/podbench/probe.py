@@ -15,7 +15,8 @@ rejecting the syscall, ``ptrace_scope=3``, or AppArmor. Only if that succeeds
 is a failure on the target informative about the target.
 
 Exit codes are :class:`~podbench.model.Verdict`'s values — 0 live attach,
-10 read-only, 20 nothing — so a shell can branch without parsing anything.
+10 read-only, 15 launch-only, 20 nothing — so a shell can branch without
+parsing anything.
 """
 
 from __future__ import annotations
@@ -33,7 +34,14 @@ import typer
 
 from .cli import new_app, run
 from .flavour import Debugger, format_inventory, inventory
-from .model import TARGET_CID_ENV, Blocker, CapabilityReport, Verdict
+from .model import (
+    TARGET_CID_ENV,
+    Blocker,
+    CapabilityReport,
+    Verdict,
+    describe_reads,
+    ptrace_reads_ok,
+)
 from .proc import (
     DEFAULT_PROC,
     apparmor_profile,
@@ -404,11 +412,18 @@ def derive_verdict(
 ) -> tuple[Verdict, Blocker, list[str]]:
     """Turn the measurements into a verdict and a named blocker."""
     notes: list[str] = []
-    reads_ok = any(proc_reads.values())
+    # Only the ptrace-gated reads may carry this. `any` over the whole matrix
+    # made the verdict very nearly unfalsifiable — `cmdline` and `status` need
+    # no permission at all, so they are true on a pod where nothing works, and
+    # a Diamond seat with root, maps and environ all denied was reported as
+    # read-only (issue #51).
+    reads_ok = ptrace_reads_ok(proc_reads)
 
     if not child.ok and not child.skipped:
         # Yama and the credential check both always permit our own child, so
-        # this cannot be a policy decision about the target.
+        # this cannot be a policy decision about the target. There is no
+        # launch-only fallback from here either: gdb traces an inferior it
+        # forked, which is the very attach that just failed.
         blocker, structural_notes = _classify_structural(
             seccomp=seccomp, yama=yama, apparmor_self=apparmor_self, child=child
         )
@@ -450,10 +465,24 @@ def derive_verdict(
 
     if reads_ok:
         notes.append(
-            "read-only debugging is still available: sysroot, maps, environ "
-            "and fd are readable, and gdb-launch needs no capability"
+            "read-only debugging is still available: "
+            f"{describe_reads(proc_reads)}, and gdb-launch needs no capability"
         )
         return Verdict.READ_ONLY, blocker, notes
+    if child.measured_ok:
+        # The rung the brief never named. Attach and the target's own /proc are
+        # both gone, but tracing a descendant is always permitted (report
+        # 3.12), so the inner loop the report tells us to design for is intact
+        # — and saying "nothing works" here would hide it.
+        notes.append(
+            "the target's own /proc is closed to this seat "
+            f"({describe_reads(proc_reads)}), so a sysroot, an environ read or "
+            "a maps read will fail too; what still works is debugging a "
+            "process the seat starts itself - `podbench dbg --launch ./prog` - "
+            "which "
+            "needs no capability"
+        )
+        return Verdict.LAUNCH_ONLY, blocker, notes
     return Verdict.NONE, blocker, notes
 
 
@@ -588,6 +617,12 @@ def _json_payload(
         "child_attach_ok": report.child_attach_ok,
         "target_attach_ok": report.target_attach_ok,
         "proc_reads": report.proc_reads,
+        # Derived, and emitted anyway, so a shell branching on `--json` gets the
+        # same answer as the verdict without re-deriving which of the six reads
+        # ptrace actually gates. The launcher deliberately does *not* read it:
+        # it recomputes from `proc_reads`, which is what lets a new launcher
+        # correct an older image's verdict.
+        "reads_ok": report.reads_ok,
         "notes": report.notes,
     }
 
@@ -625,6 +660,13 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
             for name, value in report.proc_reads.items()
         )
         kv("/proc reads", f"{ok}/{len(report.proc_reads)} ok - {detail}")
+        # The count alone reads as a score, and "3/6 ok" looks like half a loaf
+        # when it is the whole loaf missing: the three that survive a denial
+        # need no permission in the first place (issue #51).
+        kv(
+            "read-only inspect",
+            f"{_yn(report.reads_ok)} - {report.reads_summary}",
+        )
 
     lines.append("PROBES")
     kv("scratch attach (own child)", _attach_text(report.child_attach_ok))

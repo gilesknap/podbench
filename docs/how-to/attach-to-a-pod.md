@@ -148,7 +148,10 @@ supports
   [ ] live attach (gdb -p <pid>)
       CAP_SYS_PTRACE is not in this container's effective set...
   [x] read-only inspect (/proc/<pid>/root, maps, environ)
-  [x] seat (editor, shell, git)
+      root, maps and environ readable
+  [x] debug launched processes (podbench dbg --launch ./prog)
+  [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
+  [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
 ```
 
 The degraded rung is genuinely useful. It reads the target's rootfs, `maps`,
@@ -159,6 +162,34 @@ already-running process. See [Debug with gdb](debug-with-gdb.md).
 
 Two things it cannot do, so do not plan on them: `/proc/<pid>/mem` and
 `/proc/<pid>/syscall` use `PTRACE_MODE_ATTACH` and are denied.
+
+## When the reads are denied too
+
+The line under each tick is the measurement it was taken from, so the case above
+is distinguishable from this one at a glance:
+
+```
+supports
+  [ ] live attach (gdb -p <pid>)
+      denied by Yama: /proc/sys/kernel/yama/ptrace_scope forbids attaching...
+  [ ] read-only inspect (/proc/<pid>/root, maps, environ)
+      cmdline, status and fd only; root, maps and environ denied
+      the three paths this line names take PTRACE_MODE_READ, which the
+      mechanism that refused attach gates too - see the blocker below
+  [x] debug launched processes (podbench dbg --launch ./prog)
+measured
+  verdict     launch-only: `podbench dbg --launch` works; the target is closed
+```
+
+This is the **launch-only** rung, and it is a real one — a Diamond production pod
+lands on it. Nothing of the target opens: no sysroot, no `environ`, no `maps`.
+What still works is a program the seat starts *itself*, because tracing your own
+descendant needs no capability and no Yama exemption. So go straight to
+`podbench dbg --launch ./prog` and do not spend the afternoon on a sysroot.
+
+`cmdline`, `status` and `fd` staying readable is not a partial win: they need no
+permission at all, and are readable on any pod whatsoever. That is why the tick
+is decided by the three paths it names and nothing else.
 
 ## Making memory headroom first
 

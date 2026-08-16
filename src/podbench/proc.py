@@ -27,7 +27,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .model import TARGET_CID_ENV, ProcInfo
+from .model import (
+    PTRACE_READ_PATHS,
+    TARGET_CID_ENV,
+    WORLD_READ_PATHS,
+    ProcInfo,
+)
 
 __all__ = [
     "CAP_SYS_PTRACE_BIT",
@@ -66,14 +71,16 @@ DEFAULT_PROC = Path("/proc")
 CAP_SYS_PTRACE_BIT = 19
 """CAP_SYS_PTRACE's bit position in the 64-bit capability masks."""
 
-READ_MATRIX_PATHS = ("root", "maps", "environ", "fd", "cmdline", "status")
+READ_MATRIX_PATHS = (*PTRACE_READ_PATHS, *WORLD_READ_PATHS)
 """The six reads that decide whether degraded debugging is usable.
 
-``root``, ``maps``, ``environ`` and ``exe`` take ``PTRACE_MODE_READ`` and so
-survive at the target's UID with zero capabilities; ``cmdline``, ``status`` and
-``fd`` survive even at the wrong UID (report §3.11). ``mem`` and ``syscall``
-are deliberately absent — they take ``PTRACE_MODE_ATTACH`` and are denied in
-the degraded rung, so counting them would understate a working setup.
+Composed from the two groups rather than written out, because only the first
+group is evidence: ``root``, ``maps`` and ``environ`` (with ``exe``) take
+``PTRACE_MODE_READ`` and so survive at the target's UID with zero capabilities,
+while ``cmdline``, ``status`` and ``fd`` survive even at the wrong UID (report
+§3.11) and are therefore true on a pod where nothing works. ``mem`` and
+``syscall`` are deliberately absent — they take ``PTRACE_MODE_ATTACH`` and are
+denied in the degraded rung, so counting them would understate a working setup.
 """
 
 DELETED_SUFFIX = " (deleted)"
