@@ -48,12 +48,13 @@ from __future__ import annotations
 
 import enum
 import os
+import re
 import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .elf import ElfInfo, debugpy_helper_name, read_elf
+from .elf import ElfInfo, debugpy_helper_name, debugpy_helper_published, read_elf
 from .proc import (
     DEFAULT_PROC,
     read_cmdline,
@@ -62,6 +63,7 @@ from .proc import (
     self_capabilities,
     sysroot_path,
 )
+from .provision import PROVISION_DEST, provision_paste
 
 __all__ = [
     "DEBUGPY_PORT",
@@ -181,6 +183,15 @@ class Target:
     """The first non-flag argument after an interpreter — the file a Python
     developer thinks of as "the program"."""
 
+    python_version: str | None = None
+    """The target's CPython ``X.Y``, when it is a CPython.
+
+    Measured because it is what uv resolves against: the seat's image is 3.11
+    and the target on the bench was 3.12, and a wheel built for the wrong one
+    still imports — pydevd just finds no matching ``pydevd_cython`` accelerator
+    and falls back to pure Python, silently (issue #45).
+    """
+
     cwd: str | None = None
     """The target's working directory, in its *own* rootfs's spelling."""
 
@@ -250,7 +261,15 @@ class Seat:
     path that resolves in both mount namespaces."""
 
     debugpy_helper: bool = False
-    """Whether the attach helper for the *target's* architecture exists."""
+    """Whether the attach helper for the *target's* architecture exists **in the
+    tree the injection will load** — the target's copy when there is one, since
+    that is what ``PYTHONPATH`` points the driver at, and this seat's only when
+    there is not."""
+
+    provision_dest: str = PROVISION_DEST
+    """Where a provisioned debugpy would go, as the target spells it. Carried on
+    the seat so that the refusal's remedy quotes the destination this run would
+    really use rather than the default."""
 
     sysroot_gdb: bool = False
     """Whether a bare ``gdb`` on PATH sets the sysroot before it attaches."""
@@ -331,6 +350,7 @@ def inspect_target(
     interpreter = _interpreter_of(exe, argv)
     language = _language(interpreter, elf)
     script = _script_of(argv) if interpreter else None
+    root = Path(proc) / str(pid) / "root"
     return Target(
         pid=pid,
         language=language,
@@ -339,6 +359,9 @@ def inspect_target(
         elf=elf,
         interpreter=interpreter,
         script=script,
+        python_version=(
+            _python_version(exe, argv, root) if interpreter == "python" else None
+        ),
         cwd=_read_cwd(pid, proc=proc),
         notes=tuple(notes),
     )
@@ -394,6 +417,50 @@ def _script_of(argv: Sequence[str]) -> str | None:
         if token.startswith("-"):
             continue
         return token
+    return None
+
+
+_PYTHON_VERSION = re.compile(r"^python(\d+\.\d+)$")
+"""``python3.12``, and deliberately not ``python3`` or ``python``.
+
+A version that is not in the name is not a measurement, and uv's
+``--python-version`` is the one field here where a plausible guess is worse than
+an admitted gap.
+"""
+
+
+def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | None:
+    """The target's CPython ``X.Y``, from its own rootfs. ``None`` is an answer.
+
+    The exe link usually resolves through ``python`` to ``python3.12`` and
+    settles it. When it does not — an unreadable ``exe`` on the degraded rung,
+    or an ``argv[0]`` of plain ``python`` — the target's own library directory
+    is asked instead, over the same two fixed prefixes as
+    :func:`_target_debugpy` and for the same reason: a walk of another
+    container's filesystem is the OOM the vscode-in-a-seat skill warns about.
+
+    *One* library directory under a prefix is evidence; two are an ambiguity,
+    and answering one of them would be the guess this module refuses to make —
+    a ``sorted()`` pick puts ``python3.10`` ahead of ``python3.9`` on top of it,
+    so the wrong answer would not even have been the plausible one.
+
+    >>> _python_version("/usr/local/bin/python3.12", [], Path("/nonexistent"))
+    '3.12'
+    >>> _python_version(None, ["python"], Path("/nonexistent")) is None
+    True
+    """
+    for candidate in (exe, argv[0] if argv else None):
+        match = _PYTHON_VERSION.match(Path(candidate).name) if candidate else None
+        if match:
+            return match.group(1)
+    for prefix in _SEARCH_ROOTS:
+        found: list[str] = []
+        for parent in (root / prefix).glob("python3.*"):
+            match = _PYTHON_VERSION.match(parent.name)
+            if match and match.group(1) not in found:
+                found.append(match.group(1))
+        if found:
+            return found[0] if len(found) == 1 else None
     return None
 
 
@@ -494,7 +561,7 @@ def _debugpy_detail(root: str | None) -> tuple[bool, str]:
 
 def _debugpy_dir(root: str | None) -> Path | None:
     base = Path(root or SEAT_DEBUGPY_PATH)
-    return base if (base / "debugpy" / "__init__.py").is_file() else None
+    return base if _has_debugpy(base) else None
 
 
 def survey_seat(
@@ -505,6 +572,7 @@ def survey_seat(
     which: Which = shutil.which,
     debugpy_root: str | None = None,
     listening_port: int | None = None,
+    provision_dest: str = PROVISION_DEST,
 ) -> Seat:
     """Gather every fact :func:`assess` needs, with no side effects.
 
@@ -514,45 +582,77 @@ def survey_seat(
     the flavours need, and they cost a read of ``/proc/self/status``.
     """
     here = _debugpy_dir(debugpy_root)
-    there = _target_debugpy(target.pid, proc=proc)
+    there = _target_debugpy(target.pid, proc=proc, provision_dest=provision_dest)
     return Seat(
         machine=machine or os.uname().machine,
         cap_sys_ptrace=self_capabilities(proc=proc).sys_ptrace_effective,
         debuggers=inventory(which=which, debugpy_root=debugpy_root),
         debugpy_here=None if here is None else str(here),
-        debugpy_there=there,
-        debugpy_helper=_helper_present(here, target.machine),
+        debugpy_there=None if there is None else _spelled(target.pid, proc, there),
+        # Asked of the tree the *injection* loads, which is the target's copy
+        # whenever there is one: the driver runs with PYTHONPATH pointed at it,
+        # so the seat's copy answers a question nobody asked, and would misreport
+        # the moment the two differ.
+        debugpy_helper=_helper_present(there or here, target.machine),
         sysroot_gdb=sysroot_gdb_on_path(which),
         listening_port=listening_port,
+        provision_dest=provision_dest,
     )
 
 
-def _helper_present(here: Path | None, machine: str | None) -> bool:
-    if here is None or machine is None:
+def _helper_present(tree: Path | None, machine: str | None) -> bool:
+    if tree is None or machine is None:
         return False
-    return (here / _HELPER_RELATIVE / debugpy_helper_name(machine)).is_file()
+    return (tree / _HELPER_RELATIVE / debugpy_helper_name(machine)).is_file()
 
 
-def _target_debugpy(pid: int, *, proc: Path = DEFAULT_PROC) -> str | None:
-    """Where the *target* keeps debugpy, spelled so both namespaces agree.
+def _has_debugpy(directory: Path) -> bool:
+    """Whether ``directory`` is a directory an interpreter could import debugpy
+    from — the only test that matters, since that import is what the target's
+    own interpreter performs."""
+    return (directory / "debugpy" / "__init__.py").is_file()
 
-    The returned path goes on the driver's ``PYTHONPATH``, and the string
-    debugpy then injects into the target has to resolve there too — which is
-    exactly why it is ``/proc/<pid>/root/...`` and never the seat's own copy's
-    path (issue #20's live proof, step 3).
+
+def _spelled(pid: int, proc: Path, local: Path) -> str:
+    """``local`` as the driver has to write it on ``PYTHONPATH``.
+
+    The string debugpy injects into the target is the one the *driver* saw, and
+    driver and target share no mount namespace, so ``/proc/<pid>/root/...`` is
+    the only spelling that resolves on both sides (issue #20's live proof, step
+    3). The conversion is here rather than in each branch below so that the
+    search and the spelling cannot drift apart.
+    """
+    relative = local.relative_to(Path(f"{proc}/{pid}/root"))
+    return f"{sysroot_path(pid)}/{relative.as_posix()}"
+
+
+def _target_debugpy(
+    pid: int, *, proc: Path = DEFAULT_PROC, provision_dest: str = PROVISION_DEST
+) -> Path | None:
+    """Where the *target* keeps debugpy, as a path this container can stat.
+
+    ``provision_dest`` is **one** extra fixed path, not a widened glob: it is
+    where ``--provision`` puts a copy, and it is checked first because it was
+    put there deliberately, for this, and matched to the target's interpreter by
+    ``uv pip install --python-version``. Anything broader would be a walk of
+    another container's rootfs, which is the OOM the vscode-in-a-seat skill
+    warns about and which an ephemeral container cannot be restarted from.
     """
     root = Path(f"{proc}/{pid}/root")
+    provisioned = root / provision_dest.lstrip("/")
+    if _has_debugpy(provisioned):
+        return provisioned
     for prefix in _SEARCH_ROOTS:
         for parent in sorted((root / prefix).glob("python3*")):
             for leaf in ("site-packages", "dist-packages"):
-                if (parent / leaf / "debugpy" / "__init__.py").is_file():
-                    return f"{sysroot_path(pid)}/{prefix}/{parent.name}/{leaf}"
+                if _has_debugpy(parent / leaf):
+                    return parent / leaf
         # Debian's own layout puts dist-packages one level up from the versioned
         # directory, so it is checked separately rather than folded into the
         # glob above.
         for leaf in ("python3/dist-packages",):
-            if (root / prefix / leaf / "debugpy" / "__init__.py").is_file():
-                return f"{sysroot_path(pid)}/{prefix}/{leaf}"
+            if _has_debugpy(root / prefix / leaf):
+                return root / prefix / leaf
     return None
 
 
@@ -748,6 +848,20 @@ def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
     )
 
 
+def _provision_paste(target: Target, seat: Seat) -> str:
+    """The install command with this run's pid, destination and version in it.
+
+    Every field filled in, because a remedy the reader has to complete is a
+    remedy the reader gets wrong: the version in particular is the target's and
+    not this seat's, and the two differ on the very bench this was proved on.
+    """
+    return provision_paste(
+        target.pid,
+        dest=seat.provision_dest,
+        python_version=target.python_version,
+    )
+
+
 def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str, str]]:
     """The unmet prerequisites, as ``(structural, reason, remedy)``.
 
@@ -773,9 +887,20 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                 "inside the target's interpreter, and debugpy injects a dlopen "
                 "of the path the *driver* sees, which the target's mount "
                 "namespace does not have",
-                "install debugpy into the app image, or bake "
-                "`debugpy.listen()` into the app - both survive a restart, "
-                "which injection does not",
+                # The remedy has to be runnable where it is printed: "install it
+                # into the app image" is a rebuild, and nobody attached to a
+                # running pod at 3 a.m. can do that (issue #45). uv resolves for
+                # an interpreter it is not running, so a 3.11 seat lands the
+                # accelerators a 3.12 target will load.
+                "install it into the target from this seat: "
+                f"`{_provision_paste(target, seat)}` - uv resolves for an "
+                "interpreter it is not running, so what lands is the wheel the "
+                "target's own version loads, and `podbench debug-config "
+                "--provision` runs exactly that after probing the target's "
+                "rootfs for writability. It needs egress from the pod, "
+                "~15 MB of the ephemeral-storage budget this seat shares with "
+                "the workload, and it survives no restart - baking "
+                "`debugpy.listen()` into the app image is the durable answer",
             )
         )
     if not seat.sysroot_gdb:
@@ -793,20 +918,34 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     # The helper is only asked about when there is a debugpy to ask: with none
     # installed its absence says nothing about the architecture, and reporting
     # "not published for x86_64" — which is false — would be worse than saying
-    # nothing.
-    if seat.debugpy_here is not None and not seat.debugpy_helper:
+    # nothing. The tree asked is the one the injection loads, and it is named in
+    # the message, because with a copy on each side they can disagree.
+    tree = seat.debugpy_there or seat.debugpy_here
+    if tree is not None and not seat.debugpy_helper:
         machine = target.machine or seat.machine
-        unmet.append(
-            (
-                True,
-                f"no {debugpy_helper_name(machine)} in this seat's debugpy: it "
-                "ships the amd64 helper alone and publishes no aarch64 Linux "
-                f"wheel at all, so on {machine} there is nothing to install",
-                "bake `debugpy.listen()` into the app image, or use "
-                "`podbench dev` - both are pure Python and work on any "
-                "architecture",
+        helper = debugpy_helper_name(machine)
+        if debugpy_helper_published(machine):
+            unmet.append(
+                (
+                    False,
+                    f"no {helper} in {tree}, which is the debugpy the injection "
+                    "loads: PYTHONPATH points the driver at the target's copy "
+                    "whenever there is one, not at this seat's",
+                    f"re-install it there: `{_provision_paste(target, seat)}`",
+                )
             )
-        )
+        else:
+            unmet.append(
+                (
+                    True,
+                    f"no {helper} in {tree}: debugpy ships the amd64 helper "
+                    "alone and publishes no aarch64 Linux wheel at all, so on "
+                    f"{machine} there is nothing to install",
+                    "bake `debugpy.listen()` into the app image, or use "
+                    "`podbench dev` - both are pure Python and work on any "
+                    "architecture",
+                )
+            )
     if not seat.cap_sys_ptrace:
         unmet.append(
             (

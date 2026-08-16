@@ -54,6 +54,7 @@ def make_proc(
     machine: int = EM_X86_64,
     cwd: str = "/",
     site_packages: str | None = None,
+    target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = False,
 ) -> Path:
     """A ``/proc`` with one target process and a rootfs behind it."""
@@ -74,41 +75,57 @@ def make_proc(
     (entry / "cmdline").write_text(cmdline.replace(" ", "\x00"))
     (entry / "cwd").symlink_to(cwd)
     if site_packages is not None:
-        package = entry / "root" / site_packages / "debugpy"
-        package.mkdir(parents=True)
-        (package / "__init__.py").write_text("")
+        # With the helpers by default, because that is what a wheel unpacks to.
+        # The tree the injection loads is the target's, so a target debugpy with
+        # no helper in it models a *broken* install rather than an ordinary one.
+        write_debugpy(
+            entry / "root" / site_packages,
+            helpers=AMD64_HELPER if target_helpers is None else target_helpers,
+        )
     return tmp_path
 
 
 def python_proc(
     tmp_path: Path,
     *,
+    exe: str | None = "/usr/local/bin/python3.12",
     machine: int = EM_X86_64,
     site_packages: str | None = None,
+    target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = True,
 ) -> Path:
     """``podbench-demo/demo-service``, as a synthetic tree."""
     return make_proc(
         tmp_path,
-        exe="/usr/local/bin/python3.12",
+        exe=exe,
         cmdline="python /src/demo_service.py",
         machine=machine,
         site_packages=site_packages,
+        target_helpers=target_helpers,
         cap_sys_ptrace=cap_sys_ptrace,
     )
 
 
-def seat_debugpy(tmp_path: Path, *, helpers: list[str]) -> str:
-    """A directory shaped like an installed debugpy, with chosen helpers."""
-    root = tmp_path / "seat-debugpy"
+def write_debugpy(root: Path, *, helpers: list[str]) -> Path:
+    """A directory shaped like an installed debugpy, with chosen helpers.
+
+    Idempotent, because ``--provision`` installs over its own destination and a
+    real ``uv pip install --target`` is quite happy to be pointed at a directory
+    that already has a tree in it.
+    """
     package = root / "debugpy"
-    package.mkdir(parents=True)
+    package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text("")
     helper_dir = package / "_vendored" / "pydevd" / "pydevd_attach_to_process"
-    helper_dir.mkdir(parents=True)
+    helper_dir.mkdir(parents=True, exist_ok=True)
     for name in helpers:
         (helper_dir / name).write_bytes(b"")
-    return str(root)
+    return root
+
+
+def seat_debugpy(tmp_path: Path, *, helpers: list[str]) -> str:
+    """The image's own copy, at the path ``--debugpy-root`` would name."""
+    return str(write_debugpy(tmp_path / "seat-debugpy", helpers=helpers))
 
 
 def which_of(*present: str, shimmed: bool = True) -> Which:
@@ -315,6 +332,162 @@ def test_amd64_still_fails_on_the_dlopen_path_first(tmp_path: Path) -> None:
     assert not result.available
     assert "not importable by the target" in result.reason
     assert "mount namespace" in result.reason
+
+
+def test_the_remedy_is_a_runnable_install_not_an_image_rebuild(
+    tmp_path: Path,
+) -> None:
+    """The remedy for "not importable by the target" has to run where it prints.
+
+    Both old remedies were image changes, and neither is available to someone
+    already attached to a running pod. The bench proved the seat can do it
+    itself, so what is printed is the command, with the *target's* version and
+    the destination already in it (issue #45).
+    """
+    proc = python_proc(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
+    assert (
+        "uv pip install --no-cache --python-version 3.12 --target "
+        f"/proc/{PID}/root/opt/podbench-debugpy debugpy" in remedy
+    )
+    # The image change is still named, as the thing that survives a restart -
+    # but second, and no longer as the only way out.
+    assert remedy.startswith("install it into the target from this seat")
+
+
+def test_the_targets_python_version_is_read_from_its_own_rootfs(
+    tmp_path: Path,
+) -> None:
+    """``/usr/local/bin/python`` names no version, and the seat's is the wrong one.
+
+    Seat 3.11 and target 3.12 is the bench's own arrangement: uv resolves for
+    whichever version it is told, and told the seat's it lands a wheel whose
+    accelerator the target skips without a word.
+    """
+    proc = python_proc(
+        tmp_path, exe="/usr/local/bin/python", site_packages=SITE_PACKAGES
+    )
+    assert inspect_target(PID, proc=proc).python_version == "3.12"
+
+
+def test_an_unversioned_python_is_admitted_rather_than_guessed(
+    tmp_path: Path,
+) -> None:
+    """With nothing to read it from, the paste carries a gap and says so."""
+    proc = make_proc(tmp_path, exe="/usr/local/bin/python", cmdline="python app.py")
+    target = inspect_target(PID, proc=proc)
+    assert target.python_version is None
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
+    # And the gap is shell-safe: the whole line is printed as a paste, and a
+    # bare <X.Y> is an input redirection that hangs an interactive shell on an
+    # unterminated quote instead of showing uv rejecting the version.
+    assert "--python-version '<X.Y>'" in remedy
+
+
+def test_two_library_directories_are_an_ambiguity_not_a_measurement(
+    tmp_path: Path,
+) -> None:
+    """A rootfs carrying 3.9 and 3.10 gets the gap, not the later of the two.
+
+    Sorting picks ``python3.10`` over ``python3.9``, so the guess would not even
+    have been the plausible one - and either way an installed library directory
+    is not evidence about the *running* interpreter once there are two of them.
+    """
+    proc = make_proc(tmp_path, exe="/usr/local/bin/python", cmdline="python app.py")
+    for version in ("3.9", "3.10"):
+        (proc / str(PID) / "root" / "usr" / "lib" / f"python{version}").mkdir(
+            parents=True
+        )
+    assert inspect_target(PID, proc=proc).python_version is None
+
+
+def test_the_provisioned_copy_is_found_by_one_more_fixed_path(
+    tmp_path: Path,
+) -> None:
+    """A copy nobody can find is a copy that was never installed.
+
+    ``_SEARCH_ROOTS`` covers ``usr/local/lib`` and ``usr/lib``, and a
+    ``--target`` install is under neither. One more fixed path answers it; a
+    glob wide enough to have found it anyway would be a walk of another
+    container's rootfs, which is the unrecoverable OOM.
+    """
+    proc = python_proc(tmp_path)
+    write_debugpy(
+        proc / str(PID) / "root" / "opt" / "podbench-debugpy", helpers=AMD64_HELPER
+    )
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    assert seat.debugpy_there == f"/proc/{PID}/root/opt/podbench-debugpy"
+    assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).available
+
+
+def test_a_chosen_destination_is_the_one_searched_and_the_one_printed(
+    tmp_path: Path,
+) -> None:
+    """Read-only rootfs is common, and then the copy goes on a writable mount.
+
+    So the destination is a parameter everywhere it appears: the path searched,
+    the path in the remedy and the path a later run has to find again are one
+    value, not three.
+    """
+    proc = python_proc(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+        provision_dest="/scratch/debugpy",
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
+    assert f"--target /proc/{PID}/root/scratch/debugpy debugpy" in remedy
+
+
+def test_the_helper_is_looked_for_in_the_tree_the_injection_loads(
+    tmp_path: Path,
+) -> None:
+    """The seat's tree is the wrong one to ask.
+
+    The injection runs with ``PYTHONPATH`` pointed at the *target's* copy, so
+    the helper the seat happens to have says nothing about the dlopen that copy
+    will ask for. Harmless while both sides come from the same amd64 wheel, and
+    a misreport the moment they differ — which provisioning makes possible.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, target_helpers=[])
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    assert f"no attach_linux_amd64.so in /proc/{PID}/root/{SITE_PACKAGES}" in (
+        result.reason
+    )
+    # And not blamed on the architecture: amd64 is in every wheel, so this is an
+    # incomplete install with a remedy, not the arm64 wall with none.
+    assert "nothing to install" not in result.reason
+    assert "uv pip install" in (result.remedy or "")
 
 
 def test_a_missing_sysroot_gdb_is_named_too(tmp_path: Path) -> None:

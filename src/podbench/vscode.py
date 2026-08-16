@@ -65,6 +65,7 @@ from typing import Annotated, Any, cast
 import typer
 
 from .cli import new_app, run
+from .elf import debugpy_helper_name, debugpy_helper_published
 from .flavour import (
     DEBUGPY_PORT,
     Assessment,
@@ -90,6 +91,12 @@ from .gdbcmd import (
 from .kubectl import Runner, run_subprocess
 from .model import as_dict
 from .proc import DEFAULT_PROC
+from .provision import (
+    PROVISION_DEST,
+    provision_debugpy,
+    provision_paste,
+    target_destination,
+)
 
 __all__ = [
     "ADAPTER_CPPDBG",
@@ -825,6 +832,134 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     return port if listeners_on(parse_ss(result.stdout), port) else None
 
 
+def _provision(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    dest: str,
+    python_version: str | None,
+    proc: Path,
+    runner: Runner | None,
+    which: Which,
+) -> bool:
+    """Install debugpy into the target, or say which mechanism stopped it.
+
+    Opt-in, and for a stronger reason than :func:`injection_command` is only
+    printed: this writes ~15 MB into the *workload's* writable layer, against an
+    ephemeral-storage budget an ephemeral container may not reserve (report
+    3.9), and a verb that authors a configuration file must stay safe to re-run.
+
+    Every refusal below names its mechanism, in the same house style as the
+    verdicts: a config author that quietly does nothing when it was asked to do
+    something is the silent wrong answer this module exists to prevent, one
+    layer up from where it usually appears.
+    """
+    if mode is Mode.DEV:
+        _warn(
+            "--provision: dev mode debugs a process in this container, where "
+            "debugpy is an ordinary workspace dependency - there is no other "
+            "container's rootfs to install into"
+        )
+        return False
+    if target.language is not Language.PYTHON:
+        _warn(
+            f"--provision: the target is {target.language.value} and debugpy "
+            "debugs CPython, so there is nothing to install"
+        )
+        return False
+    if seat.listening_port is not None:
+        _warn(
+            "--provision: a debugpy server is already listening on "
+            f"{DEBUGPY_HOST}:{seat.listening_port}, and the emitted "
+            "configuration connects to it without any of this"
+        )
+        return False
+    machine = target.machine or seat.machine
+    if not debugpy_helper_published(machine):
+        # 15 MB into the workload that could never help: debugpy publishes no
+        # aarch64 Linux wheel, so there is no helper to dlopen on any path.
+        _warn(
+            f"--provision: debugpy publishes no {machine} attach helper, so "
+            "installing one cannot make pid-injection work here - bake "
+            "`debugpy.listen()` into the app image, or use `podbench dev`"
+        )
+        return False
+    if seat.debugpy_there == target_destination(target.pid, dest):
+        # This flag's own destination, so it is installed over rather than kept.
+        # Nothing in an installed tree records the X.Y uv resolved it for, and
+        # `_target_debugpy` checks this path first - so a copy made for the wrong
+        # version imports fine, shadows the target's real one, and drops pydevd
+        # to pure Python silently, which is the failure the whole module is
+        # shaped around. Refusing here would leave no way to correct it.
+        _warn(
+            f"--provision: {seat.debugpy_there} is this flag's own destination, "
+            "so it is installed over rather than kept - re-running is the only "
+            "way to correct a copy resolved for the wrong X.Y, and the tree "
+            "records no version to check it against"
+        )
+    elif seat.debugpy_there is not None and seat.debugpy_helper:
+        _warn(
+            f"--provision: the target can already import debugpy from "
+            f"{seat.debugpy_there}, so nothing is installed"
+        )
+        return False
+    elif seat.debugpy_there is not None:
+        # Importable but incomplete, which is the one case worth writing over:
+        # the injection would get as far as the dlopen and then fail on the
+        # helper the target's own copy does not have.
+        _warn(
+            f"--provision: the target's debugpy at {seat.debugpy_there} has no "
+            f"{debugpy_helper_name(machine)}, so a complete copy goes in beside it"
+        )
+    if which("uv") is None:
+        _warn(
+            "--provision: no uv on PATH in this seat, and it is uv's "
+            "--python-version that resolves a wheel for the *target's* "
+            "interpreter rather than this one"
+        )
+        return False
+    version = python_version or target.python_version
+    if version is None:
+        _warn(
+            "--provision: could not read the target's X.Y from its exe, its "
+            "command line or its rootfs, and installing for the wrong one "
+            "leaves pydevd on its pure-Python fallback with nothing said - "
+            "pass --provision-python X.Y (`python -V` in the target names it)"
+        )
+        return False
+    if not seat.cap_sys_ptrace:
+        # Said, not refused - unlike the arm64 gate above. The tree lands in the
+        # *target's* rootfs, which outlives this seat, so provisioning now and
+        # relaunching on the `full` rung still works; what would be wrong is
+        # letting the install land and then reading "CAP_SYS_PTRACE is not in
+        # this seat's effective set" two lines later with nothing joining them.
+        _warn(
+            "--provision: this seat has no CAP_SYS_PTRACE, so the injection "
+            "cannot be driven from here whatever gets installed - the copy goes "
+            "into the target's own rootfs and outlives this seat, so a relaunch "
+            "on the `full` rung picks it up rather than repeating the install"
+        )
+    # Announced before it runs: uv's output is captured for the failure message,
+    # so a resolve against an index with no route is several silent seconds
+    # (bounded by uv's own HTTP timeout, not by anything here) that would
+    # otherwise be indistinguishable from a hang.
+    _warn(
+        "--provision: running `"
+        f"{provision_paste(target.pid, dest=dest, python_version=version)}`"
+    )
+    result = provision_debugpy(
+        target.pid,
+        python_version=version,
+        dest=dest,
+        proc=proc,
+        runner=runner,
+    )
+    for message in result.messages:
+        _warn(f"--provision: {message}")
+    return result.ok
+
+
 def _emit(
     assessments: Sequence[Assessment],
     wanted: set[Flavour],
@@ -884,6 +1019,9 @@ def _run(
     port: int,
     print_config: bool,
     output: str | None,
+    provision: bool,
+    provision_dest: str,
+    provision_python: str | None,
     proc: Path,
     runner: Runner | None,
     which: Which,
@@ -910,13 +1048,32 @@ def _run(
         if target.language is Language.PYTHON
         else None
     )
-    seat = survey_seat(
+
+    def measure() -> Seat:
+        return survey_seat(
+            target,
+            proc=proc,
+            which=which,
+            debugpy_root=debugpy_root,
+            listening_port=listening,
+            provision_dest=provision_dest,
+        )
+
+    seat = measure()
+    if provision and _provision(
         target,
+        mode,
+        seat,
+        dest=provision_dest,
+        python_version=provision_python,
         proc=proc,
+        runner=runner,
         which=which,
-        debugpy_root=debugpy_root,
-        listening_port=listening,
-    )
+    ):
+        # Measured again rather than assumed: whether the target can import what
+        # was just written is the prerequisite itself, and `_target_debugpy` is
+        # the only thing that answers it.
+        seat = measure()
     assessments = assess(target, mode, seat)
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
@@ -1118,6 +1275,34 @@ def main(
                 help="shorthand for --flavour lldb",
             ),
         ] = False,
+        provision: Annotated[
+            bool,
+            typer.Option(
+                "--provision",
+                help="install debugpy into the target with uv when it cannot "
+                "import one. Mutates the workload: ~15 MB of shared ephemeral "
+                "storage, needs egress from the pod, and no restart survives it",
+            ),
+        ] = False,
+        provision_dest: Annotated[
+            str,
+            typer.Option(
+                "--provision-dest",
+                metavar="PATH",
+                help="where --provision installs it, as the *target* spells it, "
+                "and the one extra path searched for the target's copy. Point "
+                "it at a writable mount when the target's rootfs is read-only",
+            ),
+        ] = PROVISION_DEST,
+        provision_python: Annotated[
+            str | None,
+            typer.Option(
+                "--provision-python",
+                metavar="X.Y",
+                help="the target's Python version for uv to resolve against, "
+                "when it cannot be read from the target itself",
+            ),
+        ] = None,
         print_config: Annotated[
             bool,
             typer.Option(
@@ -1148,6 +1333,9 @@ def main(
                 port=port,
                 print_config=print_config,
                 output=output,
+                provision=provision,
+                provision_dest=provision_dest,
+                provision_python=provision_python,
                 proc=proc,
                 runner=runner,
                 which=which,
