@@ -101,9 +101,10 @@ capability list, a sample of command output.
 
 ## Pacing a batch through CodeRabbit
 
-`.coderabbit.yaml` sets `reviews.auto_review.enabled: false`, so nothing is reviewed until
-you comment `@coderabbitai review` on the PR. The plan allows **one review at a time**,
-replenishing on a window measured at **55 minutes** — so a batch of nine PRs is most of a
+`.coderabbit.yaml` sets `reviews.auto_review.enabled: false` and says why, so nothing is
+reviewed until you comment `@coderabbitai review` on the PR. That file is where the plan's
+own terms are recorded: on 2026-08-16 it was **one review at a time**, replenishing on a
+window measured at roughly **55 minutes** — so a batch of nine PRs is most of a
 working day, and the reviews must be requested serially as the quota resets. Drive that
 from a `Monitor`, not from turns.
 
