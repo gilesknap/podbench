@@ -23,6 +23,24 @@ language server has been measured. Treat this page as the best available
 guidance, not as a proven result.
 :::
 
+:::{warning}
+**In Observe mode, a breakpoint on a probed pod is on a timer.** Sitting on a
+breakpoint stops the app answering its probes, and the kubelet cannot tell that
+from a hang: the readiness budget takes the pod out of its Service quietly, and
+the liveness budget restarts the container and kills the seat with it — an
+ephemeral container cannot be restarted, so the session and the seat's name both
+go. `podbench attach` prints both deadlines for the pod you name, computed from
+its spec; on the demo Deployment in `tests/e2e/apps/` they are 11–16 s and
+21–31 s.
+
+VS Code's own tools are the way to stay inside them: **logpoints** (right-click
+the gutter → *Add Logpoint*) print and carry on without stopping the process,
+and a conditional breakpoint stops only on the iteration you care about. For an
+unlimited pause, debug in a dev pod ([Iterate on Python](iterate-on-python.md)),
+which has no probes by construction. [Debug with gdb](debug-with-gdb.md) has the
+arithmetic and the measurements.
+:::
+
 ## Size the pod first
 
 Disk, not memory, is the binding constraint. Measured:
@@ -249,6 +267,8 @@ arguments. It kills the server after exactly five minutes idle.
 | connection hangs with no output | keepalives removed, or a genuinely stalled apiserver path |
 | server download stalls | the container has no egress to the four host groups above |
 | session dies and the workload restarts | the pod hit its memory limit. This is the Observe-mode footgun; an OOM inside an ephemeral container is unrecoverable |
+| session dies and the workload restarts *while you were stopped at a breakpoint* | the liveness budget expired — same symptom, different cause. `kubectl describe pod` says `failed liveness probe`, and there is no `OOMKilled` |
+| the app stops answering through the Service while you are stopped, and is fine again after you continue | the readiness budget expired. Nothing is broken and nothing restarted; the pod left the Service's routing and re-joined |
 | everything is gone after a reconnect | the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate) |
 | `Permission denied (publickey)` on a dev pod | the key is authorised from the sidecar's environment, which is fixed when the pod is created — so a dev pod made with a different `--identity` needs `podbench dev --delete` and a fresh one, not a re-run |
 

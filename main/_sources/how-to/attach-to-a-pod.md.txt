@@ -22,6 +22,52 @@ heavier than looking belongs in a dev pod
 ([Iterate on Python](iterate-on-python.md)).
 :::
 
+:::{warning}
+**A breakpoint on a probed pod is on a timer.** A process stopped in a debugger
+does not answer its probes, and the kubelet cannot tell that from a hang. The
+budget is `(failureThreshold - 1) x periodSeconds + timeoutSeconds` after the
+pause begins, plus up to one more period depending on where in the probe cycle
+it began — and there are two of them:
+
+* **readiness** — the pod goes not-ready and stops taking Service traffic. This
+  is the quiet one: nothing restarts, no state survives it, and it recovers a
+  probe period after you continue, so the only symptom is traffic that stopped
+  arriving and it will not look as though the debugger did it.
+* **liveness** — the container is killed and restarted, and the seat, which
+  shares its namespaces, is killed with it. An ephemeral container cannot be
+  restarted, so that name is burnt and coming back needs `--new`.
+
+Probes cannot be changed on a running pod — they are not in the short list of
+fields a pod update may touch, and unlike `resources` they have no resize-style
+subresource, so there is no `--resize` equivalent to reach for. `podbench
+attach` computes both deadlines from the target's own spec and prints them,
+so the numbers below are for the pod you name rather than for pods in general:
+
+```
+supports
+  [x] live attach (gdb -p <pid>)
+      TIME-LIMITED: 'app' answers probes, so a pause has a deadline - the
+      first is readiness at 11-16s. The WARNING below has the arithmetic and
+      the way out
+...
+WARNING
+  a breakpoint on 'app' is on a timer: it answers probes, and a process
+  stopped in a debugger does not - which the kubelet cannot tell from a
+  hang.
+    readiness, 11-16s into a pause: the pod goes not-ready and stops
+      taking Service traffic - ...
+    liveness, 21-31s into a pause: the container is killed and restarted -
+      and the seat, which shares its namespaces, is killed with it. ...
+```
+
+A target with no probes gets the opposite statement — `no deadline: 'victim'
+declares no readiness, liveness or startup probe` — because "explore freely"
+and "you have twenty seconds" are different facts and you need to know which
+one you are in. For an unlimited pause on a probed workload use
+[`podbench dev`](iterate-on-python.md), which strips all three probes by
+construction; [Debug with gdb](debug-with-gdb.md) has the measurements.
+:::
+
 ## Attach, and re-attach
 
 ```
@@ -212,6 +258,8 @@ for whatever it has written.
 | ssh hangs forever with no output | a *stalled* transport (apiserver or konnectivity hiccup) | the generated config sets `ServerAliveInterval 15`/`CountMax 3`, which fails in ~19 s instead. Do not remove them |
 | `ControlPath too long ('...' >= 108 bytes)` | the control socket is not under `/tmp/podbench-cm` | keep the generated `ControlPath`; `sun_path` is 108 bytes |
 | container status `CreateContainerConfigError`, `container's runAsUser breaks non-root policy` | the kubelet refused a root container *after* the API server accepted it | podbench pre-empts this by reading `runAsNonRoot` and skips the full rung; if you forced it, do not |
+| traffic stopped reaching the pod while you sat at a breakpoint, and came back on its own | the readiness budget expired: the pod went not-ready, so its EndpointSlice kept the address but flipped `conditions.ready` to false and kube-proxy stopped routing to it. Quiet, not silent — `Unhealthy` events are emitted while it lasts, but no restart survives it | nothing to fix — it self-heals. Stay inside the budget `attach` printed, or use a dev pod |
+| the workload restarted mid-session and the seat went with it | the liveness budget expired; the seat shares the target's namespaces | `attach --new` for a fresh seat (the old name is burnt), and debug in a dev pod if you need to stop for longer |
 | attach lands but `blocker: yama-scope` | Yama's `ptrace_scope >= 1` on **that node** forbids attaching to non-descendants | `dbg --launch`, or have the target call `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` |
 | every library reports `missing debugging information` | `ca-certificates` absent, so `libdebuginfod` fails the TLS handshake silently | use the published image; it is mandatory there for exactly this reason |
 | attach works on one pod, is denied on the next | Yama differs **per node**, by kernel flavour, not by architecture | nothing to fix. The report prints the node name and Yama state for this reason |

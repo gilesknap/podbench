@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0b4.dev13+g216fe9925 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b4.dev17+g331b68300 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=9bfd69b6"></script>
+    <script src="../_static/documentation_options.js?v=632bb75b"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -501,6 +501,50 @@ the first PyPI release, as
 <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
 <a class="reference internal" href="../tutorials/installation.html"><span class="std std-doc">Installation</span></a>.</p>
 </div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><strong>A breakpoint on a probed pod is on a timer.</strong> A process stopped in a debugger
+does not answer its probes, and the kubelet cannot tell that from a hang. Two
+deadlines follow, and the quiet one is the one that will catch you out. Both are
+<code class="docutils literal notranslate"><span class="pre">(failureThreshold</span> <span class="pre">-</span> <span class="pre">1)</span> <span class="pre">x</span> <span class="pre">periodSeconds</span> <span class="pre">+</span> <span class="pre">timeoutSeconds</span></code> after the pause
+begins, plus up to one more period depending on where in the cycle it began:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>deadline</p></th>
+<th class="head"><p>what happens</p></th>
+<th class="head"><p>how visible</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">readinessProbe</span></code></p></td>
+<td><p>the pod goes not-ready and stops taking Service traffic — the address stays in the EndpointSlice with <code class="docutils literal notranslate"><span class="pre">conditions.ready:</span> <span class="pre">false</span></code></p></td>
+<td><p><strong>quiet</strong> — nothing restarts, and it recovers a probe period after you continue, so afterwards nothing points at the debugger</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code></p></td>
+<td><p>the container is killed and restarted, and the seat — which shares its namespaces — is killed with it</p></td>
+<td><p>loud — an event, a bumped restart count, and a burnt seat name: an ephemeral container cannot be restarted, so coming back needs <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--new</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Measured against <code class="docutils literal notranslate"><span class="pre">tests/e2e/apps/python-service.yaml</span></code> (readiness every 5 s,
+liveness every 10 s, both <code class="docutils literal notranslate"><span class="pre">failureThreshold:</span> <span class="pre">3</span></code>, both <code class="docutils literal notranslate"><span class="pre">timeoutSeconds:</span> <span class="pre">1</span></code>, so
+11–16 s and 21–31 s): a gdb attach held 18 s took the pod out of the Service
+after ~12 s and put it back 5 s after <code class="docutils literal notranslate"><span class="pre">detach</span></code>, with no restart. Held 45 s, it
+also produced <code class="docutils literal notranslate"><span class="pre">Container</span> <span class="pre">app</span> <span class="pre">failed</span> <span class="pre">liveness</span> <span class="pre">probe,</span> <span class="pre">will</span> <span class="pre">be</span> <span class="pre">restarted</span></code> at ~25 s
+and <code class="docutils literal notranslate"><span class="pre">exitCode:</span> <span class="pre">137</span></code> on both the workload <em>and</em> the seat.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> prints these numbers for the pod you name, computed from its
+own spec — including the opposite answer, “no probes, no deadline”, when the
+target has none.</p>
+<p><strong>Probes cannot be turned off on a running pod.</strong> A pod update may change only
+<code class="docutils literal notranslate"><span class="pre">containers[*].image</span></code>, <code class="docutils literal notranslate"><span class="pre">initContainers[*].image</span></code>, <code class="docutils literal notranslate"><span class="pre">activeDeadlineSeconds</span></code>,
+<code class="docutils literal notranslate"><span class="pre">tolerations</span></code> and <code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code>; unlike <code class="docutils literal notranslate"><span class="pre">resources</span></code> — the
+asymmetry that makes <code class="docutils literal notranslate"><span class="pre">--resize</span></code> possible — probes have no resize-style
+subresource. So live attach on a probed pod is a <strong>short-visit</strong> tool: break,
+look, continue. Logpoints and conditional breakpoints never stop the process.
+For an unlimited pause use <a class="reference internal" href="iterate-on-python.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code></span></a>, which strips
+all three probes by construction.</p>
+</div>
 <p>Everything here is driven by <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, the helper on the debug container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.
 <code class="docutils literal notranslate"><span class="pre">dbg</span></code> is not <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span></code>: it fixes seven commands in one order, and the order is a
 correctness property rather than a preference. Setting the sysroot <em>after</em>
@@ -669,6 +713,10 @@ denied you are told <em>which mechanism</em> denies it rather than being handed 
 </section>
 <section id="breakpoint-source-step">
 <h2>5. Breakpoint, source, step<a class="headerlink" href="#breakpoint-source-step" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">victim</span></code> declares no probes, so this pause is unlimited and you can take as long
+over it as you like — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> said as much under <code class="docutils literal notranslate"><span class="pre">supports</span></code>. On a pod
+that <em>does</em> carry probes, read the timer warning at the top of this page before
+you break anywhere.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>(gdb) break compute
 Breakpoint 1 at 0x575fbad351f4: file victim.c, line 19.
 (gdb) continue

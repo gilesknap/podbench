@@ -12,6 +12,39 @@ the first PyPI release, as
 [Installation](../tutorials/installation.md).
 :::
 
+:::{warning}
+**A breakpoint on a probed pod is on a timer.** A process stopped in a debugger
+does not answer its probes, and the kubelet cannot tell that from a hang. Two
+deadlines follow, and the quiet one is the one that will catch you out. Both are
+`(failureThreshold - 1) x periodSeconds + timeoutSeconds` after the pause
+begins, plus up to one more period depending on where in the cycle it began:
+
+| deadline | what happens | how visible |
+|---|---|---|
+| `readinessProbe` | the pod goes not-ready and stops taking Service traffic — the address stays in the EndpointSlice with `conditions.ready: false` | **quiet** — nothing restarts, and it recovers a probe period after you continue, so afterwards nothing points at the debugger |
+| `livenessProbe` | the container is killed and restarted, and the seat — which shares its namespaces — is killed with it | loud — an event, a bumped restart count, and a burnt seat name: an ephemeral container cannot be restarted, so coming back needs `attach --new` |
+
+Measured against `tests/e2e/apps/python-service.yaml` (readiness every 5 s,
+liveness every 10 s, both `failureThreshold: 3`, both `timeoutSeconds: 1`, so
+11–16 s and 21–31 s): a gdb attach held 18 s took the pod out of the Service
+after ~12 s and put it back 5 s after `detach`, with no restart. Held 45 s, it
+also produced `Container app failed liveness probe, will be restarted` at ~25 s
+and `exitCode: 137` on both the workload *and* the seat.
+
+`podbench attach` prints these numbers for the pod you name, computed from its
+own spec — including the opposite answer, "no probes, no deadline", when the
+target has none.
+
+**Probes cannot be turned off on a running pod.** A pod update may change only
+`containers[*].image`, `initContainers[*].image`, `activeDeadlineSeconds`,
+`tolerations` and `terminationGracePeriodSeconds`; unlike `resources` — the
+asymmetry that makes `--resize` possible — probes have no resize-style
+subresource. So live attach on a probed pod is a **short-visit** tool: break,
+look, continue. Logpoints and conditional breakpoints never stop the process.
+For an unlimited pause use [`podbench dev`](iterate-on-python.md), which strips
+all three probes by construction.
+:::
+
 Everything here is driven by `dbg`, the helper on the debug container's `PATH`.
 `dbg` is not `gdb -p`: it fixes seven commands in one order, and the order is a
 correctness property rather than a preference. Setting the sysroot *after*
@@ -175,6 +208,11 @@ Every line earns its place:
 | `file /proc/<pid>/root$(readlink /proc/<pid>/exe)` **before** `attach` | this is what recovers the *user* frames. A trailing ` (deleted)` is stripped |
 
 ## 5. Breakpoint, source, step
+
+`victim` declares no probes, so this pause is unlimited and you can take as long
+over it as you like — `podbench attach` said as much under `supports`. On a pod
+that *does* carry probes, read the timer warning at the top of this page before
+you break anywhere.
 
 ```
 (gdb) break compute

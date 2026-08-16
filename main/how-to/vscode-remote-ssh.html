@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b4.dev13+g216fe9925 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b4.dev17+g331b68300 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=9bfd69b6"></script>
+    <script src="../_static/documentation_options.js?v=632bb75b"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -512,6 +512,23 @@ memory figure below is therefore a <strong>lower bound</strong>: no extension ho
 language server has been measured. Treat this page as the best available
 guidance, not as a proven result.</p>
 </div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><strong>In Observe mode, a breakpoint on a probed pod is on a timer.</strong> Sitting on a
+breakpoint stops the app answering its probes, and the kubelet cannot tell that
+from a hang: the readiness budget takes the pod out of its Service quietly, and
+the liveness budget restarts the container and kills the seat with it — an
+ephemeral container cannot be restarted, so the session and the seat’s name both
+go. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> prints both deadlines for the pod you name, computed from
+its spec; on the demo Deployment in <code class="docutils literal notranslate"><span class="pre">tests/e2e/apps/</span></code> they are 11–16 s and
+21–31 s.</p>
+<p>VS Code’s own tools are the way to stay inside them: <strong>logpoints</strong> (right-click
+the gutter → <em>Add Logpoint</em>) print and carry on without stopping the process,
+and a conditional breakpoint stops only on the iteration you care about. For an
+unlimited pause, debug in a dev pod (<a class="reference internal" href="iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>),
+which has no probes by construction. <a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a> has the
+arithmetic and the measurements.</p>
+</div>
 <section id="size-the-pod-first">
 <h2>Size the pod first<a class="headerlink" href="#size-the-pod-first" title="Link to this heading">#</a></h2>
 <p>Disk, not memory, is the binding constraint. Measured:</p>
@@ -806,6 +823,12 @@ all there.</p></li>
 </tr>
 <tr class="row-even"><td><p>session dies and the workload restarts</p></td>
 <td><p>the pod hit its memory limit. This is the Observe-mode footgun; an OOM inside an ephemeral container is unrecoverable</p></td>
+</tr>
+<tr class="row-odd"><td><p>session dies and the workload restarts <em>while you were stopped at a breakpoint</em></p></td>
+<td><p>the liveness budget expired — same symptom, different cause. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">describe</span> <span class="pre">pod</span></code> says <code class="docutils literal notranslate"><span class="pre">failed</span> <span class="pre">liveness</span> <span class="pre">probe</span></code>, and there is no <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>the app stops answering through the Service while you are stopped, and is fine again after you continue</p></td>
+<td><p>the readiness budget expired. Nothing is broken and nothing restarted; the pod left the Service’s routing and re-joined</p></td>
 </tr>
 <tr class="row-odd"><td><p>everything is gone after a reconnect</p></td>
 <td><p>the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate)</p></td>
