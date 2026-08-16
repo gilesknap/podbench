@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b3.dev29+g8052c203d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=653b4031"></script>
+    <script src="../_static/documentation_options.js?v=f4c362d4"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -506,6 +506,7 @@ launcher’s guess and a helper’s separate guess.</p>
 │ --help               Show this message and exit.                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
+│ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
@@ -533,7 +534,7 @@ launcher’s guess and a helper’s separate guess.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Your machine</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">doctor</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Inside the debug container</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
@@ -570,7 +571,8 @@ seat; several have shorter aliases on <code class="docutils literal notranslate"
 <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>).</p>
 <section id="common-options">
 <h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
-<p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these:</p>
+<p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these,
+and so does <code class="docutils literal notranslate"><span class="pre">doctor</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">namespace</span>  <span class="o">-</span><span class="n">n</span>  <span class="n">NAMESPACE</span>  <span class="n">namespace</span> <span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">the</span> <span class="n">kubeconfig</span> <span class="n">context</span><span class="s1">&#39;s own)</span>
 <span class="o">--</span><span class="n">context</span>        <span class="n">NAME</span>       <span class="n">kubeconfig</span> <span class="n">context</span>
 <span class="o">--</span><span class="n">kubectl</span>        <span class="n">BIN</span>        <span class="n">kubectl</span> <span class="n">binary</span> <span class="n">to</span> <span class="n">use</span> <span class="p">[</span><span class="n">default</span><span class="p">:</span> <span class="n">kubectl</span><span class="p">]</span>
@@ -645,6 +647,131 @@ not <code class="docutils literal notranslate"><span class="pre">list</span></co
 <hr class="docutils" />
 <section id="cluster-side-verbs">
 <h2>Cluster-side verbs<a class="headerlink" href="#cluster-side-verbs" title="Link to this heading">#</a></h2>
+<section id="doctor">
+<h3><code class="docutils literal notranslate"><span class="pre">doctor</span></code><a class="headerlink" href="#doctor" title="Link to this heading">#</a></h3>
+<p>Everything that has to be true of <strong>this machine</strong> before the first attach, and
+the name of whatever is not. <code class="docutils literal notranslate"><span class="pre">status</span></code> is about pods; <code class="docutils literal notranslate"><span class="pre">doctor</span></code> is about your
+laptop.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench doctor [OPTIONS]
+
+ Name what will block the first attach from this machine.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --fix                            make the two changes podbench can make safely: create the       │
+│                                  config directory, and add the ssh Include above any Host *      │
+│                                  block. Never creates an ssh key                                 │
+│ --identity            KEY        the ssh key attach would use [default: ~/.ssh/id_ed25519]       │
+│ --namespace   -n      NAMESPACE  namespace to test RBAC in (default: the context&#39;s own)          │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench doctor -n demo
+============================= podbench doctor ==============================
+THIS MACHINE
+  launcher       1.0.0b1
+  image          ghcr.io/gilesknap/podbench:1.0.0b1
+  context        prod-eu
+  namespace      demo
+CHECKS
+  [ok]    kubectl        v1.31 at /usr/local/bin/kubectl
+  [ok]    kubeconfig     context prod-eu
+  [ok]    ssh client     /usr/bin/ssh
+  [ok]    ssh identity   /home/dev/.ssh/id_ed25519 and /home/dev/.ssh/id_ed25519.pub
+  [ok]    config dir     /home/dev/.podbench/config.d
+  [FAIL]  ssh include    /home/dev/.ssh/config does not include the generated stanzas
+          add this line above any Host * block:  Include /home/dev/.podbench/config.d/*.conf
+          or run:  podbench doctor --fix
+RBAC in demo (kubectl auth can-i, as your kubeconfig&#39;s user)
+  [ok]    attach         all 5 verbs allowed
+  [warn]  iterate        missing: create pods, delete pods
+          grant it with the chart&#39;s rbac.iterate=true, or the equivalent Role
+  [warn]  resize         missing: patch pods/resize
+          grant it with the chart&#39;s rbac.resize=true, or the equivalent Role
+  [ok]    patch          all 5 verbs allowed
+----------------------------------------------------------------------------
+VERDICT: 1 blocker before `podbench attach` can work (exit 1)
+BLOCKERS: ssh include
+============================================================================
+</pre></div>
+</div>
+<p>What it checks:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Check</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">FAIL</span></code> when</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">warn</span></code> when</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kubectl</span></code></p></td>
+<td><p>not on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, or older than <strong>1.25</strong></p></td>
+<td><p>it printed no version to read</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kubeconfig</span></code></p></td>
+<td><p>there is no current context</p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">client</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ssh</span></code> is not on <code class="docutils literal notranslate"><span class="pre">PATH</span></code></p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">identity</span></code></p></td>
+<td><p>either half of the key is missing</p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">config</span> <span class="pre">dir</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code> does not exist yet</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">include</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> does not include the generated stanzas</p></td>
+<td><p>it includes them <strong>below</strong> a <code class="docutils literal notranslate"><span class="pre">Host</span></code>/<code class="docutils literal notranslate"><span class="pre">Match</span></code> block</p></td>
+</tr>
+<tr class="row-even"><td><p>RBAC <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>any of its verbs is denied</p></td>
+<td><p>kubectl could not answer</p></td>
+</tr>
+<tr class="row-odd"><td><p>RBAC <code class="docutils literal notranslate"><span class="pre">iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">resize</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p>—</p></td>
+<td><p>any of its verbs is denied, or kubectl could not answer</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><strong>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> when nothing blocks the headline attach path and <code class="docutils literal notranslate"><span class="pre">1</span></code> when
+something does</strong>; a warning never changes it. A cluster that will not grant
+Iterate mode is a fact about that cluster, not a failure — the same call
+<code class="docutils literal notranslate"><span class="pre">attach</span></code> makes when it lands a degraded seat. <code class="docutils literal notranslate"><span class="pre">2</span></code> remains a usage error.</p></li>
+<li><p>The RBAC verbs are asked one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time, in the namespace
+in play, as your kubeconfig’s user. The table lives in
+<code class="docutils literal notranslate"><span class="pre">podbench.doctor.FEATURES</span></code> and names the <code class="docutils literal notranslate"><span class="pre">rbac.&lt;flag&gt;</span></code> of
+<a class="reference internal" href="../explanations/security.html"><span class="std std-doc">the chart</span></a> that grants each feature;
+<code class="docutils literal notranslate"><span class="pre">tests/test_chart_contract.py</span></code> renders the chart and asserts they are the same
+list, so the flag a report tells you to set really is the one that fixes it.</p></li>
+<li><p>Only two things are ever written, and only with <code class="docutils literal notranslate"><span class="pre">--fix</span></code>: <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code>
+is created, and the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line is prepended to <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> above any
+<code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block. Your file is not rewritten — the line is added at the top and
+everything you had stays where it was — and the write goes through a temporary
+file, because a half-written <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> locks you out of every host you
+have, not only podbench’s. Running <code class="docutils literal notranslate"><span class="pre">--fix</span></code> twice changes nothing the second
+time.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--fix</span></code> never creates an ssh key.</strong> A missing identity is named, with the
+<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span></code> line to run, because a key podbench minted would be a credential
+you never chose and <code class="docutils literal notranslate"><span class="pre">attach</span></code> would then authorise it inside your cluster.</p></li>
+<li><p>An <code class="docutils literal notranslate"><span class="pre">Include</span></code> below a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block is a warning rather than a blocker: the
+stanza is still read, but ssh takes the <strong>first</strong> value it sees for each
+keyword, so anything that block also sets — a <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code>, a <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> —
+has already won.</p></li>
+</ul>
+</section>
 <section id="attach">
 <h3><code class="docutils literal notranslate"><span class="pre">attach</span></code><a class="headerlink" href="#attach" title="Link to this heading">#</a></h3>
 <p>Land a debug seat in a <strong>live</strong> pod, walking the capability ladder, and print
@@ -1364,10 +1491,10 @@ stream.</p>
 <td><p>success — including a degraded seat, which is an honest outcome and not a failure</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
-<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); or <code class="docutils literal notranslate"><span class="pre">patch</span> <span class="pre">status</span></code> found a pod needing attention</p></td>
+<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); <code class="docutils literal notranslate"><span class="pre">patch</span> <span class="pre">status</span></code> found a pod needing attention; or <code class="docutils literal notranslate"><span class="pre">doctor</span></code> found something blocking an attach</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
-<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
+<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), a <code class="docutils literal notranslate"><span class="pre">doctor</span></code> usage error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> only: the capability verdict</p></td>
@@ -1428,6 +1555,7 @@ stream.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-options">Common options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#naming-the-pod">Naming the pod</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cluster-side-verbs">Cluster-side verbs</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#doctor"><code class="docutils literal notranslate"><span class="pre">doctor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#attach"><code class="docutils literal notranslate"><span class="pre">attach</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-config"><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#status"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>

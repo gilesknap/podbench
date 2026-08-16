@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
+    <title>Security model &#8212; podbench 0.1.0b3.dev29+g8052c203d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=653b4031"></script>
+    <script src="../_static/documentation_options.js?v=f4c362d4"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -576,6 +576,12 @@ without it. Everything else runs with capabilities dropped, non-root, under the
 </tbody>
 </table>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> asks the cluster for these one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time,
+as your own kubeconfig, and reports them per feature — <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">OK</span></code>,
+<code class="docutils literal notranslate"><span class="pre">iterate</span> <span class="pre">missing</span></code>. It is the same list: <code class="docutils literal notranslate"><span class="pre">podbench.doctor.FEATURES</span></code> names the
+chart flag that grants each feature, and <code class="docutils literal notranslate"><span class="pre">tests/test_chart_contract.py</span></code> renders
+the chart to assert the two cannot drift. Without it an RBAC denial arrives
+mid-attach, after a container name has been burnt for the life of the pod.</p>
 <p>The chart splits these into <code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> (on by default), <code class="docutils literal notranslate"><span class="pre">rbac.iterate</span></code>,
 <code class="docutils literal notranslate"><span class="pre">rbac.resize</span></code> and <code class="docutils literal notranslate"><span class="pre">rbac.patch</span></code>, because they are genuinely different levels of
 trust: reading and attaching to a pod you own is not the same as creating and

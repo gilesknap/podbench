@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>podbench &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
+    <title>podbench &#8212; podbench 0.1.0b3.dev29+g8052c203d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="_static/documentation_options.js?v=653b4031"></script>
+    <script src="_static/documentation_options.js?v=f4c362d4"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
@@ -524,7 +524,9 @@ below:</p>
 permanently with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">tool</span> <span class="pre">install</span> <span class="pre">podbench</span></code> if you would rather type <code class="docutils literal notranslate"><span class="pre">podbench</span></code>.
 It is the same program either way.</p>
 <p>Full prerequisites, cluster-side RBAC and the one-time ssh <code class="docutils literal notranslate"><span class="pre">Include</span></code> line — the
-only thing that does outlive the command — are in the <em>Installation</em> tutorial.</p>
+only thing that does outlive the command — are in the <em>Installation</em> tutorial.
+<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span></code> checks all three from your machine and names whatever is
+missing; <code class="docutils literal notranslate"><span class="pre">--fix</span></code> adds the <code class="docutils literal notranslate"><span class="pre">Include</span></code>.</p>
 </section>
 <section id="observe-mode-in-one-command">
 <h2>Observe mode in one command<a class="headerlink" href="#observe-mode-in-one-command" title="Link to this heading">#</a></h2>
@@ -554,6 +556,7 @@ seat can actually do:</p>
 
 <span class="n">ssh</span> <span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">7</span><span class="n">d9f8c5b4</span><span class="o">-</span><span class="n">x2k9p</span><span class="o">.</span><span class="n">conf</span>
 <span class="n">add</span> <span class="n">this</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">ssh</span><span class="o">/</span><span class="n">config</span> <span class="n">once</span><span class="p">:</span>  <span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
+<span class="ow">or</span> <span class="n">let</span> <span class="n">podbench</span> <span class="n">check</span> <span class="ow">and</span> <span class="n">add</span> <span class="n">it</span><span class="p">:</span>  <span class="n">podbench</span> <span class="n">doctor</span> <span class="o">--</span><span class="n">fix</span>
 <span class="n">then</span><span class="p">:</span>  <span class="n">ssh</span> <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">7</span><span class="n">d9f8c5b4</span><span class="o">-</span><span class="n">x2k9p</span>
 </pre></div>
 </div>

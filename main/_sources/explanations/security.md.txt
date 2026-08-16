@@ -27,6 +27,13 @@ RBAC, in the namespace being debugged. That is the whole list:
 | `apps`: `deployments`, `statefulsets` | `patch` | write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Patch mode relies on, so they go on the template — and that same edit is what rolls the workload | Patch mode |
 | `pods` | `patch`, `delete` | annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back | Patch mode |
 
+`podbench doctor` asks the cluster for these one `kubectl auth can-i` at a time,
+as your own kubeconfig, and reports them per feature — `attach OK`,
+`iterate missing`. It is the same list: `podbench.doctor.FEATURES` names the
+chart flag that grants each feature, and `tests/test_chart_contract.py` renders
+the chart to assert the two cannot drift. Without it an RBAC denial arrives
+mid-attach, after a container name has been burnt for the life of the pod.
+
 The chart splits these into `rbac.observe` (on by default), `rbac.iterate`,
 `rbac.resize` and `rbac.patch`, because they are genuinely different levels of
 trust: reading and attaching to a pod you own is not the same as creating and

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b3.dev29+g8052c203d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=653b4031"></script>
+    <script src="../_static/documentation_options.js?v=f4c362d4"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -588,6 +588,8 @@ the include once, <strong>above</strong> any <code class="docutils literal notra
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> checks that line is there and in that position;
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">--fix</span></code> adds it.</p>
 </li>
 <li><p>Land a seat and note the alias it prints. Both modes write the same kind of
 stanza to the same place, and both print the alias on the last line:</p>
@@ -791,7 +793,7 @@ all there.</p></li>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Remote-SSH cannot find the host</p></td>
-<td><p>the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line is missing, is below a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block, or <code class="docutils literal notranslate"><span class="pre">remote.SSH.configFile</span></code> points elsewhere</p></td>
+<td><p>the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line is missing, is below a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block, or <code class="docutils literal notranslate"><span class="pre">remote.SSH.configFile</span></code> points elsewhere. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> tells the first two apart, and <code class="docutils literal notranslate"><span class="pre">--fix</span></code> settles them</p></td>
 </tr>
 <tr class="row-odd"><td><p>“Could not establish connection”, <code class="docutils literal notranslate"><span class="pre">Broken</span> <span class="pre">pipe</span></code> at key exchange</p></td>
 <td><p>the ProxyCommand was edited; <code class="docutils literal notranslate"><span class="pre">-e</span></code> is mandatory and stderr must not be redirected</p></td>

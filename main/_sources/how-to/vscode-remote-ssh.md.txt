@@ -71,6 +71,9 @@ Which pod that lands in decides how much it matters:
    Include ~/.podbench/config.d/*.conf
    ```
 
+   `podbench doctor` checks that line is there and in that position;
+   `podbench doctor --fix` adds it.
+
 3. Land a seat and note the alias it prints. Both modes write the same kind of
    stanza to the same place, and both print the alias on the last line:
 
@@ -241,7 +244,7 @@ arguments. It kills the server after exactly five minutes idle.
 
 | Symptom | Likely cause |
 |---|---|
-| Remote-SSH cannot find the host | the `Include` line is missing, is below a `Host *` block, or `remote.SSH.configFile` points elsewhere |
+| Remote-SSH cannot find the host | the `Include` line is missing, is below a `Host *` block, or `remote.SSH.configFile` points elsewhere. `podbench doctor` tells the first two apart, and `--fix` settles them |
 | "Could not establish connection", `Broken pipe` at key exchange | the ProxyCommand was edited; `-e` is mandatory and stderr must not be redirected |
 | connection hangs with no output | keepalives removed, or a genuinely stalled apiserver path |
 | server download stalls | the container has no egress to the four host groups above |

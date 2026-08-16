@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Installation &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
+    <title>Installation &#8212; podbench 0.1.0b3.dev29+g8052c203d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=653b4031"></script>
+    <script src="../_static/documentation_options.js?v=f4c362d4"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -527,6 +527,8 @@ $ helm version --short
 $ ls ~/.ssh/id_ed25519 || ssh-keygen -t ed25519
 </pre></div>
 </div>
+<p>Or let podbench check them, along with everything else on this page, once you
+have <code class="docutils literal notranslate"><span class="pre">uv</span></code>: <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span></code>. See <em>Check the machine</em>, below.</p>
 </section>
 <section id="run-the-launcher">
 <h2>Run the launcher<a class="headerlink" href="#run-the-launcher" title="Link to this heading">#</a></h2>
@@ -621,22 +623,44 @@ it by its wheel spelling, <code class="docutils literal notranslate"><span class
 <a class="reference external" href="https://github.com/gilesknap/podbench/releases">releases page</a>; you need it
 below for <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">--version</span></code>.</p>
 </section>
-<section id="add-the-ssh-include-once">
-<h2>Add the ssh include, once<a class="headerlink" href="#add-the-ssh-include-once" title="Link to this heading">#</a></h2>
-<p>This is the one setup step that outlives the command, and it is why it is worth
-doing before your first attach.</p>
-<p>podbench writes a generated stanza per pod into <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/</span></code> rather
-than editing <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, so it can regenerate wholesale on every attach
-without ever owning a file you also edit. Point ssh at that directory once:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ mkdir -p ~/.podbench/config.d
-$ printf &#39;Include ~/.podbench/config.d/*.conf\n&#39; | cat - ~/.ssh/config &gt; ~/.ssh/config.new
-$ mv ~/.ssh/config.new ~/.ssh/config
+<section id="check-the-machine-and-add-the-ssh-include">
+<h2>Check the machine, and add the ssh include<a class="headerlink" href="#check-the-machine-and-add-the-ssh-include" title="Link to this heading">#</a></h2>
+<p>There is no install step under <code class="docutils literal notranslate"><span class="pre">uvx</span></code>, so there is nowhere for first-run setup to
+happen by itself. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> is that step: it says whether this machine
+can attach at all, and names whatever cannot.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench doctor -n demo
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">Include</span></code> must come <strong>before</strong> any <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block in <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>;
-OpenSSH takes the first value it sees for each keyword.</p>
+<p>It checks <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> and its version, the context and namespace in play, the ssh
+client and both halves of your key, the <code class="docutils literal notranslate"><span class="pre">Include</span></code> below, and — one
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time — the RBAC each podbench feature needs, reported
+as <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">OK</span> <span class="pre">/</span> <span class="pre">iterate</span> <span class="pre">missing</span> <span class="pre">/</span> <span class="pre">resize</span> <span class="pre">missing</span></code>. It exits <code class="docutils literal notranslate"><span class="pre">0</span></code> only when
+nothing blocks an attach. See the
+<a class="reference internal" href="../reference/cli.html"><span class="std std-doc">command-line reference</span></a> for the full list.</p>
+<p>One of those checks is the only setup step that outlives the command. podbench
+writes a generated stanza per pod into <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/</span></code> rather than
+editing <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, so it can regenerate wholesale on every attach without
+ever owning a file you also edit — and ssh has to be pointed at that directory
+once. <code class="docutils literal notranslate"><span class="pre">--fix</span></code> does it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench doctor --fix
+</pre></div>
+</div>
+<p>That creates <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code> and adds one line at the <strong>top</strong> of
+<code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
+</pre></div>
+</div>
+<p>At the top because the <code class="docutils literal notranslate"><span class="pre">Include</span></code> must come <strong>before</strong> any <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block:
+OpenSSH takes the first value it sees for each keyword, so a <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code> or
+<code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> in a block above it would silently replace podbench’s. <code class="docutils literal notranslate"><span class="pre">--fix</span></code>
+adds nothing else, moves nothing you wrote, and is safe to run twice. If you
+would rather make the edit yourself — a managed dotfile, say — <code class="docutils literal notranslate"><span class="pre">doctor</span></code> prints
+the exact line and changes nothing without <code class="docutils literal notranslate"><span class="pre">--fix</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--fix</span></code> will <strong>not</strong> generate an ssh key. A missing one is named, with the
+<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span></code> command to run, because podbench authorises that key inside your
+containers and it should be one you chose.</p>
 <p>Change the directory with <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> or <code class="docutils literal notranslate"><span class="pre">PODBENCH_CONFIG_DIR</span></code> if
-<code class="docutils literal notranslate"><span class="pre">~/.podbench</span></code> does not suit you.</p>
+<code class="docutils literal notranslate"><span class="pre">~/.podbench</span></code> does not suit you; <code class="docutils literal notranslate"><span class="pre">doctor</span></code> follows the same flag.</p>
 </section>
 <section id="the-image">
 <h2>The image<a class="headerlink" href="#the-image" title="Link to this heading">#</a></h2>
@@ -698,6 +722,8 @@ Read the whole list, with the reasoning for each, in
 </tbody>
 </table>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> asks the cluster this table one verb at a time and reports it
+per feature, so you find out before the attach rather than during it.</p>
 <p>A chart is provided for clusters that would rather grant these through Helm than
 by hand. It is published to an OCI registry on every release, so this needs no
 clone either.</p>
@@ -804,7 +830,7 @@ editor.</p>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-you-need-first">What you need first</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-launcher">Run the launcher</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#add-the-ssh-include-once">Add the ssh include, once</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#check-the-machine-and-add-the-ssh-include">Check the machine, and add the ssh include</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-image">The image</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-cluster-has-to-allow">What the cluster has to allow</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next">Next</a></li>

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b3.dev18+g710bf0933 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b3.dev29+g8052c203d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=653b4031"></script>
+    <script src="../_static/documentation_options.js?v=f4c362d4"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -694,6 +694,10 @@ for whatever it has written.</p>
 <tr class="row-even"><td><p>attach works on one pod, is denied on the next</p></td>
 <td><p>Yama differs <strong>per node</strong>, by kernel flavour, not by architecture</p></td>
 <td><p>nothing to fix. The report prints the node name and Yama state for this reason</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span> <span class="pre">&quot;web-...&quot;</span> <span class="pre">is</span> <span class="pre">forbidden:</span> <span class="pre">User</span> <span class="pre">cannot</span> <span class="pre">update</span> <span class="pre">resource</span> <span class="pre">&quot;pods/ephemeralcontainers&quot;</span></code></p></td>
+<td><p>your kubeconfig lacks a verb podbench needs, discovered mid-attach</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">-n</span> <span class="pre">demo</span></code> asks for every verb up front and names the chart flag that grants it</p></td>
 </tr>
 </tbody>
 </table>
