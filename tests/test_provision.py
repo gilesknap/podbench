@@ -55,8 +55,15 @@ def test_uv_resolves_for_the_targets_version_not_the_seats(tmp_path: Path) -> No
     uv = FakeUv()
     result = provision_debugpy(PID, python_version="3.12", proc=tmp_path, runner=uv)
     assert result.ok
-    assert uv.argv[:5] == ["uv", "pip", "install", "--python-version", "3.12"]
-    assert uv.argv[5:] == [
+    assert uv.argv[:6] == [
+        "uv",
+        "pip",
+        "install",
+        "--no-cache",
+        "--python-version",
+        "3.12",
+    ]
+    assert uv.argv[6:] == [
         "--target",
         str(tmp_path / str(PID) / "root" / "opt" / "podbench-debugpy"),
         "debugpy",

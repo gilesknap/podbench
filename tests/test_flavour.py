@@ -354,7 +354,7 @@ def test_the_remedy_is_a_runnable_install_not_an_image_rebuild(
     )
     remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
     assert (
-        "uv pip install --python-version 3.12 --target "
+        "uv pip install --no-cache --python-version 3.12 --target "
         f"/proc/{PID}/root/opt/podbench-debugpy debugpy" in remedy
     )
     # The image change is still named, as the thing that survives a restart -

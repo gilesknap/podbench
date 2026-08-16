@@ -919,7 +919,7 @@ and `/proc/<pid>/root` is the target's own filesystem — so the refusal prints
 the command rather than asking for an image rebuild:
 
 ```
-uv pip install --python-version 3.12 --target /proc/1/root/opt/podbench-debugpy debugpy
+uv pip install --no-cache --python-version 3.12 --target /proc/1/root/opt/podbench-debugpy debugpy
 ```
 
 `--python-version` is the load-bearing flag, and the reason this is a uv install
@@ -942,6 +942,13 @@ the flag it probes the destination for writability first and names what refuses:
 | network egress from the pod | uv resolves and downloads from an index; a locked-down namespace refuses it, and the fallback is a copy of the seat's tree with the accelerator caveat above |
 | no restart survives it | neither the install nor the injection — a restart brings back the app image exactly as built |
 | ~15 MB of ephemeral storage | on a budget the seat **shares with the workload and cannot reserve**, because an ephemeral container may not carry `resources` |
+
+`--no-cache` is what keeps that last number true. uv downloads into its cache in
+the *seat's* writable layer and materialises from there into `--target`; the two
+are different filesystems, so no hardlink is possible and both copies would
+exist — against the one pod-level budget. The install is also echoed before it
+runs, because uv's output is captured for the failure message and a resolve
+against an unroutable index is otherwise silence indistinguishable from a hang.
 
 `readOnlyRootFilesystem: true` is the one genuinely new precondition, and it is
 not readable from the seat: the mount flag lives in the target's mount

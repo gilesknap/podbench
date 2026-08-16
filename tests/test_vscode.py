@@ -637,7 +637,17 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
         debugpy_root=root,
     )
     assert code == 0
-    assert uv.argv[:5] == ["uv", "pip", "install", "--python-version", "3.12"]
+    assert uv.argv[:6] == [
+        "uv",
+        "pip",
+        "install",
+        # The cache lands in the *seat's* layer and the target is another
+        # filesystem, so without this the wheel is paid for twice out of one
+        # pod-level ephemeral-storage budget.
+        "--no-cache",
+        "--python-version",
+        "3.12",
+    ]
     captured = capsys.readouterr()
     assert json.loads(captured.out)["configurations"][0]["type"] == "debugpy"
     # The install is only half of it: the injection is still printed rather than
@@ -669,7 +679,7 @@ def test_without_the_flag_nothing_is_written_into_the_workload(
     assert code != 0
     assert uv.argv == []
     assert (
-        "uv pip install --python-version 3.12 --target "
+        "uv pip install --no-cache --python-version 3.12 --target "
         f"/proc/{PID}/root/opt/podbench-debugpy debugpy" in capsys.readouterr().err
     )
 
@@ -813,3 +823,64 @@ def test_an_incomplete_target_copy_gets_a_complete_one_beside_it(
     captured = capsys.readouterr()
     assert "a complete copy goes in beside it" in captured.err
     assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in captured.err
+
+
+def test_provision_without_uv_says_what_uv_was_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A seat with no uv cannot resolve for an interpreter it is not running,
+    which is the whole reason this is an install and not a copy."""
+    proc, root = provision_seat(tmp_path)
+    main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench"),
+        runner=no_listeners,
+        debugpy_root=root,
+    )
+    assert "no uv on PATH in this seat" in capsys.readouterr().err
+
+
+def test_provision_refuses_to_guess_the_targets_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Installing for the wrong X.Y leaves pydevd on its pure-Python fallback
+    with nothing said, so an unreadable version is a refusal with a flag to pass
+    rather than the seat's own version quietly substituted."""
+    proc = python_proc(tmp_path, exe="/usr/local/bin/python")
+    uv = InstallingUv()
+    main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert uv.argv == []
+    assert "--provision-python X.Y" in capsys.readouterr().err
+
+
+def test_provision_without_ptrace_says_so_and_still_installs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not a refusal, unlike arm64: the copy outlives the seat.
+
+    It goes into the *target's* rootfs, so a relaunch on the ``full`` rung picks
+    it up rather than repeating the install — but the run ends in
+    "CAP_SYS_PTRACE is not in this seat's effective set", and the two have to be
+    joined up or the install reads as having been spent for nothing.
+    """
+    proc = python_proc(tmp_path, cap_sys_ptrace=False)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert code != 0
+    captured = capsys.readouterr()
+    assert "outlives this seat" in captured.err
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" in captured.err
+    assert uv.argv[:3] == ["uv", "pip", "install"]

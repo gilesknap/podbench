@@ -122,13 +122,20 @@ def provision_command(destination: str, python_version: str) -> tuple[str, ...]:
     is not running, which is the only way a 3.11 seat lands the accelerators a
     3.12 target will actually load.
 
-    >>> provision_command("/proc/1/root/opt/dbg", "3.12")[:5]
-    ('uv', 'pip', 'install', '--python-version', '3.12')
+    ``--no-cache`` is what makes the ~15 MB in :data:`CAVEATS` the true cost. uv
+    downloads into its cache in the *seat's* writable layer and materialises from
+    there into ``--target``; the two are different filesystems, so the hardlink
+    is impossible and both copies exist — and both land on the one pod-level
+    ephemeral-storage budget the caveat is warning about.
+
+    >>> provision_command("/proc/1/root/opt/dbg", "3.12")[:4]
+    ('uv', 'pip', 'install', '--no-cache')
     """
     return (
         "uv",
         "pip",
         "install",
+        "--no-cache",
         "--python-version",
         python_version,
         "--target",
@@ -146,8 +153,8 @@ def provision_paste(
     the remedy for a prerequisite the seat can meet has to be runnable where it
     is printed, not a rebuild.
 
-    >>> print(provision_paste(1, dest="/opt/dbg", python_version="3.12"))
-    uv pip install --python-version 3.12 --target /proc/1/root/opt/dbg debugpy
+    >>> print(provision_paste(1, dest="/dbg", python_version="3.12"))
+    uv pip install --no-cache --python-version 3.12 --target /proc/1/root/dbg debugpy
     """
     destination = target_destination(pid, dest)
     return " ".join(provision_command(destination, python_version or _UNKNOWN_VERSION))

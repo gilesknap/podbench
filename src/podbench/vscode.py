@@ -91,7 +91,12 @@ from .gdbcmd import (
 from .kubectl import Runner, run_subprocess
 from .model import as_dict
 from .proc import DEFAULT_PROC
-from .provision import PROVISION_DEST, provision_debugpy, target_destination
+from .provision import (
+    PROVISION_DEST,
+    provision_debugpy,
+    provision_paste,
+    target_destination,
+)
 
 __all__ = [
     "ADAPTER_CPPDBG",
@@ -923,6 +928,26 @@ def _provision(
             "pass --provision-python X.Y (`python -V` in the target names it)"
         )
         return False
+    if not seat.cap_sys_ptrace:
+        # Said, not refused - unlike the arm64 gate above. The tree lands in the
+        # *target's* rootfs, which outlives this seat, so provisioning now and
+        # relaunching on the `full` rung still works; what would be wrong is
+        # letting the install land and then reading "CAP_SYS_PTRACE is not in
+        # this seat's effective set" two lines later with nothing joining them.
+        _warn(
+            "--provision: this seat has no CAP_SYS_PTRACE, so the injection "
+            "cannot be driven from here whatever gets installed - the copy goes "
+            "into the target's own rootfs and outlives this seat, so a relaunch "
+            "on the `full` rung picks it up rather than repeating the install"
+        )
+    # Announced before it runs: uv's output is captured for the failure message,
+    # so a resolve against an index with no route is several silent seconds
+    # (bounded by uv's own HTTP timeout, not by anything here) that would
+    # otherwise be indistinguishable from a hang.
+    _warn(
+        "--provision: running `"
+        f"{provision_paste(target.pid, dest=dest, python_version=version)}`"
+    )
     result = provision_debugpy(
         target.pid,
         python_version=version,
