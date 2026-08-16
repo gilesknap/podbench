@@ -41,8 +41,11 @@ from .model import (
 
 __all__ = [
     "AGENT_COMMAND",
+    "COMPARE_OPTIONS_ANNOTATION",
     "CONTROLLER_LABELS",
     "DEVPOD_LABEL",
+    "GITOPS_LABELS",
+    "IGNORE_EXTRANEOUS",
     "ORIGIN_ANNOTATION",
     "SERVER_OWNED_METADATA",
     "WORKSPACE_MOUNT_PATH",
@@ -84,6 +87,35 @@ endpointslice without making it a ReplicaSet member. Keeping ``pod-template-hash
 instead would give a ``replicas: 1`` ReplicaSet two matching pods, and one of
 them would be reaped (report 3.5).
 """
+
+GITOPS_LABELS: tuple[str, ...] = ("argocd.argoproj.io/instance",)
+"""Labels that make a GitOps controller believe it owns the clone.
+
+Argo CD tracks the resources belonging to an Application by stamping them with a
+label, and a dev pod carrying that label has no ``ownerReferences`` and does not
+exist in git — which is exactly Argo's definition of an extraneous resource. An
+Application with ``prune: true`` therefore deletes the dev pod, mid-session and
+without a word (spike S6, finding 7: every Application on the cluster measured
+had both ``prune`` and ``selfHeal`` on).
+
+The key is configurable (``application.instanceLabelKey``), so this cannot be
+exhaustive. What it deliberately does *not* strip is the **default**,
+``app.kubernetes.io/instance``: charts routinely put that one in a Service
+selector, and dropping it would silently undo ``--take-traffic`` — trading a
+visible failure for an invisible one. :data:`COMPARE_OPTIONS_ANNOTATION` covers
+the cases this tuple cannot, and does not depend on guessing the key.
+"""
+
+COMPARE_OPTIONS_ANNOTATION = "argocd.argoproj.io/compare-options"
+"""Tells Argo CD to leave the dev pod alone whatever its labels say.
+
+``IgnoreExtraneous`` excludes a resource from an Application's diff, so the pod
+is neither reported as out-of-sync nor pruned. Set unconditionally: it is inert
+on a cluster with no Argo, and the alternative is asking the user to know how
+their GitOps controller is configured before they can safely debug.
+"""
+
+IGNORE_EXTRANEOUS = "IgnoreExtraneous"
 
 SERVER_OWNED_METADATA: tuple[str, ...] = (
     "uid",
@@ -502,16 +534,16 @@ def dev_pod_spec(
     metadata["name"] = name
 
     labels = as_dict(metadata.get("labels")) if take_traffic else {}
-    for key in CONTROLLER_LABELS:
+    for key in (*CONTROLLER_LABELS, *GITOPS_LABELS):
         labels.pop(key, None)
     labels[DEVPOD_LABEL] = "true"
     metadata["labels"] = labels
     # The origin's annotations are dropped rather than copied: they carry
     # last-applied-configuration and sidecar-injection directives that would be
     # untrue, or actively harmful, on an orphan copy.
-    metadata["annotations"] = (
-        {ORIGIN_ANNOTATION: origin_name} if isinstance(origin_name, str) else {}
-    )
+    metadata["annotations"] = {COMPARE_OPTIONS_ANNOTATION: IGNORE_EXTRANEOUS}
+    if isinstance(origin_name, str):
+        metadata["annotations"][ORIGIN_ANNOTATION] = origin_name
     pod["metadata"] = metadata
 
     spec.pop("nodeName", None)

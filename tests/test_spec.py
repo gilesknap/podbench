@@ -19,7 +19,9 @@ from podbench.model import (
 )
 from podbench.spec import (
     AGENT_COMMAND,
+    COMPARE_OPTIONS_ANNOTATION,
     DEVPOD_LABEL,
+    IGNORE_EXTRANEOUS,
     ORIGIN_ANNOTATION,
     WORKSPACE_VOLUME,
     InvalidSpecError,
@@ -424,8 +426,52 @@ def test_service_traffic_is_opt_in() -> None:
 def test_the_origin_is_recorded_and_its_annotations_are_not_copied() -> None:
     pod = devpod()
     assert pod["metadata"]["annotations"] == {
-        ORIGIN_ANNOTATION: "podbench-target-7b8d54747c-ltmtd"
+        ORIGIN_ANNOTATION: "podbench-target-7b8d54747c-ltmtd",
+        COMPARE_OPTIONS_ANNOTATION: IGNORE_EXTRANEOUS,
     }
+
+
+def test_argo_tracking_label_is_dropped_even_when_taking_traffic() -> None:
+    """A clone carrying it is an extraneous resource, and prune deletes it."""
+    origin = origin_pod()
+    origin["metadata"]["labels"]["argocd.argoproj.io/instance"] = "beamline-i22"
+    pod = dev_pod_spec(
+        origin,
+        name="dev",
+        target_container="app",
+        image="podbench:dev",
+        target_port=8080,
+        take_traffic=True,
+    )
+    assert "argocd.argoproj.io/instance" not in pod["metadata"]["labels"]
+    assert pod["metadata"]["labels"]["app"] == "podbench-target"
+
+
+def test_the_default_instance_label_survives_because_selectors_use_it() -> None:
+    """Argo's *default* tracking key doubles as a Service-selector label.
+
+    Stripping it would silently undo ``--take-traffic``, which is a worse
+    failure than the one it would prevent — see GITOPS_LABELS.
+    """
+    origin = origin_pod()
+    origin["metadata"]["labels"]["app.kubernetes.io/instance"] = "podbench-target"
+    pod = dev_pod_spec(
+        origin,
+        name="dev",
+        target_container="app",
+        image="podbench:dev",
+        target_port=8080,
+        take_traffic=True,
+    )
+    assert pod["metadata"]["labels"]["app.kubernetes.io/instance"] == "podbench-target"
+
+
+def test_argo_is_told_to_ignore_the_dev_pod_whatever_its_labels_say() -> None:
+    """Set unconditionally: the tracking key is configurable and unguessable."""
+    assert (
+        devpod(take_traffic=True)["metadata"]["annotations"][COMPARE_OPTIONS_ANNOTATION]
+        == IGNORE_EXTRANEOUS
+    )
 
 
 def test_server_owned_metadata_and_status_are_dropped() -> None:
