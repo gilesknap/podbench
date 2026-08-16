@@ -268,17 +268,34 @@ template and silently reverts the resize. If you resize to make a seat viable,
 raise the template too, or expect the next unrelated rollout to take it away.
 
 Whether you need it at all is measured rather than assumed. `attach` sums the
-pod's memory limits, subtracts what its containers have reserved, and warns
+pod's memory limits, subtracts what its containers have *reserved*, and warns
 only when what is left is short of the 1.1–1.3 GB a VS Code seat takes:
 
 ```
-! memory: 256Mi free of a 512Mi pod limit, and a VS Code seat needs 1.1-1.3Gi -
-  re-attach with --resize 2Gi
+! memory: 256Mi unreserved of a 512Mi pod limit, and a VS Code seat needs
+  1.1-1.3Gi it cannot reserve - re-attach with --resize 2Gi
 ```
+
+"Unreserved", not "free": this is `limits` less `requests`, read from the pod
+spec, and podbench has no metrics-server to ask what the workload is actually
+resident at. A container that states a limit and no request has the limit as
+its request — the API server's own defaulting — so such a pod is reported as
+reserving all of its ceiling.
 
 A pod with the headroom — including one you have just resized — is told
 nothing, and neither is a pod with no memory limit at all, because there is no
 cgroup ceiling there for the seat to hit.
+
+Disk is warned about on its own terms, because it is the constraint of the two
+(report §3.8) and its failure is the worse: exceeding the pod's
+`ephemeral-storage` limits evicts the **whole pod**, where an OOM takes only
+the seat. `--resize` is no help there — it patches `limits.memory` and nothing
+else:
+
+```
+! ephemeral-storage: a 1Gi pod limit, and a seat writes ~1.5Gi into its own
+  layer - exceeding it evicts the whole pod, and --resize raises memory only
+```
 
 Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.
