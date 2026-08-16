@@ -2533,6 +2533,10 @@ def explain_note(
             )
         )
     else:
+        # "Burnt" is not an assumption here: `status` prints "no podbench
+        # containers in ns/pod" and exits before `--explain` is consulted, so
+        # this branch is only ever reached with seats that landed and are gone,
+        # and `--new` is the command that replaces one.
         blocks.append(
             (
                 "what these seats support",
