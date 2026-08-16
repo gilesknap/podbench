@@ -104,6 +104,7 @@ def pod_document(
     target_started: str | None = None,
     memory_limit: str | None = None,
     memory_request: str | None = None,
+    storage_limit: str | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -111,10 +112,13 @@ def pod_document(
     if non_root:
         security["runAsNonRoot"] = True
     workload: dict[str, Any] = {"name": container, "securityContext": security}
-    if memory_limit is not None or memory_request is not None:
-        resources: dict[str, Any] = {}
+    if memory_limit is not None or memory_request is not None or storage_limit:
+        limits: dict[str, Any] = {}
         if memory_limit is not None:
-            resources["limits"] = {"memory": memory_limit}
+            limits["memory"] = memory_limit
+        if storage_limit is not None:
+            limits["ephemeral-storage"] = storage_limit
+        resources: dict[str, Any] = {"limits": limits} if limits else {}
         if memory_request is not None:
             resources["requests"] = {"memory": memory_request}
         workload["resources"] = resources
@@ -2245,7 +2249,7 @@ def test_explain_carries_the_arithmetic_attach_no_longer_prints(
     assert "liveness, 21-31s into a pause" in out
     assert "cannot be changed on a running pod" in out
     # The memory half, in this pod's own numbers rather than in general terms.
-    assert "explain: the memory a seat shares" in out
+    assert "explain: the memory and disk a seat shares" in out
     assert "no memory limit on this pod" in out
     assert "LimitRange" in out, "R13's untested half is still untested"
 
@@ -2560,7 +2564,7 @@ def test_a_pod_with_no_room_for_a_seat_is_told_so_in_its_own_numbers() -> None:
     session = attach(talking_to(cluster), "target")
 
     (memory,) = [note for note in session.warnings if note.startswith("memory:")]
-    assert "256Mi free of a 512Mi pod limit" in memory
+    assert "256Mi unreserved of a 512Mi pod limit" in memory
     assert "--resize 2Gi" in memory
 
 
@@ -2585,6 +2589,42 @@ def test_a_pod_with_no_memory_limit_at_all_is_not_warned_either() -> None:
     session = attach(talking_to(cluster), "target")
 
     assert not [note for note in session.warnings if note.startswith("memory:")]
+
+
+def test_a_pod_whose_disk_a_seat_cannot_fit_in_is_warned_about_that_instead() -> None:
+    """`OOM_WARNING` named two hazards and the memory gate covers one. Report
+    3.8 calls disk the constraint of the two, and an ephemeral-storage overrun
+    evicts the pod rather than only the seat, so it needs its own gate."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000, memory_limit="8Gi", memory_request="256Mi", storage_limit="1Gi"
+        )
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert not [note for note in session.warnings if note.startswith("memory:")]
+    (storage,) = [
+        note for note in session.warnings if note.startswith("ephemeral-storage:")
+    ]
+    assert "a 1Gi pod limit" in storage
+    assert "evicts the whole pod" in storage
+
+
+def test_a_pod_with_the_disk_for_a_seat_is_told_nothing_about_it() -> None:
+    """The tutorial's own pod: 4Gi of ephemeral-storage against a seat's ~1.5Gi,
+    and the sample report in *Your first session* shows no line for it."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000, memory_limit="3Gi", memory_request="256Mi", storage_limit="4Gi"
+        )
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert not [
+        note
+        for note in session.warnings
+        if note.startswith(("memory:", "ephemeral-storage:"))
+    ]
 
 
 def test_current_namespace_falls_back_to_default() -> None:

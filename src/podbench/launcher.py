@@ -40,6 +40,7 @@ import typer
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
 from .budget import (
     PROBE_FAILURE_REASON,
+    RESERVATION_NOTE,
     ProbeBudget,
     format_probe_spend,
     memory_budget,
@@ -49,6 +50,7 @@ from .budget import (
     probe_qualifier,
     probe_spend,
     probe_warning,
+    storage_warning,
     target_status,
 )
 from .cli import new_app, require_subcommand, run
@@ -974,6 +976,13 @@ def attach(
     memory_note = memory_warning(memory_budget(pod_json))
     if memory_note is not None:
         warnings.append(memory_note)
+    # The other half of the caution these two replaced. `OOM_WARNING` named two
+    # hazards, and gating both on the memory one would have dropped the disk
+    # one - which report 3.8 calls the constraint of the two, and whose failure
+    # is the worse: an ephemeral-storage overrun evicts the whole pod.
+    storage_note = storage_warning(pod_json)
+    if storage_note is not None:
+        warnings.append(storage_note)
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
     # a caution about probed pods. It is stated before anyone sets a
@@ -2491,7 +2500,13 @@ def explain_note(
         )
     budget = memory_budget(pod_json)
     blocks.append(
-        ("the memory a seat shares", _warning_lines(f"{budget.summary}. {OOM_WARNING}"))
+        (
+            "the memory and disk a seat shares",
+            # RESERVATION_NOTE beside the number, not below the block: the
+            # summary is limits less requests, and a reader who takes it for
+            # free memory has been told the opposite of what it measures.
+            _warning_lines(f"{budget.summary}. {RESERVATION_NOTE} {OOM_WARNING}"),
+        )
     )
     blocks.append(("raising that limit with --resize", _warning_lines(RESIZE_WARNING)))
     lines: list[str] = []

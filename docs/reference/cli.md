@@ -526,10 +526,10 @@ explain: what a pause costs on 'app'
   stopped in a debugger does not - which the kubelet cannot tell from a hang.
     readiness, 11-16s into a pause: ...
     liveness, 21-31s into a pause: ...
-explain: the memory a seat shares
-  512Mi pod limit, 256Mi of it reserved by the workload, leaving 256Mi for a
-  seat. podbench shares this pod's memory and ephemeral-storage limits and
-  cannot reserve its own: ...
+explain: the memory and disk a seat shares
+  512Mi pod limit, 256Mi of it reserved by the workload, 256Mi unreserved.
+  Reservations, not usage: this is read from the pod spec, and
+  metrics-server is not a dependency the launcher has. ...
 explain: raising that limit with --resize
   --resize raises the target container's memory limit in place ...
 ```
@@ -538,7 +538,8 @@ The capability half is **measured again**, by running `capreport` inside the
 running seat exactly as `attach` does. Nothing of an attach survives on the
 client, the seat is still there to be asked, and a report kept from an earlier
 session would age silently on a node whose Yama setting or LSM had changed
-underneath it. That costs one `kubectl exec` and is why it is behind a flag.
+underneath it. That costs two `kubectl exec` calls — `capreport` and the
+login-name probe the ssh stanza needs — which is why it is behind a flag.
 A pod whose seats are all dead gets the other three blocks and is told why the
 first is missing: `capreport` runs *inside* the seat, and a burnt container
 cannot answer.

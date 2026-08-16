@@ -28,6 +28,7 @@ from podbench.budget import (
     probe_explanation,
     probe_qualifier,
     probe_spend,
+    storage_warning,
     target_status,
 )
 
@@ -654,10 +655,22 @@ def test_a_limit_with_no_request_is_reserved_in_full() -> None:
     assert budget.free == 0
 
 
+def test_nothing_unreserved_is_said_as_a_reservation_not_as_free_memory() -> None:
+    """The number is limits less requests, so on a Guaranteed pod it is 0
+    however little the workload is resident. "0 free" would be a claim about
+    usage that nothing here measures; "reserves all of it" is what the spec
+    says, and a bare `0` in a column of `512Mi` reads as truncated anyway."""
+    warning = memory_warning(memory_budget(memory_pod(sized("app", "512Mi"))))
+    assert warning is not None
+    assert "the workload reserves all 512Mi of the pod limit" in warning
+    assert "free" not in warning
+    assert "0 " not in warning
+
+
 def test_a_pod_too_small_for_a_seat_is_told_how_short_and_what_to_type() -> None:
     warning = memory_warning(memory_budget(memory_pod(sized("app", "512Mi", "256Mi"))))
     assert warning is not None
-    assert "256Mi free of a 512Mi pod limit" in warning
+    assert "256Mi unreserved of a 512Mi pod limit" in warning
     assert "--resize 2Gi" in warning
     assert "\n" not in warning, "one line, so it can be scanned beside the others"
 
@@ -677,3 +690,78 @@ def test_an_unreadable_quantity_is_unmeasured_rather_than_unlimited() -> None:
     budget = memory_budget(memory_pod(sized("app", "512 megabytes")))
     assert budget.limit is None
     assert memory_warning(budget) is None
+
+
+def test_a_binary_kilobyte_limit_is_a_limit_and_not_an_absence() -> None:
+    """`Ki` is uppercase and `k` is not, and a suffix class that took `[Mk]i?`
+    accepted the nonexistent `ki` while rejecting the real `Ki` - so a pod
+    stating `600000Ki` read as having no memory limit at all and was told
+    nothing."""
+    budget = memory_budget(memory_pod(sized("app", "600000Ki")))
+    assert budget.limit == 600000 * 1024
+    warning = memory_warning(budget)
+    assert warning is not None
+    assert "585.9Mi" in warning
+
+
+def test_the_applied_limit_wins_over_the_one_the_resize_patch_asked_for() -> None:
+    """The resize subresource writes the *spec* and the kubelet may defer or
+    refuse it, so a pod read back straight after `--resize` can state a limit
+    its cgroup has not been given. R13 verified the applied value rather than
+    the spec, and `status.containerStatuses[].resources` is where the kubelet
+    publishes it."""
+    pod = memory_pod(sized("app", "4Gi", "256Mi"))
+    pod["status"] = {
+        "containerStatuses": [
+            {
+                "name": "app",
+                "resources": {
+                    "limits": {"memory": "512Mi"},
+                    "requests": {"memory": "256Mi"},
+                },
+            }
+        ]
+    }
+    budget = memory_budget(pod)
+    assert budget.limit == 512 * MIB, "the kubelet has not applied the 4Gi"
+    assert memory_warning(budget) is not None
+
+
+def test_a_status_that_publishes_no_resources_leaves_the_spec_in_charge() -> None:
+    """The field arrived with in-place resize and a cluster without it reports
+    nothing, which must not read as a container with no limits."""
+    pod = memory_pod(sized("app", "512Mi", "256Mi"))
+    pod["status"] = {"containerStatuses": [{"name": "app", "restartCount": 0}]}
+    assert memory_budget(pod).limit == 512 * MIB
+
+
+# -- the ephemeral-storage budget -------------------------------------------
+
+
+def stored(name: str, limit: str | None = None) -> dict[str, Any]:
+    resources: dict[str, Any] = {}
+    if limit is not None:
+        resources["limits"] = {"ephemeral-storage": limit}
+    return {"name": name, "resources": resources}
+
+
+def test_a_pod_whose_disk_a_seat_cannot_fit_in_is_told_so() -> None:
+    """Report 3.8: disk, not memory, is the constraint - and the failure is the
+    worse of the two, because exceeding the sum of the ephemeral-storage limits
+    evicts the whole pod rather than only the seat."""
+    warning = storage_warning(memory_pod(stored("app", "1Gi")))
+    assert warning is not None
+    assert "a 1Gi pod limit" in warning
+    assert "evicts the whole pod" in warning
+    assert "--resize raises memory only" in warning, "R13: --resize is memory-only"
+
+
+def test_a_pod_with_disk_to_spare_is_told_nothing_about_it() -> None:
+    assert storage_warning(memory_pod(stored("app", "4Gi"))) is None
+
+
+def test_a_pod_with_no_ephemeral_storage_limit_is_told_nothing_either() -> None:
+    """No pod-level ceiling to overrun; the node's own eviction thresholds are
+    not something the pod spec states or podbench can read."""
+    assert storage_warning(memory_pod(stored("app"))) is None
+    assert storage_warning(memory_pod(stored("app", "1Gi"), stored("sidecar"))) is None

@@ -54,6 +54,8 @@ spec:
           ports:
             - containerPort: 8080
           resources:
+            requests:
+              memory: 256Mi
             limits:
               memory: 3Gi
               ephemeral-storage: 4Gi
@@ -72,6 +74,12 @@ $ kubectl -n podbench-demo rollout status deploy/web
 The limits are deliberate and generous. A VS Code session is a **1.1–1.3 GB**
 working set on node disk, and in Observe mode it is spent from *this* pod's
 budget — see step 4 below.
+
+The `requests` line is deliberate too. A container that states a limit and no
+request has the limit as its request — the API server's own defaulting — so a
+3 Gi limit alone would reserve the whole 3 Gi for an `http.server`, and
+`attach` would report a pod with nothing unreserved for a seat. Stating the
+request is what makes the headroom real rather than nominal.
 
 Get the pod name:
 

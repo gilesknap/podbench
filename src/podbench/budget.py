@@ -69,6 +69,8 @@ __all__ = [
     "DEFAULT_PERIOD_SECONDS",
     "DEFAULT_TIMEOUT_SECONDS",
     "PROBE_FAILURE_REASON",
+    "RESERVATION_NOTE",
+    "SEAT_DISK_FOOTPRINT",
     "SEAT_WORKING_SET",
     "MemoryBudget",
     "ProbeBudget",
@@ -83,6 +85,7 @@ __all__ = [
     "probe_qualifier",
     "probe_spend",
     "probe_warning",
+    "storage_warning",
     "target_status",
 ]
 
@@ -1049,14 +1052,50 @@ MIB = 1024 * 1024
 GIB = 1024 * MIB
 
 SEAT_WORKING_SET = 1300 * MIB
-"""What a seat costs when VS Code is the client, in bytes.
+"""What a seat costs in *memory* when VS Code is the client, in bytes.
 
-Measured rather than budgeted for: vscode-server alone is 700-800 MB RSS, and
-1.1-1.3 GB once the extensions are in (the ``vscode-in-a-seat`` skill). The top
-of that range is the number used, because the failure this decides whether to
-warn about is unrecoverable - an OOM-killed ephemeral container cannot be
-restarted, and its name is burnt for the pod's lifetime.
+Two project sources state a working set and they are not measuring the same
+thing. Report §3.8 measured **~97 MiB idle RSS**, but with no client attached:
+no extension host and no language server was ever spawned, and R2 says in as
+many words that every RSS figure there is a **lower bound** and that where it
+bites is "the memory budget, the pod-resize headroom calculation". The
+``vscode-in-a-seat`` skill has the number for the case that is missing from the
+report - a real client, ~700-800 MB RSS for the server and 1.1-1.3 GB once the
+extensions are in - so that is the one used here, at the top of its range,
+because the failure this gate decides whether to warn about is unrecoverable:
+an OOM-killed ephemeral container cannot be restarted and its name is burnt for
+the pod's lifetime (§3.9).
+
+Not to be confused with :data:`SEAT_DISK_FOOTPRINT`, which is §3.8's 1.1-1.3 GB
+of *node disk* and happens to be the same range for unrelated reasons.
 """
+
+SEAT_DISK_FOOTPRINT = 1500 * MIB
+"""What a seat writes into its own container layer, in bytes.
+
+Report §3.8, measured: a 680.8 MiB extracted server plus a 330 M cpptools, and
+``~/.vscode-server`` reaching 995 MiB with one extension and 2.2 GB with six.
+Its stated total is "1.1-1.3 GB of node disk", and its amendment is
+"**restate the budget as ~1.5 GB**, or make trimming mandatory" - trimming is
+not mandatory here, so the amended figure is the one used, per the rule that
+where the brief and the report disagree the report wins.
+
+§3.8's own conclusion is that **disk, not memory, is the constraint**, and the
+consequence is worse than an OOM: exceeding the pod's ephemeral-storage limit
+evicts the *whole pod*, not just the seat.
+"""
+
+RESERVATION_NOTE = (
+    "Reservations, not usage: this is read from the pod spec, and metrics-server "
+    "is not a dependency the launcher has. A workload resident above its request "
+    "leaves a seat less than this and one below it leaves more, so the number is "
+    "what the pod promises rather than what is free right now."
+)
+"""Printed beside :attr:`MemoryBudget.summary` under ``status --explain``.
+
+The one thing a reader must not take the summary for is a measurement of free
+memory. Requests are a scheduling reservation; nothing in ``kubectl get pod``
+says what the workload is actually resident at."""
 
 
 @dataclass(frozen=True)
@@ -1085,11 +1124,12 @@ class MemoryBudget:
 
     @property
     def free(self) -> int | None:
-        """Bytes inside the ceiling that nothing has reserved.
+        """Bytes inside the ceiling that nothing has *reserved*.
 
-        An upper bound on what a seat can take without pushing the workload out
-        of its guaranteed share, and ``None`` when there is no ceiling to be
-        inside.
+        What a seat can take without pushing the workload out of its guaranteed
+        share, and ``None`` when there is no ceiling to be inside. Not free
+        memory: see :data:`RESERVATION_NOTE`, which every user-facing rendering
+        of this number carries.
 
         >>> MemoryBudget(512 * MIB, 256 * MIB).free == 256 * MIB
         True
@@ -1121,7 +1161,7 @@ class MemoryBudget:
         """The measurement in words, for ``podbench status --explain``.
 
         >>> MemoryBudget(512 * MIB, 256 * MIB).summary
-        '512Mi pod limit, 256Mi of it reserved by the workload, 256Mi for a seat'
+        '512Mi pod limit, 256Mi of it reserved by the workload, 256Mi unreserved'
         >>> MemoryBudget(None, 0).summary
         'no memory limit on this pod, so its cgroup has no ceiling for a seat to hit'
         """
@@ -1133,7 +1173,7 @@ class MemoryBudget:
             )
         return (
             f"{_human(self.limit)} pod limit, {_human(self.reserved)} of it "
-            f"reserved by the workload, {_human(free)} for a seat"
+            f"reserved by the workload, {_human(free)} unreserved"
         )
 
     @property
@@ -1154,7 +1194,7 @@ class MemoryBudget:
 
 
 def memory_budget(pod_json: Mapping[str, Any]) -> MemoryBudget:
-    """The ceiling this pod puts on a seat, read from the spec it already has.
+    """The ceiling this pod puts on a seat, read from the pod it already has.
 
     >>> pod = {"spec": {"containers": [{"name": "app", "resources": {
     ...     "limits": {"memory": "512Mi"}, "requests": {"memory": "256Mi"}}}]}}
@@ -1164,19 +1204,86 @@ def memory_budget(pod_json: Mapping[str, Any]) -> MemoryBudget:
     >>> memory_budget({"spec": {"containers": [{"name": "app"}]}}).limit is None
     True
     """
+    limit, reserved = _pod_ceiling(pod_json, "memory")
+    return MemoryBudget(limit=limit, reserved=reserved)
+
+
+def storage_warning(pod_json: Mapping[str, Any]) -> str | None:
+    """The one line an attach owes a pod whose disk a seat cannot fit in.
+
+    The other half of the caution :func:`memory_warning` replaced. §3.8's
+    conclusion is that **disk, not memory, is the constraint**, and its failure
+    is the worse of the two: exceeding the sum of the containers'
+    ``ephemeral-storage`` limits evicts the *whole pod*, where an OOM takes only
+    the seat.
+
+    Gated on the limit alone rather than on what the workload has reserved of
+    it, unlike the memory half. Eviction is decided on *usage* against that sum,
+    and a seat's 1.5 GB is new usage arriving in a layer nothing has accounted
+    for - so the fact worth stating is the one that is certain: a ceiling this
+    low has no room for a seat even in a pod writing nothing.
+
+    ``--resize`` is not the way out. It patches ``limits.memory`` and nothing
+    else (report R13), so the remedy is a pod with a larger limit.
+
+    >>> storage_warning({"spec": {"containers": [{"name": "app", "resources": {
+    ...     "limits": {"ephemeral-storage": "1Gi"}}}]}})
+    'ephemeral-storage: a 1Gi pod limit, and a seat writes ~1.5Gi into its own layer - exceeding it evicts the whole pod, and --resize raises memory only'
+    >>> storage_warning({"spec": {"containers": [{"name": "app", "resources": {
+    ...     "limits": {"ephemeral-storage": "4Gi"}}}]}}) is None
+    True
+    >>> storage_warning({"spec": {"containers": [{"name": "app"}]}}) is None
+    True
+    """  # noqa: E501
+    limit, _reserved = _pod_ceiling(pod_json, "ephemeral-storage")
+    if limit is None or limit >= SEAT_DISK_FOOTPRINT:
+        return None
+    return (
+        f"ephemeral-storage: a {_human(limit)} pod limit, and a seat writes "
+        f"~{_human(SEAT_DISK_FOOTPRINT)} into its own layer - exceeding it "
+        "evicts the whole pod, and --resize raises memory only"
+    )
+
+
+def _pod_ceiling(pod_json: Mapping[str, Any], key: str) -> tuple[int | None, int]:
+    """One resource's pod-wide ceiling, and what the workload reserved of it.
+
+    The ceiling is the sum of the containers' limits, because that is what the
+    pod's own cgroup is given, and ``None`` as soon as one container declares no
+    limit. The reservation is the sum of their requests, with a container that
+    states a limit and no request taking the limit as its request - the API
+    server's own defaulting.
+
+    Read from ``status.containerStatuses[*].resources`` in preference to the
+    spec wherever the kubelet publishes it. The resize subresource writes the
+    *spec* and the kubelet may then defer or refuse the change, so a pod read
+    back straight after ``--resize`` states a limit its cgroup has not been
+    given; R13 verified the applied value (``memory.max`` inside the container's
+    own cgroup) rather than the spec, and this is the same standard through the
+    only field that reports it.
+    """
+    applied = {
+        name: as_dict(entry.get("resources"))
+        for entry in _as_entries(
+            as_dict(pod_json.get("status")).get("containerStatuses")
+        )
+        if (name := _text(entry.get("name"))) is not None and "resources" in entry
+    }
     limit = 0
     reserved = 0
     unbounded = False
     for container in _as_entries(as_dict(pod_json.get("spec")).get("containers")):
-        resources = as_dict(container.get("resources"))
-        stated = _quantity(as_dict(resources.get("limits")).get("memory"))
-        request = _quantity(as_dict(resources.get("requests")).get("memory"))
+        resources = applied.get(_text(container.get("name")) or "") or as_dict(
+            container.get("resources")
+        )
+        stated = _quantity(as_dict(resources.get("limits")).get(key))
+        request = _quantity(as_dict(resources.get("requests")).get(key))
         if stated is None:
             unbounded = True
         else:
             limit += stated
         reserved += request if request is not None else (stated or 0)
-    return MemoryBudget(limit=None if unbounded else limit, reserved=reserved)
+    return None if unbounded else limit, reserved
 
 
 def memory_warning(budget: MemoryBudget) -> str | None:
@@ -1189,18 +1296,33 @@ def memory_warning(budget: MemoryBudget) -> str | None:
     and that an OOM'd ephemeral container is unrecoverable - is one command
     away in ``podbench status --explain``.
 
+    "Unreserved" rather than "free", and it is not a quibble: the number is
+    ``limits`` less ``requests``, so on a pod whose workload states a limit and
+    no request it is 0 however little that workload is resident (issue #54
+    review). Saying "0 free" of a pod running a 20 MB process would be the
+    report asserting something it has not measured; saying the workload has the
+    whole ceiling reserved is exactly what the spec says, and is why a seat
+    sharing it has nowhere to allocate from that is not someone else's
+    guarantee.
+
     >>> memory_warning(MemoryBudget(4 * GIB, 256 * MIB)) is None
     True
     >>> memory_warning(MemoryBudget(512 * MIB, 256 * MIB))
-    'memory: 256Mi free of a 512Mi pod limit, and a VS Code seat needs 1.1-1.3Gi - re-attach with --resize 2Gi'
+    'memory: 256Mi unreserved of a 512Mi pod limit, and a VS Code seat needs 1.1-1.3Gi it cannot reserve - re-attach with --resize 2Gi'
+    >>> memory_warning(MemoryBudget(512 * MIB, 512 * MIB))
+    'memory: the workload reserves all 512Mi of the pod limit, and a VS Code seat needs 1.1-1.3Gi it cannot reserve - re-attach with --resize 2Gi'
     """  # noqa: E501
     free = budget.free
     if budget.fits or free is None or budget.limit is None:
         return None
+    room = (
+        f"the workload reserves all {_human(budget.limit)} of the pod limit"
+        if free == 0
+        else f"{_human(free)} unreserved of a {_human(budget.limit)} pod limit"
+    )
     return (
-        f"memory: {_human(free)} free of a {_human(budget.limit)} pod limit, "
-        "and a VS Code seat needs 1.1-1.3Gi - re-attach with "
-        f"--resize {budget.suggestion}"
+        f"memory: {room}, and a VS Code seat needs 1.1-1.3Gi it cannot "
+        f"reserve - re-attach with --resize {budget.suggestion}"
     )
 
 
@@ -1220,7 +1342,17 @@ _SUFFIXES = {
     "Ei": 1024**6,
 }
 
-_QUANTITY = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(?:[eE]([+-]?[0-9]+))?([EPTGMk]i?)?$")
+_QUANTITY = re.compile(
+    r"^([0-9]+(?:\.[0-9]+)?)(?:[eE]([+-]?[0-9]+))?(Ki|Mi|Gi|Ti|Pi|Ei|[kMGTPE])?$"
+)
+"""Kubernetes' two suffix families, spelled out rather than as a character class.
+
+They differ in case where it matters: the decimal one is lowercase ``k`` and the
+binary one is uppercase ``Ki``. A class of ``[EPTGMk]i?`` accepts the
+nonexistent ``ki`` and rejects the real ``Ki``, which read as *no limit at all*
+on a pod stating ``1500Ki`` - and left the ``"Ki"`` entry in :data:`_SUFFIXES`
+unreachable, which is the tell.
+"""
 
 
 def _quantity(value: Any) -> int | None:
@@ -1232,6 +1364,8 @@ def _quantity(value: Any) -> int | None:
 
     >>> [_quantity(text) for text in ("512Mi", "1.5Gi", "128974848", "129e6")]
     [536870912, 1610612736, 128974848, 129000000]
+    >>> [_quantity(text) for text in ("1500Ki", "1500k")]
+    [1536000, 1500000]
     >>> _quantity("a lot") is None
     True
     """
@@ -1248,12 +1382,16 @@ def _quantity(value: Any) -> int | None:
 def _human(size: int) -> str:
     """Bytes back in the units the pod spec would have stated them in.
 
+    The unit is never dropped, including on zero: these numbers are read beside
+    ``512Mi`` and ``4Gi``, and a bare ``0`` in that column reads as a truncated
+    value rather than as none.
+
     >>> [_human(n) for n in (536870912, 4 * GIB, 1610612736, 0)]
-    ['512Mi', '4Gi', '1.5Gi', '0']
+    ['512Mi', '4Gi', '1.5Gi', '0B']
     """
     for unit, name in ((GIB, "Gi"), (MIB, "Mi"), (1024, "Ki")):
         if size >= unit:
             if size % unit == 0:
                 return f"{size // unit}{name}"
             return f"{size / unit:.1f}{name}"
-    return str(size)
+    return f"{size}B"
