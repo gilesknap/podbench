@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b5.dev53+gbd5b003a2 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=df4132fe"></script>
+    <script src="../_static/documentation_options.js?v=cc79f0a7"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -823,7 +823,10 @@ entries and leaves any hand-written configuration alone.</p>
 <p>For a <strong>Python</strong> target the answer is debugpy rather than gdb, and it depends on
 the architecture as well as the language — the
 <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">CLI reference</span></a> has the three axes and what each one
-changes.</p>
+changes. A stock Python image has no debugpy for the injection to bootstrap
+with, and <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> then prints the <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span></code> that puts one inside
+the target; <code class="docutils literal notranslate"><span class="pre">--provision</span></code> runs it, at the cost of ~15 MB of the pod’s ephemeral
+storage, egress from the pod, and nothing that survives a restart.</p>
 <p>VS Code reads <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> from the folder that is <strong>open</strong>, not from
 <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>. A config written to <code class="docutils literal notranslate"><span class="pre">~</span></code> when you opened <code class="docutils literal notranslate"><span class="pre">/</span></code> never appears in the Run
 and Debug list, and nothing reports an error.</p>
