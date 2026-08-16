@@ -269,8 +269,8 @@ Patch mode — a PVC mounted over the app's venv so a fix survives restarts and
 reschedules — is the one mode that requires deploy-time cooperation, because
 durable-across-restart code must sit on a volume that was present in the pod
 spec at creation: pod volumes are immutable and a container's rootfs is reset on
-every restart. The workflow ships as `podbench patch`
+every restart. The workflow ships as `podbench hotfix`
 (`init`/`apply`/`status`/`consolidate`, plus `--print-values` for the chart
 snippet), but it has only ever been exercised against unit tests: no cluster has
 run it, and `attach` cannot yet mount the claim into the seat, so the seat must
-be authored by hand or `patch` run inside it with `--local`.
+be authored by hand or `hotfix` run inside it with `--local`.

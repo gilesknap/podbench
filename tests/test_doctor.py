@@ -465,7 +465,7 @@ def test_each_feature_is_reported_separately(home: Path) -> None:
     verdicts = statuses(report)
     assert verdicts["resize"] is Status.WARN
     assert verdicts["iterate"] is Status.OK
-    assert verdicts["patch"] is Status.OK
+    assert verdicts["hotfix"] is Status.OK
 
 
 def test_a_cluster_that_cannot_be_reached_is_unknown_and_not_denied(

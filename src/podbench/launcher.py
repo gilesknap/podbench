@@ -335,7 +335,7 @@ def resolve_mounts(
     would then resolve a different tree at the same path).
 
     A claim name is accepted as well as a volume name because that is what the
-    user has in hand (``patch --print-values`` names the claim), while a mount
+    user has in hand (``hotfix --print-values`` names the claim), while a mount
     refers to the pod's volume *entry*.
     """
     volumes = [
@@ -524,7 +524,7 @@ def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
         "exists, so podbench cannot add one now. This is exactly why Patch mode "
         "needs the chart's cooperation at deploy time - redeploy the workload "
         f"with a volume bound to claim {name!r}, mounted over the application's "
-        "venv path (`podbench patch --print-values` emits the volume, the "
+        "venv path (`podbench hotfix --print-values` emits the volume, the "
         "volumeMount and the seeding initContainer). The pod currently declares: "
         + (", ".join(str(entry) for entry in declared) or "no volumes")
     )

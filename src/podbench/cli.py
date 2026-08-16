@@ -44,9 +44,9 @@ def new_app() -> typer.Typer:
 def require_subcommand(ctx: typer.Context) -> None:
     """No verb at all: print the help and exit 2, as argparse did.
 
-    Click's own ``no_args_is_help`` exits 0, which would make ``podbench patch``
+    Click's own ``no_args_is_help`` exits 0, which would make ``podbench hotfix``
     with nothing after it look like a command that succeeded. It is a usage
-    error, and ``patch status`` is documented as usable in a shutdown checklist,
+    error, and ``hotfix status`` is documented as usable in a shutdown checklist,
     so the difference between 0 and 2 is load-bearing there.
 
     ``ctx.get_help()`` returns the text under plain click but renders it to the

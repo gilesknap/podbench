@@ -4,7 +4,7 @@ Podbench has three modes. They are not three interfaces to the same thing — ea
 makes a different trade against the pod it is aimed at, and the trade decides which is
 available to you before taste does.
 
-| | `attach` | `dev` | `patch` |
+| | `attach` | `dev` | `hotfix` |
 |---|---|---|---|
 | **What it does** | puts a seat in the running pod | runs a sacrificial clone of it | makes an edit outlive the session |
 | **Touches the workload** | no — adds a container to the pod | no — the origin is left alone | yes — needs a claim in the chart |
@@ -20,10 +20,10 @@ A workload is a singleton when a second copy of it is not merely wasteful but wr
 holds a device that accepts one connection, claims a name on the network, or takes a lock.
 An EPICS IOC is usually all three at once.
 
-`attach` and `patch` never make a second copy — one works inside the running pod, the
+`attach` and `hotfix` never make a second copy — one works inside the running pod, the
 other restarts it in place. `dev` is built on a clone, so for a singleton it produces two
 processes competing for the same device and the same names. There is no flag for this;
-the clone *is* the mode. Use `patch` for a singleton that needs an inner loop.
+the clone *is* the mode. Use `hotfix` for a singleton that needs an inner loop.
 
 ## GitOps-safe
 
@@ -34,9 +34,9 @@ telling you.
 `attach` is clear because its mutations are pod-level — an ephemeral container and an
 in-place resize — and pods made by a controller are not compared against git. `dev` is
 currently at risk from the other direction: the clone can look like a tracked resource
-that has gone missing from git, and be pruned mid-session. `patch` works, but records its
+that has gone missing from git, and be pruned mid-session. `hotfix` works, but records its
 provenance on the pod template, which self-heal strips — so the fix keeps running while
-`patch status` stops being able to see it. Both are fixable; both are open.
+`hotfix status` stops being able to see it. Both are fixable; both are open.
 
 ## Languages
 
@@ -49,12 +49,12 @@ anything. What is Python-specific is `dev-bootstrap`, which clones, runs `uv syn
 does an editable install. For another language, prepare the workspace yourself and use
 `podbench run`.
 
-`patch` is Python throughout: it reads `pyvenv.cfg`, mounts a claim over the application's
+`hotfix` is Python throughout: it reads `pyvenv.cfg`, mounts a claim over the application's
 venv, and re-runs an editable install. Generalising it is [#34](https://github.com/gilesknap/podbench/issues/34).
 
 ## If you only remember one thing
 
 Start with `attach`. It is safe against anything, needs nothing from the chart, and
 answers most questions. Reach for `dev` when you need a fast edit-and-rerun loop and the
-workload tolerates a second copy; reach for `patch` when the fix has to survive a restart,
+workload tolerates a second copy; reach for `hotfix` when the fix has to survive a restart,
 or when it needs a loop and a second copy is out of the question.

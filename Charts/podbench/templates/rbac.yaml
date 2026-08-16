@@ -55,7 +55,7 @@ rules:
     resources: ["pods/resize"]
     verbs: ["patch"]
   {{- end }}
-  {{- if .Values.rbac.patch }}
+  {{- if .Values.rbac.hotfix }}
   # Patch mode builds on rbac.observe — it reads the pod to find the application
   # container and its imageID, and reaches the claim's git checkout by exec'ing
   # into the seat — and adds the following.
@@ -78,7 +78,7 @@ rules:
     verbs: ["patch"]
   # A pod with no pod template — unowned, or owned by something podbench does not
   # template — takes the annotations directly, and when it does have a controller
-  # it is deleted so the controller replaces it with the patch picked up. An
+  # it is deleted so the controller replaces it with the hotfix picked up. An
   # unowned pod is never deleted: nothing would bring it back.
   - apiGroups: [""]
     resources: ["pods"]
