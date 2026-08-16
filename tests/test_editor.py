@@ -165,6 +165,11 @@ class FakeSeat:
         raise AssertionError(f"nothing opened a folder: {self.calls}")
 
 
+def _seat_calls(seat: FakeSeat) -> int:
+    """How many calls have reached the pod - the ssh preflight reaches nothing."""
+    return len([call for call in seat.calls if call[0] not in ("ssh", "code")])
+
+
 def _result(returncode: int, *, stdout: str = "", stderr: str = "") -> CommandResult:
     return CommandResult((), returncode, stdout, stderr if returncode else "")
 
@@ -440,7 +445,13 @@ def test_provision_asks_the_seat_and_gets_a_launch_json() -> None:
 
 def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
     """It is a uv resolve and download into somebody else's writable layer. A
-    cost named after the write is not a cost the user got to decline."""
+    cost named after the write is not a cost the user got to decline.
+
+    Counted in *seat* calls rather than in calls: the reachability preflight
+    runs first and deliberately so - provisioning writes into the workload and
+    ptraces it, which is not worth spending on a seat no editor can reach - but
+    it opens one ssh connection and changes nothing.
+    """
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     timeline: list[tuple[str, int]] = []
     open_seat(
@@ -448,7 +459,7 @@ def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
         SEAT,
         alias=ALIAS,
         folder=HOME,
-        report=lambda note: timeline.append((note, len(seat.calls))),
+        report=lambda note: timeline.append((note, _seat_calls(seat))),
         editor="code",
         provision=True,
         runner=seat,
