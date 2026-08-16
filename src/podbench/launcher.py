@@ -85,6 +85,7 @@ from .sshcfg import (
 
 __all__ = [
     "CAPREPORT_ARGV",
+    "CONFIG_D",
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
     "HOST_KEY_ARGV",
@@ -115,6 +116,7 @@ __all__ = [
     "format_age",
     "format_pod_choices",
     "format_session",
+    "identity_paths",
     "list_seats",
     "main",
     "match_pod_choices",
@@ -135,6 +137,7 @@ __all__ = [
     "seats",
     "spec_env",
     "ssh_config_path",
+    "ssh_include_line",
     "ssh_stanza",
     "target_container_name",
     "try_resize",
@@ -177,6 +180,13 @@ produce exactly the paths the launcher puts in the ProxyCommand."""
 DEFAULT_CLIENT_DIR = "~/.podbench"
 CLIENT_DIR_ENV = "PODBENCH_CONFIG_DIR"
 DEFAULT_IDENTITY = "~/.ssh/id_ed25519"
+
+CONFIG_D = "config.d"
+"""Subdirectory of the client dir holding one generated stanza per pod.
+
+Its name is in the ``Include`` line the user adds to ``~/.ssh/config`` as well
+as in every path podbench writes, so the two are derived from this rather than
+spelled twice — see :func:`ssh_include_line`."""
 
 DEFAULT_SEAT_USER = SEAT_USER
 """ssh login name for a non-root seat. sshd resolves it through NSS, so the seat
@@ -1562,7 +1572,33 @@ def ssh_config_path(directory: Path, pod: PodRef) -> Path:
     the name would silently leave a stanza behind pointing at a pod that no
     longer exists.
     """
-    return directory / "config.d" / f"{pod.namespace}-{pod.name}.conf"
+    return directory / CONFIG_D / f"{pod.namespace}-{pod.name}.conf"
+
+
+def ssh_include_line(directory: Path) -> str:
+    """The one line ``~/.ssh/config`` needs for those files to be read.
+
+    Derived from the same :data:`CONFIG_D` the stanzas are written under, so the
+    advice cannot come to name a directory nothing writes to. ``podbench
+    doctor`` checks for this line and ``--fix`` splices it in; ``attach`` prints
+    it, because the user may be the only one allowed to edit that file.
+
+    >>> ssh_include_line(Path("/home/dev/.podbench"))
+    'Include /home/dev/.podbench/config.d/*.conf'
+    >>> ssh_include_line(Path("/Users/Jo Smith/.podbench"))
+    'Include "/Users/Jo Smith/.podbench/config.d/*.conf"'
+    """
+    glob = str(directory / CONFIG_D / "*.conf")
+    # ssh_config splits a directive's arguments on whitespace, so an unquoted
+    # `/Users/Jo Smith/...` reaches OpenSSH as two paths and neither exists -
+    # and `doctor` reads it back with the same split, so the check would report
+    # MISSING for ever and `--fix` would prepend the line again on every run.
+    # Double quotes are the quoting ssh_config understands; shlex.quote's single
+    # quotes are not. Only quoted when needed, so the line a reader is asked to
+    # paste stays the plain one everywhere it can.
+    if any(character.isspace() for character in glob):
+        return f'Include "{glob}"'
+    return f"Include {glob}"
 
 
 def forget_ssh_config(
@@ -1584,7 +1620,16 @@ def forget_ssh_config(
     return removed
 
 
-def _identity_paths(identity: str) -> tuple[Path, Path]:
+def identity_paths(identity: str) -> tuple[Path, Path]:
+    """The private and public halves of an ssh key named by either.
+
+    Public because ``doctor`` reports on the same pair this module refuses
+    without, and a second spelling of ".pub" would be a second thing to keep
+    true.
+
+    >>> [path.name for path in identity_paths("/keys/id_ed25519")]
+    ['id_ed25519', 'id_ed25519.pub']
+    """
     private = Path(identity).expanduser()
     return private, private.with_name(private.name + ".pub")
 
@@ -1597,7 +1642,7 @@ def read_public_key(identity: str) -> tuple[str, str]:
     and a mismatch between them is a login refused for reasons neither file
     explains.
     """
-    private, public = _identity_paths(identity)
+    private, public = identity_paths(identity)
     if not public.is_file():
         raise LauncherError(
             f"no ssh public key at {public}. podbench authorises this key inside "
@@ -1701,7 +1746,13 @@ def emit_ssh_config(
             [
                 *notes,
                 f"ssh config written to {path}",
-                f"add this to ~/.ssh/config once:  Include {directory}/config.d/*.conf",
+                # The hint names the verb that *checks* the edit as well as the
+                # line itself: this one is the only setup step podbench has ever
+                # asked a user to make by hand, and until `doctor` existed
+                # nothing verified it had been made, or made correctly - above
+                # any Host * block, where ssh will read it first.
+                f"add this to ~/.ssh/config once:  {ssh_include_line(directory)}",
+                "or let podbench check and add it:  podbench doctor --fix",
                 f"then:  ssh {alias}   (or Remote-SSH: Connect to Host -> {alias})",
                 # The VS Code debugger needs a launch.json whose pid,
                 # sysroot-prefixed program and setup ordering are all things

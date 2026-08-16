@@ -78,6 +78,8 @@ It is the same program either way.
 
 Full prerequisites, cluster-side RBAC and the one-time ssh `Include` line — the
 only thing that does outlive the command — are in the *Installation* tutorial.
+`uvx podbench doctor` checks all three from your machine and names whatever is
+missing; `--fix` adds the `Include`.
 
 ## Observe mode in one command
 
@@ -110,6 +112,7 @@ measured
 
 ssh config written to ~/.podbench/config.d/demo-web-7d9f8c5b4-x2k9p.conf
 add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+or let podbench check and add it:  podbench doctor --fix
 then:  ssh podbench-demo-web-7d9f8c5b4-x2k9p
 ```
 

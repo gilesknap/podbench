@@ -1,4 +1,5 @@
-"""The chart's half of two contracts: seat identity, and values.schema.json.
+"""The chart's half of three contracts, checked against the code's: seat
+identity, the RBAC table, and ``values.schema.json``.
 
 Everything else in the suite asserts the *Python* side agrees with itself: the
 launcher mounts what :mod:`podbench.model` names, the snippet points at what
@@ -11,6 +12,10 @@ every one of those tests and ``helm lint`` too, and surfaces at runtime as
 The mounts are asked of :func:`podbench.launcher.seat_identity_mounts` against a
 pod built from :func:`podbench.patch.values_snippet`, rather than written out
 here, so this file cannot drift from either half by being edited to match.
+
+The second contract is the RBAC table. ``podbench doctor`` reports each feature
+as allowed or missing and names the ``rbac.<flag>`` that grants it, which is
+only useful advice if that flag really does grant the verbs it asked about.
 
 ``values.schema.json`` is checked the same way, by asking helm rather than by
 reading the JSON: helm is what enforces it, and what it enforces - a refusal at
@@ -30,6 +35,7 @@ import pytest
 import yaml
 
 from podbench.agent import GROUP_PATH, PASSWD_PATH
+from podbench.doctor import FEATURES, RbacFeature
 from podbench.launcher import SEAT_IDENTITY_MOUNTS, seat_identity_mounts
 from podbench.model import (
     SEAT_GROUP_KEY,
@@ -267,6 +273,67 @@ def test_a_dev_pods_sidecar_logs_in_as_the_uid_the_chart_wrote(
         pod["spec"]["securityContext"]["fsGroup"]
         == snippet["podSecurityContext"]["fsGroup"]
     )
+
+
+def granted_by(flag: str) -> set[tuple[str, str]]:
+    """Every ``(resource, verb)`` the Role carries with only ``flag`` switched on.
+
+    ``rbac.observe`` defaults to true, so it is turned off explicitly: without
+    that, every feature's rules would arrive with observe's mixed in and a grant
+    checked under the wrong flag would pass.
+
+    A resource is spelled the way ``kubectl auth can-i`` takes it -
+    ``deployments.apps``, ``pods/exec`` - because that is the spelling
+    :mod:`podbench.doctor` asks the apiserver with.
+    """
+    rendered = subprocess.run(
+        [
+            "helm",
+            "template",
+            "pb",
+            str(CHART),
+            "--set",
+            "rbac.create=true",
+            "--set",
+            "rbac.observe=false",
+            "--set",
+            f"rbac.{flag}=true",
+            "--show-only",
+            "templates/rbac.yaml",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    role = next(
+        document
+        for document in yaml.safe_load_all(rendered)
+        if document and document.get("kind") == "Role"
+    )
+    return {
+        (resource if not group else f"{resource}.{group}", verb)
+        for rule in role["rules"]
+        for group in rule["apiGroups"]
+        for resource in rule["resources"]
+        for verb in rule["verbs"]
+    }
+
+
+@pytest.mark.parametrize("feature", FEATURES, ids=lambda feature: feature.name)
+def test_the_chart_grants_every_verb_doctor_checks_for(feature: RbacFeature) -> None:
+    """doctor's RBAC table against the chart's, one feature at a time.
+
+    A subset rather than an equality: the chart is deliberately the more
+    generous of the two - it also grants ``pods/log`` and the ``list``/``watch``
+    verbs podbench never issues - and narrowing it to exactly what the launcher
+    uses is a separate decision from this one. The direction that matters is
+    this one. A grant doctor reports as missing under ``rbac.iterate`` that
+    ``rbac.iterate`` does not actually give would send a reader to install a
+    chart flag that cannot fix their report, which is worse than not having been
+    told.
+    """
+    checked = {(grant.resource, grant.verb) for grant in feature.grants}
+    assert checked <= granted_by(feature.chart_flag)
 
 
 def test_the_generated_schema_is_committed_and_covers_every_default() -> None:
