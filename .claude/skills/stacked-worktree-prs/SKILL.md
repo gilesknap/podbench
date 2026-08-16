@@ -99,6 +99,47 @@ the parent corrected** and confirm no branch upstream of it says the old thing. 
 applies to any enumerated fact that exists in more than one file — an exit-code table, a
 capability list, a sample of command output.
 
+## Merge a child only once GitHub has retargeted its base
+
+GitHub retargets a stacked PR's base to `main` when its parent merges, but **not
+instantly**. Merge the child in the same breath as the parent and it merges into the
+*parent branch* instead, reporting `MERGED` and leaving `main` without it. On 2026-08-16
+that put `src/podbench/editor.py` nowhere near `main` while #61 read as merged, and the
+recovery was a fresh PR for the same commits.
+
+Between merges, read the child's base back and wait for it to say `main`:
+
+```
+gh pr view <child> --json baseRefName,mergeStateStatus
+```
+
+`UNKNOWN`/`UNKNOWN` means GitHub is still computing — that is not permission to proceed.
+
+## A branch image is a moving target, and the node caches it
+
+Every branch push republishes **the same tag**, `0.1.0-beta.5-<branch-slug>`, over the
+previous build, and a seat pulls `IfNotPresent`. So a node that pulled that tag for an
+earlier test **keeps serving the old layer**: the attach succeeds, the version looks
+plausible, and the run silently measures code from an hour ago. It bit both cluster
+verifications on 2026-08-16 — one of them re-testing the very fix that had just been
+pushed.
+
+This is a *branch prerelease* problem only. A release tag is minted once and never
+rewritten, so production never hits it.
+
+Before trusting any cluster result, prove which build you are on, from inside the seat:
+
+```
+podbench --version                      # must derive from the tip you think you pushed
+sh -c 'command -v capreport || echo ABSENT'   # a deleted alias is a cheap era marker
+```
+
+Then pin the digest rather than the tag — `model.py` supports it:
+
+```
+PODBENCH_IMAGE=ghcr.io/gilesknap/podbench@sha256:<index-digest>
+```
+
 ## Pacing a batch through CodeRabbit
 
 `.coderabbit.yaml` sets `reviews.auto_review.enabled: false` and says why, so nothing is
