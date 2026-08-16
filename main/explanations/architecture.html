@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Architecture &#8212; podbench 0.1.0b4.dev33+g122f2edbc documentation</title>
+    <title>Architecture &#8212; podbench 0.1.0b4.dev35+g18f9d3421 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=5b83d658"></script>
+    <script src="../_static/documentation_options.js?v=14d22ba8"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -798,11 +798,11 @@ worked yesterday” is explicable.</p>
 reschedules — is the one mode that requires deploy-time cooperation, because
 durable-across-restart code must sit on a volume that was present in the pod
 spec at creation: pod volumes are immutable and a container’s rootfs is reset on
-every restart. The workflow ships as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span></code>
+every restart. The workflow ships as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span></code>
 (<code class="docutils literal notranslate"><span class="pre">init</span></code>/<code class="docutils literal notranslate"><span class="pre">apply</span></code>/<code class="docutils literal notranslate"><span class="pre">status</span></code>/<code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, plus <code class="docutils literal notranslate"><span class="pre">--print-values</span></code> for the chart
 snippet), but it has only ever been exercised against unit tests: no cluster has
 run it, and <code class="docutils literal notranslate"><span class="pre">attach</span></code> cannot yet mount the claim into the seat, so the seat must
-be authored by hand or <code class="docutils literal notranslate"><span class="pre">patch</span></code> run inside it with <code class="docutils literal notranslate"><span class="pre">--local</span></code>.</p>
+be authored by hand or <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> run inside it with <code class="docutils literal notranslate"><span class="pre">--local</span></code>.</p>
 </section>
 </section>
 

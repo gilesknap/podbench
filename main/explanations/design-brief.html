@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench &#8212; podbench 0.1.0b4.dev33+g122f2edbc documentation</title>
+    <title>Podbench &#8212; podbench 0.1.0b4.dev35+g18f9d3421 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=5b83d658"></script>
+    <script src="../_static/documentation_options.js?v=14d22ba8"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -517,7 +517,7 @@
 <ul class="simple">
 <li><p><strong>Observe mode</strong> — attach to a live pod, connect VS Code Remote-SSH through the Kubernetes API, and drive gdb against the workload’s processes. Built for distroless targets that have no shell of their own.</p></li>
 <li><p><strong>Iterate mode</strong> — mint a sacrificial copy of the pod with an idle main container, build an editable Python environment with uv inside the debug container, edit the checkout directly in VS Code (no laptop-to-cluster sync — the editor is already there), and relaunch on demand. This is the expected majority use case: small amounts of in-cluster dev for features that are hard to exercise in CI.</p></li>
-<li><p><strong>Patch mode</strong> (final phase) — for emergency fixes that must outlive the session: a helm-enabled PVC mounted over the app’s venv makes a patch survive container restarts and pod reschedules for the rest of an operational run (beamtime), then consolidates into a proper image rebuild at the next shutdown.</p></li>
+<li><p><strong>Hotfix mode</strong> (final phase) — for emergency fixes that must outlive the session: a helm-enabled PVC mounted over the app’s venv makes a hotfix survive container restarts and pod reschedules for the rest of an operational run (beamtime), then consolidates into a proper image rebuild at the next shutdown.</p></li>
 </ul>
 <p>Tilt, Skaffold, Okteto and mirrord validate the demand; none of them offer this specific shape — no file sync, no traffic interception, just “the editor is inside the cluster.” That’s the differentiator to protect as the design evolves.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>              laptop
@@ -575,7 +575,7 @@
 <td><p>A sacrificial clone of the pod with the app container’s command replaced by an idle process and probes stripped — the safe arena for edit-relaunch. The launcher authors the copied spec itself, so the dev pod can also gain volumes, a true sidecar, and its own resource limits.</p></td>
 </tr>
 <tr class="row-odd"><td><p>PVC mounted over the venv (helm-toggled)</p></td>
-<td><p>Existing facility mechanism: patches persist across container restarts and pod reschedules. Mounted at the same path in the debug container, it is a genuinely shared filesystem — the durable substrate for Patch mode.</p></td>
+<td><p>Existing facility mechanism: hotfixes persist across container restarts and pod reschedules. Mounted at the same path in the debug container, it is a genuinely shared filesystem — the durable substrate for Hotfix mode.</p></td>
 </tr>
 </tbody>
 </table>
@@ -596,7 +596,7 @@
 <li><p><strong>No resource isolation on the live pod.</strong> Ephemeral containers can’t declare resources; vscode-server plus gdb symbol-loading can eat hundreds of MB inside the pod’s existing memory limit and get the <em>workload</em> OOM-killed. This is the loudest warning the docs need — and the reason Observe mode has a strict weight budget (see “Storage, and staying agnostic”).</p></li>
 <li><p><strong>Ephemeral-storage limits evict pods.</strong> The debug container’s writes — vscode-server, clones, caches — count toward the pod’s ephemeral-storage accounting; exceed the limit (2 GB is a realistic facility default) and the kubelet evicts the whole pod, workload included.</p></li>
 <li><p><strong>Mount namespaces don’t share paths.</strong> A <code class="docutils literal notranslate"><span class="pre">.pth</span></code> written into the target’s site-packages pointing at a checkout in the <em>debug</em> container’s filesystem dangles — the target resolves paths in its own namespace. Interpreter, venv, and checkout must live on the same side. Podbench standardizes on: everything in the debug container.</p></li>
-<li><p><strong>Don’t fight the kubelet.</strong> If PID 1 exits, the container restarts with pristine image code; if it’s SIGSTOPped, liveness probes kill it anyway, and a stopped process still holds its listening socket. Hence Iterate mode runs on a <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> clone where PID 1 is inert by construction, never by pausing the live pod. (Patch mode deliberately inverts this: once the venv persists on a PVC, the container restart <em>is</em> the relaunch mechanism.)</p></li>
+<li><p><strong>Don’t fight the kubelet.</strong> If PID 1 exits, the container restarts with pristine image code; if it’s SIGSTOPped, liveness probes kill it anyway, and a stopped process still holds its listening socket. Hence Iterate mode runs on a <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> clone where PID 1 is inert by construction, never by pausing the live pod. (Hotfix mode deliberately inverts this: once the venv persists on a PVC, the container restart <em>is</em> the relaunch mechanism.)</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem</span></code> is common in prod.</strong> Never depend on writing into the target container’s filesystem; <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a read path in the standard workflows.</p></li>
 </ul>
 </section>
@@ -621,13 +621,13 @@
 </section>
 <section id="storage-and-staying-agnostic">
 <h2>Storage, and staying agnostic<a class="headerlink" href="#storage-and-staying-agnostic" title="Link to this heading">#</a></h2>
-<p>Design principle: <strong>the target needs nothing.</strong> Observe and Iterate modes must work against any pod, from any chart, completely unmodified — only Patch mode may ask for deploy-time cooperation. Where each mode’s disk comes from follows from that principle:</p>
+<p>Design principle: <strong>the target needs nothing.</strong> Observe and Iterate modes must work against any pod, from any chart, completely unmodified — only Hotfix mode may ask for deploy-time cooperation. Where each mode’s disk comes from follows from that principle:</p>
 <ul class="simple">
 <li><p><strong>The debug container’s own writable layer is the default.</strong> Ephemeral containers can’t mount new volumes, but their rootfs is writable and node-backed — vscode-server already lives there. The catch is the accounting above: on the live pod, every byte competes with the workload’s ephemeral-storage budget.</p></li>
 <li><p><strong>Observe mode is a cockpit, not a workshop.</strong> No full clone on the live pod: gdb fetches both symbols <em>and sources</em> over debuginfod, VS Code reads target files through the sysroot, extensions stay minimal. Soft budget: fit comfortably inside ~1 GB so a 2 GB-limit pod is never at eviction risk. Anything heavier than looking belongs in a dev pod.</p></li>
 <li><p><strong>Iterate mode escapes every limit, because the dev pod is authored.</strong> <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> is only a convenience; the launcher builds the pod spec itself and may change anything: podbench as a true sidecar (not an ephemeral container) with its own memory and ephemeral-storage requests, plus a workspace volume. The clone, venv, uv cache, and vscode-server all live here — the OOM and eviction footguns do not apply to this mode.</p></li>
 <li><p><strong>The scratch PVC is podbench-side scaffolding, never a target-side requirement.</strong> <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">init</span></code> (optional, once per namespace) provisions a per-user or per-team PVC; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> mounts it so workspaces survive dev-pod teardown and reattach takes seconds. Without it, <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> works with zero setup. RWO is fine — one dev pod mounts it — at the cost of pinning that pod to the volume’s node.</p></li>
-<li><p><strong>Patch mode is the one licensed exception, and unavoidably so.</strong> Durable-across-restart code must sit on a volume present in the pod spec at creation: pod volumes are immutable, and a container’s rootfs is reset on every restart. The chart-untouching alternatives are strictly worse — a mutating admission webhook is a cluster component to own; launcher-recreated pods fight the controller and helm. The helm parameter is the right mechanism.</p></li>
+<li><p><strong>Hotfix mode is the one licensed exception, and unavoidably so.</strong> Durable-across-restart code must sit on a volume present in the pod spec at creation: pod volumes are immutable, and a container’s rootfs is reset on every restart. The chart-untouching alternatives are strictly worse — a mutating admission webhook is a cluster component to own; launcher-recreated pods fight the controller and helm. The helm parameter is the right mechanism.</p></li>
 </ul>
 </section>
 <section id="the-image">
@@ -687,25 +687,25 @@
 <p>Accept</p>
 <p>A stranger with a kind cluster can go from README to a connected VS Code session using only published artifacts.</p>
 </section>
-<section id="phase-6-patch-mode-durable-in-place-fixes">
-<h3>Phase 6 — Patch mode — durable in-place fixes<a class="headerlink" href="#phase-6-patch-mode-durable-in-place-fixes" title="Link to this heading">#</a></h3>
+<section id="phase-6-hotfix-mode-durable-in-place-fixes">
+<h3>Phase 6 — Hotfix mode — durable in-place fixes<a class="headerlink" href="#phase-6-hotfix-mode-durable-in-place-fixes" title="Link to this heading">#</a></h3>
 <p>Deliberately last: it builds on everything before it and on an existing facility mechanism — a helm parameter that mounts a PVC over the app container’s venv path. The operational story: an emergency fix goes in mid-run when a full release cycle is too expensive, survives every restart and reschedule until the next shutdown, and is then consolidated into a proper image rebuild and the PVC retired.</p>
 <p>The PVC changes the physics of the earlier phases, in Podbench’s favor:</p>
 <ul class="simple">
 <li><p><strong>The mount-namespace gotcha dissolves.</strong> The ephemeral container mounts the same PVC (ephemeral containers may mount existing pod volumes, via the <code class="docutils literal notranslate"><span class="pre">--custom</span></code> profile) at the <em>identical</em> mountPath. With venv and checkout both on the PVC, editable-install paths resolve correctly in both containers — a genuinely shared filesystem at last.</p></li>
-<li><p><strong>Restart becomes the relaunch.</strong> With the venv persistent, killing PID 1 — or simply deleting the pod — is the clean way to pick up a patch. The kubelet is now doing the work instead of fighting it, probes and all.</p></li>
+<li><p><strong>Restart becomes the relaunch.</strong> With the venv persistent, killing PID 1 — or simply deleting the pod — is the clean way to pick up a hotfix. The kubelet is now doing the work instead of fighting it, probes and all.</p></li>
 </ul>
 <p>Podbench’s contribution is the workflow around the mount:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">init</span></code> — seed an empty PVC from the image’s own venv (or verify the helm chart’s initContainer did), clone the source onto it, editable-install.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">apply</span></code> — commit the change on the PVC checkout, reinstall if metadata changed, bounce the pod.</p></li>
-<li><p><strong>Provenance is non-negotiable.</strong> Every patch is a git commit; a manifest on the PVC records base image digest, interpreter version, commit sha, author, and timestamp; the pod gets an annotation marking it patched.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">status</span></code> — list every patched pod in a namespace with its drift (commits ahead of the released image). Silently-diverged pods are the operational risk this mode must never create.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">consolidate</span></code> — push the PVC checkout as a branch/PR at shutdown, ready for the rebuild; after the new image rolls out, flip the helm flag off and retire the PVC.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">init</span></code> — seed an empty PVC from the image’s own venv (or verify the helm chart’s initContainer did), clone the source onto it, editable-install.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">apply</span></code> — commit the change on the PVC checkout, reinstall if metadata changed, bounce the pod.</p></li>
+<li><p><strong>Provenance is non-negotiable.</strong> Every hotfix is a git commit; a manifest on the PVC records base image digest, interpreter version, commit sha, author, and timestamp; the pod gets an annotation marking it hotfixed.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span></code> — list every hotfixed pod in a namespace with its drift (commits ahead of the released image). Silently-diverged pods are the operational risk this mode must never create.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">consolidate</span></code> — push the PVC checkout as a branch/PR at shutdown, ready for the rebuild; after the new image rolls out, flip the helm flag off and retire the PVC.</p></li>
 </ul>
-<p>Risks to document: the PVC venv <em>shadows</em> the image’s — an image upgrade under a live patch mount runs the old venv, and an interpreter version bump breaks it (the manifest records the interpreter so <code class="docutils literal notranslate"><span class="pre">status</span></code> can warn); multi-replica deployments need RWX or a per-replica story — v1 scopes to single-replica; a stale PVC left mounted after consolidation silently reverts the fix’s provenance.</p>
+<p>Risks to document: the PVC venv <em>shadows</em> the image’s — an image upgrade under a live hotfix mount runs the old venv, and an interpreter version bump breaks it (the manifest records the interpreter so <code class="docutils literal notranslate"><span class="pre">status</span></code> can warn); multi-replica deployments need RWX or a per-replica story — v1 scopes to single-replica; a stale PVC left mounted after consolidation silently reverts the fix’s provenance.</p>
 <p>Accept</p>
-<p>On the demo app: patch applied mid-“run”, pod deleted and rescheduled, patch still live; <code class="docutils literal notranslate"><span class="pre">status</span></code> names the patched pod and shows the exact diff; <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> yields a branch that rebuilds cleanly, and dropping the helm flag returns the pristine image.</p>
+<p>On the demo app: hotfix applied mid-“run”, pod deleted and rescheduled, hotfix still live; <code class="docutils literal notranslate"><span class="pre">status</span></code> names the hotfixed pod and shows the exact diff; <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> yields a branch that rebuilds cleanly, and dropping the helm flag returns the pristine image.</p>
 <p>Biggest footgun</p>
 <p>On a <em>live</em> pod, Podbench shares the workload’s memory and ephemeral-storage limits and cannot reserve its own — the debugger’s presence can get the workload OOM-killed or the pod evicted. Iterate mode is immune (the authored dev pod gives podbench its own limits); Observe mode manages it by staying slim. Every user-facing surface — README, launcher output — should say this once, clearly.</p>
 </section>
@@ -813,7 +813,7 @@ it.
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-3-debug-workflow-polish">Phase 3 — Debug workflow polish</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-4-iterate-mode-python">Phase 4 — Iterate mode (Python)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-5-ship-it">Phase 5 — Ship it</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-6-patch-mode-durable-in-place-fixes">Phase 6 — Patch mode — durable in-place fixes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-6-hotfix-mode-durable-in-place-fixes">Phase 6 — Hotfix mode — durable in-place fixes</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#repository-layout">Repository layout</a></li>

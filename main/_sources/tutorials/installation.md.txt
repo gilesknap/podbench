@@ -245,7 +245,7 @@ $ helm upgrade --install podbench \
 From a checkout, the same values work against the chart directory:
 `helm upgrade --install podbench ./Charts/podbench ...`.
 
-`rbac.observe` is on by default; `rbac.iterate`, `rbac.resize` and `rbac.patch`
+`rbac.observe` is on by default; `rbac.iterate`, `rbac.resize` and `rbac.hotfix`
 are separate flags because they are genuinely different levels of trust. The
 chart also carries the optional scratch PVC for Iterate-mode workspaces.
 

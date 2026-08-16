@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Installation &#8212; podbench 0.1.0b4.dev33+g122f2edbc documentation</title>
+    <title>Installation &#8212; podbench 0.1.0b4.dev35+g18f9d3421 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=5b83d658"></script>
+    <script src="../_static/documentation_options.js?v=14d22ba8"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -749,7 +749,7 @@ $ helm show chart oci://ghcr.io/gilesknap/charts/podbench --version &quot;$PODBE
 </div>
 <p>From a checkout, the same values work against the chart directory:
 <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">upgrade</span> <span class="pre">--install</span> <span class="pre">podbench</span> <span class="pre">./Charts/podbench</span> <span class="pre">...</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> is on by default; <code class="docutils literal notranslate"><span class="pre">rbac.iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">rbac.resize</span></code> and <code class="docutils literal notranslate"><span class="pre">rbac.patch</span></code>
+<p><code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> is on by default; <code class="docutils literal notranslate"><span class="pre">rbac.iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">rbac.resize</span></code> and <code class="docutils literal notranslate"><span class="pre">rbac.hotfix</span></code>
 are separate flags because they are genuinely different levels of trust. The
 chart also carries the optional scratch PVC for Iterate-mode workspaces.</p>
 <p>The chart ships a <code class="docutils literal notranslate"><span class="pre">values.schema.json</span></code>, so a misspelt <code class="docutils literal notranslate"><span class="pre">--set</span></code> is refused by

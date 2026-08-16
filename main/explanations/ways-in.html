@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ways in &#8212; podbench 0.1.0b4.dev33+g122f2edbc documentation</title>
+    <title>Ways in &#8212; podbench 0.1.0b4.dev35+g18f9d3421 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=5b83d658"></script>
+    <script src="../_static/documentation_options.js?v=14d22ba8"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -513,7 +513,7 @@ available to you before taste does.</p>
 <tr class="row-odd"><th class="head"><p></p></th>
 <th class="head"><p><code class="docutils literal notranslate"><span class="pre">attach</span></code></p></th>
 <th class="head"><p><code class="docutils literal notranslate"><span class="pre">dev</span></code></p></th>
-<th class="head"><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></th>
 </tr>
 </thead>
 <tbody>
@@ -560,10 +560,10 @@ available to you before taste does.</p>
 <p>A workload is a singleton when a second copy of it is not merely wasteful but wrong: it
 holds a device that accepts one connection, claims a name on the network, or takes a lock.
 An EPICS IOC is usually all three at once.</p>
-<p><code class="docutils literal notranslate"><span class="pre">attach</span></code> and <code class="docutils literal notranslate"><span class="pre">patch</span></code> never make a second copy — one works inside the running pod, the
+<p><code class="docutils literal notranslate"><span class="pre">attach</span></code> and <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> never make a second copy — one works inside the running pod, the
 other restarts it in place. <code class="docutils literal notranslate"><span class="pre">dev</span></code> is built on a clone, so for a singleton it produces two
 processes competing for the same device and the same names. There is no flag for this;
-the clone <em>is</em> the mode. Use <code class="docutils literal notranslate"><span class="pre">patch</span></code> for a singleton that needs an inner loop.</p>
+the clone <em>is</em> the mode. Use <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> for a singleton that needs an inner loop.</p>
 </section>
 <section id="gitops-safe">
 <h2>GitOps-safe<a class="headerlink" href="#gitops-safe" title="Link to this heading">#</a></h2>
@@ -573,9 +573,9 @@ telling you.</p>
 <p><code class="docutils literal notranslate"><span class="pre">attach</span></code> is clear because its mutations are pod-level — an ephemeral container and an
 in-place resize — and pods made by a controller are not compared against git. <code class="docutils literal notranslate"><span class="pre">dev</span></code> is
 currently at risk from the other direction: the clone can look like a tracked resource
-that has gone missing from git, and be pruned mid-session. <code class="docutils literal notranslate"><span class="pre">patch</span></code> works, but records its
+that has gone missing from git, and be pruned mid-session. <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> works, but records its
 provenance on the pod template, which self-heal strips — so the fix keeps running while
-<code class="docutils literal notranslate"><span class="pre">patch</span> <span class="pre">status</span></code> stops being able to see it. Both are fixable; both are open.</p>
+<code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> stops being able to see it. Both are fixable; both are open.</p>
 </section>
 <section id="languages">
 <h2>Languages<a class="headerlink" href="#languages" title="Link to this heading">#</a></h2>
@@ -586,14 +586,14 @@ listening-socket check are all language-agnostic — <code class="docutils liter
 anything. What is Python-specific is <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, which clones, runs <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code> and
 does an editable install. For another language, prepare the workspace yourself and use
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">patch</span></code> is Python throughout: it reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code>, mounts a claim over the application’s
+<p><code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is Python throughout: it reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code>, mounts a claim over the application’s
 venv, and re-runs an editable install. Generalising it is <a class="reference external" href="https://github.com/gilesknap/podbench/issues/34">#34</a>.</p>
 </section>
 <section id="if-you-only-remember-one-thing">
 <h2>If you only remember one thing<a class="headerlink" href="#if-you-only-remember-one-thing" title="Link to this heading">#</a></h2>
 <p>Start with <code class="docutils literal notranslate"><span class="pre">attach</span></code>. It is safe against anything, needs nothing from the chart, and
 answers most questions. Reach for <code class="docutils literal notranslate"><span class="pre">dev</span></code> when you need a fast edit-and-rerun loop and the
-workload tolerates a second copy; reach for <code class="docutils literal notranslate"><span class="pre">patch</span></code> when the fix has to survive a restart,
+workload tolerates a second copy; reach for <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> when the fix has to survive a restart,
 or when it needs a loop and a second copy is out of the question.</p>
 </section>
 </section>
