@@ -202,10 +202,16 @@ this rung the report says so:
 ```
 
 Whatever refused attach here refuses *someone else's* process. In Iterate and
-Hotfix the debuggee is the sidecar's own child, and tracing a descendant needs no
-capability and no policy exemption — which is why the Diamond pod that produced
-this report can still be debugged, through `podbench dev` or `podbench hotfix`,
-with breakpoints and a live inner loop.
+Hotfix the debuggee is the sidecar's own child, which is the attach this seat
+just measured as permitted — which is why the Diamond pod that produced this
+report can still be debugged, through `podbench dev` or `podbench hotfix`, with
+breakpoints and a live inner loop.
+
+It is a *measurement*, not a rule: descendant ptrace needs no capability and no
+Yama exemption below `ptrace_scope=2`, but an LSM still decides it — SELinux
+checks `process:ptrace` between the two contexts even when both are the same
+domain. Yama and the LSM are per node (report §4.5), so a `dev` pod that lands
+on a different node is probed again rather than assumed.
 
 ### When the blocker is `selinux`
 
@@ -216,13 +222,21 @@ measured
 ```
 
 Nothing you can put in a pod spec changes this: SELinux policy is node
-configuration, and the seat is not the thing that has to be fixed. The report
-prints both contexts and, when they are identical (`system_u:system_r:spc_t:s0`
-on both sides, on the pod this was measured on), says so — because that rules out
-the obvious cross-domain explanation and makes the policy question a real one.
+configuration, and the seat is not the thing that has to be fixed.
 
-The specific rule is not readable from the pod. Ask whoever administers the node
-for the AVC denial:
+**It is named only when the two contexts differ.** SELinux decides ptrace on the
+*pair* — `allow <source_type> <target_type>:process ptrace` — and a forked child
+inherits its parent's label, so the scratch attach on the seat's own child is
+that same check with this seat's context on both sides. Where the target carries
+the same context (`system_u:system_r:spc_t:s0` on both sides, on the pod this was
+measured on), a scratch attach that *succeeded* has already measured the policy
+permitting the pair, and the report says so rather than naming SELinux for a
+denial it cannot have issued. On that pod the blocker is `unknown`, and the
+report names the two mechanisms podbench cannot see from inside a seat: a target
+that is not dumpable, and a user-namespace boundary between the containers.
+
+Where SELinux *is* named, the specific rule is still not readable from the pod.
+Ask whoever administers the node for the AVC denial:
 
 ```
 $ ausearch -m avc -ts recent      # on the node, not in the seat

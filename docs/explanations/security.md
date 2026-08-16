@@ -180,6 +180,27 @@ which needs someone with access to it. A permissive policy
 (`/sys/fs/selinux/enforce` is `0`) logs the denial and allows the call, so podbench
 never names it as the blocker.
 
+**Neither module is named for a pair the probe measured it permitting.** Both
+decide ptrace on the *pair* of labels — SELinux `allow <source_type>
+<target_type>:process ptrace`, AppArmor a `ptrace` rule between two profiles — and
+a forked child inherits its parent's label. So the scratch `PTRACE_ATTACH` on the
+seat's own child *is* that check, run with this seat's context on both sides; where
+the target carries the same context, a scratch attach that succeeded has already
+measured the policy allowing the pair. That is the Diamond pod's own shape, and it
+is why the report there says `unknown` and names what it cannot see — a target that
+is not dumpable (`prctl(PR_SET_DUMPABLE, 0)`, or one that dropped privileges, which
+loses exactly `root`, `maps`, `environ` and `exe` to a tracer without
+`CAP_SYS_PTRACE`) and a user-namespace boundary — rather than sending a reader to a
+node sysadmin for an AVC that cannot exist.
+
+**A context whose module could not be confirmed is `unknown`, never `none`.**
+`/sys/module/apparmor/parameters/enabled` may be unreadable at the seat's uid, and
+selinuxfs may not be mounted into the container; both look exactly like a node with
+no LSM at all, while `attr/current` still holds a context somebody wrote. `none` is
+read downstream as "no LSM denied anything", so it is reserved for the case where
+nothing wrote a context either. A Smack or TOMOYO label lands in `unknown` for the
+same reason: podbench asks two modules and there are more than two.
+
 Yama is per node and differs by **kernel flavour, not architecture**: two arm64
 nodes in the same cluster disagreed, one denying and one allowing the
 byte-identical container. podbench probes per pod and never caches a
@@ -315,12 +336,29 @@ Stated so nobody relies on them:
   profile, and ptrace worked because that profile permits ptrace between peers
   within it. A custom profile on the target breaks that, and the diagnostic text
   for that case has never been seen in the field.
-* **The SELinux blocker is named by elimination.** On the Diamond pod every other
-  mechanism measurably said "not me" and the policy is enforcing, which is a strong
-  inference and not yet a fact: no AVC record has been read back from that node, and
-  until one is, the specific rule — and whether it is a ptrace denial at all — is
-  unconfirmed. Both sides carried the *same* context, so it is not an obvious
-  cross-domain refusal.
+* **The SELinux blocker is named by elimination**, and on the Diamond pod itself
+  the elimination now goes the other way. Every other mechanism measurably said
+  "not me" and the policy is enforcing — but both sides carried the *same*
+  context, and the scratch attach on the seat's own child, which is that identical
+  pair, succeeded. So SELinux is ruled out there too, and **what denied that attach
+  is unknown**: the two candidates the report names — a non-dumpable target and a
+  user-namespace boundary — are both invisible from inside a seat, and neither has
+  been checked on that node. No AVC record has ever been read back from it. Where
+  the two contexts *differ*, `selinux` is still an inference from eliminating the
+  other four and not a confirmed rule.
+* **`/sys/fs/selinux` has never been read from inside an ephemeral container.**
+  The phase-0 report measured AppArmor on k3s only, and kind runs AppArmor too, so
+  there is no e2e for the SELinux path. If selinuxfs turns out not to be visible
+  in a seat, `detect_lsm` answers `unknown` with the context still printed, which
+  is the honest failure — but it is untested against the one node class this
+  exists for.
+* **`enforce` is the global mode, not the seat's effective one.** `semanage
+  permissive -a <type>` makes a single domain permissive while
+  `/sys/fs/selinux/enforce` still reads `1`, and the per-domain list lives in
+  `/sys/fs/selinux/policy`, which a seat cannot read and could not parse without a
+  second runtime dependency. So a globally-enforcing node can still be permissive
+  for exactly the pair podbench names. It shows up in the `ausearch` the report
+  already sends the reader to: that AVC carries `permissive=1`.
 * **Targets in user namespaces**, and targets with unusual UID mappings, were
   never tested.
 * **Behaviour through konnectivity or an API gateway** is unknown; every

@@ -754,6 +754,14 @@ class and permission is in the node's audit log. The explanation points at
 policy (`lsm_enforcing` false) logs and allows, so it is never named as the
 blocker.
 
+Nor is it named when the target's `lsm_context` equals this seat's and
+`child_attach_ok` is true. SELinux decides ptrace on the *pair* of contexts, and a
+forked child inherits its parent's label, so that scratch attach is the same check
+already measured as permitted. `blocker` is `unknown` there, and the explanation
+names the two mechanisms a seat cannot see: a non-dumpable target, and a
+user-namespace boundary. The same rule applies to AppArmor and one profile on both
+sides.
+
 Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
 `PTRACE_MODE_READ`; `cmdline`, `status` and `fd` need no permission at all and are
 therefore readable on a pod where nothing else is, so they are reported and never
