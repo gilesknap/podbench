@@ -133,10 +133,12 @@ in `derive_verdict()` that the full `just check` could not — a gated-read test
 same pass argued for a code branch on partial read matrices that cannot occur, because the
 three ptrace-gated paths share one `PTRACE_MODE_READ` check.
 
-## The devcontainer shell is zsh
+## The shell your commands run in is zsh
 
-`for x in $LIST` iterates **once**, with the whole string, because zsh does not word-split
-unquoted parameter expansions the way `sh` and bash do. A loop meant to walk eight PR
-numbers walked one nonexistent PR named `"59 55 56 …"`. Write the list literally in the
-`for`, or use an array. This bites hardest in a background script, where the only symptom
-is a job that quietly does nothing.
+`echo $0` in the devcontainer says `/usr/bin/zsh` (5.9), whatever `/etc/passwd` says about
+login shells. `for x in $LIST` there iterates **once**, with the whole string, because zsh
+does not word-split unquoted parameter expansions the way `sh` and bash do. A loop meant to
+walk eight PR numbers walked one nonexistent PR named `"59 55 56 …"`. Write the list
+literally in the `for`, or use an array — both are safe in either shell. A script with a
+`#!/bin/bash` shebang splits normally, which is what makes this easy to disbelieve, and it
+bites hardest in a background job, where the only symptom is one that quietly does nothing.
