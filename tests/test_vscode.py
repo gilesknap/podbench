@@ -394,6 +394,8 @@ def test_merge_refuses_a_settings_file_it_cannot_parse() -> None:
 def test_merge_refuses_a_document_that_is_not_an_object() -> None:
     with pytest.raises(ValueError, match="not a JSON object"):
         merge_machine_settings("[]")
+
+
 # -- one entry per flavour that applies --------------------------------------
 
 
