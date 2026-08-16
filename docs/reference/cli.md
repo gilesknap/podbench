@@ -445,6 +445,13 @@ burnt.
 
 The same, across the namespace.
 
+Both verbs end each pod's block with the ssh alias to connect with, read out of
+the stanza in `--config-dir` rather than derived from the pod's name: `attach
+--host-alias NAME` is recorded nowhere in the cluster, so a derived alias would
+be wrong for whoever used the flag. When there is no stanza on this machine —
+the seat was landed from another one — they say so and name `ssh-config`, the
+verb that writes the missing half. Neither verb writes anything.
+
 ```
 
  Usage: podbench list [OPTIONS]

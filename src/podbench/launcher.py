@@ -115,7 +115,9 @@ __all__ = [
     "forget_ssh_config",
     "format_age",
     "format_pod_choices",
+    "format_seats",
     "format_session",
+    "host_alias_in",
     "identity_paths",
     "list_seats",
     "main",
@@ -137,6 +139,7 @@ __all__ = [
     "seats",
     "spec_env",
     "ssh_config_path",
+    "ssh_connect_line",
     "ssh_include_line",
     "ssh_stanza",
     "target_container_name",
@@ -1844,8 +1847,67 @@ def list_seats(kubectl: Kubectl) -> list[tuple[PodRef, list[SeatInfo]]]:
     return found
 
 
-def format_seats(pod: PodRef, present: Sequence[SeatInfo]) -> str:
-    """One pod's podbench containers, for ``status`` and ``list``."""
+def host_alias_in(stanza: str) -> str | None:
+    """The ``Host`` name a written stanza declares, or ``None`` if it has none.
+
+    Only ever pointed at a file :func:`write_ssh_config` produced, which is why
+    the parse is this thin: one ``Host`` line, one pattern, no ``Match`` blocks
+    and no ``=`` separator. Case-insensitive because ssh_config keywords are,
+    and a stanza someone reformatted by hand is still theirs to connect with.
+
+    >>> host_alias_in("Host podbench-demo-api\\n    User root\\n")
+    'podbench-demo-api'
+    >>> host_alias_in("    hostname api-7f9\\n") is None
+    True
+    """
+    for line in stanza.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0].lower() == "host":
+            return fields[1]
+    return None
+
+
+def ssh_connect_line(directory: Path, pod: PodRef) -> str:
+    """What to type to sit in ``pod``'s seat — read from disk, never derived.
+
+    :func:`default_host_alias` is a pure function of the :class:`PodRef` and so
+    is tempting to recompute here, but ``attach --host-alias NAME`` overrides it
+    and the cluster records that choice nowhere: a derived alias would be
+    silently wrong for exactly the users who picked their own. So the answer is
+    read back out of the stanza, which holds the ``Host`` line ssh will actually
+    match. A listing that names an alias which does not work is worse than one
+    that names none, so every case that cannot produce a real alias says which
+    file it looked in instead.
+    """
+    path = ssh_config_path(directory, pod)
+    try:
+        stanza = path.read_text()
+    except FileNotFoundError:
+        # The stanza is client-side state: nothing in the pod carries it. A seat
+        # landed from another machine, or by a colleague, is normal and reaches
+        # here, and `ssh-config` exists to mint the missing half.
+        return (
+            f"  no ssh config here: podbench ssh-config -n {pod.namespace} {pod.name}"
+        )
+    except OSError as error:
+        return f"  cannot read {path}: {error.strerror or error}"
+    alias = host_alias_in(stanza)
+    if alias is None:
+        return (
+            f"  no Host line in {path}: "
+            f"podbench ssh-config -n {pod.namespace} {pod.name}"
+        )
+    return f"  ssh {alias}"
+
+
+def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -> str:
+    """One pod's podbench containers, for ``status`` and ``list``.
+
+    ``directory`` is the client config dir, and is read — never written — for
+    the one fact a listing is asked for and the cluster cannot answer: which
+    alias to ssh to. Required rather than defaulted so a caller cannot drop the
+    connect line by omission.
+    """
     lines = [str(pod)]
     for seat in present:
         lines.append(
@@ -1853,6 +1915,7 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo]) -> str:
             f"{seat.rung.description}"
         )
         lines.append(f"  {'':<12} {seat.detail}")
+    lines.append(ssh_connect_line(directory, pod))
     return "\n".join(lines)
 
 
@@ -2515,14 +2578,20 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        del config_dir  # accepted for symmetry; this verb writes no ssh config
         kube = _kubectl(namespace, context, kubectl, runner)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         present = seats(kube.get_pod(name))
         if not present:
             print(f"no podbench containers in {kube.namespace}/{name}")
             raise typer.Exit(0)
-        print(format_seats(PodRef(kube.namespace, name), present))
+        # Read-only: the config dir is where the ssh alias for these seats is
+        # recorded, and reporting one podbench cannot back up would be worse
+        # than reporting none. Nothing here writes a stanza.
+        print(
+            format_seats(
+                PodRef(kube.namespace, name), present, directory=client_dir(config_dir)
+            )
+        )
         raise typer.Exit(0)
 
     @app.command(
@@ -2534,13 +2603,23 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        del config_dir  # accepted for symmetry; this verb writes no ssh config
         kube = _kubectl(namespace, context, kubectl, runner)
         found = list_seats(kube)
         if not found:
             print(f"no podbench containers in namespace {kube.namespace}")
             raise typer.Exit(0)
-        print("\n".join(format_seats(pod, present) for pod, present in found))
+        # `list` used to discard this flag deliberately, on the grounds that it
+        # writes no ssh config — and it still writes none. It reads it, because
+        # the alias to connect with lives only in the stanza on disk, so a list
+        # that ignored the config dir could only guess at the one fact it is
+        # asked for.
+        directory = client_dir(config_dir)
+        print(
+            "\n".join(
+                format_seats(pod, present, directory=directory)
+                for pod, present in found
+            )
+        )
         raise typer.Exit(0)
 
     return app
