@@ -2781,11 +2781,12 @@ def _build_app(
             bool,
             typer.Option(
                 "--provision",
-                help="with --open, let the seat install debugpy into the target "
-                "when the target cannot import one - otherwise a stock Python "
-                "workload gets no launch.json at all. Mutates the workload: "
-                "~15 MB of shared ephemeral storage, needs egress from the pod, "
-                "and no restart survives it",
+                help="with --open, make the target debuggable: install debugpy "
+                "when it cannot import one, then start the server so F5 has "
+                "something to connect to - otherwise a stock Python workload "
+                "gets no launch.json at all. Mutates the workload: ~15 MB of "
+                "shared ephemeral storage, needs egress from the pod, ptraces "
+                "the app for a few seconds, and no restart survives it",
             ),
         ] = False,
         timeout: Annotated[

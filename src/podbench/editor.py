@@ -134,14 +134,20 @@ and 127 belong to ``sh``.
 """
 
 _PROVISION_NOTICE = (
-    "--provision: the seat will install debugpy into the target if the target "
-    "cannot import one, since the injection bootstrap runs in the target's own "
-    "interpreter. " + "; ".join(CAVEATS)
+    "--provision: the seat will make the target debuggable - installing debugpy "
+    "into it if it cannot import one, then starting the server so the emitted "
+    "configuration has something to connect to. Starting it ptraces the app, "
+    "which stops answering probes until the attach returns (a few seconds; the "
+    "deadlines printed with the report above are the budget). " + "; ".join(CAVEATS)
 )
 """Said before the exec, not after: the install is a uv resolve and download.
 
 The costs are :data:`podbench.provision.CAVEATS` itself rather than a retelling,
-so the sentence the laptop prints cannot drift from the one the seat prints.
+so the sentence the laptop prints cannot drift from the one the seat prints. The
+probe deadlines are *pointed at* rather than repeated, for the reason the
+vscode-in-a-seat skill gives: :mod:`podbench.budget` computes them from the pod
+spec and ``attach`` has already printed them, and a second hand-written copy is
+a second thing to keep true.
 """
 
 _PROVISION_REMEDY = (

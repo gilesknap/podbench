@@ -97,6 +97,7 @@ from .model import as_dict
 from .proc import DEFAULT_PROC
 from .provision import (
     PROVISION_DEST,
+    inject_debugpy,
     provision_debugpy,
     provision_paste,
     target_destination,
@@ -982,6 +983,64 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     return port if listeners_on(parse_ss(result.stdout), port) else None
 
 
+def _inject(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    port: int,
+    runner: Runner | None,
+) -> bool:
+    """Start the debugpy server inside the target, under ``--provision``.
+
+    :func:`podbench.flavour.injection_command`'s docstring says this is printed
+    rather than run because ptracing the workload "is not something authoring a
+    launch.json may do on its own" — and that is still true of a bare
+    ``debug-config``. ``--provision`` is the flag that revokes it: issue #45
+    ordered the two mutations and put *installing* above *injecting*, so a run
+    that has already been told it may write 15 MB into the workload has been
+    told it may do the smaller thing too. Asking twice for the lesser of them
+    left the configuration emitted and the port closed, which is a launch.json
+    that connects to nothing.
+
+    Gated on the verdict rather than on the install's return value, so the
+    reason a refusal gives is the same sentence :func:`assess` would have given.
+    """
+    if mode is Mode.DEV or target.language is not Language.PYTHON:
+        # Both already named by `_provision`, which refuses first for the same
+        # two reasons; saying it twice would read as two separate problems.
+        return False
+    if seat.listening_port is not None:
+        # Not a no-op worth reporting: `_provision` has just said the same
+        # thing, and the emitted configuration connects to it either way.
+        return False
+    verdict = next(
+        (
+            item
+            for item in assess(target, mode, seat)
+            if item.flavour is Flavour.DEBUGPY
+        ),
+        None,
+    )
+    if verdict is None or not verdict.available:
+        _warn(
+            "--provision: not starting the server - "
+            + (verdict.reason if verdict else "debugpy was not assessed")
+        )
+        return False
+    command = injection_command(target, seat, port)
+    _warn(
+        f"--provision: starting the server inside the app. This ptraces the "
+        f"workload, so it stops answering probes until the attach returns; on "
+        f"a probed pod the deadlines `attach` prints are the budget it spends. "
+        f"Running `{command}`"
+    )
+    injected = inject_debugpy(command, runner=runner, port=port)
+    for message in injected.messages:
+        _warn(f"--provision: {message}")
+    return injected.ok
+
+
 def _provision(
     target: Target,
     mode: Mode,
@@ -1193,13 +1252,17 @@ def _run(
     for note in target.notes:
         _warn(note)
     mode = mode or detect_mode(pid, proc=proc)
-    listening = (
-        _listening_debugpy(port, runner=runner)
-        if target.language is Language.PYTHON
-        else None
-    )
 
     def measure() -> Seat:
+        # The listener is re-probed on every measurement rather than read once:
+        # --provision can *start* one part way through this function, and a
+        # port sampled before that would emit a configuration whose "already
+        # listening" answer is stale in the one run that changed it.
+        listening = (
+            _listening_debugpy(port, runner=runner)
+            if target.language is Language.PYTHON
+            else None
+        )
         return survey_seat(
             target,
             proc=proc,
@@ -1210,20 +1273,26 @@ def _run(
         )
 
     seat = measure()
-    if provision and _provision(
-        target,
-        mode,
-        seat,
-        dest=provision_dest,
-        python_version=provision_python,
-        proc=proc,
-        runner=runner,
-        which=which,
-    ):
-        # Measured again rather than assumed: whether the target can import what
-        # was just written is the prerequisite itself, and `_target_debugpy` is
-        # the only thing that answers it.
-        seat = measure()
+    if provision:
+        if _provision(
+            target,
+            mode,
+            seat,
+            dest=provision_dest,
+            python_version=provision_python,
+            proc=proc,
+            runner=runner,
+            which=which,
+        ):
+            # Measured again rather than assumed: whether the target can import
+            # what was just written is the prerequisite itself, and
+            # `_target_debugpy` is the only thing that answers it.
+            seat = measure()
+        # Not chained onto the install: a target that could already import
+        # debugpy takes the "nothing is installed" path above and still has
+        # nothing listening, which is the case this whole flag exists to end.
+        if _inject(target, mode, seat, port=port, runner=runner):
+            seat = measure()
     assessments = assess(target, mode, seat)
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
@@ -1429,9 +1498,12 @@ def main(
             bool,
             typer.Option(
                 "--provision",
-                help="install debugpy into the target with uv when it cannot "
-                "import one. Mutates the workload: ~15 MB of shared ephemeral "
-                "storage, needs egress from the pod, and no restart survives it",
+                help="make the target debuggable: install debugpy with uv when "
+                "it cannot import one, then start the server inside it so the "
+                "emitted configuration has something to connect to. Mutates "
+                "the workload: ~15 MB of shared ephemeral storage, needs egress "
+                "from the pod, ptraces the app for a few seconds, and no "
+                "restart survives it",
             ),
         ] = False,
         provision_dest: Annotated[

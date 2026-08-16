@@ -16,13 +16,13 @@ Nothing here touches a cluster: pids come from a synthetic ``/proc`` tree.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from podbench.flavour import Mode
+from podbench.flavour import DEBUGPY_PORT, Mode
 from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
 from podbench.vscode import (
@@ -626,6 +626,24 @@ def no_listeners(
     return CommandResult(tuple(argv), 0, "State Recv-Q Send-Q Local Peer\n", "")
 
 
+def listening_on(port: int) -> Callable[..., CommandResult]:
+    """An ``ss`` that reports a debugpy server on ``port``, as one appears the
+    moment ``--provision`` finishes its injection."""
+
+    def runner(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        return CommandResult(
+            tuple(argv),
+            0,
+            "State Recv-Q Send-Q Local Peer\n"
+            f"LISTEN 0      0      127.0.0.1:{port} 0.0.0.0:*\n",
+            "",
+        )
+
+    return runner
+
+
 def test_a_python_target_emits_debugpy_with_the_observe_mapping(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -684,17 +702,30 @@ class InstallingUv:
 
     It has to, because the point of the flag is what happens *after*: the
     debugpy configuration may only be emitted once the **target** can import
-    debugpy, and nothing but the filesystem answers that. Anything that is not
-    uv is the ``ss`` this verb also runs.
+    debugpy, and nothing but the filesystem answers that.
+
+    It is also the pod's ``ss`` and the shell the injection runs in, and those
+    two are coupled: ``--provision`` starts a server, so an ``ss`` that reports
+    the same empty pod afterwards would let a run that injected nothing pass.
+    ``inject_rc`` is the failing half.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, inject_rc: int = 0) -> None:
         self.argv: list[str] = []
+        self.injected: str | None = None
+        self.inject_rc = inject_rc
 
     def __call__(
         self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
     ) -> CommandResult:
+        if list(argv[:2]) == ["sh", "-c"]:
+            self.injected = argv[2]
+            if self.inject_rc != 0:
+                return CommandResult(tuple(argv), self.inject_rc, "", "ptrace: denied")
+            return CommandResult(tuple(argv), 0, "", "")
         if argv[0] != "uv":
+            if self.injected is not None and self.inject_rc == 0:
+                return listening_on(DEBUGPY_PORT)(argv, stdin=stdin, capture=capture)
             return no_listeners(argv, stdin=stdin, capture=capture)
         self.argv = list(argv)
         write_debugpy(
@@ -744,11 +775,113 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
     ]
     captured = capsys.readouterr()
     assert json.loads(captured.out)["configurations"][0]["type"] == "debugpy"
-    # The install is only half of it: the injection is still printed rather than
-    # run, and its PYTHONPATH is the copy that was just made.
-    assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in captured.err
+    # The install is only half of it. The injection runs, and its PYTHONPATH is
+    # the copy that was just made - the whole point of resolving for the
+    # target's version rather than this seat's.
+    assert uv.injected is not None
+    assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in uv.injected
     for caveat in ("egress", "restart", "ephemeral storage"):
         assert caveat in captured.err
+
+
+def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #45 ordered the two mutations and put *installing* above
+    *injecting*, so a run allowed the larger one has been allowed the smaller.
+    Asking twice left the configuration emitted and the port closed, which is a
+    launch.json that connects to nothing."""
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+
+    assert code == 0
+    assert uv.injected is not None
+    assert f"--pid {PID}" in uv.injected
+    captured = capsys.readouterr()
+    # The hint that exists for the un-injected case must not survive the run
+    # that injected: it would send the reader to do what was just done.
+    assert "nothing is listening" not in captured.err
+    assert "injected in" in captured.err
+
+
+def test_a_target_that_already_has_debugpy_still_gets_a_server(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The install is skipped and the injection is not. This is the case the
+    flag exists for at its sharpest: debugpy importable, nothing listening, and
+    every prerequisite already met - so the old --provision said "nothing is
+    installed" and left the port closed."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    write_debugpy(
+        proc / str(PID) / "root" / SITE_PACKAGES.lstrip("/"),
+        helpers=["attach_linux_amd64.so"],
+    )
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+
+    assert code == 0
+    assert uv.argv == []
+    assert uv.injected is not None
+    assert "nothing is listening" not in capsys.readouterr().err
+
+
+def test_a_refused_injection_is_reported_and_not_claimed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ptrace an LSM denies is the DLS case. The install still happened, so
+    the run is not a failure - but it must not read as one that connected."""
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv(inject_rc=1)
+    main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+
+    captured = capsys.readouterr()
+    assert "injection exited 1" in captured.err
+    assert "injected in" not in captured.err
+    # And the paste is back, because now it is the reader's only way through.
+    assert "nothing is listening" in captured.err
+
+
+def test_without_the_flag_nothing_is_injected_either(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`injection_command` is printed rather than run for a bare debug-config,
+    and that has not changed: authoring a launch.json may not ptrace the
+    workload on its own. --provision is what revokes it."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    write_debugpy(
+        proc / str(PID) / "root" / SITE_PACKAGES.lstrip("/"),
+        helpers=["attach_linux_amd64.so"],
+    )
+    uv = InstallingUv()
+    main(
+        [str(PID), "--print-config"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+
+    assert uv.injected is None
+    assert "nothing is listening" in capsys.readouterr().err
 
 
 def test_without_the_flag_nothing_is_written_into_the_workload(

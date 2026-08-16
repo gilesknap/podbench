@@ -145,23 +145,28 @@ You get the excludes, the folder and the alias, and no `launch.json` at all.
 podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open --provision
 ```
 
-The seat then installs debugpy into the target with `uv` before authoring the
-configuration. It is opt-in and stays that way: it writes ~15 MB into the
-workload's writable layer, on an ephemeral-storage budget the seat *shares with
-the workload and cannot reserve*; it needs egress from the pod, since uv
-downloads from an index; and no container restart survives it. Without `--open`
-it is refused rather than ignored — there is no configuration run for it to
-change.
+`--provision` means *make this target debuggable*, and it is both halves of
+that: the seat installs debugpy into the target with `uv`, then starts the
+debugpy server inside the app so the configuration it writes has something to
+connect to. F5 works when it finishes.
+
+It is opt-in and stays that way. It writes ~15 MB into the workload's writable
+layer, on an ephemeral-storage budget the seat *shares with the workload and
+cannot reserve*; it needs egress from the pod, since uv downloads from an index;
+starting the server ptraces the app, which stops answering probes for the few
+seconds that takes (~3 s measured — compare it against the deadlines `attach`
+prints); and no container restart survives any of it. Without `--open` it is
+refused rather than ignored — there is no configuration run for it to change.
 
 Baking `debugpy.listen()` into the app image is the durable answer, and the only
 one that survives a restart. `--provision` is for the pod that is already
 misbehaving.
 
-One thing it does **not** do: start the server. The configuration is emitted as
-soon as the prerequisites are met, and nothing is listening until the injection
-runs — ptracing the workload is not something authoring a `launch.json` may do
-on its own. `--open` relays the seat's own output, so the command to run is
-printed with the rest, along with every mechanism that said no.
+A **bare** `debug-config`, with no `--provision`, still only prints the
+injection command rather than running it: that really is authoring a
+`launch.json` and nothing more, and ptracing the workload is not something it
+may do on its own. `--open` relays the seat's own output either way, so the
+command is printed with the rest, along with every mechanism that said no.
 
 ### Re-running `--open` on a window that is already connected? Reload it
 
