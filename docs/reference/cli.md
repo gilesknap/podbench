@@ -460,7 +460,8 @@ Fails if there is no running podbench container in the pod.
 ### `status`
 
 Every podbench container in one pod, including dead ones whose names remain
-burnt.
+burnt — and, underneath, what the target's probes have cost since the seat
+landed.
 
 ```
 
@@ -485,9 +486,59 @@ burnt.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### The probe budget already spent
+
+`attach` states the budget on the way in — how long a pause has before the
+kubelet acts. Nothing said what you then **spent**, and that is the one budget
+in podbench that is spent silently: an ephemeral container cannot be restarted,
+so a liveness kill burns the seat's name for the pod's lifetime and costs an
+`attach --new`. `status` joins the pod's `Unhealthy` events to the thresholds
+in its spec:
+
+```
+probes on 'app' since the seat landed (2026-08-16T08:52:04Z)
+  readiness: 2 failures, last 2026-08-16T10:04:33Z - 3 consecutive x 5s
+    period, 1s timeout; a 3rd in a row takes the pod out of its Service
+    until a probe succeeds again
+  liveness: 2 failures, last 2026-08-16T10:04:31Z - 3 consecutive x 10s
+    period, 1s timeout; a 3rd in a row kills the container, and the seat
+    with it
+  restarts: 0 - nothing has been killed under this seat
+```
+
+Three things it deliberately does not say:
+
+* **How many failures in a row.** That is the number `failureThreshold`
+  actually counts, and it is the kubelet's, not the API's: the counter resets
+  on the first success and is published nowhere. Events are aggregated, so the
+  two liveness failures above were 20 s apart on a 10 s period — a probe
+  succeeded between them and the count never stood above 1. Rendering that as
+  "2 of 3" would be a fiction, and the alarming one. Only a **restart** proves
+  a liveness streak completed.
+* **That nothing happened.** Events expire after the API server's
+  `--event-ttl`, an hour by default, so an empty report means nothing retained.
+* **That the count is all yours.** A series that began before the seat landed
+  is reported whole and labelled, because an aggregated count cannot be split.
+
+It also names the thing that sends people looking for a bug that is not there:
+a `BrokenPipeError`, or any broken-connection traceback, logged by the
+application as you continue **is** a missed probe. All three probes have a
+`timeoutSeconds` (1 s on the demo app), the kubelet hangs up when it expires,
+and the handler discovers the dead socket on resume. One traceback, one missed
+probe — and an application that swallows the exception leaves the events as the
+only evidence there was one.
+
+Reading the events needs `get` on events in the namespace, which is a separate
+RBAC verb from `get` on pods. A namespace that grants one and not the other
+still gets its seat listing; only this block is lost, and it says so in
+`kubectl`'s own words. A target with no probes at all costs no call: there is
+no budget to spend, and `status` says that instead.
+
 ### `list`
 
-The same, across the namespace.
+The same, across the namespace — the seats only. The probe block is `status`'s
+alone: it is one `kubectl get events` per pod, and it is asked about a session
+you are in rather than a fleet you are surveying.
 
 Both verbs end each pod's block with the ssh alias to connect with, read out of
 the stanza in `--config-dir` rather than derived from the pod's name: `attach

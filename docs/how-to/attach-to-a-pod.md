@@ -66,6 +66,11 @@ and "you have twenty seconds" are different facts and you need to know which
 one you are in. For an unlimited pause on a probed workload use
 [`podbench dev`](iterate-on-python.md), which strips all three probes by
 construction; [Debug with gdb](debug-with-gdb.md) has the measurements.
+
+`podbench status` reports the other half — what the probes have cost since the
+seat landed — because this is the only budget podbench has that is spent
+without anything saying so. *What a pause has already cost*, below, reads its
+output.
 :::
 
 ## Attach, and re-attach
@@ -328,6 +333,47 @@ print the ssh alias for each pod, read from the stanza on disk — so a seat
 someone else landed, or one you landed from another machine, is reported as
 having no config here rather than under an alias that would not resolve. Run
 `podbench ssh-config` to mint the missing one.
+
+### What a pause has already cost
+
+Under the seats, `status` reports the probe failures the pod has accumulated
+since the seat landed, against the thresholds in its spec:
+
+```
+probes on 'app' since the seat landed (2026-08-16T08:52:04Z)
+  readiness: 2 failures, last 2026-08-16T10:04:33Z - 3 consecutive x 5s
+    period, 1s timeout; a 3rd in a row takes the pod out of its Service
+    until a probe succeeds again
+  liveness: 2 failures, last 2026-08-16T10:04:31Z - 3 consecutive x 10s
+    period, 1s timeout; a 3rd in a row kills the container, and the seat
+    with it
+  restarts: 0 - nothing has been killed under this seat
+```
+
+**Two failures is not two-thirds of the way to a restart.** `failureThreshold`
+counts *consecutive* failures, the kubelet's counter resets on the first
+success, and these events are aggregated — the two above were twenty seconds
+apart on a ten second period, so a probe succeeded between them and the count
+never stood above 1. Nothing in the events can show a streak, so `status`
+reports the count and the last timestamp and says so rather than inventing one.
+The one piece of proof is `restarts`: a completed liveness streak leaves a
+restart behind, and takes the seat with it.
+
+**A `BrokenPipeError` from your application is one of these failures, not a
+bug.** Every probe has a `timeoutSeconds` — 1 s here — so a pause longer than
+that has the kubelet hang up, and the handler discovers the dead socket when
+you continue:
+
+```
+  File "/src/demo_service.py", line 19, in do_GET
+    self.wfile.write(body)
+BrokenPipeError: [Errno 32] Broken pipe
+```
+
+One traceback, one missed probe. An application that swallows the exception
+gives no clue at all, which is why the events are worth reading either way —
+and why "no failures" means none *retained*: events expire after the API
+server's `--event-ttl`, an hour by default.
 
 ## Removing a seat
 

@@ -230,6 +230,11 @@ the session you forgot about last week. Each pod's block ends with the `ssh`
 line to reconnect with, taken from the stanza `attach` wrote, so the alias
 survives the attach output scrolling away.
 
+`status` also reports what the target's probes have cost since the seat landed
+— the failures the kubelet has recorded, beside the thresholds `attach` warned
+you about. It is the other end of the same arithmetic, and worth a look after
+any pause you held longer than you meant to.
+
 ## 8. Clean up
 
 An ephemeral container dies with its pod, which is the only way to remove one:

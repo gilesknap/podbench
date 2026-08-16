@@ -207,6 +207,18 @@ def _names(entries: Any) -> set[str]:
     }
 
 
+def _items(result: CommandResult) -> list[dict[str, Any]]:
+    """The ``items`` of a ``kubectl get -o json`` list, or none of them."""
+    items = _parse_json_object(result.stdout, result.argv).get("items")
+    if not isinstance(items, list):
+        return []
+    return [
+        cast(dict[str, Any], item)
+        for item in cast(list[Any], items)
+        if isinstance(item, dict)
+    ]
+
+
 def _parse_json_object(text: str, argv: Sequence[str]) -> dict[str, Any]:
     parsed: object = json.loads(text)
     if not isinstance(parsed, dict):
@@ -304,15 +316,32 @@ class Kubectl:
         (:func:`podbench.launcher.resolve_pod`) — and a second ``get pods``
         spelled slightly differently is a second thing to keep true.
         """
-        result = self.run("get", "pods", "-o", "json")
-        items = _parse_json_object(result.stdout, result.argv).get("items")
-        if not isinstance(items, list):
-            return []
-        return [
-            cast(dict[str, Any], item)
-            for item in cast(list[Any], items)
-            if isinstance(item, dict)
-        ]
+        return _items(self.run("get", "pods", "-o", "json"))
+
+    def list_events(self, pod: str) -> list[dict[str, Any]]:
+        """Every event the API server still holds about one pod.
+
+        Field-selected server side, because a busy namespace's event stream is
+        long and only one pod's is wanted. ``involvedObject.kind`` is selected
+        as well as the name: a Deployment's Service, its ReplicaSet and its pod
+        can all be called the same thing in some namespaces, and an event about
+        the wrong kind of object counted as a probe failure would be a wrong
+        number rather than a missing one.
+
+        Events are not history. The API server keeps them for ``--event-ttl``,
+        an hour by default, so an empty list means nothing is retained rather
+        than nothing happened — which is why
+        :func:`podbench.budget.format_probe_spend` says so out loud.
+        """
+        return _items(
+            self.run(
+                "get",
+                "events",
+                f"--field-selector=involvedObject.name={pod},involvedObject.kind=Pod",
+                "-o",
+                "json",
+            )
+        )
 
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:
         """A pod subresource's JSON, e.g. ``ephemeralcontainers``."""

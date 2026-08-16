@@ -99,6 +99,7 @@ def pod_document(
     phase: str = "Running",
     ready: bool = True,
     probes: Mapping[str, Any] | None = None,
+    restarts: int = 0,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -131,6 +132,7 @@ def pod_document(
                     "name": container,
                     "containerID": f"containerd://{TARGET_CID}",
                     "ready": ready,
+                    "restartCount": restarts,
                 }
             ],
             "ephemeralContainerStatuses": [dict(s) for s in ephemeral_statuses],
@@ -182,6 +184,8 @@ class FakeCluster:
         kubelet_refuses_root: bool = False,
         kubelet_refuses_root_image: bool = False,
         capreport: dict[str, Any] | None = None,
+        events: Sequence[dict[str, Any]] = (),
+        events_error: str | None = None,
         host_key: str | None = HOST_KEY,
         login_user: str | None = SEAT_USER,
         login_user_returncode: int = 1,
@@ -197,6 +201,10 @@ class FakeCluster:
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
         self.capreport = capreport if capreport is not None else capreport_payload()
+        # The pod's events, which only `status` reads: a namespace may grant
+        # `get` on pods and not on events, so the refusal is a fixture too.
+        self.events = [dict(event) for event in events]
+        self.events_error = events_error
         self.capreport_output: str | None = None
         self.host_key = host_key
         self.login_user = login_user
@@ -236,6 +244,10 @@ class FakeCluster:
     ) -> CommandResult:
         if rest[:1] == ["config"]:
             return _ok("demo\n")
+        if rest[:2] == ["get", "events"]:
+            if self.events_error is not None:
+                return _fail(self.events_error)
+            return _ok(json.dumps({"items": self.events}))
         if rest[:2] == ["get", "pods"]:
             return _ok(json.dumps({"items": [self.pod, *self.others]}))
         if rest[:2] == ["get", "pod"]:
@@ -1958,6 +1970,129 @@ def test_status_lists_every_container_live_or_burnt(
     assert "degraded" in out
     assert "read-only inspection" in out
     assert "other-sidecar" not in out
+
+
+PROBED = {
+    "readinessProbe": {"periodSeconds": 5},
+    "livenessProbe": {"periodSeconds": 10},
+}
+"""The demo Deployment's probes, which is the pod issue #50 was measured on."""
+
+
+def unhealthy(kind: str, count: int, first: str, last: str) -> dict[str, Any]:
+    """One aggregated `Unhealthy` event for the target container."""
+    return {
+        "type": "Warning",
+        "reason": "Unhealthy",
+        "message": f'{kind} probe failed: Get "http://10.42.0.23:8080/healthz"',
+        "count": count,
+        "firstTimestamp": first,
+        "lastTimestamp": last,
+        "involvedObject": {
+            "kind": "Pod",
+            "name": "target",
+            "fieldPath": "spec.containers{app}",
+        },
+    }
+
+
+def probed_cluster(**overrides: Any) -> FakeCluster:
+    """A pod with probes and a seat that landed at 2026-08-15T09:00:00Z."""
+    return FakeCluster(
+        pod_document(
+            uid=1000,
+            probes=PROBED,
+            ephemeral=[{"name": "podbench-1", "targetContainerName": "app"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        **overrides,
+    )
+
+
+def test_status_reports_the_budget_spent_beside_the_budget_available(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The pause of 2026-08-16: two liveness failures 20s apart on a 10s
+    period, so a probe succeeded between them and nothing was spent. Counting
+    that by hand took two kubectl calls and knowing which fields to read."""
+    cluster = probed_cluster(
+        events=[
+            unhealthy("Liveness", 2, "2026-08-15T10:04:11Z", "2026-08-15T10:04:31Z"),
+            unhealthy("Readiness", 2, "2026-08-15T10:04:13Z", "2026-08-15T10:04:33Z"),
+        ]
+    )
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "podbench-1" in out
+    assert "probes on 'app' since the seat landed (2026-08-15T09:00:00Z)" in out
+    assert "liveness: 2 failures, last 2026-08-15T10:04:31Z" in out
+    assert "restarts: 0" in out
+    # The two facts the count itself cannot carry.
+    assert "A count is not a streak" in out
+    assert "BrokenPipeError" in out
+
+
+def test_the_events_are_asked_for_by_pod_and_by_kind() -> None:
+    cluster = probed_cluster()
+    assert main(["status", "target", "-n", "demo"], runner=cluster) == 0
+    (call,) = [argv for argv in cluster.calls if "events" in argv]
+    assert "--field-selector=involvedObject.name=target,involvedObject.kind=Pod" in call
+
+
+def test_a_failure_before_the_seat_landed_is_not_charged_to_this_session(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = probed_cluster(
+        events=[
+            unhealthy("Liveness", 7, "2026-08-15T07:00:00Z", "2026-08-15T07:02:00Z")
+        ]
+    )
+    assert main(["status", "target", "-n", "demo"], runner=cluster) == 0
+    out = capsys.readouterr().out
+    assert "liveness: none retained" in out
+    assert "7 failures" not in out
+
+
+def test_an_unprobed_target_costs_status_no_call_at_all(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """There is no budget to spend on a pod with no probes, and asking the
+    cluster for events to say so would need a verb this needs no other reason
+    to hold."""
+    cluster = seated_cluster()
+    assert main(["status", "target", "-n", "demo"], runner=cluster) == 0
+    assert not [argv for argv in cluster.calls if "events" in argv]
+    assert "none declared, so there is no budget to spend" in capsys.readouterr().out
+
+
+def test_events_refused_costs_the_probe_block_and_nothing_else(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`get events` is a separate RBAC verb from `get pods`, and a namespace
+    that grants one and not the other must still get its seat listing."""
+    cluster = probed_cluster(
+        events_error=(
+            'Error from server (Forbidden): events is forbidden: User "dev" '
+            'cannot list resource "events" in API group "" in the namespace "demo"'
+        )
+    )
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "podbench-1" in out
+    assert "what they have cost cannot be read" in out
+    assert "Forbidden" in out
 
 
 def test_list_finds_pods_carrying_a_seat(

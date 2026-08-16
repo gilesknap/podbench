@@ -38,7 +38,15 @@ from typing import Annotated, Any, cast
 import typer
 
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
-from .budget import ProbeBudget, probe_budgets, probe_qualifier, probe_warning
+from .budget import (
+    ProbeBudget,
+    format_probe_spend,
+    probe_budgets,
+    probe_qualifier,
+    probe_spend,
+    probe_warning,
+    restart_count,
+)
 from .cli import new_app, require_subcommand, run
 from .kubectl import (
     EphemeralContainerError,
@@ -130,6 +138,7 @@ __all__ = [
     "parse_mount",
     "plan_ladder",
     "pod_choices",
+    "probe_spend_note",
     "probe_ssh_identity",
     "read_public_key",
     "resolve_among",
@@ -580,6 +589,12 @@ class SeatInfo:
     ephemeral container's mounts are fixed at creation, so a reconnect has to
     read this rather than re-derive it from what the pod declares *now*."""
 
+    started_at: str | None = None
+    """When the node started this container, ``None`` until it has. The window
+    a probe-failure count is asked over: what the *pod* has ever spent is not
+    what this session spent, and the seat's own start is the only boundary
+    between them that the cluster records."""
+
     @property
     def running(self) -> bool:
         """Whether this container can still take an ssh session."""
@@ -606,7 +621,8 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
         name = _entry_name(container)
         if name is None or not (name == base or name.startswith(f"{base}-")):
             continue
-        phase, detail = _phase_of(statuses.get(name, {}))
+        status = statuses.get(name, {})
+        phase, detail = _phase_of(status)
         found.append(
             SeatInfo(
                 name=name,
@@ -618,9 +634,26 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
                 target=_as_str(container.get("targetContainerName")),
                 home=spec_env(container).get("HOME"),
                 identity_mounted=_mounts_volume(container, SEAT_IDENTITY_VOLUME),
+                started_at=_landed_at(status),
             )
         )
     return found
+
+
+def _landed_at(status: Mapping[str, Any]) -> str | None:
+    """When the node started this seat's container, running or since dead.
+
+    A terminated seat keeps its ``startedAt``, and that case is the one worth
+    reading: if a liveness streak completed, the restart it caused is what
+    killed the seat, and the events either side of this stamp are the only
+    place that shows.
+    """
+    state = as_dict(status.get("state"))
+    for key in ("running", "terminated"):
+        started = as_dict(state.get(key)).get("startedAt")
+        if isinstance(started, str) and started:
+            return started
+    return None
 
 
 def running_seat(
@@ -2139,6 +2172,56 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -
     return "\n".join(lines)
 
 
+def probe_spend_note(
+    kubectl: Kubectl,
+    pod: str,
+    pod_json: Mapping[str, Any],
+    present: Sequence[SeatInfo],
+) -> str:
+    """What the target's probes have already cost, for ``status`` to print.
+
+    ``attach`` states the budget on the way in and then never mentions it
+    again, which leaves the one number that decides whether the seat survives —
+    how many liveness failures have gone by — to be counted by hand out of
+    ``kubectl get events``. It is asked for here, where a session already
+    running is being looked at, and it is the only budget podbench has that is
+    spent without anything saying so.
+
+    The events are a separate RBAC verb from the pods, so a namespace that
+    grants one and not the other must still get its listing: the failure
+    reports itself and costs this block only.
+    """
+    latest = next((seat for seat in reversed(present) if seat.running), None) or (
+        present[-1] if present else None
+    )
+    container = (latest.target if latest is not None else None) or (
+        target_container_name(pod_json)
+    )
+    if not (budgets := probe_budgets(pod_json, container)):
+        return (
+            f"probes on {container!r}: none declared, so there is no budget to "
+            "spend - nothing removes this pod from a Service or restarts it "
+            "while it is stopped in a debugger"
+        )
+    try:
+        events = kubectl.list_events(pod)
+    except KubectlError as error:
+        return (
+            f"probes on {container!r}: what they have cost cannot be read - "
+            f"{error}. The failures are only in the pod's events, so this "
+            "needs `get` on events in this namespace; the budget itself is in "
+            "the pod spec and `podbench attach` states it"
+        )
+    landed = latest.started_at if latest is not None else None
+    return format_probe_spend(
+        container,
+        budgets,
+        probe_spend(events, container, since=landed),
+        since=landed,
+        restarts=restart_count(pod_json, container),
+    )
+
+
 # -- choosing which pod the user meant --------------------------------------
 
 
@@ -2836,7 +2919,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
-        present = seats(kube.get_pod(name))
+        pod_json = kube.get_pod(name)
+        present = seats(pod_json)
         if not present:
             print(f"no podbench containers in {kube.namespace}/{name}")
             raise typer.Exit(0)
@@ -2847,6 +2931,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             format_seats(
                 PodRef(kube.namespace, name), present, directory=client_dir(config_dir)
             )
+        )
+        print(
+            "\n".join(_warning_lines(probe_spend_note(kube, name, pod_json, present)))
         )
         raise typer.Exit(0)
 

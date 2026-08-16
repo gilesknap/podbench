@@ -19,9 +19,13 @@ import yaml
 from podbench.budget import (
     ProbeBudget,
     ProbeKind,
+    ProbeSpend,
+    format_probe_spend,
     probe_budgets,
     probe_qualifier,
+    probe_spend,
     probe_warning,
+    restart_count,
 )
 
 APP = "app"
@@ -52,10 +56,13 @@ def pod_document(
     *,
     started: bool | None = True,
     container: str = APP,
+    restarts: int | None = None,
 ) -> dict[str, Any]:
     status: dict[str, Any] = {"name": container, "ready": True}
     if started is not None:
         status["started"] = started
+    if restarts is not None:
+        status["restartCount"] = restarts
     return {
         "spec": {"containers": [{"name": container, **(probes or {})}]},
         "status": {"containerStatuses": [status]},
@@ -204,3 +211,254 @@ def test_initial_delay_is_named_only_when_the_spec_states_one() -> None:
     )
     assert with_delay is not None and "initialDelaySeconds" in with_delay
     assert without is not None and "initialDelaySeconds" not in without
+
+
+# -- the budget spent -------------------------------------------------------
+#
+# The fixtures below are the events of 2026-08-16 (issue #50), transcribed: a
+# pause-and-resume in VS Code against the demo Deployment produced four
+# BrokenPipeError tracebacks in the application's log and exactly these two
+# aggregated events, 1:1 with them. Two liveness failures against a threshold
+# of 3, twenty seconds apart on a ten second period - so a probe succeeded
+# between them, the counter reset, and nothing was spent. Reporting that as
+# "2 of 3" would have been wrong, and wrong in the direction that panics.
+
+LANDED = "2026-08-16T08:52:04Z"
+"""When the seat landed on the pod those events came from."""
+
+
+def unhealthy(
+    kind: str,
+    count: int,
+    first: str,
+    last: str,
+    *,
+    container: str = APP,
+    field_path: str | None = None,
+) -> dict[str, Any]:
+    """One aggregated event, in the shape ``kubectl get events -o json`` returns."""
+    involved: dict[str, Any] = {"kind": "Pod", "name": "web-6c9d7f4b8b-hq2vn"}
+    path = field_path if field_path is not None else f"spec.containers{{{container}}}"
+    if path:
+        involved["fieldPath"] = path
+    return {
+        "type": "Warning",
+        "reason": "Unhealthy",
+        "message": (
+            f'{kind} probe failed: Get "http://10.42.0.23:8080/healthz": '
+            "context deadline exceeded (Client.Timeout exceeded while "
+            "awaiting headers)"
+        ),
+        "count": count,
+        "firstTimestamp": first,
+        "lastTimestamp": last,
+        "involvedObject": involved,
+    }
+
+
+THE_PAUSE = [
+    unhealthy("Liveness", 2, "2026-08-16T10:04:11Z", "2026-08-16T10:04:31Z"),
+    unhealthy("Readiness", 2, "2026-08-16T10:04:13Z", "2026-08-16T10:04:33Z"),
+]
+
+
+def spend_report(
+    events: list[dict[str, Any]],
+    *,
+    probes: dict[str, Any] | None = None,
+    since: str | None = LANDED,
+    restarts: int = 0,
+) -> str:
+    pod = pod_document(probes if probes is not None else DEMO_PROBES, restarts=restarts)
+    return format_probe_spend(
+        APP,
+        probe_budgets(pod, APP),
+        probe_spend(events, APP, since=since),
+        since=since,
+        restarts=restart_count(pod, APP),
+    )
+
+
+def test_the_events_of_the_pause_are_reported_as_the_events_have_them() -> None:
+    spend = {item.kind: item for item in probe_spend(THE_PAUSE, APP, since=LANDED)}
+    assert spend[ProbeKind.LIVENESS] == ProbeSpend(
+        kind=ProbeKind.LIVENESS,
+        failures=2,
+        first="2026-08-16T10:04:11Z",
+        last="2026-08-16T10:04:31Z",
+    )
+    assert spend[ProbeKind.READINESS].failures == 2
+    assert spend[ProbeKind.READINESS].last == "2026-08-16T10:04:33Z"
+
+
+def test_readiness_leads_here_as_it_does_in_the_budget() -> None:
+    assert [item.kind for item in probe_spend(THE_PAUSE, APP)] == [
+        ProbeKind.READINESS,
+        ProbeKind.LIVENESS,
+    ]
+
+
+def test_a_count_is_never_reported_as_a_streak() -> None:
+    """The whole point: `count` is aggregated and cannot show consecutiveness."""
+    report = spend_report(THE_PAUSE)
+    assert "2 failures, last 2026-08-16T10:04:31Z" in report
+    # Anything of this shape would be an assertion the events cannot support.
+    for fiction in ("2 of 3", "2/3", "one away", "2 consecutive failures"):
+        assert fiction not in report
+    assert "A count is not a streak" in report
+    assert "resets on the first success" in report
+    assert "Only a restart proves a liveness streak ever completed" in report
+
+
+def test_the_threshold_is_stated_with_the_word_consecutive_on_the_line() -> None:
+    report = spend_report(THE_PAUSE)
+    assert "3 consecutive x 10s period, 1s timeout" in report
+    assert "a 3rd in a row kills the container, and the seat with it" in report
+
+
+def test_the_traceback_the_application_logs_is_named_as_a_missed_probe() -> None:
+    """Four BrokenPipeErrors and four missed probes were the same four events;
+    working that out from scratch is the cost this note exists to remove."""
+    report = spend_report(THE_PAUSE)
+    assert "BrokenPipeError" in report
+    assert "One traceback, one missed probe" in report
+    # And it is there for the reader who has the traceback but no events left.
+    assert "BrokenPipeError" in spend_report([])
+
+
+def test_nothing_retained_is_not_nothing_happened() -> None:
+    report = spend_report([])
+    assert "none retained" in report
+    assert "--event-ttl" in report
+    assert "A count is not a streak" not in report
+
+
+def test_a_sidecars_probe_failures_are_not_charged_to_the_target() -> None:
+    events = [
+        unhealthy(
+            "Liveness",
+            9,
+            "2026-08-16T10:04:11Z",
+            "2026-08-16T10:04:31Z",
+            container="istio-proxy",
+        )
+    ]
+    assert probe_spend(events, APP, since=LANDED) == ()
+
+
+def test_an_event_naming_no_container_is_not_attributed_to_one() -> None:
+    """The kubelet always sets fieldPath on these, so an event without one is
+    not a probe failure of this container's - and a count credited to the
+    wrong container is worse than a count that is missing."""
+    events = [
+        unhealthy(
+            "Liveness",
+            2,
+            "2026-08-16T10:04:11Z",
+            "2026-08-16T10:04:31Z",
+            field_path="",
+        )
+    ]
+    assert probe_spend(events, APP, since=LANDED) == ()
+
+
+def test_a_series_that_ended_before_the_seat_landed_is_not_this_sessions() -> None:
+    events = [unhealthy("Liveness", 6, "2026-08-16T07:10:00Z", "2026-08-16T07:11:00Z")]
+    assert probe_spend(events, APP, since=LANDED) == ()
+    # Without a landing to measure from, it is the pod's whole retained history.
+    assert probe_spend(events, APP)[0].failures == 6
+
+
+def test_a_series_straddling_the_landing_says_so_rather_than_splitting_it() -> None:
+    """An aggregated count cannot be apportioned, so it is reported whole and
+    labelled rather than silently credited to this session."""
+    events = [unhealthy("Liveness", 5, "2026-08-16T08:00:00Z", "2026-08-16T09:30:00Z")]
+    (spend,) = probe_spend(events, APP, since=LANDED)
+    assert spend.began_before
+    assert spend.failures == 5
+    assert "before the seat landed" in spend_report(events)
+
+
+def test_the_events_api_shape_counts_too() -> None:
+    """`kubectl get events` returns whatever the emitter wrote: an events.k8s.io
+    record carries eventTime and series, and none of firstTimestamp,
+    lastTimestamp or a top-level count."""
+    event = unhealthy("Readiness", 0, "", "")
+    del event["firstTimestamp"]
+    del event["lastTimestamp"]
+    event["count"] = None
+    event["eventTime"] = "2026-08-16T10:04:13Z"
+    event["series"] = {"count": 4, "lastObservedTime": "2026-08-16T10:04:33Z"}
+    (spend,) = probe_spend([event], APP, since=LANDED)
+    assert (spend.failures, spend.last) == (4, "2026-08-16T10:04:33Z")
+
+
+def test_an_unaggregated_event_stands_for_the_one_failure_it_is() -> None:
+    event = unhealthy("Liveness", 2, "2026-08-16T10:04:11Z", "2026-08-16T10:04:31Z")
+    event["count"] = 0
+    assert probe_spend([event], APP, since=LANDED)[0].failures == 1
+
+
+def test_two_series_for_one_probe_are_summed_and_the_latest_timestamp_wins() -> None:
+    events = [
+        unhealthy("Liveness", 2, "2026-08-16T10:04:11Z", "2026-08-16T10:04:31Z"),
+        unhealthy("Liveness", 3, "2026-08-16T11:00:00Z", "2026-08-16T11:00:20Z"),
+    ]
+    (spend,) = probe_spend(events, APP, since=LANDED)
+    assert spend.failures == 5
+    assert (spend.first, spend.last) == (
+        "2026-08-16T10:04:11Z",
+        "2026-08-16T11:00:20Z",
+    )
+
+
+def test_only_probe_failures_are_counted() -> None:
+    other = {
+        "reason": "Killing",
+        "message": "Stopping container app",
+        "count": 1,
+        "firstTimestamp": "2026-08-16T10:04:31Z",
+        "lastTimestamp": "2026-08-16T10:04:31Z",
+        "involvedObject": {"kind": "Pod", "fieldPath": "spec.containers{app}"},
+    }
+    assert probe_spend([other], APP, since=LANDED) == ()
+
+
+def test_a_restart_is_reported_with_what_it_did_to_the_seat() -> None:
+    report = spend_report(THE_PAUSE, restarts=1)
+    assert "restarts: 1" in report
+    assert "cannot come back" in report
+    assert "over its whole life, not just this session" in report
+
+
+def test_no_restarts_is_said_plainly() -> None:
+    assert "restarts: 0 - nothing has been killed under this seat" in spend_report([])
+
+
+def test_an_unstated_restart_count_costs_the_line_not_the_report() -> None:
+    pod = pod_document(DEMO_PROBES)
+    assert restart_count(pod, APP) is None
+    report = format_probe_spend(APP, probe_budgets(pod, APP), (), since=LANDED)
+    assert "restarts" not in report
+
+
+def test_a_failure_against_a_probe_the_spec_no_longer_declares_is_labelled() -> None:
+    """Probes cannot be changed on a running pod, but this pod is not the only
+    thing the events outlive: a rolled Deployment's old spec is gone and the
+    count is still there, and calling it a startup budget would be a lie."""
+    events = [unhealthy("Startup", 4, "2026-08-16T09:00:00Z", "2026-08-16T09:01:00Z")]
+    report = spend_report(
+        events, probes={"livenessProbe": {"periodSeconds": 10}}, since=LANDED
+    )
+    assert "startup: 4 failures" in report
+    assert "declares no startupProbe now" in report
+
+
+def test_an_unreadable_timestamp_drops_the_event_rather_than_the_report() -> None:
+    events = [unhealthy("Liveness", 2, "last tuesday", "last tuesday")]
+    assert probe_spend(events, APP, since=LANDED) == ()
+
+
+def test_the_window_says_so_when_there_is_no_landing_to_measure_from() -> None:
+    report = spend_report(THE_PAUSE, since=None)
+    assert "over every event the cluster still holds" in report

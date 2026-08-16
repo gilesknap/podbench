@@ -231,7 +231,10 @@ liveness probe
   A periodic check the {term}`kubelet` uses to decide whether to *restart* a
   container. A process stopped at a breakpoint stops answering it, and the kubelet
   cannot tell that from a hang — so on a probed pod a debugging session is on a timer,
-  and `attach` prints the arithmetic before you set one.
+  and `attach` prints the arithmetic before you set one. It is the only budget in
+  podbench that is spent *silently*, which is why `podbench status` reports the
+  {term}`Unhealthy` events afterwards as well: a restart takes the {term}`seat` with
+  it and {term}`burnt name`s do not come back.
 
 merge patch
   A patch that unions map keys — RFC 7386, `kubectl patch --type=merge`. Right for
@@ -329,6 +332,15 @@ subPath
   than the whole thing. The API server **forbids it on an ephemeral container**, and
   refuses the entire request when it sees one — which is why an `attach` seat can
   never be given a `/etc/passwd` file, and a `dev` {term}`sidecar` can.
+
+Unhealthy
+  The {term}`kubelet`'s event for a probe that failed — one reason for all three
+  probes, with the probe named only in the message. It is the *only* trace a probe
+  failure leaves, and `podbench status` reports what it says and nothing more: the
+  events are aggregated, so a `count` of two can be two failures twenty seconds
+  apart with a success between them, while `failureThreshold` counts **consecutive**
+  ones. Reporting "2 of 3" from that would be a fiction. They also expire, after the
+  API server's `--event-ttl` — an hour by default.
 ```
 
 ## Linux, and why ptrace says no
