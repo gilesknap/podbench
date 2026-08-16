@@ -35,13 +35,21 @@ lifetime.
 
 ## A breakpoint on a probed pod is on a timer
 
-Pausing stops the app answering its probes. Two budgets, and **the quiet one is
-worse**:
+Pausing stops the app answering its probes. Two budgets, both
+`(failureThreshold - 1) x periodSeconds + timeoutSeconds` after the pause,
+plus up to one more period depending on where in the cycle it began — and
+**the quiet one is worse**:
 
 | paused | consequence | visibility |
 |---|---|---|
-| `readiness failureThreshold x periodSeconds` | dropped from the Service's endpoints | **silent** — no event, recovers on continue |
-| `liveness failureThreshold x periodSeconds` | container killed and restarted | loud — event + restart count |
+| the readiness budget | pod goes not-ready and stops taking Service traffic; the EndpointSlice keeps the address with `conditions.ready: false` | **quiet** — `Unhealthy` events while it lasts, but nothing restarts and it recovers a period after continue, so afterwards there is no trace |
+| the liveness budget | container killed and restarted, **and the seat with it** — it shares the target's namespaces, exits 137 in the same second, and cannot be restarted | loud — event, restart count, burnt seat name |
+
+Measured on the demo Deployment (5 s / 10 s periods, `failureThreshold: 3`,
+`timeoutSeconds: 1`, so 11–16 s and 21–31 s): an 18 s gdb attach went not-ready
+at ~12 s and recovered 5 s after `detach` with no restart; a 45 s one also hit
+`failed liveness probe` at ~25 s. `podbench.budget` computes both from the pod
+spec and `attach` prints them, so **do not restate the numbers by hand**.
 
 **Probes cannot be changed on a running pod.** The API permits only
 `containers[*].image`, `initContainers[*].image`, `activeDeadlineSeconds`,

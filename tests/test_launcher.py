@@ -12,7 +12,7 @@ that only the second burns a container name.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -95,6 +95,7 @@ def pod_document(
     created: str = "2026-08-15T09:00:00Z",
     phase: str = "Running",
     ready: bool = True,
+    probes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -104,6 +105,7 @@ def pod_document(
     workload: dict[str, Any] = {"name": container, "securityContext": security}
     if volume_mounts:
         workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
+    workload.update(probes or {})
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -1073,6 +1075,43 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert "ptrace_scope" in text
     assert "node02" in text
     assert "OOM-kill" in text, "the shared-limits warning is not optional"
+
+
+PROBES: dict[str, Any] = {
+    "readinessProbe": {"periodSeconds": 5, "initialDelaySeconds": 2},
+    "livenessProbe": {"periodSeconds": 10, "initialDelaySeconds": 5},
+}
+
+
+def test_a_probed_target_is_given_its_deadline_before_it_costs_anything() -> None:
+    """The readiness half of this is invisible after the fact — the pod stops
+    taking Service traffic, leaves no restart behind and recovers on continue —
+    so the report has to state it up front or not at all."""
+    cluster = FakeCluster(pod_document(uid=1000, probes=PROBES))
+    session = attach(kubectl_for(cluster), "target")
+
+    assert [budget.kind.value for budget in session.probes] == [
+        "readiness",
+        "liveness",
+    ]
+    text = format_session(session)
+    assert "TIME-LIMITED" in text, "a bare [x] means two different things"
+    assert "readiness at 11-16s" in text
+    assert "`podbench dev`" in text
+    # One line per probe, indented under the warning: the wrap must not run
+    # them into a paragraph where the two numbers no longer compare.
+    assert "    readiness, 11-16s into a pause:" in text
+    assert "    liveness, 21-31s into a pause:" in text
+
+
+def test_an_unprobed_target_is_told_so_rather_than_left_to_infer_it() -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(kubectl_for(cluster), "target")
+
+    assert session.probes == ()
+    text = format_session(session)
+    assert "no deadline: 'app' declares no readiness" in text
+    assert "on a timer" not in text, "there is nothing to warn about here"
 
 
 def test_a_missing_capreport_is_reported_rather_than_assumed() -> None:
