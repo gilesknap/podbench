@@ -100,6 +100,7 @@ def pod_document(
     ready: bool = True,
     probes: Mapping[str, Any] | None = None,
     restarts: int = 0,
+    target_started: str | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -110,6 +111,14 @@ def pod_document(
     if volume_mounts:
         workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
     workload.update(probes or {})
+    target: dict[str, Any] = {
+        "name": container,
+        "containerID": f"containerd://{TARGET_CID}",
+        "ready": ready,
+        "restartCount": restarts,
+    }
+    if target_started is not None:
+        target["state"] = {"running": {"startedAt": target_started}}
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -127,14 +136,7 @@ def pod_document(
         },
         "status": {
             "phase": phase,
-            "containerStatuses": [
-                {
-                    "name": container,
-                    "containerID": f"containerd://{TARGET_CID}",
-                    "ready": ready,
-                    "restartCount": restarts,
-                }
-            ],
+            "containerStatuses": [target],
             "ephemeralContainerStatuses": [dict(s) for s in ephemeral_statuses],
         },
     }
@@ -2030,7 +2032,7 @@ def test_status_reports_the_budget_spent_beside_the_budget_available(
     )
     out = capsys.readouterr().out
     assert "podbench-1" in out
-    assert "probes on 'app' since the seat landed (2026-08-15T09:00:00Z)" in out
+    assert "probes on 'app' since podbench-1 landed (2026-08-15T09:00:00Z)" in out
     assert "liveness: 2 failures, last 2026-08-15T10:04:31Z" in out
     assert "restarts: 0" in out
     # The two facts the count itself cannot carry.

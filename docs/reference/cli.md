@@ -496,7 +496,7 @@ so a liveness kill burns the seat's name for the pod's lifetime and costs an
 in its spec:
 
 ```
-probes on 'app' since the seat landed (2026-08-16T08:52:04Z)
+probes on 'app' since podbench-1 landed (2026-08-16T08:52:04Z)
   readiness: 2 failures, last 2026-08-16T10:04:33Z - 3 consecutive x 5s
     period, 1s timeout; a 3rd in a row takes the pod out of its Service
     until a probe succeeds again
@@ -506,6 +506,8 @@ probes on 'app' since the seat landed (2026-08-16T08:52:04Z)
   restarts: 0 - nothing has been killed under this seat
 ```
 
+The header names the seat, because `status` lists every seat the pod has ever
+carried and only one of them sets this window.
 Both `Unhealthy` message forms count: the kubelet writes `probe failed` when
 the probe answered wrongly and `probe errored` when the attempt could not be
 made at all, and both move `failureThreshold`'s counter.
@@ -517,12 +519,26 @@ Three things it deliberately does not say:
   on the first success and is published nowhere. Events are aggregated, so the
   two liveness failures above were 20 s apart on a 10 s period — a probe
   succeeded between them and the count never stood above 1. Rendering that as
-  "2 of 3" would be a fiction, and the alarming one. Only a **restart** proves
-  a liveness streak completed.
+  "2 of 3" would be a fiction, and the alarming one.
 * **That nothing happened.** Events expire after the API server's
   `--event-ttl`, an hour by default, so an empty report means nothing retained.
 * **That the count is all yours.** A series that began before the seat landed
   is reported whole and labelled, because an aggregated count cannot be split.
+
+What follows the counts is the measured half, read from the container's own
+status rather than from any event. A **restart** is the only proof a liveness
+streak ever completed — so it is dated against the seat's landing (the current
+instance's `startedAt`), and the previous instance's termination reason is
+printed with it, because a liveness kill is one cause of that counter and OOM,
+eviction and a clean exit are others. A container that is **not ready** as you
+read this is the equivalent proof on the readiness half, and it is the only
+line here about *now* rather than about a window; nothing is printed when the
+container is in its Service.
+
+A probe that cannot fire says so instead of stating a stake: a satisfied
+startup probe has nothing at stake until a restart brings the container up
+again, and readiness and liveness are held off entirely while a startup probe
+is still running — the same distinction `attach`'s own budget block draws.
 
 It also names the thing that sends people looking for a bug that is not there:
 a `BrokenPipeError`, or any broken-connection traceback, logged by the

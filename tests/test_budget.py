@@ -25,7 +25,7 @@ from podbench.budget import (
     probe_qualifier,
     probe_spend,
     probe_warning,
-    restart_count,
+    target_status,
 )
 
 APP = "app"
@@ -57,12 +57,19 @@ def pod_document(
     started: bool | None = True,
     container: str = APP,
     restarts: int | None = None,
+    ready: bool = True,
+    running_since: str | None = None,
+    last_terminated: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    status: dict[str, Any] = {"name": container, "ready": True}
+    status: dict[str, Any] = {"name": container, "ready": ready}
     if started is not None:
         status["started"] = started
     if restarts is not None:
         status["restartCount"] = restarts
+    if running_since is not None:
+        status["state"] = {"running": {"startedAt": running_since}}
+    if last_terminated is not None:
+        status["lastState"] = {"terminated": last_terminated}
     return {
         "spec": {"containers": [{"name": container, **(probes or {})}]},
         "status": {"containerStatuses": [status]},
@@ -267,15 +274,21 @@ def spend_report(
     *,
     probes: dict[str, Any] | None = None,
     since: str | None = LANDED,
-    restarts: int = 0,
+    seat: str | None = None,
+    **status: Any,
 ) -> str:
-    pod = pod_document(probes if probes is not None else DEMO_PROBES, restarts=restarts)
+    pod = pod_document(
+        probes if probes is not None else DEMO_PROBES,
+        restarts=status.pop("restarts", 0),
+        **status,
+    )
     return format_probe_spend(
         APP,
         probe_budgets(pod, APP),
         probe_spend(events, APP, since=since),
         since=since,
-        restarts=restart_count(pod, APP),
+        seat=seat,
+        target=target_status(pod, APP),
     )
 
 
@@ -314,6 +327,47 @@ def test_the_threshold_is_stated_with_the_word_consecutive_on_the_line() -> None
     report = spend_report(THE_PAUSE)
     assert "3 consecutive x 10s period, 1s timeout" in report
     assert "a 3rd in a row kills the container, and the seat with it" in report
+    # One renderer for the three numbers, so the two lines cannot drift apart.
+    budget = by_kind(probe_budgets(pod_document(DEMO_PROBES), APP))[ProbeKind.LIVENESS]
+    assert budget.mechanism == "3 failures x 10s period, 1s timeout"
+    assert budget.consecutive_mechanism == "3 consecutive x 10s period, 1s timeout"
+
+
+def test_a_count_past_the_threshold_still_refuses_to_call_it_a_streak() -> None:
+    """The rendering the whole design turns on: five failures against a
+    threshold of three is not five-thirds of anything, and the line must not
+    start reading as an overdraft once the numbers cross."""
+    events = [unhealthy("Liveness", 5, "2026-08-16T10:00:00Z", "2026-08-16T10:20:00Z")]
+    report = spend_report(events)
+    assert "liveness: 5 failures, last 2026-08-16T10:20:00Z" in report
+    for fiction in ("5 of 3", "over budget", "exhausted", "5 consecutive"):
+        assert fiction not in report
+    assert "restarts: 0 - nothing has been killed under this seat" in report
+
+
+def test_a_probe_that_cannot_fire_has_no_stake_to_state() -> None:
+    """`_budget_line` already refuses to call a satisfied startup probe a
+    deadline; the spent half stating one for the same probe on the same pod
+    would contradict it, and in the alarming direction."""
+    report = spend_report([], probes=DEMO_PROBES)
+    assert "startup: none retained" in report
+    assert "already satisfied, so nothing is at stake" in report
+    assert "a 30th in a row kills the container" not in report
+
+
+def test_a_running_startup_probe_leaves_the_other_two_nothing_at_stake() -> None:
+    pod = pod_document(DEMO_PROBES, started=False)
+    report = format_probe_spend(APP, probe_budgets(pod, APP), (), since=LANDED)
+    assert "liveness: none retained - 3 consecutive x 10s period, 1s timeout; held off"
+    assert report.count("held off while the startup probe is still running") == 2
+    assert "kills the container, and the seat with it" not in report
+
+
+def test_the_header_names_the_seat_whose_landing_the_window_is() -> None:
+    """`status` lists every seat the pod has carried and only one of them sets
+    this window; "the seat" does not say which."""
+    report = spend_report(THE_PAUSE, seat="podbench-3")
+    assert f"probes on 'app' since podbench-3 landed ({LANDED})" in report
 
 
 def test_the_traceback_the_application_logs_is_named_as_a_missed_probe() -> None:
@@ -456,11 +510,43 @@ def test_only_probe_failures_are_counted() -> None:
     assert probe_spend([other], APP, since=LANDED) == ()
 
 
-def test_a_restart_is_reported_with_what_it_did_to_the_seat() -> None:
-    report = spend_report(THE_PAUSE, restarts=1)
+def test_a_restart_under_the_seat_is_reported_with_what_it_did_to_it() -> None:
+    report = spend_report(
+        THE_PAUSE, restarts=1, running_since="2026-08-16T10:04:41Z", seat="podbench-1"
+    )
     assert "restarts: 1" in report
+    assert "after the seat landed, so at least one of those happened under it" in report
     assert "cannot come back" in report
-    assert "over its whole life, not just this session" in report
+
+
+def test_a_restart_that_predates_the_seat_is_not_charged_to_the_session() -> None:
+    """`restartCount` is the container's whole life, and an unrelated OOM
+    yesterday reported bare is an alarm about a session that spent nothing.
+    The current instance's startedAt dates the last restart exactly."""
+    report = spend_report(THE_PAUSE, restarts=1, running_since="2026-08-15T04:00:00Z")
+    assert "all of them before this seat" in report
+    assert "nothing has been killed under it" in report
+    assert "burnt one" not in report
+
+
+def test_an_undated_restart_says_it_cannot_place_it() -> None:
+    report = spend_report(THE_PAUSE, restarts=1)
+    assert "does not date the last one" in report
+    assert "burnt one" in report
+
+
+def test_the_last_instances_cause_of_death_is_named() -> None:
+    """A seat walking / OOMs the pod, and the counter that a liveness streak
+    moves is the same one - so a restart presented bare reads as proof of a
+    streak that never happened."""
+    report = spend_report(
+        THE_PAUSE,
+        restarts=1,
+        running_since="2026-08-16T10:04:41Z",
+        last_terminated={"reason": "OOMKilled", "exitCode": 137},
+    )
+    assert "The last one ended OOMKilled, exit 137" in report
+    assert "not the only one" in report
 
 
 def test_no_restarts_is_said_plainly() -> None:
@@ -469,15 +555,36 @@ def test_no_restarts_is_said_plainly() -> None:
 
 def test_an_unstated_restart_count_costs_the_line_not_the_report() -> None:
     pod = pod_document(DEMO_PROBES)
-    assert restart_count(pod, APP) is None
+    assert target_status(pod, APP).restarts is None
     report = format_probe_spend(APP, probe_budgets(pod, APP), (), since=LANDED)
     assert "restarts" not in report
 
 
+def test_a_container_out_of_its_service_right_now_is_said_so_outright() -> None:
+    """The one fact in the block that is about *now* rather than a window, and
+    the only proof there is on the readiness half - `ready` goes false when a
+    readiness streak completes. A count of failures does not say it."""
+    report = spend_report(THE_PAUSE, ready=False)
+    assert "not ready: the kubelet has this container out of its Service" in report
+    # Silence is the healthy answer: a tick here is the line readers skip.
+    assert "not ready" not in spend_report(THE_PAUSE)
+
+
+def test_readiness_is_not_reported_on_a_target_that_declares_no_readiness_probe() -> (
+    None
+):
+    report = spend_report(
+        [], probes={"livenessProbe": {"periodSeconds": 10}}, ready=False
+    )
+    assert "not ready" not in report
+
+
 def test_a_failure_against_a_probe_the_spec_no_longer_declares_is_labelled() -> None:
-    """Probes cannot be changed on a running pod, but this pod is not the only
-    thing the events outlive: a rolled Deployment's old spec is gone and the
-    count is still there, and calling it a startup budget would be a lie."""
+    """Probes cannot be changed on a running pod, but the events outlive the
+    pod itself and the field selector matches on its *name*: a StatefulSet pod
+    or a bare one recreated under the same name inherits the retained events of
+    its predecessor, whose spec may have declared a probe this one does not.
+    Calling that a startup budget would be a lie."""
     events = [unhealthy("Startup", 4, "2026-08-16T09:00:00Z", "2026-08-16T09:01:00Z")]
     report = spend_report(
         events, probes={"livenessProbe": {"periodSeconds": 10}}, since=LANDED

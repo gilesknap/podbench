@@ -6,10 +6,12 @@ deadlines follow, and **the quiet one is worse**: readiness failing stops the
 pod taking Service traffic — measured on a live cluster, its EndpointSlice
 keeps the address and flips ``conditions.ready`` and ``serving`` to false — with
 no restart count, and it re-joins on continue. Quiet rather than silent:
-``Unhealthy`` events are emitted while it lasts, but nothing survives it, so
-afterwards the symptom is traffic that stopped arriving and it will not look
-like the debugger did it. Liveness failing kills the container, and the seat's
-debug session goes with it.
+``Unhealthy`` events are emitted while it lasts and outlive it by the API
+server's ``--event-ttl``, but *the pod's own status* keeps nothing — no restart
+count moves — so unless those events are read back the symptom is traffic that
+stopped arriving and it will not look like the debugger did it. Reading them
+back is what :func:`probe_spend` is for. Liveness failing kills the container,
+and the seat's debug session goes with it.
 
 Neither can be turned off in place. A pod update may change only
 ``containers[*].image``, ``initContainers[*].image``, ``activeDeadlineSeconds``,
@@ -54,12 +56,13 @@ __all__ = [
     "ProbeBudget",
     "ProbeKind",
     "ProbeSpend",
+    "TargetStatus",
     "format_probe_spend",
     "probe_budgets",
     "probe_qualifier",
     "probe_spend",
     "probe_warning",
-    "restart_count",
+    "target_status",
 ]
 
 DEFAULT_PERIOD_SECONDS = 10
@@ -215,8 +218,29 @@ class ProbeBudget:
         >>> ProbeBudget(ProbeKind.READINESS, 5, 1, 3, 2).mechanism
         '3 failures x 5s period, 1s timeout'
         """
+        return self._mechanism("failures")
+
+    @property
+    def consecutive_mechanism(self) -> str:
+        """The same three numbers, for a line that is reporting failures.
+
+        ``failureThreshold`` is stated as "failures" where the reader has not
+        had any yet and the spec's own word is the clearest one. Beside a count
+        that has already happened it has to say **consecutive** on the line
+        itself, because that line is what gets quoted into a chat window and
+        the note underneath is what gets left behind. Same fields either way,
+        so they are rendered in one place: the ``vscode-in-a-seat`` rule is
+        that the numbers come from :mod:`podbench.budget` and are never
+        restated by hand.
+
+        >>> ProbeBudget(ProbeKind.READINESS, 5, 1, 3, 2).consecutive_mechanism
+        '3 consecutive x 5s period, 1s timeout'
+        """
+        return self._mechanism("consecutive")
+
+    def _mechanism(self, unit: str) -> str:
         return (
-            f"{self.failure_threshold} failures x {self.period_seconds}s "
+            f"{self.failure_threshold} {unit} x {self.period_seconds}s "
             f"period, {self.timeout_seconds}s timeout"
         )
 
@@ -328,12 +352,20 @@ the reason narrows the stream and the message decides the kind.
 STREAK_NOTE = (
     "A count is not a streak. failureThreshold counts *consecutive* failures "
     "and the kubelet's counter resets on the first success, while these events "
-    "are aggregated: two of them 20s apart on a 10s period had a success "
-    "between them and never stood above 1. Only a restart proves a liveness "
-    "streak ever completed."
+    "are aggregated: failures further apart than the probe's own period had a "
+    "success between them and never stood above 1, and nothing in an event "
+    "says which case this is. Only a restart proves a liveness streak ever "
+    "completed - and not every restart is one, which is why the last "
+    "termination's reason is printed beside the count when the pod carries it."
 )
 """Printed whenever a failure is reported, because the count invites the wrong
-inference and the wrong inference is the alarming one."""
+inference and the wrong inference is the alarming one.
+
+Deliberately without the numbers from the incident that prompted this (two
+failures 20s apart on a 10s period). They are the right illustration in a
+commit message and the wrong one in a line printed under the reader's own
+count, where "two of them" reads as *their* two and the arithmetic does not
+hold on a 5s or a 60s period."""
 
 TRACEBACK_NOTE = (
     "A pause longer than a probe's timeoutSeconds misses that probe, and the "
@@ -425,7 +457,8 @@ def format_probe_spend(
     spend: Sequence[ProbeSpend],
     *,
     since: str | None = None,
-    restarts: int | None = None,
+    seat: str | None = None,
+    target: TargetStatus | None = None,
 ) -> str:
     """The budget already spent, joined to the budget still available.
 
@@ -434,9 +467,14 @@ def format_probe_spend(
     kill burns the seat's name for the pod's lifetime, and until now counting
     how close a session had come to that took two ``kubectl`` calls and knowing
     which fields to read.
+
+    ``seat`` names the container whose landing ``since`` is, because ``status``
+    lists every seat the pod has ever carried and only one of them sets this
+    window.
     """
+    landed = f"{seat} landed" if seat else "the seat landed"
     where = (
-        f"since the seat landed ({since})"
+        f"since {landed} ({since})"
         if since is not None
         else "over every event the cluster still holds"
     )
@@ -453,8 +491,8 @@ def format_probe_spend(
         for item in spend
         if item.kind not in declared
     )
-    if restarts is not None:
-        lines.append(f"  restarts: {_restart_line(restarts)}")
+    state = target if target is not None else TargetStatus()
+    lines.extend(f"  {line}" for line in _proof_lines(state, budgets, since=since))
     if spend:
         lines.append(STREAK_NOTE)
     lines.append(TRACEBACK_NOTE)
@@ -462,25 +500,66 @@ def format_probe_spend(
     return "\n".join(lines)
 
 
-def restart_count(pod_json: Mapping[str, Any], container: str) -> int | None:
-    """How often the kubelet has restarted ``container``, or ``None`` if unsaid.
+@dataclass(frozen=True)
+class TargetStatus:
+    """What the target container's *own status* proves, beside what the events
+    only suggest.
 
-    Reported beside the probe failures as the one piece of *proof* among them:
-    the events cannot show a streak, but a restart is what a completed liveness
-    streak leaves behind. It counts the container's whole life, not the seat's.
+    The events cannot show a streak, so everything here is the measured half of
+    the report: a restart is what a completed liveness streak leaves behind, a
+    container that is not ready has completed a readiness one, and the reason
+    the last instance ended is what says whether a restart was a probe at all.
+    Read by :func:`target_status`; every field is ``None`` when the pod does not
+    say, because a missing field must cost its line and not the block.
+    """
 
-    >>> pod = {"status": {"containerStatuses": [
-    ...     {"name": "app", "restartCount": 2}]}}
-    >>> restart_count(pod, "app"), restart_count(pod, "sidecar")
-    (2, None)
+    restarts: int | None = None
+    started_at: str | None = None
+    """When the *current* instance started, which is what dates the last
+    restart. :attr:`restarts` counts the container's whole life, so on its own
+    it cannot tell a kill under this seat from one that happened yesterday;
+    this stamp against the seat's landing can."""
+
+    last_reason: str | None = None
+    """``lastState.terminated.reason`` — ``Error`` for a liveness kill,
+    ``OOMKilled`` for the pod hitting its memory limit, and so on."""
+
+    last_exit_code: int | None = None
+    ready: bool | None = None
+    """The kubelet's own readiness verdict, which is the only *proof* on the
+    readiness half: it goes false once a readiness streak completes, and back
+    true on the first success afterwards."""
+
+
+def target_status(pod_json: Mapping[str, Any], container: str) -> TargetStatus:
+    """``container``'s status, as far as the pod JSON states it.
+
+    >>> pod = {"status": {"containerStatuses": [{"name": "app",
+    ...     "restartCount": 2, "ready": False,
+    ...     "state": {"running": {"startedAt": "2026-08-16T09:00:00Z"}},
+    ...     "lastState": {"terminated": {"reason": "OOMKilled",
+    ...                                  "exitCode": 137}}}]}}
+    >>> target_status(pod, "app")
+    TargetStatus(restarts=2, started_at='2026-08-16T09:00:00Z', \
+last_reason='OOMKilled', last_exit_code=137, ready=False)
+    >>> target_status(pod, "sidecar")
+    TargetStatus(restarts=None, started_at=None, last_reason=None, \
+last_exit_code=None, ready=None)
     """
     for entry in _as_entries(as_dict(pod_json.get("status")).get("containerStatuses")):
-        if entry.get("name") == container:
-            count = entry.get("restartCount")
-            if isinstance(count, bool) or not isinstance(count, int):
-                return None
-            return count
-    return None
+        if entry.get("name") != container:
+            continue
+        terminated = as_dict(as_dict(entry.get("lastState")).get("terminated"))
+        return TargetStatus(
+            restarts=_whole(entry.get("restartCount")),
+            started_at=_text(
+                as_dict(as_dict(entry.get("state")).get("running")).get("startedAt")
+            ),
+            last_reason=_text(terminated.get("reason")),
+            last_exit_code=_whole(terminated.get("exitCode")),
+            ready=entry.get("ready") if isinstance(entry.get("ready"), bool) else None,
+        )
+    return TargetStatus()
 
 
 def _budget_line(budget: ProbeBudget) -> str:
@@ -591,11 +670,17 @@ def _spend_line(budget: ProbeBudget, item: ProbeSpend | None) -> str:
     than left to the note below, because the line is what gets quoted into a
     chat window and the note is what gets left behind.
     """
-    threshold = (
-        f"{budget.failure_threshold} consecutive x {budget.period_seconds}s "
-        f"period, {budget.timeout_seconds}s timeout"
+    threshold = budget.consecutive_mechanism
+    # A probe that is not in force cannot exact its stake, and saying it would
+    # contradicts what `_budget_line` prints for the same probe on the same
+    # pod: a satisfied startup probe is done with this container instance, and
+    # readiness and liveness are held off entirely while a startup probe is
+    # still running.
+    stake = (
+        budget.kind.streak_cost(budget.failure_threshold)
+        if budget.in_force
+        else _held_off(budget)
     )
-    stake = budget.kind.streak_cost(budget.failure_threshold)
     if item is None:
         return f"{budget.kind.value}: none retained - {threshold}; {stake}"
     span = (
@@ -619,15 +704,96 @@ def _failures(item: ProbeSpend) -> str:
     return f"{item.failures} failure{'' if item.failures == 1 else 's'}"
 
 
-def _restart_line(restarts: int) -> str:
-    """The restart count, and what a non-zero one means for the seat."""
-    if restarts == 0:
-        return "0 - nothing has been killed under this seat"
+def _held_off(budget: ProbeBudget) -> str:
+    """What a probe that cannot fire right now has at stake: nothing yet."""
+    if budget.kind is ProbeKind.STARTUP:
+        return (
+            "already satisfied, so nothing is at stake on it until a restart "
+            "brings the container up again"
+        )
     return (
-        f"{restarts} - the container has been killed and restarted at least "
-        "once. That is over its whole life, not just this session, but a "
-        "restart takes any seat in the pod with it and an ephemeral container "
-        "cannot come back: check the seat names above for a burnt one"
+        "held off while the startup probe is still running, so nothing is at "
+        "stake on it yet"
+    )
+
+
+def _proof_lines(
+    target: TargetStatus, budgets: Sequence[ProbeBudget], *, since: str | None
+) -> list[str]:
+    """The measured half: what the container's own status says happened.
+
+    Ordered after the counts because it is what the counts cannot prove, and
+    each line is omitted rather than guessed at when the pod does not say.
+    """
+    lines: list[str] = []
+    if any(budget.kind is ProbeKind.READINESS for budget in budgets):
+        lines.extend(_ready_line(target))
+    if target.restarts is not None:
+        lines.append(f"restarts: {_restart_line(target, since=since)}")
+    return lines
+
+
+def _ready_line(target: TargetStatus) -> list[str]:
+    """Printed only when the answer is bad news.
+
+    A tick beside a healthy pod is the line the reader learns to skip, and this
+    is the one place in the block that is a fact about *now* rather than about
+    a window - so silence has to mean "in its Service".
+    """
+    if target.ready is not False:
+        return []
+    return [
+        "not ready: the kubelet has this container out of its Service as of "
+        "this call, which is what a completed readiness streak leaves behind. "
+        "It clears on the first probe that succeeds, and nothing restarts"
+    ]
+
+
+def _restart_line(target: TargetStatus, *, since: str | None) -> str:
+    """The restart count, dated against the seat and attributed where it can be.
+
+    ``restartCount`` is the container's whole life, and reported bare it turns
+    an unrelated OOM from yesterday into an alarm about this session. The
+    current instance's ``startedAt`` dates the last one exactly, and
+    ``lastState.terminated.reason`` says whether it was a probe at all - a
+    liveness kill is ``Error``, while OOM, eviction and the process simply
+    exiting move the same counter.
+    """
+    if target.restarts == 0:
+        return "0 - nothing has been killed under this seat"
+    ended = _termination(target)
+    started, landed = _moment(target.started_at), _moment(since)
+    if started is not None and landed is not None and started <= landed:
+        return (
+            f"{target.restarts} - all of them before this seat: the running "
+            f"instance started {target.started_at}, which is not after the "
+            f"seat landed, so nothing has been killed under it{ended}"
+        )
+    if started is not None and landed is not None:
+        return (
+            f"{target.restarts} - and the running instance started "
+            f"{target.started_at}, after the seat landed, so at least one of "
+            "those happened under it. A restart takes any seat in the pod with "
+            "it and an ephemeral container cannot come back: check the seat "
+            f"names above for a burnt one{ended}"
+        )
+    return (
+        f"{target.restarts} - the container has been killed and restarted at "
+        "least once. The pod does not date the last one, so this is over its "
+        "whole life rather than this session, but a restart takes any seat in "
+        "the pod with it and an ephemeral container cannot come back: check "
+        f"the seat names above for a burnt one{ended}"
+    )
+
+
+def _termination(target: TargetStatus) -> str:
+    """What the previous instance died of, when the pod still remembers."""
+    if target.last_reason is None:
+        return ""
+    code = "" if target.last_exit_code is None else f", exit {target.last_exit_code}"
+    return (
+        f". The last one ended {target.last_reason}{code} - a liveness kill is "
+        "one cause of that counter and not the only one"
     )
 
 
@@ -745,12 +911,30 @@ def _repeats(*values: Any) -> int:
     return 1
 
 
-def _stamp(*values: Any) -> str | None:
-    """The first of ``values`` that is a timestamp string."""
+def _text(*values: Any) -> str | None:
+    """The first of ``values`` that is a non-empty string.
+
+    Every field it reads is one the API server writes and a hand-built fixture
+    may not, so the fallbacks are the point rather than the type check.
+    """
     for value in values:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _whole(value: Any) -> int | None:
+    """An integer field, or ``None`` when the pod does not state one.
+
+    ``bool`` is excluded because it is an ``int`` in Python and never one here:
+    a ``restartCount`` of ``True`` is a malformed pod, not one restart.
+
+    >>> _whole(0), _whole(True), _whole("2")
+    (0, None, None)
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _moment(value: str | None) -> datetime | None:

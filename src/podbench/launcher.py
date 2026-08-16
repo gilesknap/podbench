@@ -45,7 +45,7 @@ from .budget import (
     probe_qualifier,
     probe_spend,
     probe_warning,
-    restart_count,
+    target_status,
 )
 from .cli import new_app, require_subcommand, run
 from .kubectl import (
@@ -2218,7 +2218,8 @@ def probe_spend_note(
         budgets,
         probe_spend(events, container, since=landed),
         since=landed,
-        restarts=restart_count(pod_json, container),
+        seat=latest.name if latest is not None else None,
+        target=target_status(pod_json, container),
     )
 
 

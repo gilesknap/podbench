@@ -340,7 +340,7 @@ Under the seats, `status` reports the probe failures the pod has accumulated
 since the seat landed, against the thresholds in its spec:
 
 ```
-probes on 'app' since the seat landed (2026-08-16T08:52:04Z)
+probes on 'app' since podbench-1 landed (2026-08-16T08:52:04Z)
   readiness: 2 failures, last 2026-08-16T10:04:33Z - 3 consecutive x 5s
     period, 1s timeout; a 3rd in a row takes the pod out of its Service
     until a probe succeeds again
@@ -356,8 +356,21 @@ success, and these events are aggregated — the two above were twenty seconds
 apart on a ten second period, so a probe succeeded between them and the count
 never stood above 1. Nothing in the events can show a streak, so `status`
 reports the count and the last timestamp and says so rather than inventing one.
-The one piece of proof is `restarts`: a completed liveness streak leaves a
-restart behind, and takes the seat with it.
+
+The proof is in the last three lines, which come from the container's own
+status rather than from any event:
+
+* **`restarts`** — a completed liveness streak leaves a restart behind, and
+  takes the seat with it. The count is over the container's whole life, so the
+  line dates it: a restart whose instance started *before* the seat is not this
+  session's, and one that started after it is. When the pod still remembers
+  what the previous instance died of that is named too, because `OOMKilled`,
+  an eviction and the process simply exiting all move the same counter, and a
+  restart read as proof of a liveness streak it was not sends you shortening
+  pauses that were never the problem.
+* **`not ready`** — printed only when the container is out of its Service *as
+  you read this*, which is the one thing a completed readiness streak does
+  leave behind. It clears on the first probe that succeeds.
 
 **A `BrokenPipeError` from your application is one of these failures, not a
 bug.** Every probe has a `timeoutSeconds` — 1 s here — so a pause longer than
