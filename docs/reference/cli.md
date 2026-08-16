@@ -655,6 +655,24 @@ failure there is structural) and a live attach on the target; then a six-path
 `/proc` read matrix. Yama is a **node-level** knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.
 
+A **DEBUGGERS** block sits beside the verdict, listing what the image actually
+ships — so what `debug-config` emits and what the seat can run cannot drift
+apart:
+
+```
+DEBUGGERS (what this image ships)
+  yes  gdb: /usr/local/bin/gdb
+  no   lldb: absent (CodeLLDB brings its own to the remote, so this is optional)
+  no   dlv: absent (delve, for Go targets)
+  yes  gdb-podbench: /usr/local/bin/gdb-podbench (`gdb` on PATH is the shim)
+  yes  debugpy: /opt/podbench/debugpy (attach helpers: attach_linux_amd64.so)
+```
+
+Two lines say more than yes/no on purpose. `gdb-podbench` reports whether a bare
+`gdb` *resolves* to the wrapper, because that is what a tool shelling out to
+`gdb --pid` will run; and debugpy lists its attach helpers by name, because on
+arm64 the package is present and the mechanism is not.
+
 ### `pids`
 
 List the processes in the pod's shared PID namespace and say which container
@@ -719,36 +737,90 @@ come first. See [Debug with gdb](../how-to/debug-with-gdb.md).
 ### `debug-config`
 
 The VS Code debug configuration for this seat, written the way `attach` writes
-the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed `program` or a
-setup ordering, each of which fails *silently* when wrong.
+the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed `program`, a
+setup ordering or a path mapping, each of which fails *silently* when wrong.
+
+Which debugger is not one choice but three: **language x mode x architecture**.
+Every configuration that applies is emitted at once, each named for its flavour,
+so `launch.json`'s list and VS Code's own dropdown become the choice. Every
+flavour that does *not* apply gets a sentence naming the mechanism.
 
 ```
-                                                                                                    
- Usage: debug-config [OPTIONS] [PID]                                                                
-                                                                                                    
- Write the VS Code debug configuration for this seat, with the pid, the sysroot-prefixed program    
- path and the gdb setup order already filled in.                                                    
-                                                                                                    
+
+ Usage: debug-config [OPTIONS] [PID]
+
+ Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
+ with the pid, the sysroot-prefixed program path and the mode's path mappings already filled in.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   [PID]      <int>  pid to attach to; discovered from the container id if omitted                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --container-id         ID       target container id used to discover the pid (default:           │
-│                                 $PODBENCH_TARGET_CID)                                            │
-│ --program              PATH     the target's binary as its own rootfs spells it, when            │
-│                                 /proc/<pid>/exe cannot be read. It is prefixed with the sysroot  │
-│                                 here, so do not prefix it yourself                               │
-│ --source-dir           DIR      extra source directory in *this* container, wired with gdb's     │
-│                                 `directory`. Repeatable                                          │
-│ --source-map           FROM=TO  map a DWARF compilation directory (`info source` prints it) onto │
-│                                 a readable path. Repeatable                                      │
-│ --no-debuginfod                 do not enable debuginfod (it needs ca-certificates and network)  │
-│ --lldb                          emit a CodeLLDB configuration instead of cpptools' cppdbg        │
-│ --print-config                  print the configuration instead of writing it                    │
-│ --output               PATH     where to write it (default: ./.vscode/launch.json)               │
-│ --help                          Show this message and exit.                                      │
+│ --container-id         ID                        target container id used to discover the pid    │
+│                                                  (default: $PODBENCH_TARGET_CID)                 │
+│ --flavour              <gdb|lldb|delve|debugpy>  emit only this debugger flavour, and say why if │
+│                                                  it cannot be emitted. Repeatable; the default   │
+│                                                  is every flavour that applies                   │
+│ --mode                 <observe|dev>             override the detected mode. Observe attaches to │
+│                                                  another container and needs path mappings; dev  │
+│                                                  launches in this one and must not have any      │
+│ --port                 PORT                      the debugpy port to connect to (shared network  │
+│                                                  namespace, so always 127.0.0.1)                 │
+│                                                  [default: 5678]                                 │
+│ --program              PATH                      the target's binary as its own rootfs spells    │
+│                                                  it, when /proc/<pid>/exe cannot be read. It is  │
+│                                                  prefixed with the sysroot here, so do not       │
+│                                                  prefix it yourself                              │
+│ --source-dir           DIR                       extra source directory in *this* container,     │
+│                                                  wired with gdb's `directory`. Repeatable        │
+│ --source-map           FROM=TO                   map a DWARF compilation directory (`info        │
+│                                                  source` prints it) onto a readable path.        │
+│                                                  Repeatable                                      │
+│ --no-debuginfod                                  do not enable debuginfod (it needs              │
+│                                                  ca-certificates and network)                    │
+│ --lldb                                           shorthand for --flavour lldb                    │
+│ --print-config                                   print the configuration instead of writing it   │
+│ --output               PATH                      where to write it (default:                     │
+│                                                  ./.vscode/launch.json)                          │
+│ --help                                           Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+#### The three axes
+
+| axis | how it is decided | what it changes |
+|---|---|---|
+| language | `/proc/<pid>/exe` and `argv[0]` for an interpreter; the target's ELF sections for Go (`.gopclntab`) | which adapter: `cppdbg`, CodeLLDB, the Go extension, debugpy |
+| mode | whether the target shares this container's **mount namespace** — a `podbench dev` pod relaunches the app from the seat, so its process is on this side | attach vs launch, and whether `pathMappings` is populated **or empty** |
+| architecture | the target *binary*'s `e_machine`, not the node label | whether debugpy's attach-to-pid exists at all |
+
+`pathMappings` is the field with no error message: get it wrong and breakpoints
+simply never bind. In Observe mode the editor sees the source through
+`/proc/<pid>/root` and the debuggee reports its own path, so a mapping is
+required; in dev mode both are the same inodes and the mapping must be empty.
+`127.0.0.1` is right in both, because the seat and the app share the pod's
+network namespace — no port-forward, no tunnel.
+
+#### When a flavour cannot be emitted
+
+The refusal names the mechanism, in `capreport`'s house style, and lists *every*
+unmet prerequisite rather than only the first — fixing one to meet the next wall
+is the experience this replaces:
+
+```
+debug-config: debugpy unavailable: no debugpy in this seat to drive the injection
+debug-config:   also: debugpy is not importable by the target: the bootstrap runs
+                inside the target's interpreter, and debugpy injects a dlopen of the
+                path the *driver* sees, which the target's mount namespace does not have
+debug-config:   also: no sysroot-aware gdb on PATH: debugpy shells out to a bare
+                `gdb --nx --pid`, which reads this seat's libraries for the target's process
+```
+
+On arm64 the architecture prerequisite is promoted to the headline, because it
+is the only one with no remedy anywhere: debugpy ships `attach_linux_amd64.so`
+alone and publishes no aarch64 Linux wheel, so there is nothing to install.
+`debugpy.listen()` baked into the app is pure Python and works on any
+architecture — as does `podbench dev`.
 
 `miDebuggerPath` names `/usr/local/bin/gdb-podbench`, never `/usr/bin/gdb`:
 cpptools launches gdb inheriting its own extension directory as a working
@@ -757,9 +829,10 @@ dies in `getcwd()` during startup with no signal name. `--source-map /` is
 refused rather than emitted — gdb re-applies a root substitution on display and
 the editor is handed `/proc/<pid>/root/proc/<pid>/root/...`.
 
-Re-running replaces its own entry by name and leaves a hand-written
-configuration beside it untouched. A `launch.json` it cannot parse — VS Code
-permits comments, `json` does not — is refused rather than rewritten. See
+Re-running replaces its own entries by name and leaves a hand-written
+configuration beside them untouched — which is why every generated name carries
+its flavour. A `launch.json` it cannot parse — VS Code permits comments, `json`
+does not — is refused rather than rewritten. See
 [Debug with gdb](../how-to/debug-with-gdb.md).
 
 ### `dev-bootstrap`
