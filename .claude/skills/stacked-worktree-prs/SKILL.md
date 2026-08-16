@@ -27,23 +27,33 @@ attach report and moved the reasoning it dropped into a new `status --explain`, 
 reuses the probe-spend reporting #50 adds — so #54 went last. The other way round it
 would have meant writing those lines twice and resolving them against each other.
 
-## Cut the roots yourself, sequentially
+## Cut the root worktrees yourself, up front
 
-`git worktree add` writes the repo's index. Several agents doing it at the same moment
-contend on `index.lock`, and the loser fails with something that reads like a corrupt repo.
-Create the worktrees that branch from `main` up front, one at a time:
+Create the worktrees that branch from `main` before any agent starts, from the session
+doing the fan-out:
 
 ```
 git worktree add .claude/worktrees/fix-dev-namespace -b fix/dev-namespace-from-kubeconfig origin/main
 ```
+
+`git worktree add` does **not** take the main checkout's `index.lock` — it succeeds with
+that file held, and eight concurrent adds on git 2.43 all pass — so an `index.lock`
+failure during a fan-out comes from something *else* running `git add`, `git commit` or
+`git status` in the main checkout. Read the lock named in the error rather than assuming
+the worktree call, and keep the batch's git work inside the worktrees.
 
 A **child** worktree cannot be pre-created, because its branch must be cut from the
 parent's tip *after* the parent has committed. Cut it at the start of the child's own turn,
 and check the parent actually carries work before trusting it:
 
 ```
-git log --oneline origin/main..<parent-branch>   # empty means the parent did nothing
+git log --oneline <grandparent-branch>..<parent-branch>   # empty means the parent did nothing
 ```
+
+The grandparent is `origin/main` only for the second link of a chain. Higher up,
+`origin/main..<parent-branch>` also lists every commit *below* the parent, so it is
+non-empty even when the parent itself has committed nothing — which is the one answer
+this check exists to catch.
 
 ## Each worktree is a separate venv
 
