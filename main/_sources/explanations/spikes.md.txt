@@ -1,14 +1,16 @@
-# Phase 0 spikes
+# Spikes
+
+Findings notes from throwaway experiments, kept verbatim. They are the reason several
+things in podbench are built the way they are rather than the obvious way, so they are
+recorded as evidence rather than summarised away — when a later change looks like an easy
+simplification, the relevant note usually explains what it would break.
+
+## Phase 0
 
 Podbench's design brief ordered its phases by *risk*, not by component, and put five
 throwaway experiments in front of everything else:
 
 > Do not start Phase 1 until all five pass or the brief is amended with what was learned.
-
-These are the findings notes from those experiments, kept verbatim. They are the reason
-several things in podbench are built the way they are rather than the obvious way, so
-they are recorded as evidence rather than summarised away — when a later change looks
-like an easy simplification, the relevant note usually explains what it would break.
 
 All five were run on 2026-08-15 against a real k3s v1.34 cluster (six nodes, mixed
 amd64/arm64, Ubuntu hosts with Yama `ptrace_scope=1`) rather than the kind cluster the
@@ -25,7 +27,7 @@ spikes/s4
 spikes/s5
 ```
 
-## Verdicts
+### Verdicts
 
 | Spike | Subject | Verdict |
 |---|---|---|
@@ -38,3 +40,27 @@ spikes/s5
 Five passes, but five of the brief's load-bearing assumptions were falsified in the
 process; the [gate report](spikes/phase0-report) lists the amendments and which phase
 each one blocks.
+
+## Later spikes
+
+Spikes did not stop at the phase gate. These answer questions raised by real use rather
+than by the brief, and they follow the same rule: measured against a live cluster, written
+up whether or not the answer was the hoped-for one.
+
+```{toctree}
+:maxdepth: 1
+
+spikes/s6
+```
+
+### Verdicts
+
+| Spike | Subject | Verdict |
+|---|---|---|
+| [S6](spikes/s6) | Suspending an Argo-managed origin by taking `spec.replicas` via server-side apply | NOT ADOPTED |
+
+S6 is a record of a route *not* taken. The mechanism works, but only against an
+Application that uses server-side apply, and against the far commoner client-side case it
+silently hands podbench ownership of the whole workload spec. The requirement it was
+chasing dissolved instead: Patch mode already gives a singleton an inner loop without
+cloning it.
