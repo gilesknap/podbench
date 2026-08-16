@@ -128,7 +128,14 @@ It needs `code` on your PATH — VS Code's Command Palette has *Shell Command:
 Install 'code' command in PATH* — and the local **Remote - SSH** extension,
 without which `--remote` cannot resolve anything. `--open` is on `attach` only,
 and drives `code` only; `cursor`, `codium` and `windsurf` take the same flags
-but have not been tried.
+but have not been tried, and a flatpak VS Code cannot put `code` on the host
+PATH at all.
+
+Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
+window, a devcontainer or a Codespace, `code` on the PATH is the *remote* CLI,
+which talks to the window you are already in: it would install the extensions
+into that machine instead of into the seat. podbench refuses that `code` by name
+rather than driving it.
 
 :::{warning}
 `--open` has not been driven against a real VS Code GUI client. The flags it

@@ -428,7 +428,17 @@ Notes:
   the failure rather than reported as a traceback. `code` is looked for
   *before* the seat is landed, because an ephemeral container's name is
   permanent and a run that was always going to end at "no `code`" must not burn
-  one. In order it:
+  one.
+
+  It has to be the **desktop** `code`. Inside a Remote-SSH window, a
+  devcontainer or a Codespace, the `code` on your PATH is VS Code's *remote*
+  CLI, which forwards to the window that terminal already belongs to:
+  `--install-extension` would install into that machine rather than into the
+  seat, leaving breakpoints that never bind. podbench refuses that one by name
+  before landing anything — run it from a terminal on the machine your VS Code
+  itself runs on, or drop `--open` and use **Remote-SSH: Connect to Host**.
+
+  In order it:
   * writes `<home>/.vscode/settings.json` with every exclude `podbench agent`
     writes at machine scope — the watcher, search, Pylance and cpptools entries
     for `/proc`, `/sys`, `/dev` and `~/.vscode-server` — **before** the window

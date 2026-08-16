@@ -351,6 +351,42 @@ def test_no_code_on_path_is_a_sentence_not_a_traceback() -> None:
         resolve_editor(lambda _: None)
 
 
+def test_the_refusal_names_the_installs_that_cannot_follow_the_instruction() -> None:
+    """A flatpak VS Code has no route out of its sandbox onto the host PATH, so
+    'Shell Command: Install code command in PATH' is not a way out of this for
+    the user who most often meets it; nor is it for a `codium` user."""
+    with pytest.raises(EditorError, match="flatpak") as raised:
+        resolve_editor(lambda _: None)
+    assert "codium" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/dev/.vscode-server/bin/2c9b7f/bin/remote-cli/code",
+        "/vscode/vscode-server/bin/linux-x64/2c9b7f/bin/remote-cli/code",
+        "/home/dev/.vscode-server-insiders/bin/2c9b7f/bin/remote-cli/code",
+    ],
+)
+def test_the_remote_cli_is_refused_rather_than_driven_at_the_wrong_machine(
+    path: str,
+) -> None:
+    """Inside a Remote-SSH window, a devcontainer or a Codespace, `code` on PATH
+    forwards to the window this terminal is already in. --install-extension
+    would install into *that* machine, leaving the seat with .vscode files, no
+    extensions and breakpoints that never bind."""
+    with pytest.raises(EditorError, match="remote. CLI") as raised:
+        resolve_editor(lambda _: path)
+    assert "never bind" in str(raised.value)
+
+
+def test_a_desktop_code_is_not_mistaken_for_the_remote_one() -> None:
+    """A local window's integrated terminal has VSCODE_IPC_HOOK_CLI set too, and
+    its `code` is the desktop CLI — which is why the path is what decides."""
+    desktop = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    assert resolve_editor(lambda _: desktop) == desktop
+
+
 def test_a_remote_that_cannot_be_reached_names_remote_ssh() -> None:
     """``--remote`` fails when the local VS Code has no Remote-SSH extension, or
     when ssh cannot resolve the alias — the Include line podbench has always

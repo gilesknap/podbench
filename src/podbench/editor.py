@@ -81,6 +81,23 @@ found`` — which arrives here as "printed no JSON", blaming the assessment for 
 command that never ran.
 """
 
+_REMOTE_CLI_MARKERS = ("/remote-cli/", "/.vscode-server/", "/.vscode-server-insiders/")
+"""What a ``code`` that is not the desktop one looks like on disk.
+
+VS Code puts ``<server>/bin/remote-cli`` on the PATH of a remote window's
+integrated terminal, so ``shutil.which`` finds *that* whenever podbench is run
+from inside a Remote-SSH window, a devcontainer or a Codespace — this repo's own
+workflow being a devcontainer. It forwards to the window it belongs to over
+``VSCODE_IPC_HOOK_CLI``, which is the one thing ``--open`` must not do: the
+extensions would land on the machine the user is already on, and a seat with the
+adapter installed anywhere but in it is the silent "looks like a bad
+launch.json" failure this whole module exists to prevent.
+
+Matched on the resolved path rather than on ``VSCODE_IPC_HOOK_CLI``, which is
+also set in a *local* window's terminal, where ``code`` is the desktop CLI and
+everything here works.
+"""
+
 _ABSENT = 3
 """Exit code :func:`_read`'s script uses for "there is no such file".
 
@@ -107,7 +124,7 @@ class EditorError(RuntimeError):
 
 
 def resolve_editor(which: Callable[[str], str | None] = shutil.which) -> str:
-    """Where the VS Code CLI is, or a refusal naming what to install.
+    """Where the *desktop* VS Code CLI is, or a refusal naming the mechanism.
 
     Resolved *before* the seat is landed. An ephemeral container's name is
     permanent, so a run that was always going to end at "no ``code``" must not
@@ -117,9 +134,26 @@ def resolve_editor(which: Callable[[str], str | None] = shutil.which) -> str:
     if found is None:
         raise EditorError(
             f"--open needs the VS Code CLI (`{DEFAULT_EDITOR}`) on PATH and "
-            "there is none. Install it from VS Code with Command Palette -> "
-            "'Shell Command: Install 'code' command in PATH', or drop --open "
-            "and connect with Remote-SSH: Connect to Host."
+            "there is none. From VS Code: Command Palette -> 'Shell Command: "
+            "Install 'code' command in PATH'. That command has nothing to offer "
+            "a flatpak install, which cannot reach the host PATH from its "
+            "sandbox, and the forks (`cursor`, `codium`, `windsurf`) take the "
+            "same flags but have no flag of their own here yet. From any of "
+            "them, drop --open and use Remote-SSH: Connect to Host on the alias "
+            "podbench prints."
+        )
+    if any(marker in found for marker in _REMOTE_CLI_MARKERS):
+        raise EditorError(
+            f"--open found `{found}`, which is VS Code's *remote* CLI rather "
+            "than the desktop one: it is what a Remote-SSH window, a "
+            "devcontainer or a Codespace puts on the PATH of its integrated "
+            "terminal, and it talks to the window this terminal is already in. "
+            "--install-extension there installs into *this* machine and not "
+            "into the seat, so the seat would get its .vscode files, no "
+            "extensions, and breakpoints that never bind - the failure this "
+            "flag exists to prevent. Run podbench from a terminal on the "
+            "machine your VS Code itself runs on, or drop --open and use "
+            "Remote-SSH: Connect to Host on the alias podbench prints."
         )
     return found
 
