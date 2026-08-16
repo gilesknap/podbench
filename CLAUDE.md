@@ -59,6 +59,13 @@ silent.
   shape, and do not narrate what the code already says. `model.py` sets the bar.
 - Commits: one logical change, imperative subject, body explaining the reasoning
   rather than restating the diff.
+- Docs build with `just docs` — `sphinx-build -EW` plus `nitpicky = True`, so any
+  warning is a CI failure. `docs/explanations.md` and `docs/explanations/spikes.md`
+  list their pages explicitly rather than by glob, which is what lets them be
+  ordered; the cost is that a new page must be added to one of them by hand, or
+  the build fails with "document isn't included in any toctree". Run `just docs`
+  before pushing a docs change — CI will not tell you anything you could not have
+  learned in 30 seconds locally.
 
 ## Testing
 
