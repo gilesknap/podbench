@@ -170,11 +170,38 @@ ENV UV_PYTHON_INSTALL_DIR=/python
 COPY --from=build /app/.venv /app/.venv
 ENV PATH=/app/.venv/bin:$PATH
 
+# debugpy, for the Python half of `debug-config`. 15 MiB against the brief's
+# ~700 MB cap, and it buys the one thing a seat cannot improvise: the *driver*
+# side of debugpy's attach-to-pid, which starts a debug server inside an
+# uncooperative CPython with no cooperation from the app image (issue #20).
+#
+# `--target`, not a dependency and not this venv: podbench's wheel has exactly
+# one runtime dependency and tests/test_packaging.py asserts it. The injection
+# recipe also has to put this directory on PYTHONPATH by hand, which is easier
+# to state as one path than as a venv's site-packages.
+#
+# What lands here is architecture-dependent and is *supposed* to be: debugpy
+# publishes no aarch64 Linux wheel, so an arm64 image gets the same
+# `py2.py3-none-any` wheel carrying only `attach_linux_amd64.so`. That is why
+# `capreport` lists the attach helpers by name rather than reporting "debugpy:
+# yes" — on arm64 the package is present and the mechanism is not.
+RUN uv pip install --python /app/.venv/bin/python \
+    --target /opt/podbench/debugpy debugpy==1.8.21
+
 # The helpers the brief puts on PATH. They are one-line `exec podbench <sub>`
 # wrappers so there is a single tested implementation rather than a second one
 # in shell - see image/README.md for why `run`/`stop` are `podbench-run` and
 # `podbench-stop` here.
 COPY --chmod=0755 image/bin/ /usr/local/bin/
+
+# `gdb` on PATH is the wrapper, and /usr/local/bin comes first. Every tool that
+# shells out to `gdb --pid <n>` in a seat is broken twice without it — no
+# sysroot, so it reads this container's libraries for another container's
+# process, and a cwd cpptools may have deleted. debugpy's injection is the
+# instance that was caught; the bug belongs to the seat, not to debugpy, so the
+# fix goes where every caller gets it. `dbg` and `debug-config` are unaffected:
+# they set the sysroot themselves and never pass --pid.
+RUN ln -s gdb-podbench /usr/local/bin/gdb
 
 # sshd is built with UsePAM no in report 4.1's config, so login shells get
 # sshd's compiled-in default PATH and never see the ENV above. This fixes
