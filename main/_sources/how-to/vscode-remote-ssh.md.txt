@@ -250,7 +250,7 @@ arguments. It kills the server after exactly five minutes idle.
   `podbench-home` volume is what keeps that off the container's writable layer.
 * In Observe mode open the seat's **home** — `/root`, or `/home/podbench` where
   the pod declares a `podbench-home` volume — and reach the workload's
-  filesystem through `/proc/<pid>/root` from there. The `pids` helper tells you
+  filesystem through `/proc/<pid>/root` from there. `podbench pids` tells you
   which pid.
 
   Do **not** open `/`. Opening a *file* under `/proc` is fine; opening a
@@ -265,9 +265,10 @@ arguments. It kills the server after exactly five minutes idle.
   path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
   [Debug with gdb](debug-with-gdb.md) and
   [Iterate on Python](iterate-on-python.md).
-* Terminals are ordinary ssh sessions with the container's `PATH`, so `pids`,
-  `dbg`, `capreport`, `dev-bootstrap`, `podbench-run` and `podbench-stop` are
-  all there.
+* Terminals are ordinary ssh sessions with the container's `PATH`, so every
+  in-pod verb is there as `podbench <verb>` — `podbench pids`, `podbench dbg`,
+  `podbench capreport`, `podbench dev-bootstrap`, `podbench run`, `podbench
+  stop`.
 
 ## What the seat configures for you
 
@@ -313,6 +314,7 @@ the dev pod before opening a folder again.
 | session dies and the workload restarts *while you were stopped at a breakpoint* | the liveness budget expired — same symptom, different cause. `kubectl describe pod` says `failed liveness probe`, and there is no `OOMKilled` |
 | the app stops answering through the Service while you are stopped, and is fine again after you continue | the readiness budget expired. Nothing is broken and nothing restarted; the pod left the Service's routing and re-joined |
 | everything is gone after a reconnect | the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate) |
+| `Permission denied (publickey,keyboard-interactive)` with `agent refused operation` above it in the Remote-SSH log | your ssh agent holds that key, so ssh asked the agent to sign and it refused — nothing in the pod is involved. `SSH_AUTH_SOCK= ssh <alias>` in a terminal proves it, and `IdentityAgent none` in a `Host podbench-*` block in your own `~/.ssh/config`, below the `Include` line, makes ssh use the file (never for a FIDO/`sk-*` key or a smartcard). `podbench doctor` names it in advance |
 | `Permission denied (publickey)` on a dev pod | the key is authorised from the sidecar's environment, which is fixed when the pod is created — so a dev pod made with a different `--identity` needs `podbench dev --delete` and a fresh one, not a re-run |
 
 Behaviour through konnectivity or an API gateway is unknown — every measurement

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.1.0b5.dev13+g48b64eb4e documentation</title>
+    <title>What attach does &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=86dc820f"></script>
+    <script src="../_static/documentation_options.js?v=64e2b681"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -587,7 +587,7 @@ this codebase.</p>
 │                                                                  │
 │   exec -c SEAT -- podbench agent --print-login-user              │
 │        can sshd resolve a login name for the uid it runs as?     │
-│   exec -c SEAT -- capreport --json          (unless --no-probe)  │
+│   exec -c SEAT -- podbench capreport --json (unless --no-probe)  │
 │        which of ptrace&#39;s four blockers is saying no?             │
 │                                                                  │
 │   Nothing here is inferred from the spec that was submitted.     │
@@ -694,7 +694,8 @@ around the API call:</p>
  8  kubectl -n NS get pod POD -o json                    # polled until running
  --- always: ---
  9  kubectl -n NS exec -c SEAT POD -- podbench agent --print-login-user
-10  kubectl -n NS exec -c SEAT POD -- capreport --json   # unless --no-probe
+10  kubectl -n NS exec -c SEAT POD -- podbench capreport --json
+                                                        # unless --no-probe
 11  kubectl -n NS get pod POD -o json                    # metadata.uid
 12  kubectl -n NS exec -c SEAT POD -- podbench agent --print-host-key --no-self-check
 </pre></div>
@@ -739,7 +740,7 @@ subresource takes the spec verbatim, so the launcher posts to it directly.</p>
 <tr class="row-even"><td><p>readiness is <code class="docutils literal notranslate"><span class="pre">state.running.startedAt</span></code> only</p></td>
 <td><p>treating the API server’s acceptance as the node’s</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> runs in the container, on the node</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> runs in the container, on the node</p></td>
 <td><p>reporting what was <em>requested</em> rather than what was granted; Yama differs per node by kernel flavour</p></td>
 </tr>
 <tr class="row-even"><td><p>login name measured, not derived</p></td>
@@ -838,9 +839,9 @@ NSS identity the exec half does not.</p></li>
 <p>When ptrace is denied, the report names <em>which</em> of the four mechanisms said no —
 missing capability, Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code>, seccomp or AppArmor — because all four
 return the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>, and that naming is the point of the whole probe.</p>
-<p>Then, inside the seat, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> writes a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> whose pid,
-sysroot-prefixed program path and setup ordering are things the launcher knows and a
-human cannot guess.</p>
+<p>Then, inside the seat, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code> writes a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code>
+whose pid, sysroot-prefixed program path and setup ordering are things the
+launcher knows and a human cannot guess.</p>
 </section>
 <section id="see-also">
 <h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>

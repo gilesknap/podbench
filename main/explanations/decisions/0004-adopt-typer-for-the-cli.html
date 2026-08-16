@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>4. Adopt typer for the CLI, and spend the one runtime dependency on it &#8212; podbench 0.1.0b5.dev13+g48b64eb4e documentation</title>
+    <title>4. Adopt typer for the CLI, and spend the one runtime dependency on it &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=86dc820f"></script>
+    <script src="../../_static/documentation_options.js?v=64e2b681"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -548,7 +548,8 @@ what only it can, that a cold-cache resolve reaches <code class="docutils litera
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">cli.py</span></code> owns the one adapter between click’s world and this package’s. Every
 <code class="docutils literal notranslate"><span class="pre">main()</span></code> is still <code class="docutils literal notranslate"><span class="pre">(argv)</span> <span class="pre">-&gt;</span> <span class="pre">int</span></code>, because the tests drive them directly and
-the <code class="docutils literal notranslate"><span class="pre">image/bin</span></code> wrappers care about nothing else; click’s standalone mode
+the <code class="docutils literal notranslate"><span class="pre">image/bin/podbench</span></code> wrapper passes an argv straight through; click’s
+standalone mode
 renders its own errors and then exits, so exactly one place catches
 <code class="docutils literal notranslate"><span class="pre">SystemExit</span></code>. Command callbacks end in <code class="docutils literal notranslate"><span class="pre">raise</span> <span class="pre">typer.Exit(code)</span></code>, since click
 discards a callback’s return value on purpose.</p></li>
@@ -559,8 +560,8 @@ module, so <code class="docutils literal notranslate"><span class="pre">podbench
 smoke test, and must not depend on every module importing cleanly.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> keeps its <code class="docutils literal notranslate"><span class="pre">argparse.REMAINDER</span></code> contract by having the program’s own
 arguments lifted out of argv before click sees them. Click claims every option
-it knows wherever it appears, and <code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span> <span class="pre">--fast</span></code> has to hand
-<code class="docutils literal notranslate"><span class="pre">--fast</span></code> to the program.</p></li>
+it knows wherever it appears, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span> <span class="pre">--fast</span></code> has to
+hand <code class="docutils literal notranslate"><span class="pre">--fast</span></code> to the program.</p></li>
 </ul>
 </section>
 <section id="consequences">

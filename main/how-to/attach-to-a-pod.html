@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b5.dev13+g48b64eb4e documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=86dc820f"></script>
+    <script src="../_static/documentation_options.js?v=64e2b681"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -601,7 +601,7 @@ to match:</p>
 </div>
 <p>Without <code class="docutils literal notranslate"><span class="pre">--target</span></code> it picks the pod’s first container. On a multi-container pod,
 name it — the target choice determines the sysroot, the UID of the degraded
-rung, and what <code class="docutils literal notranslate"><span class="pre">pids</span></code> calls a target process.</p>
+rung, and what <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> calls a target process.</p>
 <p>If the pod spec does not state a <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> for the target (so the UID comes
 from the image), tell podbench with <code class="docutils literal notranslate"><span class="pre">--target-uid</span> <span class="pre">1000</span></code>. The degraded rung must
 match the target’s UID exactly; it never defaults to root, because root without
@@ -725,39 +725,43 @@ for whatever it has written.</p>
 <td><p>something closed or redirected sshd’s stderr; closing fd 2 in a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>’d process tears down the whole CRI exec stream</p></td>
 <td><p>do not hand-edit the generated <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code>. <code class="docutils literal notranslate"><span class="pre">-i</span></code> and <code class="docutils literal notranslate"><span class="pre">-e</span></code> are both mandatory and <code class="docutils literal notranslate"><span class="pre">2&gt;&amp;1</span></code> breaks it</p></td>
 </tr>
-<tr class="row-odd"><td><p>ssh hangs forever with no output</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sign_and_send_pubkey:</span> <span class="pre">signing</span> <span class="pre">failed</span> <span class="pre">...</span> <span class="pre">agent</span> <span class="pre">refused</span> <span class="pre">operation</span></code>, then <code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey,keyboard-interactive)</span></code></p></td>
+<td><p>not the seat: your agent holds that key, so ssh asked <em>it</em> to sign and it refused. The trailing message names the key, which is not what is wrong</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK=</span> <span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span></code> proves it — if that logs in, the agent was the only thing refusing. Then put <code class="docutils literal notranslate"><span class="pre">IdentityAgent</span> <span class="pre">none</span></code> in a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">podbench-*</span></code> block in your own <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, below the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line so it cannot shadow the generated stanza, and never for a FIDO/<code class="docutils literal notranslate"><span class="pre">sk-*</span></code> key or a smartcard. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> reports this before the first attach</p></td>
+</tr>
+<tr class="row-even"><td><p>ssh hangs forever with no output</p></td>
 <td><p>a <em>stalled</em> transport (apiserver or konnectivity hiccup)</p></td>
 <td><p>the generated config sets <code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span> <span class="pre">15</span></code>/<code class="docutils literal notranslate"><span class="pre">CountMax</span> <span class="pre">3</span></code>, which fails in ~19 s instead. Do not remove them</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span> <span class="pre">('...'</span> <span class="pre">&gt;=</span> <span class="pre">108</span> <span class="pre">bytes)</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span> <span class="pre">('...'</span> <span class="pre">&gt;=</span> <span class="pre">108</span> <span class="pre">bytes)</span></code></p></td>
 <td><p>the control socket is not under <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-cm</span></code></p></td>
 <td><p>keep the generated <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code>; <code class="docutils literal notranslate"><span class="pre">sun_path</span></code> is 108 bytes</p></td>
 </tr>
-<tr class="row-odd"><td><p>container status <code class="docutils literal notranslate"><span class="pre">CreateContainerConfigError</span></code>, <code class="docutils literal notranslate"><span class="pre">container's</span> <span class="pre">runAsUser</span> <span class="pre">breaks</span> <span class="pre">non-root</span> <span class="pre">policy</span></code></p></td>
+<tr class="row-even"><td><p>container status <code class="docutils literal notranslate"><span class="pre">CreateContainerConfigError</span></code>, <code class="docutils literal notranslate"><span class="pre">container's</span> <span class="pre">runAsUser</span> <span class="pre">breaks</span> <span class="pre">non-root</span> <span class="pre">policy</span></code></p></td>
 <td><p>the kubelet refused a root container <em>after</em> the API server accepted it</p></td>
 <td><p>podbench pre-empts this by reading <code class="docutils literal notranslate"><span class="pre">runAsNonRoot</span></code> and skips the full rung; if you forced it, do not</p></td>
 </tr>
-<tr class="row-even"><td><p>traffic stopped reaching the pod while you sat at a breakpoint, and came back on its own</p></td>
+<tr class="row-odd"><td><p>traffic stopped reaching the pod while you sat at a breakpoint, and came back on its own</p></td>
 <td><p>the readiness budget expired: the pod went not-ready, so its EndpointSlice kept the address but flipped <code class="docutils literal notranslate"><span class="pre">conditions.ready</span></code> to false and kube-proxy stopped routing to it. Quiet, not silent — <code class="docutils literal notranslate"><span class="pre">Unhealthy</span></code> events are emitted while it lasts, but no restart survives it</p></td>
 <td><p>nothing to fix — it self-heals. Stay inside the budget <code class="docutils literal notranslate"><span class="pre">attach</span></code> printed, or use a dev pod</p></td>
 </tr>
-<tr class="row-odd"><td><p>the workload restarted mid-session and the seat went with it</p></td>
+<tr class="row-even"><td><p>the workload restarted mid-session and the seat went with it</p></td>
 <td><p>the liveness budget expired; the seat shares the target’s namespaces</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--new</span></code> for a fresh seat (the old name is burnt), and debug in a dev pod if you need to stop for longer</p></td>
 </tr>
-<tr class="row-even"><td><p>attach lands but <code class="docutils literal notranslate"><span class="pre">blocker:</span> <span class="pre">yama-scope</span></code></p></td>
+<tr class="row-odd"><td><p>attach lands but <code class="docutils literal notranslate"><span class="pre">blocker:</span> <span class="pre">yama-scope</span></code></p></td>
 <td><p>Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span> <span class="pre">&gt;=</span> <span class="pre">1</span></code> on <strong>that node</strong> forbids attaching to non-descendants</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span></code>, or have the target call <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span></code>, or have the target call <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>every library reports <code class="docutils literal notranslate"><span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code></p></td>
+<tr class="row-even"><td><p>every library reports <code class="docutils literal notranslate"><span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> absent, so <code class="docutils literal notranslate"><span class="pre">libdebuginfod</span></code> fails the TLS handshake silently</p></td>
 <td><p>use the published image; it is mandatory there for exactly this reason</p></td>
 </tr>
-<tr class="row-even"><td><p>attach works on one pod, is denied on the next</p></td>
+<tr class="row-odd"><td><p>attach works on one pod, is denied on the next</p></td>
 <td><p>Yama differs <strong>per node</strong>, by kernel flavour, not by architecture</p></td>
 <td><p>nothing to fix. The report prints the node name and Yama state for this reason</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span> <span class="pre">&quot;web-...&quot;</span> <span class="pre">is</span> <span class="pre">forbidden:</span> <span class="pre">User</span> <span class="pre">cannot</span> <span class="pre">update</span> <span class="pre">resource</span> <span class="pre">&quot;pods/ephemeralcontainers&quot;</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span> <span class="pre">&quot;web-...&quot;</span> <span class="pre">is</span> <span class="pre">forbidden:</span> <span class="pre">User</span> <span class="pre">cannot</span> <span class="pre">update</span> <span class="pre">resource</span> <span class="pre">&quot;pods/ephemeralcontainers&quot;</span></code></p></td>
 <td><p>your kubeconfig lacks a verb podbench needs, discovered mid-attach</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">-n</span> <span class="pre">demo</span></code> asks for every verb up front and names the chart flag that grants it</p></td>
 </tr>

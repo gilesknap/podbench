@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b5.dev13+g48b64eb4e documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=86dc820f"></script>
+    <script src="../_static/documentation_options.js?v=64e2b681"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -791,7 +791,7 @@ the workspace volume; <code class="docutils literal notranslate"><span class="pr
 </li>
 <li><p>In Observe mode open the seat’s <strong>home</strong> — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> where
 the pod declares a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume — and reach the workload’s
-filesystem through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> from there. The <code class="docutils literal notranslate"><span class="pre">pids</span></code> helper tells you
+filesystem through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> from there. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> tells you
 which pid.</p>
 <p>Do <strong>not</strong> open <code class="docutils literal notranslate"><span class="pre">/</span></code>. Opening a <em>file</em> under <code class="docutils literal notranslate"><span class="pre">/proc</span></code> is fine; opening a
 <em>folder</em> at <code class="docutils literal notranslate"><span class="pre">/</span></code> points the file watcher and the search indexer at <code class="docutils literal notranslate"><span class="pre">/proc</span></code>,
@@ -806,9 +806,9 @@ reason to try it.</p>
 path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
 <a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a> and
 <a class="reference internal" href="iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>.</p></li>
-<li><p>Terminals are ordinary ssh sessions with the container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, so <code class="docutils literal notranslate"><span class="pre">pids</span></code>,
-<code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code> are
-all there.</p></li>
+<li><p>Terminals are ordinary ssh sessions with the container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, so every
+in-pod verb is there as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>,
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>.</p></li>
 </ul>
 </section>
 <section id="what-the-seat-configures-for-you">
@@ -888,7 +888,10 @@ the dev pod before opening a folder again.</p>
 <tr class="row-odd"><td><p>everything is gone after a reconnect</p></td>
 <td><p>the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code> on a dev pod</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey,keyboard-interactive)</span></code> with <code class="docutils literal notranslate"><span class="pre">agent</span> <span class="pre">refused</span> <span class="pre">operation</span></code> above it in the Remote-SSH log</p></td>
+<td><p>your ssh agent holds that key, so ssh asked the agent to sign and it refused — nothing in the pod is involved. <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK=</span> <span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span></code> in a terminal proves it, and <code class="docutils literal notranslate"><span class="pre">IdentityAgent</span> <span class="pre">none</span></code> in a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">podbench-*</span></code> block in your own <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, below the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line, makes ssh use the file (never for a FIDO/<code class="docutils literal notranslate"><span class="pre">sk-*</span></code> key or a smartcard). <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> names it in advance</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code> on a dev pod</p></td>
 <td><p>the key is authorised from the sidecar’s environment, which is fixed when the pod is created — so a dev pod made with a different <code class="docutils literal notranslate"><span class="pre">--identity</span></code> needs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span> <span class="pre">--delete</span></code> and a fresh one, not a re-run</p></td>
 </tr>
 </tbody>
