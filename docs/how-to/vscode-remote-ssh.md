@@ -337,6 +337,14 @@ Server on Host** takes the machine file with it. Inside a home the entry that
 earns its place first is `**/.vscode-server/**` — 700 MiB before a single
 extension, in the folder podbench is about to open.
 
+The `/proc` and `/sys` entries in that copy are belt-and-braces rather than the
+working guard. `search.exclude` patterns are matched **workspace-relative**, so
+from a folder at `$HOME` its `**/proc/**` cannot match anything;
+`files.watcherExclude` and `python.analysis.exclude` are matched against
+absolute paths and do work from either scope. Machine scope is what covers the
+folder you open *next* — including the `/` that starts the walk with no bottom —
+which is why both copies exist.
+
 Settings you have written yourself are never overwritten. The agent adds only
 the keys that are missing, so a deliberate `"**/proc/**": false` survives, and a
 file it cannot parse — VS Code allows comments in `settings.json`, `json` does
