@@ -318,7 +318,9 @@ class Kubectl:
         """
         return _items(self.run("get", "pods", "-o", "json"))
 
-    def list_events(self, pod: str) -> list[dict[str, Any]]:
+    def list_events(
+        self, pod: str, *, reason: str | None = None
+    ) -> list[dict[str, Any]]:
         """Every event the API server still holds about one pod.
 
         Field-selected server side, because a busy namespace's event stream is
@@ -328,19 +330,21 @@ class Kubectl:
         the wrong kind of object counted as a probe failure would be a wrong
         number rather than a missing one.
 
+        ``reason`` is selectable on core/v1 Event too, and worth passing: the
+        pods this is asked about are the ones churning out events, and the
+        caller throws away everything but one reason anyway. It narrows the
+        response rather than the answer.
+
         Events are not history. The API server keeps them for ``--event-ttl``,
         an hour by default, so an empty list means nothing is retained rather
         than nothing happened — which is why
         :func:`podbench.budget.format_probe_spend` says so out loud.
         """
+        selector = f"involvedObject.name={pod},involvedObject.kind=Pod"
+        if reason is not None:
+            selector += f",reason={reason}"
         return _items(
-            self.run(
-                "get",
-                "events",
-                f"--field-selector=involvedObject.name={pod},involvedObject.kind=Pod",
-                "-o",
-                "json",
-            )
+            self.run("get", "events", f"--field-selector={selector}", "-o", "json")
         )
 
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:

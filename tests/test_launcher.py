@@ -2040,11 +2040,16 @@ def test_status_reports_the_budget_spent_beside_the_budget_available(
     assert "BrokenPipeError" in out
 
 
-def test_the_events_are_asked_for_by_pod_and_by_kind() -> None:
+def test_the_events_are_asked_for_by_pod_by_kind_and_by_reason() -> None:
+    """All three are server-side selectable, and the pods this is asked about
+    are the ones with an event stream worth narrowing."""
     cluster = probed_cluster()
     assert main(["status", "target", "-n", "demo"], runner=cluster) == 0
     (call,) = [argv for argv in cluster.calls if "events" in argv]
-    assert "--field-selector=involvedObject.name=target,involvedObject.kind=Pod" in call
+    assert (
+        "--field-selector=involvedObject.name=target,involvedObject.kind=Pod,"
+        "reason=Unhealthy" in call
+    )
 
 
 def test_a_failure_before_the_seat_landed_is_not_charged_to_this_session(
@@ -2095,6 +2100,10 @@ def test_events_refused_costs_the_probe_block_and_nothing_else(
     assert "podbench-1" in out
     assert "what they have cost cannot be read" in out
     assert "Forbidden" in out
+    # The refusal is on the list verb - the call names no event - so `get` is
+    # the wrong thing to go and ask for, and the second refusal would look the
+    # same as the first.
+    assert "needs `list` on events" in out
 
 
 def test_list_finds_pods_carrying_a_seat(

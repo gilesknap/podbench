@@ -548,11 +548,12 @@ and the handler discovers the dead socket on resume. One traceback, one missed
 probe — and an application that swallows the exception leaves the events as the
 only evidence there was one.
 
-Reading the events needs `get` on events in the namespace, which is a separate
-RBAC verb from `get` on pods. A namespace that grants one and not the other
-still gets its seat listing; only this block is lost, and it says so in
-`kubectl`'s own words. A target with no probes at all costs no call: there is
-no budget to spend, and `status` says that instead.
+Reading the events needs **`list`** on events in the namespace — the call names
+no event, so RBAC decides it on the list verb, not the `get` the seat listing
+needs on pods. A namespace that grants one and not the other still gets its
+listing; only this block is lost, and it says so in `kubectl`'s own words. A
+target with no probes at all costs no call: there is no budget to spend, and
+`status` says that instead.
 
 ### `list`
 

@@ -39,6 +39,7 @@ import typer
 
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
 from .budget import (
+    PROBE_FAILURE_REASON,
     ProbeBudget,
     format_probe_spend,
     probe_budgets,
@@ -2194,6 +2195,10 @@ def probe_spend_note(
     latest = next((seat for seat in reversed(present) if seat.running), None) or (
         present[-1] if present else None
     )
+    # Both of these are named in the block's own header rather than implied:
+    # `status` lists every seat the pod has ever carried and only one of them
+    # sets this window, and a seat that declares no targetContainerName gets
+    # the same first-container default the rest of the launcher uses.
     container = (latest.target if latest is not None else None) or (
         target_container_name(pod_json)
     )
@@ -2204,12 +2209,15 @@ def probe_spend_note(
             "while it is stopped in a debugger"
         )
     try:
-        events = kubectl.list_events(pod)
+        events = kubectl.list_events(pod, reason=PROBE_FAILURE_REASON)
     except KubectlError as error:
+        # `list`, not `get`: the call names no event, so RBAC decides it on the
+        # list verb - which is what the refusal itself says - and telling the
+        # reader to ask for `get` on events has them refused a second time.
         return (
             f"probes on {container!r}: what they have cost cannot be read - "
             f"{error}. The failures are only in the pod's events, so this "
-            "needs `get` on events in this namespace; the budget itself is in "
+            "needs `list` on events in this namespace; the budget itself is in "
             "the pod spec and `podbench attach` states it"
         )
     landed = latest.started_at if latest is not None else None
@@ -2933,6 +2941,10 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 PodRef(kube.namespace, name), present, directory=client_dir(config_dir)
             )
         )
+        # A blank line first: the seats block ends with an `ssh` alias meant to
+        # be copied, and a probe header butted straight against it reads as
+        # part of it.
+        print()
         print(
             "\n".join(_warning_lines(probe_spend_note(kube, name, pod_json, present)))
         )
