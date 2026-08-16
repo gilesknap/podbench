@@ -191,34 +191,59 @@ descendant needs no capability and no Yama exemption. So go straight to
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.
 
-## Making memory headroom first
+## Making memory and CPU headroom first
 
 ```
-$ podbench attach web --resize 6Gi
+$ podbench attach web --resize 6Gi --resize-cpu 4
 ```
 
-This raises the **target container's** memory limit in place
+This raises the **target container's** limits in place
 (`kubectl patch pod --subresource resize`) before the seat lands, because the
 headroom has to exist before vscode-server starts allocating into a limit
-podbench cannot reserve.
+podbench cannot reserve. Naming the target container is not a detail: an
+ephemeral container may not declare `resources` at all, so the seat lives inside
+the pod's cgroup and the pod's ceiling is the sum of its containers' limits.
+
+### Requests move with limits
+
+A namespace whose `LimitRange` sets `maxLimitRequestRatio` bounds
+limit ÷ request, so raising a limit on its own only ever widens that ratio:
+
+```
+pods "web-0" is forbidden: memory max limit to request ratio per Container
+is 10, but provided ratio is 96.000000
+```
+
+That is a 6Gi limit over a 64Mi request. podbench reads the namespace's
+`LimitRange` and raises the request to the smallest value that satisfies it —
+`615Mi` here — so `--resize 6Gi` works rather than being refused with
+arithmetic. Two things it will not do, and says so instead of finding out from
+the API server: it will not raise a request to *equal* its limit on a pod that
+is not already Guaranteed, because a resize may not change a pod's QoS class;
+and it will not ask for a limit above the `LimitRange`'s own `max`.
+
+Write `REQUEST:LIMIT` — `--resize 1Gi:6Gi` — to choose the request yourself. A
+request already large enough is left alone: it is a scheduling promise the
+workload was placed on.
 
 It is opt-in and it prints a warning either way, for two reasons.
 
 It is only **partly proven**: three pods, two of them managed by a Deployment —
 a ReplicaSet reconciles pod *existence*, not pod *spec*, so it does not fight
-the resize — but all on one Kubernetes version, and never against a `LimitRange`
-or a `ResourceQuota` (report R13).
+the resize — but all on one Kubernetes version, and never against a
+`ResourceQuota` (report R13).
 
-And the raised limit **lives on the pod, not on its controller**. The Deployment
-template still asks for the original limit, nothing reconciles the difference,
+And the raised limits **live on the pod, not on its controller**. The Deployment
+template still asks for the original ones, nothing reconciles the difference,
 and so any rollout, scale, image bump or eviction regenerates the pod from that
-template and silently reverts the resize. If you resize to make a seat viable,
-raise the template too, or expect the next unrelated rollout to take it away.
+template and silently reverts the resize. Argo CD does not itself revert it —
+the pod is not one of its manifests, so there is nothing to compare against git
+— but the sync that rolls the workload takes it away like any other rollout. If
+you resize to make a seat viable, raise the template too, or expect the next
+unrelated rollout to take it away.
 
 Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.
-
-`--resize` takes a memory value only; it does not raise a CPU limit.
 
 It also needs `pods/resize` `patch`, which the chart grants separately from the
 rest.

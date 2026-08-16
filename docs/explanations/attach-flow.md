@@ -12,7 +12,8 @@ this codebase.
 ## The whole flow
 
 ```text
-podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH]
+podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
+                [--mount CLAIM:PATH]
     │
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -39,15 +40,21 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH
                                   ├─ >1 and no tty (or --no-prompt) ▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ --resize 6Gi ?   opt-in, and never fatal                         │
+│ --resize 6Gi / --resize-cpu 4 ?   opt-in, and never fatal        │
 │                                                                  │
 │   get pod POD -o json          → name the workload container     │
+│   get limitranges -o json      → maxLimitRequestRatio, max       │
 │   patch pod POD --subresource resize --type strategic            │
+│                                                                  │
+│   Requests move with limits: a ratio cap bounds limit/request,   │
+│   so raising a limit alone only ever widens it (96 against a     │
+│   cap of 10, measured at Diamond).  Never to equal its limit,    │
+│   which would change the pod's QoS class and be refused.         │
 │                                                                  │
 │   Before the seat, not after: vscode-server starts allocating    │
 │   into a limit podbench cannot reserve.  Success and failure     │
-│   are both reported loudly — the raised limit lives on the pod,  │
-│   so any rollout regenerates it away silently.                   │
+│   are both reported loudly — the raised limits live on the pod,  │
+│   so any rollout regenerates them away silently.                 │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
