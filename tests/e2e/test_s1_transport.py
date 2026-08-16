@@ -165,6 +165,28 @@ def test_remote_command_returns_output(ssh_config: tuple[Path, str]) -> None:
     assert result.stdout.decode().strip() == "podbench-e2e-hello"
 
 
+def test_a_podbench_verb_resolves_on_sshds_own_path(
+    ssh_config: tuple[Path, str],
+) -> None:
+    """The single file #47 left the image, exercised the only way it matters.
+
+    sshd is built ``UsePAM no`` (report 4.1), so ``ssh host <cmd>`` sources no
+    profile and never sees the image's ``ENV PATH``: the venv at
+    ``/app/.venv/bin`` is invisible and ``/usr/local/bin/podbench`` is what
+    makes every in-pod verb resolve. A ``kubectl exec`` cannot prove this — it
+    inherits ``ENV PATH`` and would pass with the shim deleted — and since #47
+    there is no second file to fall back on.
+
+    ``pids`` rather than ``--version``: it is the verb the README names for
+    this path, and its table proves the shim reached the real CLI rather than
+    some other program of the same name.
+    """
+    config, alias = ssh_config
+    result = _ssh(config, alias, ["podbench", "pids"])
+    listing = result.stdout.decode()
+    assert "PID" in listing and "CMDLINE" in listing, listing
+
+
 def test_no_port_forward_and_no_pod_ip_are_involved(
     ssh_config: tuple[Path, str],
 ) -> None:

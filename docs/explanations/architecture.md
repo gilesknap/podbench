@@ -199,9 +199,11 @@ the same answer on both sides. Two implementations would be two answers.
   — uv fetches the launcher for that one run and leaves nothing installed. There
   is no kubectl plugin: a plugin has to be an executable on `PATH`, which is
   exactly the thing that outlives the command.
-* In the pod: `podbench agent` is PID 1, and `pids`, `dbg`, `capreport`,
-  `dev-bootstrap`, `podbench-run` and `podbench-stop` are one-line wrappers on
-  `PATH`.
+* In the pod: `podbench agent` is PID 1, and the same spelling reaches every
+  other in-pod verb — `podbench pids`, `podbench dbg`, `podbench capreport`,
+  `podbench dev-bootstrap`, `podbench run`, `podbench stop`. One file,
+  `/usr/local/bin/podbench`, is what puts them within reach of an ssh session
+  that sources no profile.
 
 There is **one runtime dependency, and it is the CLI** — typer, which brings
 click and rich. The help a developer reads at 3 a.m. is part of the product, and

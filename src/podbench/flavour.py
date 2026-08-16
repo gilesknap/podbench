@@ -436,7 +436,7 @@ def inventory(
     """
     entries: list[Debugger] = []
     for name, note in (
-        ("gdb", "cppdbg/MIMode gdb, and `dbg`"),
+        ("gdb", "cppdbg/MIMode gdb, and `podbench dbg`"),
         ("lldb", "CodeLLDB brings its own to the remote, so this is optional"),
         ("dlv", "delve, for Go targets"),
     ):
@@ -581,8 +581,8 @@ def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
             False,
             "the target is a CPython interpreter, so gdb sees interpreter "
             "frames and not your Python source",
-            remedy="use --flavour debugpy, or `dbg` if the interpreter itself "
-            "is what you are debugging",
+            remedy="use --flavour debugpy, or `podbench dbg` if the interpreter "
+            "itself is what you are debugging",
             language_mismatch=True,
         )
     if target.language is Language.NODE:

@@ -8,8 +8,8 @@ description: What breaks when VS Code is the client for a podbench seat — the 
 Every item below was hit for real against a live cluster, and every one of them
 fails *silently or misleadingly*: the seat dies with no explanation, breakpoints
 never bind, or the kubelet kills the workload and it looks unrelated. The CLI
-paths (`dbg`, `pids`) are unaffected by most of this, which is exactly why they
-keep working on a seat where the editor cannot.
+paths (`podbench dbg`, `podbench pids`) are unaffected by most of this, which is
+exactly why they keep working on a seat where the editor cannot.
 
 ## Opening a folder can kill the seat
 
@@ -95,7 +95,7 @@ below.
    `getcwd()`. A deleted cwd then kills gdb *during startup* with no signal name
    and no backtrace. cpptools inherits its own extension directory as cwd, and
    VS Code replaces that directory on extension update. Fixed by
-   `image/bin/gdb-podbench`; `dbg` never hit it because it never enables
+   `image/bin/gdb-podbench`; `podbench dbg` never hit it because it never enables
    pretty-printing. Reproduce anywhere with:
 
    ```sh

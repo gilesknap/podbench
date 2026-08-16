@@ -1,7 +1,0 @@
-#!/bin/sh
-# List the processes belonging to the target container.
-#
-# Absolute path, not a PATH lookup: `ssh <host> pids` runs a non-login,
-# non-interactive shell that sources nothing, so the image's PATH is not in
-# effect (see /etc/profile.d/podbench.sh for the interactive case).
-exec /app/.venv/bin/podbench pids "$@"

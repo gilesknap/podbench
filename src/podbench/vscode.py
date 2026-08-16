@@ -1155,4 +1155,6 @@ def main(
             )
         )
 
-    return run(app, args, prog="debug-config")
+    # See the note on ``prog`` in probe.py: the usage line names the only
+    # spelling there is.
+    return run(app, args, prog="podbench debug-config")

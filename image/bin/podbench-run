@@ -1,9 +1,0 @@
-#!/bin/sh
-# Relaunch the workload from the debug container's environment.
-#
-# Named `podbench-run`, not `run`, because /usr/local/bin precedes /usr/bin: a
-# helper called `run` would shadow anything of that name a user's own tooling
-# expects. The brief calls it `run`; image/README.md records the deviation.
-#
-# Absolute path: see the note in `pids`.
-exec /app/.venv/bin/podbench run "$@"

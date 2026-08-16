@@ -1,8 +1,9 @@
 """The adapter between click's world and this package's ``(argv) -> int`` one.
 
 Every ``main()`` here is a plain function from an argument list to an exit code,
-because that is what the tests drive directly and what the one-line ``exec
-podbench <verb>`` wrappers in ``image/bin`` care about. Click's standalone mode
+because that is what the tests drive directly and what
+``image/bin/podbench`` — the one wrapper in the image, an ``exec`` of the venv's
+console script — passes straight through. Click's standalone mode
 is the opposite shape: it renders its own errors — which is the whole reason for
 using it, since the rich usage panel *is* the help this CLI exists to have — and
 then calls :func:`sys.exit`. :func:`run` is the only place in podbench that

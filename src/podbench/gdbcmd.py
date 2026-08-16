@@ -65,9 +65,7 @@ __all__ = [
     "gdb_argv",
     "launch_commands",
     "main",
-    "pids_main",
     "pids_payload",
-    "dbg_main",
     "read_exe",
     "resolve_target_pid",
     "strip_deleted",
@@ -238,8 +236,8 @@ def resolve_target_pid(
     if len(targets) > 1:
         notes.append(
             f"target container has {len(targets)} processes; debugging the "
-            f"lowest pid ({targets[0].pid}, {targets[0].comm}). Run `pids` to "
-            "choose another."
+            f"lowest pid ({targets[0].pid}, {targets[0].comm}). Run "
+            "`podbench pids` to choose another."
         )
     return targets[0].pid, notes
 
@@ -253,18 +251,18 @@ def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
     needs no capability at all (3.12).
     """
     lines = [
-        f"dbg: cannot attach to pid {pid}: {report.blocker.value}",
+        f"podbench dbg: cannot attach to pid {pid}: {report.blocker.value}",
         f"  {report.blocker.explanation}",
         f"  verdict: {report.verdict.summary}",
     ]
     if report.verdict is Verdict.READ_ONLY:
         lines.append(
             "  the target's rootfs, maps and environ are still readable, so "
-            "`pids` and read-only inspection work."
+            "`podbench pids` and read-only inspection work."
         )
     lines.append(
-        "  ptrace-free alternative: `dbg --launch ./yourprog [args]`. gdb "
-        "forks the inferior itself, which needs no capability and is not "
+        "  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. "
+        "gdb forks the inferior itself, which needs no capability and is not "
         "subject to Yama."
     )
     lines.append(
@@ -566,35 +564,6 @@ def _run_dbg(
     return runner(gdb_argv(commands))
 
 
-def pids_main(args: Sequence[str] | None = None, *, proc: Path = DEFAULT_PROC) -> int:
-    """Entry point for the image's ``pids`` command."""
-    app = new_app()
-    app.command(help=_PIDS_DESCRIPTION)(_pids_command(proc=proc))
-    return run(app, args, prog="pids")
-
-
-def dbg_main(
-    args: Sequence[str] | None = None,
-    *,
-    proc: Path = DEFAULT_PROC,
-    attacher: Attacher | None = None,
-    runner: GdbRunner = exec_gdb,
-) -> int:
-    """Entry point for the image's ``dbg`` command.
-
-    ``proc``, ``attacher`` and ``runner`` are test seams; the CLI passes none
-    of them.
-    """
-    argv, program_args = _split_launch(args)
-    app = new_app()
-    app.command(help=_DBG_DESCRIPTION)(
-        _dbg_command(
-            proc=proc, attacher=attacher, runner=runner, program_args=program_args
-        )
-    )
-    return run(app, argv, prog="dbg")
-
-
 def main(
     args: Sequence[str] | None = None,
     *,
@@ -604,9 +573,8 @@ def main(
 ) -> int:
     """``podbench pids`` / ``podbench dbg`` — the same two commands, one prog.
 
-    The image installs them under their short names as well, which is what the
-    walkthrough uses; :func:`pids_main` and :func:`dbg_main` are those entry
-    points, so ``pids --help`` and ``dbg --help`` are self-describing.
+    ``proc``, ``attacher`` and ``runner`` are test seams; the CLI passes none of
+    them.
     """
     argv, program_args = _split_launch(args)
     app = new_app()

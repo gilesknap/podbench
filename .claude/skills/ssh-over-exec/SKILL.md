@@ -79,9 +79,9 @@ fails in seconds. A hard kill or pod deletion is detected instantly either way.
 ## sshd does not leak its own environment
 
 The launcher injects `PODBENCH_TARGET_CID` into the container spec and it reaches the
-container — but **not** an ssh session, and a non-interactive `ssh host 'pids'` sources no
-profile either. Without forwarding, the in-pod helpers fall back to *guessing* which
-processes belong to the target.
+container — but **not** an ssh session, and a non-interactive
+`ssh host 'podbench pids'` sources no profile either. Without forwarding, the in-pod
+verbs fall back to *guessing* which processes belong to the target.
 
 `SetEnv` in the sshd config is the only route that survives. And:
 
@@ -94,8 +94,9 @@ Values containing whitespace are dropped — a space ends the pair early.
 ## Nothing is on `PATH` in an ssh session
 
 `ssh host '<cmd>'` runs a non-interactive shell that sources nothing and does not inherit
-the image's `ENV PATH`. Every helper in `image/bin/` names `/app/.venv/bin/podbench` by
-absolute path for exactly this reason. If you add a helper, do the same.
+the image's `ENV PATH`. `/usr/local/bin/podbench` — the one wrapper in `image/bin/`, and
+what makes `ssh host 'podbench pids'` resolve at all — names `/app/.venv/bin/podbench` by
+absolute path for exactly this reason. If you add a file there, do the same.
 
 ## sshd needs an NSS identity
 

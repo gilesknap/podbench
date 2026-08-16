@@ -152,10 +152,13 @@ __all__ = [
 CONTAINER_BASE = "podbench"
 """Base name for the ephemeral container; suffixed ``-1``, ``-2``, … (report 4.2)."""
 
-CAPREPORT_ARGV: tuple[str, ...] = ("capreport", "--json")
-"""The probe, as the image puts it on PATH. Unqualified names are safe here and
-nowhere else in podbench: ``kubectl exec`` inherits the image's own ``ENV
-PATH``, whereas an ssh session sources nothing and needs absolute paths."""
+CAPREPORT_ARGV: tuple[str, ...] = ("podbench", "capreport", "--json")
+"""The probe, spelled as the verb rather than as a per-subcommand alias.
+
+``podbench`` unqualified is safe here and nowhere else: ``kubectl exec``
+inherits the image's own ``ENV PATH``, which has the venv on it, whereas an ssh
+session sources nothing and reaches the same program through
+``/usr/local/bin/podbench``."""
 
 HOST_KEY_ARGV: tuple[str, ...] = (
     *AGENT_COMMAND,
@@ -1283,7 +1286,10 @@ def _seat_features(session: Session) -> tuple[Feature, Feature]:
     )
     return (
         ssh_seat,
-        Feature("exec seat (capreport, pids, dbg --launch, kubectl exec)", True),
+        Feature(
+            "exec seat (kubectl exec -- podbench capreport, pids, dbg --launch)",
+            True,
+        ),
     )
 
 
@@ -1539,8 +1545,8 @@ def ssh_unavailable_note(session: Session) -> str:
                 )
             ),
             "  the rest of the seat needs no ssh and works now:",
-            f"    kubectl exec {target} -- capreport",
-            f"    kubectl exec {target} -- pids",
+            f"    kubectl exec {target} -- podbench capreport",
+            f"    kubectl exec {target} -- podbench pids",
             f"    kubectl exec -it {target} -- bash",
         ]
     )
@@ -1813,7 +1819,7 @@ def emit_ssh_config(
                 # sysroot-prefixed program and setup ordering are all things
                 # this launcher already knows and a human cannot guess; every
                 # wrong answer fails silently rather than erroring.
-                "to debug in VS Code, run `debug-config` in the seat "
+                "to debug in VS Code, run `podbench debug-config` in the seat "
                 "(writes .vscode/launch.json)",
             ]
         ),

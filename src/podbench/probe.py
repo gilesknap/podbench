@@ -563,7 +563,8 @@ def format_report(
 def _json_payload(
     report: CapabilityReport, debuggers: Sequence[Debugger] = ()
 ) -> dict[str, object]:
-    """The JSON shape is a public interface — CI runs ``capreport --json``."""
+    """The JSON shape is a public interface — CI runs ``podbench capreport
+    --json`` against the built image, and the launcher parses what it prints."""
     return {
         "debuggers": {
             entry.name: {"present": entry.present, "detail": entry.detail}
@@ -713,7 +714,10 @@ def main(
             )
         )
 
-    return run(app, args, prog="capreport")
+    # ``podbench capreport``, matching ``podbench doctor`` and ``podbench
+    # agent``: the usage line has to name something a reader can type, and since
+    # #47 the image ships no bare ``capreport``.
+    return run(app, args, prog="podbench capreport")
 
 
 def _run(

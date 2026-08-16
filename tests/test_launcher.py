@@ -335,7 +335,10 @@ class FakeCluster:
 
     def _exec(self, rest: list[str]) -> CommandResult:
         command = rest[rest.index("--") + 1 :]
-        if command[0] == "capreport":
+        # Matched as the two-token verb, not as a bare `capreport`: the image
+        # has no per-subcommand aliases on PATH, so a launcher that sent one
+        # would exec nothing in a real seat and must miss here too.
+        if command[:2] == ["podbench", "capreport"]:
             if self.capreport_output is not None:
                 return _ok(self.capreport_output, returncode=127)
             return _ok(
@@ -1283,7 +1286,10 @@ def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
     # Named mechanism, then the way out, then what does work today.
     assert "not writable" in out
     assert "--seat-gid-root" in out
-    assert "kubectl exec -n demo target -c podbench-1 -- capreport" in out
+    # Spelled as the verb: the image ships no per-subcommand aliases (#47), so
+    # a hint the user pastes has to name the one program that is on PATH.
+    assert "kubectl exec -n demo target -c podbench-1 -- podbench capreport" in out
+    assert "kubectl exec -n demo target -c podbench-1 -- podbench pids" in out
 
 
 def test_the_capability_report_marks_the_ssh_seat_unavailable() -> None:
@@ -1298,6 +1304,10 @@ def test_the_capability_report_marks_the_ssh_seat_unavailable() -> None:
     assert "not writable" in ssh_seat.reason
     # The half that never needed sshd is still claimed, because it still works.
     assert exec_seat.available
+    # …and it is named the way it is invoked. The image ships no per-subcommand
+    # aliases (#47), so a label reading "capreport, pids" would be teaching a
+    # spelling that resolves nowhere.
+    assert "podbench capreport" in exec_seat.name
 
     text = format_session(session)
     assert "[ ] ssh seat" in text
