@@ -1225,7 +1225,11 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
     blocker degrades to :attr:`Blocker.UNKNOWN` and says so, rather than
     raising in the middle of a successful attach.
     """
-    notes = [str(note) for note in _as_list(payload.get("notes"))]
+    # Blanks dropped here rather than rendered: a note is the one part of the
+    # report the launcher does not author, an image and a launcher are versioned
+    # separately, and an empty string carries nothing while still printing a
+    # heading with nothing under it.
+    notes = [str(note) for note in _as_list(payload.get("notes")) if str(note).strip()]
     try:
         blocker = Blocker(str(payload.get("blocker")))
     except ValueError:
@@ -1785,8 +1789,23 @@ def _yama(scope: int | None) -> str:
 
 def _paragraph(text: str, *, first: str, indent: str) -> list[str]:
     """Wrap ``text`` with a hanging indent, so a wrapped line is not mistaken
-    for a second bullet."""
+    for a second bullet.
+
+    Text that wraps to nothing keeps its label and loses only the body.
+    ``_wrap`` returns no lines at all for an empty string, and the compact
+    report puts strings through here that the long form only ever passed to
+    ``_warning_lines``, which skips blanks by design - so what used to render as
+    nothing became an ``IndexError`` that takes down the whole report, which is
+    the only thing an attach has to show for itself. The label is kept rather
+    than the line dropped because the caller supplied it and it is the half that
+    still means something: a refused rung is a fact even if its detail is empty.
+
+    >>> _paragraph("", first="refused     full: ", indent=" " * 12)
+    ['refused     full:']
+    """
     wrapped = _wrap(text, width=max(24, 78 - len(indent)))
+    if not wrapped:
+        return [first.rstrip()]
     return [first + wrapped[0], *(indent + line for line in wrapped[1:])]
 
 

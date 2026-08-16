@@ -1339,6 +1339,15 @@ def test_capability_report_from_json_survives_an_unknown_blocker() -> None:
     assert any("cgroup-devices" in note for note in report.notes)
 
 
+def test_a_blank_note_from_the_image_is_dropped_rather_than_rendered() -> None:
+    """The notes are the one part of the report the launcher does not author,
+    and an image is versioned separately from it. An empty one carried nothing
+    and printed a `note` heading with nothing under it - and in the compact
+    shape, which wraps every line it prints, it took the report down."""
+    report = capability_report_from_json(capreport_payload(notes=["", "   ", "real"]))
+    assert report.notes == ["real"]
+
+
 def test_an_unknown_verdict_is_said_rather_than_flattened() -> None:
     """The sibling of the unknown-blocker note. This PR added a rung, so a
     launcher one release behind an image is a shape that now exists: reading
