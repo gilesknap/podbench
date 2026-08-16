@@ -38,6 +38,7 @@ from typing import Annotated, Any, cast
 import typer
 
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
+from .budget import ProbeBudget, probe_budgets, probe_qualifier, probe_warning
 from .cli import new_app, require_subcommand, run
 from .kubectl import (
     EphemeralContainerError,
@@ -783,6 +784,15 @@ class Session:
     ``attach`` still cannot project it. :func:`features` says so rather than
     leaving them to wonder why ssh is unavailable on a pod they prepared."""
 
+    probes: tuple[ProbeBudget, ...] = ()
+    """The target's probes, and the deadline each puts on a pause.
+
+    Empty means "no probes", not "not looked at", and both callers make that
+    true: ``attach`` reads them from the pod it already fetched, and a dev pod
+    has none by construction, since :func:`podbench.spec.dev_pod_spec` strips
+    all three. So :func:`features` can say "no deadline" from an empty tuple
+    without qualifying it."""
+
     steps: tuple[LadderStep, ...] = ()
     report: CapabilityReport | None = None
     warnings: tuple[str, ...] = ()
@@ -909,6 +919,14 @@ def attach(
         )
 
     warnings.append(OOM_WARNING)
+    # Read from the pod spec rather than warned about in general terms: every
+    # number is already in hand, so this is the deadline on *this* pod and not
+    # a caution about probed pods. It is stated before anyone sets a
+    # breakpoint, because the readiness half of it is invisible afterwards.
+    budgets = probe_budgets(pod_json, session.workload)
+    probe_note = probe_warning(session.workload, budgets)
+    if probe_note is not None:
+        warnings.append(probe_note)
     # Not also a warning: `features` reports it under "supports", which is where
     # "what this seat can do and which mechanism decided" belongs, and
     # `ssh_unavailable_note` prints the way out in place of the stanza. A third
@@ -918,6 +936,7 @@ def attach(
     session = replace(
         session,
         identity_declared=identity_declared,
+        probes=budgets,
         ssh=probe_ssh_identity(kubectl, session.seat),
     )
 
@@ -1209,10 +1228,15 @@ def features(session: Session) -> tuple[Feature, ...]:
     which are node-local and were measured inside the container (report 4.5).
     """
     report = session.report
+    # Qualifies the tick rather than repeating the warning: a bare [x] says the
+    # same thing on a pod that will restart under you in twenty seconds as on
+    # one that will wait all afternoon, and those are different products. The
+    # arithmetic and the way out stay in the WARNING block.
+    deadline = probe_qualifier(session.workload, session.probes)
     if report is None:
         unknown = "capreport did not run, so this was not measured"
         return (
-            Feature("live attach (gdb -p <pid>)", False, unknown),
+            Feature("live attach (gdb -p <pid>)", False, unknown, note=deadline),
             Feature(
                 "read-only inspect (/proc/<pid>/root, maps, environ)", False, unknown
             ),
@@ -1224,6 +1248,7 @@ def features(session: Session) -> tuple[Feature, ...]:
             "live attach (gdb -p <pid>)",
             report.verdict is Verdict.LIVE_ATTACH,
             report.blocker.explanation,
+            note=deadline,
         ),
         Feature(
             "read-only inspect (/proc/<pid>/root, maps, environ)",
@@ -1362,8 +1387,29 @@ def format_session(session: Session) -> str:
 
     for warning in session.warnings:
         lines.append("WARNING")
-        lines.extend(f"  {line}" for line in _wrap(warning))
+        lines.extend(f"  {line}" for line in _warning_lines(warning))
     return "\n".join(lines)
+
+
+def _warning_lines(warning: str) -> list[str]:
+    """Wrap a warning, keeping any indented list it carries readable.
+
+    Most warnings are one paragraph and come out of here exactly as ``_wrap``
+    left them. The probe budget is the exception: it is one line per probe and
+    the numbers only compare down the column, so its newlines and its indent
+    have to survive - and an indented line's continuation is hung two further
+    columns so it cannot be misread as the next probe.
+    """
+    lines: list[str] = []
+    for raw in warning.split("\n"):
+        indent = len(raw) - len(raw.lstrip())
+        wrapped = _wrap(raw.strip(), width=max(24, 72 - indent))
+        if not wrapped:
+            continue
+        lines.append(" " * indent + wrapped[0])
+        hang = indent + 2 if indent else 0
+        lines.extend(" " * hang + line for line in wrapped[1:])
+    return lines
 
 
 def _yama(scope: int | None) -> str:
