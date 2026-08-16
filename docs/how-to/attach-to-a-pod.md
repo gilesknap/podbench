@@ -211,7 +211,7 @@ with breakpoints and a live inner loop.
 
 ```
 measured
-  verdict     launch-only: `podbench dbg --launch` works; the target is closed
+  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
   blocker     selinux
 ```
 
