@@ -120,6 +120,7 @@ __all__ = [
     "format_session",
     "host_alias_in",
     "identity_paths",
+    "kubectl_for",
     "list_seats",
     "main",
     "match_pod_choices",
@@ -1890,6 +1891,34 @@ def current_namespace(
     return namespace
 
 
+def kubectl_for(
+    namespace: str | None,
+    *,
+    context: str | None = None,
+    binary: str = "kubectl",
+    runner: Runner | None = None,
+) -> Kubectl:
+    """The one ``Kubectl`` every cluster-side verb talks through.
+
+    Shared rather than reimplemented per module because the namespace default is
+    a promise about the whole CLI: ``-n`` unset means the kubeconfig context's
+    own namespace, and a verb that quietly means ``default`` instead sends
+    someone's ``dev`` at a pod they cannot see. That is issue #44, and it
+    happened because the two copies of these three lines were easier to add to
+    than to reach for.
+
+    The kubeconfig is consulted only when the flag gave nothing, because the
+    lookup is itself a ``kubectl`` call and every verb would otherwise pay for it
+    on top of the work it came to do.
+
+    >>> kubectl_for("demo").namespace
+    'demo'
+    """
+    if namespace is None:
+        namespace = current_namespace(binary=binary, context=context, runner=runner)
+    return Kubectl(namespace, context=context, binary=binary, runner=runner)
+
+
 def list_seats(kubectl: Kubectl) -> list[tuple[PodRef, list[SeatInfo]]]:
     """Every pod in the namespace that carries a podbench container.
 
@@ -2407,20 +2436,6 @@ _PrintConfig = Annotated[
 ]
 
 
-def _kubectl(
-    namespace: str | None, context: str | None, binary: str, runner: Runner | None
-) -> Kubectl:
-    """The one Kubectl every verb here talks through.
-
-    The namespace is resolved from the kubeconfig only when the flag did not
-    give one, because that lookup is a ``kubectl`` call and every verb would
-    otherwise pay for it twice.
-    """
-    if namespace is None:
-        namespace = current_namespace(binary=binary, context=context, runner=runner)
-    return Kubectl(namespace, context=context, binary=binary, runner=runner)
-
-
 def _build_app(runner: Runner | None) -> typer.Typer:
     app = new_app()
 
@@ -2533,7 +2548,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         # Before the namespace is listed: a missing key refuses this attach
         # whichever pod is chosen, and asking someone to pick one first would
         # spend their answer on it.
@@ -2594,7 +2609,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         key_path, _ = read_public_key(identity)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         pod_json = kube.get_pod(name)
@@ -2640,7 +2655,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         present = seats(kube.get_pod(name))
         if not present:
@@ -2665,7 +2680,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         found = list_seats(kube)
         if not found:
             print(f"no podbench containers in namespace {kube.namespace}")
