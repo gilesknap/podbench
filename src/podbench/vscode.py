@@ -90,6 +90,7 @@ from .gdbcmd import (
 from .kubectl import Runner, run_subprocess
 from .model import as_dict
 from .proc import DEFAULT_PROC
+from .provision import PROVISION_DEST, provision_debugpy
 
 __all__ = [
     "ADAPTER_CPPDBG",
@@ -825,6 +826,83 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     return port if listeners_on(parse_ss(result.stdout), port) else None
 
 
+def _provision(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    dest: str,
+    python_version: str | None,
+    proc: Path,
+    runner: Runner | None,
+    which: Which,
+) -> bool:
+    """Install debugpy into the target, or say which mechanism stopped it.
+
+    Opt-in, and for a stronger reason than :func:`injection_command` is only
+    printed: this writes ~15 MB into the *workload's* writable layer, against an
+    ephemeral-storage budget an ephemeral container may not reserve (report
+    3.9), and a verb that authors a configuration file must stay safe to re-run.
+
+    Every refusal below is a case where the install would be pointless rather
+    than impossible, and each is named: a config author that quietly does
+    nothing when asked to do something is the failure this module exists to
+    avoid, one layer up.
+    """
+    if mode is Mode.DEV:
+        _warn(
+            "--provision: dev mode debugs a process in this container, where "
+            "debugpy is an ordinary workspace dependency - there is no other "
+            "container's rootfs to install into"
+        )
+        return False
+    if target.language is not Language.PYTHON:
+        _warn(
+            f"--provision: the target is {target.language.value} and debugpy "
+            "debugs CPython, so there is nothing to install"
+        )
+        return False
+    if seat.listening_port is not None:
+        _warn(
+            "--provision: a debugpy server is already listening on "
+            f"{DEBUGPY_HOST}:{seat.listening_port}, and the emitted "
+            "configuration connects to it without any of this"
+        )
+        return False
+    if seat.debugpy_there is not None:
+        _warn(
+            f"--provision: the target can already import debugpy from "
+            f"{seat.debugpy_there}, so nothing is installed"
+        )
+        return False
+    if which("uv") is None:
+        _warn(
+            "--provision: no uv on PATH in this seat, and it is uv's "
+            "--python-version that resolves a wheel for the *target's* "
+            "interpreter rather than this one"
+        )
+        return False
+    version = python_version or target.python_version
+    if version is None:
+        _warn(
+            "--provision: could not read the target's X.Y from its exe, its "
+            "command line or its rootfs, and installing for the wrong one "
+            "leaves pydevd on its pure-Python fallback with nothing said - "
+            "pass --provision-python X.Y (`python -V` in the target names it)"
+        )
+        return False
+    result = provision_debugpy(
+        target.pid,
+        python_version=version,
+        dest=dest,
+        proc=proc,
+        runner=runner,
+    )
+    for message in result.messages:
+        _warn(f"--provision: {message}")
+    return result.ok
+
+
 def _emit(
     assessments: Sequence[Assessment],
     wanted: set[Flavour],
@@ -884,6 +962,9 @@ def _run(
     port: int,
     print_config: bool,
     output: str | None,
+    provision: bool,
+    provision_dest: str,
+    provision_python: str | None,
     proc: Path,
     runner: Runner | None,
     which: Which,
@@ -910,13 +991,32 @@ def _run(
         if target.language is Language.PYTHON
         else None
     )
-    seat = survey_seat(
+
+    def measure() -> Seat:
+        return survey_seat(
+            target,
+            proc=proc,
+            which=which,
+            debugpy_root=debugpy_root,
+            listening_port=listening,
+            provision_dest=provision_dest,
+        )
+
+    seat = measure()
+    if provision and _provision(
         target,
+        mode,
+        seat,
+        dest=provision_dest,
+        python_version=provision_python,
         proc=proc,
+        runner=runner,
         which=which,
-        debugpy_root=debugpy_root,
-        listening_port=listening,
-    )
+    ):
+        # Measured again rather than assumed: whether the target can import what
+        # was just written is the prerequisite itself, and `_target_debugpy` is
+        # the only thing that answers it.
+        seat = measure()
     assessments = assess(target, mode, seat)
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
@@ -1118,6 +1218,34 @@ def main(
                 help="shorthand for --flavour lldb",
             ),
         ] = False,
+        provision: Annotated[
+            bool,
+            typer.Option(
+                "--provision",
+                help="install debugpy into the target with uv when it cannot "
+                "import one. Mutates the workload: ~15 MB of shared ephemeral "
+                "storage, needs egress from the pod, and no restart survives it",
+            ),
+        ] = False,
+        provision_dest: Annotated[
+            str,
+            typer.Option(
+                "--provision-dest",
+                metavar="PATH",
+                help="where --provision installs it, as the *target* spells it, "
+                "and the one extra path searched for the target's copy. Point "
+                "it at a writable mount when the target's rootfs is read-only",
+            ),
+        ] = PROVISION_DEST,
+        provision_python: Annotated[
+            str | None,
+            typer.Option(
+                "--provision-python",
+                metavar="X.Y",
+                help="the target's Python version for uv to resolve against, "
+                "when it cannot be read from the target itself",
+            ),
+        ] = None,
         print_config: Annotated[
             bool,
             typer.Option(
@@ -1148,6 +1276,9 @@ def main(
                 port=port,
                 print_config=print_config,
                 output=output,
+                provision=provision,
+                provision_dest=provision_dest,
+                provision_python=provision_python,
                 proc=proc,
                 runner=runner,
                 which=which,

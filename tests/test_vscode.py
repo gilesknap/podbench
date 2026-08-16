@@ -46,7 +46,13 @@ from podbench.vscode import (
     target_architecture,
 )
 from test_elf import EM_AARCH64
-from test_flavour import SITE_PACKAGES, python_proc, seat_debugpy, which_of
+from test_flavour import (
+    SITE_PACKAGES,
+    python_proc,
+    seat_debugpy,
+    which_of,
+    write_debugpy,
+)
 
 PID = 597
 EXE = "/app/victim"
@@ -574,3 +580,140 @@ def test_an_arm64_python_target_names_the_missing_helper(
     )
     assert code != 0
     assert "attach_linux_arm64.so" in capsys.readouterr().err
+
+
+# -- provisioning debugpy into the target ------------------------------------
+
+
+class InstallingUv:
+    """A uv that really unpacks a debugpy-shaped tree where it is told to.
+
+    It has to, because the point of the flag is what happens *after*: the
+    debugpy configuration may only be emitted once the **target** can import
+    debugpy, and nothing but the filesystem answers that. Anything that is not
+    uv is the ``ss`` this verb also runs.
+    """
+
+    def __init__(self) -> None:
+        self.argv: list[str] = []
+
+    def __call__(
+        self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        if argv[0] != "uv":
+            return no_listeners(argv, stdin=stdin, capture=capture)
+        self.argv = list(argv)
+        write_debugpy(
+            Path(argv[list(argv).index("--target") + 1]),
+            helpers=["attach_linux_amd64.so"],
+        )
+        return CommandResult(tuple(argv), 0, "", "")
+
+
+def provision_seat(tmp_path: Path) -> tuple[Path, str]:
+    """A full-rung seat on a stock Python workload with no debugpy in it."""
+    return (
+        python_proc(tmp_path),
+        seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+
+
+def test_provision_installs_into_the_target_and_then_emits_debugpy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The bench's own run, end to end: refusal, install, injection command.
+
+    The seat is 3.11 and the target 3.12, so the version uv is given is the
+    target's — and what it is given decides whether the accelerators the target
+    loads exist at all.
+    """
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+    assert code == 0
+    assert uv.argv[:5] == ["uv", "pip", "install", "--python-version", "3.12"]
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"][0]["type"] == "debugpy"
+    # The install is only half of it: the injection is still printed rather than
+    # run, and its PYTHONPATH is the copy that was just made.
+    assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in captured.err
+    for caveat in ("egress", "restart", "ephemeral storage"):
+        assert caveat in captured.err
+
+
+def test_without_the_flag_nothing_is_written_into_the_workload(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Opt-in, and the reason is the mutation's size.
+
+    ~15 MB into the workload's writable layer, against a budget the seat shares
+    and cannot reserve, is larger than the injection that is already judged too
+    big to run implicitly. So the same target gets the command to run and no
+    install.
+    """
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+    assert code != 0
+    assert uv.argv == []
+    assert (
+        "uv pip install --python-version 3.12 --target "
+        f"/proc/{PID}/root/opt/podbench-debugpy debugpy" in capsys.readouterr().err
+    )
+
+
+def test_provision_probes_writability_before_it_runs_uv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A read-only rootfs is the one genuinely new precondition, and it is
+    unreadable from here: the mount flag lives in the target's namespace, so it
+    arrives as an errno on the write. Probing first means the blocker is named
+    rather than arriving as whatever uv says about a directory it could not
+    create."""
+    proc, root = provision_seat(tmp_path)
+    (proc / str(PID) / "root" / "readonly").write_text("not a directory")
+    uv = InstallingUv()
+    main(
+        [str(PID), "--print-config", "--provision", "--provision-dest", "/readonly/x"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+    assert uv.argv == []
+    assert f"cannot write {proc}/{PID}/root/readonly/x" in capsys.readouterr().err
+
+
+def test_provision_says_no_in_dev_mode_rather_than_installing_anyway(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only Observe mode needs this.
+
+    A dev pod relaunches the app as the seat's own child in this container,
+    where debugpy is an ordinary workspace-venv dependency — there is no other
+    rootfs to write into, and Iterate's non-root sidecar is a restricted-PSS
+    feature rather than an oversight.
+    """
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    main(
+        [str(PID), "--print-config", "--provision", "--mode", "dev"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=root,
+    )
+    assert uv.argv == []
+    assert "dev mode debugs a process in this container" in capsys.readouterr().err

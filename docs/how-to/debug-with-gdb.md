@@ -332,7 +332,10 @@ entries and leaves any hand-written configuration alone.
 For a **Python** target the answer is debugpy rather than gdb, and it depends on
 the architecture as well as the language — the
 [CLI reference](../reference/cli.md) has the three axes and what each one
-changes.
+changes. A stock Python image has no debugpy for the injection to bootstrap
+with, and `debug-config` then prints the `uv pip install` that puts one inside
+the target; `--provision` runs it, at the cost of ~15 MB of the pod's ephemeral
+storage, egress from the pod, and nothing that survives a restart.
 
 VS Code reads `.vscode/launch.json` from the folder that is **open**, not from
 `$HOME`. A config written to `~` when you opened `/` never appears in the Run

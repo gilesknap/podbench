@@ -99,9 +99,8 @@ def python_proc(
     )
 
 
-def seat_debugpy(tmp_path: Path, *, helpers: list[str]) -> str:
+def write_debugpy(root: Path, *, helpers: list[str]) -> Path:
     """A directory shaped like an installed debugpy, with chosen helpers."""
-    root = tmp_path / "seat-debugpy"
     package = root / "debugpy"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
@@ -109,7 +108,12 @@ def seat_debugpy(tmp_path: Path, *, helpers: list[str]) -> str:
     helper_dir.mkdir(parents=True)
     for name in helpers:
         (helper_dir / name).write_bytes(b"")
-    return str(root)
+    return root
+
+
+def seat_debugpy(tmp_path: Path, *, helpers: list[str]) -> str:
+    """The image's own copy, at the path ``--debugpy-root`` would name."""
+    return str(write_debugpy(tmp_path / "seat-debugpy", helpers=helpers))
 
 
 def which_of(*present: str, shimmed: bool = True) -> Which:

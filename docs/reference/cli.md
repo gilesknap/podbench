@@ -820,33 +820,49 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │   [PID]      <int>  pid to attach to; discovered from the container id if omitted                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --container-id         ID                        target container id used to discover the pid    │
-│                                                  (default: $PODBENCH_TARGET_CID)                 │
-│ --flavour              <gdb|lldb|delve|debugpy>  emit only this debugger flavour, and say why if │
-│                                                  it cannot be emitted. Repeatable; the default   │
-│                                                  is every flavour that applies                   │
-│ --mode                 <observe|dev>             override the detected mode. Observe attaches to │
-│                                                  another container and needs path mappings; dev  │
-│                                                  launches in this one and must not have any      │
-│ --port                 PORT                      the debugpy port to connect to (shared network  │
-│                                                  namespace, so always 127.0.0.1)                 │
-│                                                  [default: 5678]                                 │
-│ --program              PATH                      the target's binary as its own rootfs spells    │
-│                                                  it, when /proc/<pid>/exe cannot be read. It is  │
-│                                                  prefixed with the sysroot here, so do not       │
-│                                                  prefix it yourself                              │
-│ --source-dir           DIR                       extra source directory in *this* container,     │
-│                                                  wired with gdb's `directory`. Repeatable        │
-│ --source-map           FROM=TO                   map a DWARF compilation directory (`info        │
-│                                                  source` prints it) onto a readable path.        │
-│                                                  Repeatable                                      │
-│ --no-debuginfod                                  do not enable debuginfod (it needs              │
-│                                                  ca-certificates and network)                    │
-│ --lldb                                           shorthand for --flavour lldb                    │
-│ --print-config                                   print the configuration instead of writing it   │
-│ --output               PATH                      where to write it (default:                     │
-│                                                  ./.vscode/launch.json)                          │
-│ --help                                           Show this message and exit.                     │
+│ --container-id            ID                        target container id used to discover the pid │
+│                                                     (default: $PODBENCH_TARGET_CID)              │
+│ --flavour                 <gdb|lldb|delve|debugpy>  emit only this debugger flavour, and say why │
+│                                                     if it cannot be emitted. Repeatable; the     │
+│                                                     default is every flavour that applies        │
+│ --mode                    <observe|dev>             override the detected mode. Observe attaches │
+│                                                     to another container and needs path          │
+│                                                     mappings; dev launches in this one and must  │
+│                                                     not have any                                 │
+│ --port                    PORT                      the debugpy port to connect to (shared       │
+│                                                     network namespace, so always 127.0.0.1)      │
+│                                                     [default: 5678]                              │
+│ --program                 PATH                      the target's binary as its own rootfs spells │
+│                                                     it, when /proc/<pid>/exe cannot be read. It  │
+│                                                     is prefixed with the sysroot here, so do not │
+│                                                     prefix it yourself                           │
+│ --source-dir              DIR                       extra source directory in *this* container,  │
+│                                                     wired with gdb's `directory`. Repeatable     │
+│ --source-map              FROM=TO                   map a DWARF compilation directory (`info     │
+│                                                     source` prints it) onto a readable path.     │
+│                                                     Repeatable                                   │
+│ --no-debuginfod                                     do not enable debuginfod (it needs           │
+│                                                     ca-certificates and network)                 │
+│ --lldb                                              shorthand for --flavour lldb                 │
+│ --provision                                         install debugpy into the target with uv when │
+│                                                     it cannot import one. Mutates the workload:  │
+│                                                     ~15 MB of shared ephemeral storage, needs    │
+│                                                     egress from the pod, and no restart survives │
+│                                                     it                                           │
+│ --provision-dest          PATH                      where --provision installs it, as the        │
+│                                                     *target* spells it, and the one extra path   │
+│                                                     searched for the target's copy. Point it at  │
+│                                                     a writable mount when the target's rootfs is │
+│                                                     read-only                                    │
+│                                                     [default: /opt/podbench-debugpy]             │
+│ --provision-python        X.Y                       the target's Python version for uv to        │
+│                                                     resolve against, when it cannot be read from │
+│                                                     the target itself                            │
+│ --print-config                                      print the configuration instead of writing   │
+│                                                     it                                           │
+│ --output                  PATH                      where to write it (default:                  │
+│                                                     ./.vscode/launch.json)                       │
+│ --help                                              Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -885,6 +901,54 @@ is the only one with no remedy anywhere: debugpy ships `attach_linux_amd64.so`
 alone and publishes no aarch64 Linux wheel, so there is nothing to install.
 `debugpy.listen()` baked into the app is pure Python and works on any
 architecture — as does `podbench dev`.
+
+#### Installing debugpy into the target (`--provision`)
+
+A stock Python image has no debugpy, and debugpy's pid-injection needs it
+importable **by the target**: the bootstrap runs in the target's interpreter,
+and the path debugpy injects is the one the *driver* sees, so
+`/proc/<pid>/root/...` is the only spelling valid in both mount namespaces. The
+seat can supply it — it ships `uv`, live attach already requires `runAsUser: 0`,
+and `/proc/<pid>/root` is the target's own filesystem — so the refusal prints
+the command rather than asking for an image rebuild:
+
+```
+uv pip install --python-version 3.12 --target /proc/1/root/opt/podbench-debugpy debugpy
+```
+
+`--python-version` is the load-bearing flag, and the reason this is a uv install
+and not a copy of the seat's tree. The image installs debugpy for the seat's own
+interpreter, so its copy carries `pydevd_cython.cpython-311-*.so` alone; put
+that in a 3.12 target and the accelerator is skipped and pydevd falls back to
+pure Python **silently**. uv resolves for an interpreter it is not running, and
+a 3.12 target then loads the cp312 accelerators out of the provisioned
+directory. Copying the seat's tree is the fallback for a pod with no egress, not
+the route.
+
+`--provision` runs it for you, and is **opt-in on purpose**. The injection
+command is printed rather than run because it ptraces the workload; writing
+~15 MB into the workload's own writable layer is the larger mutation of the two,
+and a verb that authors a configuration file has to stay safe to re-run. Behind
+the flag it probes the destination for writability first and names what refuses:
+
+| cost | why it cannot be ignored |
+|---|---|
+| network egress from the pod | uv resolves and downloads from an index; a locked-down namespace refuses it, and the fallback is a copy of the seat's tree with the accelerator caveat above |
+| no restart survives it | neither the install nor the injection — a restart brings back the app image exactly as built |
+| ~15 MB of ephemeral storage | on a budget the seat **shares with the workload and cannot reserve**, because an ephemeral container may not carry `resources` |
+
+`readOnlyRootFilesystem: true` is the one genuinely new precondition, and it is
+not readable from the seat: the mount flag lives in the target's mount
+namespace, so it arrives as `EROFS` on the write. Uid 0 in the seat carries
+`CAP_DAC_OVERRIDE`, so the target's own uid and file modes are never the
+explanation. Where the rootfs is read-only there is usually still a writable
+`emptyDir` or tmpfs in the pod — `--provision-dest` puts the copy there instead,
+and is also the extra path `debug-config` searches on a later run.
+
+Only **Observe** mode needs any of this. A `dev` pod relaunches the app as the
+seat's own child in this container, where debugpy is an ordinary workspace-venv
+dependency; Hotfix mounts the same PVC over the venv at the same path in both
+containers. `--provision` says so rather than installing anyway.
 
 `miDebuggerPath` names `/usr/local/bin/gdb-podbench`, never `/usr/bin/gdb`:
 cpptools launches gdb inheriting its own extension directory as a working
