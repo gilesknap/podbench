@@ -709,9 +709,14 @@ automatically after every attach; run it yourself when something changes.
 | Code | Verdict |
 |---|---|
 | `0` | live attach available |
-| `10` | read-only inspection of the target (rootfs, `maps`, `environ`); no live attach; gdb-launch works |
+| `10` | read-only inspection of the target (rootfs, `maps`, `environ`); no live attach |
 | `15` | launch-only: no read-only inspection of the target, but `podbench dbg --launch` works |
 | `20` | neither; the seat itself still works |
+
+`10` says nothing about gdb-launch: the two are measured separately, and a seat
+whose own forked child refuses to be traced can still read all three gated paths
+at the target's uid. `child_attach_ok` in the JSON is the only thing that claims
+that rung.
 
 It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
 profile of both itself and the target, and `yama/ptrace_scope`; then runs a

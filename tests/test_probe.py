@@ -671,6 +671,54 @@ def test_no_reads_and_no_ptrace_at_all_is_verdict_none() -> None:
     assert blocker is Blocker.YAMA_SCOPE
 
 
+def test_a_partly_denied_matrix_still_points_at_the_sysroot() -> None:
+    """All-or-nothing is right for the tick and wrong for the prose.
+
+    A matrix that kept `root` fails :func:`ptrace_reads_ok` and lands on
+    launch-only, but `set sysroot /proc/<pid>/root` is exactly the mandatory
+    fix from report 3.4 — so the note must not steer the reader off it.
+    """
+    verdict, _, notes = derive_verdict(
+        cap_sys_ptrace=False,
+        yama=1,
+        seccomp=0,
+        apparmor_self="unconfined",
+        apparmor_target="unconfined",
+        self_uid=0,
+        target_uid=1000,
+        target_pid=1,
+        child=OK,
+        target_attach=EPERM,
+        proc_reads={"root": True, "maps": False, "environ": False},
+    )
+    assert verdict is Verdict.LAUNCH_ONLY
+    prose = " ".join(notes)
+    assert "a sysroot on root still will" in prose
+    assert "a sysroot, `environ` or `maps` is not the fallback" not in prose
+
+
+def test_read_only_does_not_claim_gdb_launch_it_never_measured() -> None:
+    """`gdb-launch needs no capability` is true and was not the claim being
+    made: on a skipped scratch attach nothing about ptrace(2) was measured."""
+    verdict, _, notes = derive_verdict(
+        cap_sys_ptrace=False,
+        yama=1,
+        seccomp=0,
+        apparmor_self="unconfined",
+        apparmor_target="unconfined",
+        self_uid=1000,
+        target_uid=1000,
+        target_pid=1,
+        child=AttachOutcome.skip("no libc"),
+        target_attach=AttachOutcome.skip("no libc"),
+        proc_reads=dict.fromkeys(("root", "maps", "environ"), True),
+    )
+    assert verdict is Verdict.READ_ONLY
+    prose = " ".join(notes)
+    assert "gdb-launch is unmeasured" in prose
+    assert "gdb-launch needs no capability" not in prose
+
+
 def test_an_unmeasured_scratch_attach_does_not_claim_launch_only() -> None:
     verdict, _, _ = derive_verdict(
         cap_sys_ptrace=False,

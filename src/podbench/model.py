@@ -37,6 +37,7 @@ __all__ = [
     "Rung",
     "Verdict",
     "as_dict",
+    "describe_gated_fallback",
     "describe_reads",
     "image_tag_for",
     "ptrace_reads_ok",
@@ -235,6 +236,13 @@ def describe_reads(proc_reads: Mapping[str, bool]) -> str:
     'cmdline, status and fd only; root, maps and environ denied'
     >>> describe_reads({})
     'no /proc reads were measured'
+
+    A gated read that survived alone is not folded into "only": that shape is
+    what :func:`describe_gated_fallback` exists to word, and calling it "only"
+    would hide the one path report 3.4 makes the fix.
+
+    >>> describe_reads({"root": True, "maps": False, "environ": False})
+    'root readable; maps and environ denied'
     """
     if not proc_reads:
         return "no /proc reads were measured"
@@ -256,10 +264,43 @@ def describe_reads(proc_reads: Mapping[str, bool]) -> str:
     return f"{_names(readable)} {kept}; {_names(denied)} denied"
 
 
+def describe_gated_fallback(proc_reads: Mapping[str, bool]) -> str:
+    """Whether a sysroot is still worth reaching for, given the matrix.
+
+    :func:`ptrace_reads_ok` is all-or-nothing, so a matrix that kept ``root``
+    and lost ``maps`` lands on the same rung as one that kept nothing — and the
+    sentence that rung used to print steered the reader off ``set sysroot
+    /proc/<pid>/root``, which report 3.4 makes the *mandatory* fix for wrong
+    symbols. So the wording is built from which gated paths survived rather
+    than from the verdict.
+
+    >>> describe_gated_fallback(dict.fromkeys(PTRACE_READ_PATHS, False))
+    'so a sysroot, `environ` or `maps` is not the fallback here'
+    >>> describe_gated_fallback({"root": True, "maps": False, "environ": False})
+    'so `maps` and `environ` will not open, but a sysroot on root still will'
+    >>> describe_gated_fallback(dict.fromkeys(PTRACE_READ_PATHS, True))
+    'and read-only inspection of the target still works'
+    """
+    kept = [name for name in PTRACE_READ_PATHS if proc_reads.get(name) is True]
+    lost = [name for name in PTRACE_READ_PATHS if name not in kept]
+    if not lost:
+        return "and read-only inspection of the target still works"
+    if not kept:
+        return "so a sysroot, `environ` or `maps` is not the fallback here"
+    tail = (
+        "a sysroot on root still will"
+        if "root" in kept
+        else f"{_names([f'`{name}`' for name in kept])} still opens"
+    )
+    return f"so {_names([f'`{name}`' for name in lost])} will not open, but {tail}"
+
+
 def _names(names: Sequence[str]) -> str:
     """``a, b and c`` — the report is read by people, not parsed."""
-    if len(names) == 1:
-        return names[0]
+    # An empty list is no caller's case today, but `names[-1]` on the way to a
+    # diagnostic is a crash in the one code path that must never crash.
+    if len(names) < 2:
+        return ", ".join(names)
     return ", ".join(names[:-1]) + f" and {names[-1]}"
 
 

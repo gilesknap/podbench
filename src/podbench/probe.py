@@ -39,6 +39,7 @@ from .model import (
     Blocker,
     CapabilityReport,
     Verdict,
+    describe_gated_fallback,
     describe_reads,
     ptrace_reads_ok,
 )
@@ -468,20 +469,31 @@ def derive_verdict(
         notes.extend(denial_notes)
 
     if reads_ok:
+        # gdb-launch is named only when the scratch attach measured it. It
+        # needs no *capability*, which is not the same as working: a skipped
+        # probe measured nothing, and this branch is reachable with one.
+        launch = (
+            ", and gdb-launch needs no capability"
+            if child.measured_ok
+            else "; the scratch attach was skipped, so gdb-launch is unmeasured"
+        )
         notes.append(
-            "read-only debugging is still available: "
-            f"{describe_reads(proc_reads)}, and gdb-launch needs no capability"
+            f"read-only debugging is still available: {describe_reads(proc_reads)}"
+            f"{launch}"
         )
         return Verdict.READ_ONLY, blocker, notes
     if child.measured_ok:
         # The rung the brief never named. Attach and the target's own /proc are
         # both gone, but tracing a descendant is always permitted (report
         # 3.12), so the inner loop the report tells us to design for is intact
-        # — and saying "nothing works" here would hide it.
+        # — and saying "nothing works" here would hide it. What is *not* said
+        # is that a sysroot is out: the rule is all-or-nothing, so a matrix
+        # that kept `root` lands here too, and report 3.4 makes that sysroot
+        # the mandatory fix rather than a consolation.
         notes.append(
             "the reads that take PTRACE_MODE_READ went with it "
-            f"({describe_reads(proc_reads)}), so a sysroot, an environ read or "
-            "a maps read is not the fallback here; what still works is "
+            f"({describe_reads(proc_reads)}), "
+            f"{describe_gated_fallback(proc_reads)}; what still works is "
             "debugging a process the seat starts itself - `podbench dbg "
             "--launch ./prog` - which needs no capability"
         )

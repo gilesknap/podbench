@@ -40,7 +40,7 @@ from typing import Annotated
 import typer
 
 from .cli import new_app, require_subcommand, run
-from .model import CapabilityReport, ProcInfo, Verdict
+from .model import CapabilityReport, ProcInfo, Verdict, describe_gated_fallback
 from .probe import Attacher, probe
 from .proc import (
     DEFAULT_PROC,
@@ -265,22 +265,48 @@ def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
         # denied" leaves the reader to try the sysroot next and lose the
         # afternoon to a second denial (issue #51). The matrix goes in the line
         # rather than a word for it, because "/proc is closed" is untrue of the
-        # world-readable half and of a matrix that lost only one gated path.
+        # world-readable half — and a matrix that lost only one gated path
+        # still fails the all-or-nothing rule, so the fallback clause is built
+        # from which gated paths survived rather than from the verdict.
         lines.append(
             f"  the reads that take PTRACE_MODE_READ went with it "
-            f"({report.reads_summary}), so a sysroot, `environ` or `maps` is "
-            "not the fallback here."
+            f"({report.reads_summary}), "
+            f"{describe_gated_fallback(report.proc_reads)}."
         )
-    lines.append(
-        "  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. "
-        "gdb forks the inferior itself, which needs no capability and is not "
-        "subject to Yama."
-    )
+    lines.append(_launch_alternative(report))
     lines.append(
         "  to keep attaching to this process, the target can opt in with one "
         "line: prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)."
     )
     return "\n".join(lines)
+
+
+def _launch_alternative(report: CapabilityReport) -> str:
+    """Offer ``dbg --launch`` only where the scratch attach earned the offer.
+
+    This line used to be unconditional, and it is the last thing a denied user
+    reads — so on a seat whose own forked child refused to be traced it sent
+    them to a second identical denial. gdb traces an inferior it forked, which
+    is precisely the attach the probe measured (report 3.12).
+    """
+    if report.can_debug_launched:
+        return (
+            "  ptrace-free alternative: `podbench dbg --launch ./yourprog "
+            "[args]`. gdb forks the inferior itself, which needs no "
+            "capability and is not subject to Yama below ptrace_scope=2."
+        )
+    if report.child_attach_ok is False:
+        return (
+            "  and `podbench dbg --launch` is not the way out either: this "
+            "seat could not ptrace a child it forked itself, so gdb cannot "
+            "trace an inferior it starts. Run `podbench capreport` for the "
+            "mechanism."
+        )
+    return (
+        "  `podbench dbg --launch ./yourprog [args]` is the usual way out - "
+        "gdb forks the inferior itself, which needs no capability - but the "
+        "scratch attach was skipped here, so this is not measured."
+    )
 
 
 _HEADERS = ("PID", "UID", "TARGET", "CONTAINER", "COMM", "CMDLINE")

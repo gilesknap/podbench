@@ -514,7 +514,8 @@ podbench dbg: cannot attach to pid 1: yama-scope
   the target's rootfs, maps and environ are still readable, so `podbench pids`
   and read-only inspection work.
   ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. gdb forks the
-  inferior itself, which needs no capability and is not subject to Yama.
+  inferior itself, which needs no capability and is not subject to Yama below
+  ptrace_scope=2.
   to keep attaching to this process, the target can opt in with one line:
   prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY).
 ```
@@ -544,10 +545,17 @@ the other way.
 `--launch` survives all of that: gdb forks the inferior and traces its own
 descendant, which needs no capability and no Yama exemption. It is still
 *measured* rather than assumed, and the tick beside **debug launched processes**
-is the measurement — `capreport` attaches to a child it forked itself before it
-claims the rung. Two things take it away with everything else: a seccomp filter
-that rejects `ptrace(2)` outright, and `ptrace_scope=3`, neither of which cares
-whose descendant the inferior is.
+is the measurement — `podbench capreport` attaches to a child it forked itself
+before it claims the rung. Three things take it away with everything else, none
+of which cares whose descendant the inferior is: a seccomp filter that rejects
+`ptrace(2)` outright, `ptrace_scope` **2 or 3** — scope 2 is the one Yama setting
+with no descendant exemption, and it demands `CAP_SYS_PTRACE` of
+`PTRACE_TRACEME` too — and an AppArmor profile that denies `ptrace`.
+`podbench capreport` names whichever of the three it finds.
+
+The offer is conditional for that reason: where the scratch attach was measured
+and failed, `podbench dbg` says so instead of pointing at `--launch`, because a
+second identical denial is what costs the afternoon.
 
 ## Gotchas
 
