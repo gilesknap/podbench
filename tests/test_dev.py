@@ -11,6 +11,7 @@ while a ``TIME_WAIT`` socket makes it unbindable.
 
 from __future__ import annotations
 
+import copy
 import json
 import signal
 from collections.abc import Callable, Sequence
@@ -764,6 +765,10 @@ class FakeKubectl(Kubectl):
                 return CommandResult(tuple(argv), 1, "", "pods 'x' not found")
         elif args[3:5] == ["get", "service"]:
             stdout = json.dumps(self.objects.get(f"service/{args[5]}", {}))
+        elif args[3] == "get":
+            # Any other kind, so the ownership walk that looks for a GitOps
+            # mark can be answered: it asks for replicasets and deployments.
+            stdout = json.dumps(self.objects.get(f"{args[4]}/{args[5]}", {}))
         elif args[3] == "create":
             stdout = stdin or "{}"
         elif args[3] == "exec":
@@ -1304,3 +1309,114 @@ def test_cli_run_will_not_relaunch_without_being_told_the_port():
 def test_run_without_a_command_is_refused(tmp_path: Path):
     with pytest.raises(dev.DevError, match="nothing to run"):
         dev.start([], port=8080, workspace=str(tmp_path), proc=make_proc(tmp_path))
+
+
+# -- GitOps refusal ---------------------------------------------------------
+
+
+def owned_pod(owner: str = "demo-77f") -> dict[str, Any]:
+    """The origin, as a controller actually leaves it: owned, and unmarked.
+
+    The absence of a mark here is the point of the fixture. Argo stamps what it
+    applied from git, and the pod template is not that — measured on a live
+    install, 0 of 82 pods carried the tracking label while their workloads did.
+    """
+    pod = copy.deepcopy(ORIGIN_POD)
+    pod["metadata"]["ownerReferences"] = [
+        {"kind": "ReplicaSet", "name": owner, "controller": True}
+    ]
+    return pod
+
+
+def workload(
+    kind: str, name: str, *, marked: bool, owner: str | None = None
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"name": name}
+    if marked:
+        metadata["labels"] = {"argocd.argoproj.io/instance": "beamline-i22"}
+    if owner is not None:
+        metadata["ownerReferences"] = [
+            {"kind": "Deployment", "name": owner, "controller": True}
+        ]
+    return {"kind": kind, "metadata": metadata}
+
+
+def gitops_kube() -> FakeKubectl:
+    return FakeKubectl(
+        **{
+            "pod/demo": owned_pod(),
+            "replicaset/demo-77f": workload(
+                "ReplicaSet", "demo-77f", marked=False, owner="demo"
+            ),
+            "deployment/demo": workload("Deployment", "demo", marked=True),
+        }
+    )
+
+
+def test_dev_refuses_a_workload_a_gitops_controller_reconciles() -> None:
+    with pytest.raises(dev.DevError) as caught:
+        dev.create_dev_pod(gitops_kube(), "demo", image="img:1")
+    message = str(caught.value)
+    assert "deployment/demo" in message
+    assert "argocd.argoproj.io/instance=beamline-i22" in message
+    # Both failure modes named, and the modes that do work offered.
+    assert "self-heal" in message
+    assert "podbench attach" in message
+
+
+def test_the_mark_is_looked_for_on_the_workload_not_on_the_pod() -> None:
+    """The pod carries nothing; refusing still has to happen.
+
+    Checking the pod alone is the plausible-looking implementation that would
+    let Iterate mode run on exactly the workloads it must not.
+    """
+    kube = gitops_kube()
+    assert spec.gitops_owner(owned_pod()) is None
+    with pytest.raises(dev.DevError):
+        dev.create_dev_pod(kube, "demo", image="img:1")
+
+
+def test_an_unmarked_workload_is_left_alone() -> None:
+    kube = FakeKubectl(
+        **{
+            "pod/demo": owned_pod(),
+            "replicaset/demo-77f": workload(
+                "ReplicaSet", "demo-77f", marked=False, owner="demo"
+            ),
+            "deployment/demo": workload("Deployment", "demo", marked=False),
+        }
+    )
+    pod, _ = dev.create_dev_pod(kube, "demo", image="img:1")
+    assert pod.ref.name.startswith("demo")
+
+
+def test_an_unreadable_owner_does_not_read_as_managed() -> None:
+    """A missing `get deployments` grant must not be reported as GitOps.
+
+    The user is left with the failure they already had rather than a confident
+    diagnosis of a condition nobody checked.
+    """
+    kube = FakeKubectl(**{"pod/demo": owned_pod()})
+    pod, _ = dev.create_dev_pod(kube, "demo", image="img:1")
+    assert pod.ref.name.startswith("demo")
+
+
+def test_the_walk_is_bounded_against_an_ownership_cycle() -> None:
+    kube = FakeKubectl(
+        **{
+            "pod/demo": owned_pod("loop"),
+            "replicaset/loop": workload(
+                "ReplicaSet", "loop", marked=False, owner="loop"
+            ),
+            "deployment/loop": {
+                "kind": "Deployment",
+                "metadata": {
+                    "name": "loop",
+                    "ownerReferences": [
+                        {"kind": "ReplicaSet", "name": "loop", "controller": True}
+                    ],
+                },
+            },
+        }
+    )
+    assert dev.gitops_manager(kube, owned_pod("loop")) is None

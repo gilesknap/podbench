@@ -118,11 +118,13 @@ __all__ = [
     "default_target_port",
     "delete_dev_pod",
     "dev_pod_name",
+    "gitops_manager",
     "identify_owner",
     "listeners_on",
     "load_state",
     "main",
     "parse_ss",
+    "refuse_if_gitops_managed",
     "path_side",
     "preflight_port",
     "read_process",
@@ -1167,6 +1169,101 @@ def recorded_cutover(pod_json: Mapping[str, Any]) -> Cutover | None:
     return Cutover(service=service, selector=selector)
 
 
+_WORKLOAD_HOPS = 3
+"""How far up the ownership chain to look for a GitOps mark.
+
+Pod → ReplicaSet → Deployment is two, and the third is slack for an operator
+that inserts a kind of its own. Bounded rather than unbounded because a
+malformed ownerReferences cycle would otherwise hang the launcher.
+"""
+
+
+def gitops_manager(
+    kube: Kubectl, pod_json: Mapping[str, Any]
+) -> tuple[str, str] | None:
+    """The workload behind this pod and the GitOps mark on it, or ``None``.
+
+    The walk is the whole point. Argo CD stamps what it applied *from git* —
+    the Deployment — and the pods a controller makes carry none of it: measured
+    on a live install, 0 of 82 pods carried the tracking label while their
+    owning workloads did. Inspecting the pod alone finds nothing, and would let
+    Iterate mode proceed on precisely the workloads it must not.
+
+    Errors are swallowed deliberately. A user who cannot ``get deployments`` is
+    not thereby entitled to a dev pod that a controller will fight, but neither
+    should a missing RBAC verb be reported as "this is GitOps-managed" — so an
+    unreadable owner reads as unmarked, and the failure stays the one the user
+    already has.
+    """
+    obj: Mapping[str, Any] = pod_json
+    for _ in range(_WORKLOAD_HOPS):
+        owner = _controller_ref(obj)
+        if owner is None:
+            return None
+        kind, name = owner
+        try:
+            result = kube.run("get", kind, name, "-o", "json")
+        except KubectlError:
+            return None
+        try:
+            parsed: object = json.loads(result.stdout)
+        except ValueError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        obj = cast(dict[str, Any], parsed)
+        mark = spec.gitops_owner(obj)
+        if mark is not None:
+            return f"{kind}/{name}", mark
+    return None
+
+
+def _controller_ref(obj: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The ``kind, name`` of the controller that owns an object."""
+    metadata = as_dict(obj.get("metadata"))
+    for entry in metadata.get("ownerReferences") or ():
+        owner = as_dict(entry)
+        if owner.get("controller") is not True:
+            continue
+        kind = owner.get("kind")
+        name = owner.get("name")
+        if isinstance(kind, str) and isinstance(name, str):
+            return kind.lower(), name
+    return None
+
+
+def refuse_if_gitops_managed(kube: Kubectl, pod_json: Mapping[str, Any]) -> None:
+    """Refuse Iterate mode on a workload a GitOps controller reconciles.
+
+    Absolute, with no override, because there is no version of this that works
+    and every mitigation makes it worse. The clone itself is usually safe — the
+    tracking mark is on the workload, not the pod template — but ``--cutover``
+    patches a Service selector, and a Service *is* a tracked object straight out
+    of git, so self-heal reverts it within seconds and traffic returns to the
+    origin with nothing logged anywhere. Annotating the dev pod
+    ``IgnoreExtraneous`` was tried and rejected (#38): it protects the pod by
+    hiding it from the operator's source of truth, which turns a loud failure
+    into a silent one and does nothing about the Service.
+    """
+    managed = gitops_manager(kube, pod_json)
+    if managed is None:
+        return
+    workload, mark = managed
+    raise DevError(
+        f"{workload} is managed by a GitOps controller ({mark}), and Iterate "
+        "mode does not work against one. A Service cutover is drift on a "
+        "git-managed object, so self-heal reverts it within seconds and the "
+        "traffic you think you have goes back to the original pod without an "
+        "error anywhere; the dev pod can also be pruned as an extraneous "
+        "resource, depending on how tracking is configured.\n\n"
+        "Use `podbench attach` to debug the workload in place — it adds an "
+        "ephemeral container, which no GitOps controller reconciles — or "
+        "`podbench hotfix` when the change has to survive a restart. If this "
+        "workload really is not reconciled, remove the mark from it rather "
+        "than working around this."
+    )
+
+
 def create_dev_pod(
     kube: Kubectl,
     origin: str,
@@ -1197,6 +1294,10 @@ def create_dev_pod(
     reads the key before it creates anything, exactly as ``attach`` does.
     """
     origin_json = kube.get_pod(origin)
+    # Before anything is authored, and before the Service is touched: the point
+    # of refusing is that the user finds out now rather than from traffic that
+    # quietly stopped arriving.
+    refuse_if_gitops_managed(kube, origin_json)
     target = container or sole_container(origin_json)
     target_port = port or default_target_port(origin_json, target)
     if target_port is None:
