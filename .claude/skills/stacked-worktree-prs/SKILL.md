@@ -64,16 +64,27 @@ worktree gets its own. Run `just sync` once per worktree before anything else, t
 ## Restacking after the parent is rewritten
 
 When a review lands fixes on the bottom of a stack, every branch above it needs replaying.
-**A plain `git rebase <parent>` is the wrong command here.** It picks the old merge base,
-tries to replay commits that are already in the parent's new history, and produces
-conflicts that look real and are not. Name the old parent tip explicitly instead:
+**A plain `git rebase <parent>` is the wrong command here.** It picks the old merge base
+and replays everything since. Rebase drops the commits that are *patch-identical* to ones
+already upstream, so a parent that was merely replayed is harmless — but a review
+**changes** the parent's commits, and the old versions are no longer identical to the
+fixed ones. Those get replayed onto a history that already carries the fix, and the
+conflicts that produces look real and are not. Name the old parent tip explicitly instead:
 
 ```
+git reflog <parent-branch>                          # the tip from before the rewrite
 git rebase --onto <parent-branch> <old-parent-tip-sha>
 ```
 
-That replays only the branch's own commits. Force-push with `--force-with-lease`, never
-`--force`, so a surprise on the remote aborts rather than being clobbered.
+The tip is gone from the branch ref by the time you need it; the reflog is where it
+survives, and branch reflogs live in the common git dir, so the parent's is readable from
+the child's worktree even though the rewrite happened in another one. `--onto` replays only
+the branch's own commits. Force-push with `--force-with-lease`, never `--force`, so a
+surprise on the remote aborts rather than being clobbered.
+
+A parent that **merges** needs none of this: GitHub retargets the child's base to `main`,
+and the merge commit puts the parent's work in the child's merge base, so the child's diff
+stays its own. A *squash* merge is a rewrite, and takes the `--onto` above.
 
 ## A clean rebase is not a correct rebase
 
