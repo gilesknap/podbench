@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.1.0b6.dev16+g641a9bebe documentation</title>
+    <title>What attach does &#8212; podbench 0.1.0b6.dev18+gd37ad7e88 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=6db1aae4"></script>
+    <script src="../_static/documentation_options.js?v=2dedefb6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -517,7 +517,8 @@ command it turns into. It assumes you know Kubernetes and VS Code and nothing ab
 this codebase.</p>
 <section id="the-whole-flow">
 <h2>The whole flow<a class="headerlink" href="#the-whole-flow" title="Link to this heading">#</a></h2>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH]
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
+                [--mount CLAIM:PATH]
     │
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -544,15 +545,21 @@ this codebase.</p>
                                   ├─ &gt;1 and no tty (or --no-prompt) ▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ --resize 6Gi ?   opt-in, and never fatal                         │
+│ --resize 6Gi / --resize-cpu 4 ?   opt-in, and never fatal        │
 │                                                                  │
 │   get pod POD -o json          → name the workload container     │
+│   get limitranges -o json      → maxLimitRequestRatio, max       │
 │   patch pod POD --subresource resize --type strategic            │
+│                                                                  │
+│   Requests move with limits: a ratio cap bounds limit/request,   │
+│   so raising a limit alone only ever widens it (96 against a     │
+│   cap of 10, measured at Diamond).  Never to equal its limit,    │
+│   which would change the pod&#39;s QoS class and be refused.         │
 │                                                                  │
 │   Before the seat, not after: vscode-server starts allocating    │
 │   into a limit podbench cannot reserve.  Success and failure     │
-│   are both reported loudly — the raised limit lives on the pod,  │
-│   so any rollout regenerates it away silently.                   │
+│   are both reported loudly — the raised limits live on the pod,  │
+│   so any rollout regenerates them away silently.                 │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐

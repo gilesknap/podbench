@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b6.dev16+g641a9bebe documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b6.dev18+gd37ad7e88 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=6db1aae4"></script>
+    <script src="../_static/documentation_options.js?v=2dedefb6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -660,30 +660,53 @@ descendant needs no capability and no Yama exemption. So go straight to
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.</p>
 </section>
-<section id="making-memory-headroom-first">
-<h2>Making memory headroom first<a class="headerlink" href="#making-memory-headroom-first" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web --resize 6Gi
+<section id="making-memory-and-cpu-headroom-first">
+<h2>Making memory and CPU headroom first<a class="headerlink" href="#making-memory-and-cpu-headroom-first" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web --resize 6Gi --resize-cpu 4
 </pre></div>
 </div>
-<p>This raises the <strong>target container’s</strong> memory limit in place
+<p>This raises the <strong>target container’s</strong> limits in place
 (<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">pod</span> <span class="pre">--subresource</span> <span class="pre">resize</span></code>) before the seat lands, because the
 headroom has to exist before vscode-server starts allocating into a limit
-podbench cannot reserve.</p>
+podbench cannot reserve. Naming the target container is not a detail: an
+ephemeral container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code> at all, so the seat lives inside
+the pod’s cgroup and the pod’s ceiling is the sum of its containers’ limits.</p>
+<section id="requests-move-with-limits">
+<h3>Requests move with limits<a class="headerlink" href="#requests-move-with-limits" title="Link to this heading">#</a></h3>
+<p>A namespace whose <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> sets <code class="docutils literal notranslate"><span class="pre">maxLimitRequestRatio</span></code> bounds
+limit ÷ request, so raising a limit on its own only ever widens that ratio:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pods</span> <span class="s2">&quot;web-0&quot;</span> <span class="ow">is</span> <span class="n">forbidden</span><span class="p">:</span> <span class="n">memory</span> <span class="nb">max</span> <span class="n">limit</span> <span class="n">to</span> <span class="n">request</span> <span class="n">ratio</span> <span class="n">per</span> <span class="n">Container</span>
+<span class="ow">is</span> <span class="mi">10</span><span class="p">,</span> <span class="n">but</span> <span class="n">provided</span> <span class="n">ratio</span> <span class="ow">is</span> <span class="mf">96.000000</span>
+</pre></div>
+</div>
+<p>That is a 6Gi limit over a 64Mi request. podbench reads the namespace’s
+<code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> and raises the request to the smallest value that satisfies it —
+<code class="docutils literal notranslate"><span class="pre">615Mi</span></code> here — so <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">6Gi</span></code> works rather than being refused with
+arithmetic. Two things it will not do, and says so instead of finding out from
+the API server: it will not raise a request to <em>equal</em> its limit on a pod that
+is not already Guaranteed, because a resize may not change a pod’s QoS class;
+and it will not ask for a limit above the <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>’s own <code class="docutils literal notranslate"><span class="pre">max</span></code>.</p>
+<p>Write <code class="docutils literal notranslate"><span class="pre">REQUEST:LIMIT</span></code> — <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">1Gi:6Gi</span></code> — to choose the request yourself. A
+request already large enough is left alone: it is a scheduling promise the
+workload was placed on.</p>
 <p>It is opt-in and it prints a warning either way, for two reasons.</p>
 <p>It is only <strong>partly proven</strong>: three pods, two of them managed by a Deployment —
 a ReplicaSet reconciles pod <em>existence</em>, not pod <em>spec</em>, so it does not fight
-the resize — but all on one Kubernetes version, and never against a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>
-or a <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> (report R13).</p>
-<p>And the raised limit <strong>lives on the pod, not on its controller</strong>. The Deployment
-template still asks for the original limit, nothing reconciles the difference,
+the resize — but all on one Kubernetes version, and never against a
+<code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> (report R13).</p>
+<p>And the raised limits <strong>live on the pod, not on its controller</strong>. The Deployment
+template still asks for the original ones, nothing reconciles the difference,
 and so any rollout, scale, image bump or eviction regenerates the pod from that
-template and silently reverts the resize. If you resize to make a seat viable,
-raise the template too, or expect the next unrelated rollout to take it away.</p>
+template and silently reverts the resize. Argo CD does not itself revert it —
+the pod is not one of its manifests, so there is nothing to compare against git
+— but the sync that rolls the workload takes it away like any other rollout. If
+you resize to make a seat viable, raise the template too, or expect the next
+unrelated rollout to take it away.</p>
 <p>Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.</p>
-<p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> takes a memory value only; it does not raise a CPU limit.</p>
 <p>It also needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>, which the chart grants separately from the
 rest.</p>
+</section>
 </section>
 <section id="opening-vs-code-on-the-seat">
 <h2>Opening VS Code on the seat<a class="headerlink" href="#opening-vs-code-on-the-seat" title="Link to this heading">#</a></h2>
@@ -870,7 +893,10 @@ would make an honest report look like a failure.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-target-container">Choosing the target container</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-refuses-sys-ptrace">When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-reads-are-denied-too">When the reads are denied too</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-headroom-first">Making memory headroom first</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-and-cpu-headroom-first">Making memory and CPU headroom first</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#requests-move-with-limits">Requests move with limits</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opening-vs-code-on-the-seat">Opening VS Code on the seat</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-the-ssh-stanza-again">Getting the ssh stanza again</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#host-keys-and-known-hosts">Host keys and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code></a></li>
