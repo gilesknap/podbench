@@ -1466,7 +1466,10 @@ def seat_ssh_config(
     The login name is *measured* rather than derived from the rung, because on a
     dev pod it is neither of the launcher's two answers: it comes from the passwd
     record the ``podbench-identity`` ConfigMap carries, and that names whatever
-    the chart called the application's uid.
+    the chart called the application's uid. Carried on the session rather than
+    passed as ``user``: :func:`podbench.launcher.emit_ssh_config` prefers what
+    the seat answered for every seat now, so naming it again here would be a
+    second spelling of the same decision.
     """
     session = sidecar_session(pod, manifest)
     identified = probe_ssh_identity(kube, session.seat)
@@ -1476,7 +1479,6 @@ def seat_ssh_config(
         identity=identity,
         config_dir=config_dir,
         host_alias=host_alias,
-        user=identified.login,
     )
 
 
