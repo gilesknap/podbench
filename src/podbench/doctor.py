@@ -35,7 +35,7 @@ import typer
 
 from . import __version__
 from .cli import new_app, run
-from .kubectl import Kubectl, Runner, run_subprocess
+from .kubectl import CommandResult, Kubectl, Runner, run_subprocess
 from .launcher import (
     CONFIG_D,
     DEFAULT_CLIENT_DIR,
@@ -536,6 +536,18 @@ falls back to the key file, an empty agent means it never had anything to offer.
 Reporting either as the other would send a reader somewhere useless.
 """
 
+SSH_ADD_LISTING_FAILED = 1
+"""``ssh-add``'s exit code for the empty agent *and* for a listing that failed.
+
+``list_identities()`` returns the same 1 whether the agent answered "nothing" or
+never answered at all — an agent killed between the connect and the reply, a
+forwarded agent's communication error, a non-OpenSSH agent's protocol error. The
+streams are what tell them apart: the empty agent is printed to stdout, every
+error to stderr. Read as an empty agent, a failed listing becomes "the agent does
+not hold your key" — the reassuring answer, from a measurement that never
+happened, about exactly the thing this check exists to name.
+"""
+
 _FINGERPRINT = re.compile(r"\b((?:SHA256|MD5):\S+)")
 _ALGORITHM = re.compile(r"\(([A-Za-z0-9-]+)\)\s*$")
 
@@ -579,15 +591,26 @@ def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
     record, the authorised key or ``--seat-gid-root``, none of which are in play.
     Membership is inferred rather than a signature demanded, so this is a
     ``WARN``: it names what would be asked, not what it would answer.
+
+    Every path a measurement can fail on reports *not measured* rather than an
+    answer. "The agent does not hold your key" is the reassuring half of this
+    check, and it is the one that must never be guessed.
     """
     socket = os.environ.get(AGENT_SOCKET, "")
     private, public = identity_paths(identity)
     if not socket:
+        if not private.is_file():
+            return Check(
+                "ssh agent",
+                Status.WARN,
+                f"{AGENT_SOCKET} unset and {private} is missing: there is "
+                "nothing left that could sign with this identity",
+            )
         return Check(
             "ssh agent",
             Status.OK,
-            f"{AGENT_SOCKET} unset: ssh signs with {private} itself, so a "
-            "passphrase prompt is expected",
+            f"{AGENT_SOCKET} unset: ssh signs with {private} itself, so expect "
+            "its passphrase prompt, or a touch if it is a FIDO key",
         )
     if not public.is_file():
         return Check(
@@ -602,12 +625,14 @@ def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
             Status.WARN,
             "not measured: ssh-add or ssh-keygen is not on PATH",
         )
-    fingerprinted = key_fingerprint(runner(["ssh-keygen", "-lf", str(public)]).stdout)
+    printed = runner(["ssh-keygen", "-lf", str(public)])
+    fingerprinted = key_fingerprint(printed.stdout)
     if fingerprinted is None:
         return Check(
             "ssh agent",
             Status.WARN,
-            f"not measured: ssh-keygen printed no fingerprint for {public}",
+            f"not measured: ssh-keygen printed no fingerprint for "
+            f"{public}{_said(printed)}",
         )
     fingerprint, algorithm = fingerprinted
     listed = runner(["ssh-add", "-l"])
@@ -619,6 +644,17 @@ def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
             "ssh falls back to the key file when the socket is dead, so this "
             "does not block an attach — but a stale SSH_AUTH_SOCK is worth "
             "clearing before it becomes the explanation for something else",
+        )
+    if listed.returncode != 0 and (
+        listed.returncode != SSH_ADD_LISTING_FAILED or listed.stderr.strip()
+    ):
+        return Check(
+            "ssh agent",
+            Status.WARN,
+            f"not measured: ssh-add -l exited {listed.returncode} against "
+            f"{socket}{_said(listed)}",
+            "an agent that cannot be listed cannot be ruled out — ssh will "
+            "still offer it the identity, so this is unknown rather than absent",
         )
     if fingerprint not in agent_fingerprints(listed.stdout):
         return Check(
@@ -634,6 +670,17 @@ def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
         f"not with {private}",
         _agent_hint(socket, algorithm),
     )
+
+
+def _said(result: CommandResult) -> str:
+    """What a probe that answered nothing useful put on a stream.
+
+    The single line that explains a refusal — a ``.pub`` whose mode ssh-keygen
+    cannot read, an agent that stopped answering — is on stderr, and "not
+    measured" with the reason dropped is a fact the reader cannot act on.
+    """
+    spoke = result.stderr.strip() or result.stdout.strip()
+    return f": {spoke.splitlines()[0]}" if spoke else ""
 
 
 def _agent_hint(socket: str, algorithm: str) -> str:

@@ -68,7 +68,9 @@ class FakeMachine:
         can_i_answers: bool = True,
         identity_fingerprint: str = MINE,
         identity_algorithm: str = "ED25519",
+        keygen_error: str = "",
         agent_keys: Sequence[str] | None = (),
+        agent_error: tuple[int, str] | None = None,
     ) -> None:
         self.binaries = set(binaries)
         self.version_json = version_json
@@ -78,8 +80,13 @@ class FakeMachine:
         self.can_i_answers = can_i_answers
         self.identity_fingerprint = identity_fingerprint
         self.identity_algorithm = identity_algorithm
+        self.keygen_error = keygen_error
         self.agent_keys = agent_keys
         """What ``ssh-add -l`` lists, or ``None`` for an agent that never answers."""
+
+        self.agent_error = agent_error
+        """``(returncode, stderr)`` for a listing that failed rather than came
+        back empty, which ``ssh-add`` reports with the same exit code."""
 
         self.calls: list[tuple[str, ...]] = []
 
@@ -99,6 +106,8 @@ class FakeMachine:
 
     def _answer(self, argv: list[str]) -> tuple[int, str, str]:
         if argv[0] == "ssh-keygen":
+            if self.keygen_error:
+                return 255, "", self.keygen_error
             return (
                 0,
                 f"256 {self.identity_fingerprint} dev@laptop "
@@ -106,6 +115,9 @@ class FakeMachine:
                 "",
             )
         if argv[0] == "ssh-add":
+            if self.agent_error is not None:
+                returncode, stderr = self.agent_error
+                return returncode, "", stderr
             if self.agent_keys is None:
                 return 2, "", "Could not open a connection to your agent."
             if not self.agent_keys:
@@ -297,8 +309,21 @@ def test_no_agent_at_all_says_the_file_will_sign_and_asks_nothing(home: Path) ->
     machine = FakeMachine()
     report = diagnose(runner=machine, which=machine.which)
     assert statuses(report)["ssh agent"] is Status.OK
-    assert not [call for call in machine.calls if call[0].startswith("ssh-")]
-    assert "passphrase prompt is expected" in format_report(report)
+    assert not [call for call in machine.calls if call[0].startswith("ssh")]
+    assert "passphrase prompt" in format_report(report)
+
+
+def test_no_agent_and_no_key_does_not_promise_the_file_will_sign(home: Path) -> None:
+    # check_identity has already failed here; an `[ok] ssh agent  ... ssh signs
+    # with /home/dev/.ssh/id_ed25519 itself` under it names a file that is not
+    # there.
+    wired(home)
+    (home / ".ssh" / "id_ed25519").unlink()
+    machine = FakeMachine()
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh identity"] is Status.FAIL
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert "nothing left that could sign" in format_report(report)
 
 
 def test_an_agent_holding_the_identity_is_named_with_both_escapes(
@@ -379,13 +404,51 @@ def test_a_dead_socket_warns_without_claiming_the_agent_will_sign(
     assert report.exit_code == 0
 
 
+@pytest.mark.parametrize("absent", ["ssh-add", "ssh-keygen"])
 @pytest.mark.usefixtures("agent")
-def test_no_ssh_add_on_path_is_not_measured_rather_than_guessed(home: Path) -> None:
+def test_a_missing_command_is_not_measured_rather_than_guessed(
+    home: Path, absent: str
+) -> None:
     wired(home)
-    machine = FakeMachine(binaries=("kubectl", "ssh", "ssh-keygen"))
+    binaries = ["kubectl", "ssh", "ssh-add", "ssh-keygen"]
+    binaries.remove(absent)
+    machine = FakeMachine(binaries=binaries)
     report = diagnose(runner=machine, which=machine.which)
     assert statuses(report)["ssh agent"] is Status.WARN
     assert "not measured" in format_report(report)
+
+
+@pytest.mark.parametrize(
+    "agent_error",
+    [
+        (1, "error fetching identities: communication with agent failed"),
+        (255, "boom"),
+    ],
+)
+@pytest.mark.usefixtures("agent")
+def test_a_listing_that_failed_is_not_read_as_an_agent_without_the_key(
+    home: Path, agent_error: tuple[int, str]
+) -> None:
+    # ssh-add exits 1 both for the empty agent and for a listing that failed,
+    # and the second one has no fingerprints in it either — so "the agent does
+    # not hold your key" would be the reassuring half of this check, guessed.
+    wired(home)
+    machine = FakeMachine(agent_error=agent_error)
+    report = diagnose(runner=machine, which=machine.which)
+    rendered = format_report(report)
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert "not measured" in rendered
+    assert agent_error[1] in rendered
+    assert "does not hold" not in rendered
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_refused_pub_file_reports_what_ssh_keygen_said(home: Path) -> None:
+    wired(home)
+    machine = FakeMachine(keygen_error="the public half is not a key file.")
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert "the public half is not a key file." in format_report(report)
 
 
 @pytest.mark.usefixtures("agent")
