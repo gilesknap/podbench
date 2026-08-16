@@ -712,6 +712,18 @@ def named_pod(name: str) -> dict[str, Any]:
     return document
 
 
+def labelled_dev_pod(name: str) -> dict[str, Any]:
+    """A dev pod as podbench recognises one: by its label, never by its name.
+
+    ``--name`` is why — a dev pod called ``mydev`` is a dev pod, and an
+    ordinary workload called ``api-podbench`` is not.
+    """
+    return {
+        "metadata": {"name": name, "labels": {spec.DEVPOD_LABEL: "true"}},
+        "spec": {"containers": [{"name": "app"}, {"name": "podbench"}]},
+    }
+
+
 def origin_with_identity(**container_context: Any) -> dict[str, Any]:
     """``ORIGIN_POD`` as somebody who deployed the identity ConfigMap wrote it."""
     pod = json.loads(json.dumps(ORIGIN_POD))
@@ -1440,6 +1452,149 @@ def test_cli_delete_of_a_pod_already_gone_is_still_a_no_op(
 
     assert code == 0
     assert "nothing to delete" in capsys.readouterr().out
+
+
+def test_cli_delete_ignores_the_workload_pods_a_reference_also_matches(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """The idempotent teardown is what `--delete` resolves *against*.
+
+    `api` matching two ordinary pods is not an ambiguity `--delete` can have:
+    neither of them is a thing it would ever delete. Resolving the reference
+    against the whole namespace made the second run of a teardown script exit 1
+    the moment the origin's own replicas shared its prefix.
+    """
+    kube = FakeKubectl(
+        **{
+            "pod/api-worker": named_pod("api-worker"),
+            "pod/api-cache": named_pod("api-cache"),
+        }
+    )
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "api",
+            "-n",
+            "podbench-test",
+            "--delete",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    assert code == 0
+    assert "nothing to delete" in capsys.readouterr().out
+    assert not any("delete" in argv for argv in kube.commands)
+
+
+def test_cli_delete_finds_a_dev_pod_that_was_given_its_own_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """`--name` breaks the derivation, and the label is what puts it back.
+
+    A dev pod called `mydev` derives to `mydev-podbench`, which is nothing, so
+    teardown used to report success while the pod — and any `--cutover` it is
+    holding open — stayed exactly where it was.
+    """
+    kube = FakeKubectl(**{"pod/mydev": labelled_dev_pod("mydev")})
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "mydev",
+            "-n",
+            "podbench-test",
+            "--delete",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    assert code == 0
+    assert "deleted pod/mydev" in capsys.readouterr().out
+
+
+def test_cli_delete_with_no_pod_offers_only_what_it_could_delete(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    kube = FakeKubectl(
+        **{
+            "pod/api": named_pod("api"),
+            "pod/api-podbench": labelled_dev_pod("api-podbench"),
+        }
+    )
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "-n",
+            "podbench-test",
+            "--delete",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "deleted pod/api-podbench" in captured.out
+    # `dev pod`, not `pod`: `api` is in the namespace too, and it is not on
+    # offer here.
+    assert "the only dev pod in namespace podbench-test is api-podbench" in captured.err
+
+
+def test_cli_delete_with_no_pod_in_a_namespace_with_none_is_a_no_op(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """ "Nothing to tear down" is the same answer whether or not POD was given."""
+    kube = FakeKubectl(**{"pod/api": named_pod("api")})
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "-n",
+            "podbench-test",
+            "--delete",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    assert code == 0
+    assert "nothing to delete" in capsys.readouterr().out
+
+
+def test_cli_delete_will_not_guess_between_two_dev_pods(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    kube = FakeKubectl(
+        **{
+            "pod/api-podbench": labelled_dev_pod("api-podbench"),
+            "pod/web-podbench": labelled_dev_pod("web-podbench"),
+        }
+    )
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "-n",
+            "podbench-test",
+            "--delete",
+            "--no-prompt",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    assert code == 1
+    assert "2 dev pods and none was named" in capsys.readouterr().err
+    assert not any("delete" in argv for argv in kube.commands)
 
 
 def test_cli_run_will_not_relaunch_without_being_told_the_port():

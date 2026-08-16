@@ -303,14 +303,18 @@ So `dev-bootstrap` and `run` refuse the layout rather than let it be discovered.
 ## Teardown
 
 ```text
-podbench dev --delete POD-podbench -n NS
+podbench dev --delete [POD] -n NS
     │
     ▼
    the dev pod's name, or the origin's: one derives from the other, and
-   `get pod NAME -o name` confirms it without listing the namespace. Only
-   a reference that names no such pod is resolved the way `dev` resolves
-   its target — and one that matches nothing at all is a teardown that
-   has already happened, so it falls through to "nothing to delete"
+   `get pod NAME -o name` confirms it without listing anything. Only a
+   reference that names no such pod is searched for — and only among the
+   pods carrying podbench.dev/devpod, which is the difference from the
+   create path. A dev pod given its own name with --name is found that
+   way; an ordinary workload that merely shares the prefix is not, so a
+   second teardown run stays "nothing to delete" rather than becoming an
+   ambiguity refusal. With no POD at all, that same list is what you are
+   offered to choose from, and an empty one is again nothing to delete
     │
     ▼
    get pod NAME -o json
@@ -356,11 +360,16 @@ podbench dev --delete POD-podbench -n NS
 
   delete:
    1  kubectl config view --minify -o jsonpath={..namespace}
-   2  kubectl -n NS get pod NAME -o name            # the derived dev pod name; only
-                                                    # a miss lists the namespace
-   3  kubectl -n NS get pod NAME -o json
-   4  kubectl -n NS patch service SVC --type=json -p '[…original selector…]'
-   5  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
+   2  kubectl -n NS get pod NAME -o name            # the derived dev pod name;
+                                                    # a hit stops the search here
+   3  kubectl -n NS get pods -o json                # only on a miss, and only the
+                                                    # podbench.dev/devpod pods of
+                                                    # it are candidates
+   4  kubectl -n NS get pod NAME -o json            # a 404 here is the teardown
+                                                    # that already happened:
+                                                    # "nothing to delete", exit 0
+   5  kubectl -n NS patch service SVC --type=json -p '[…original selector…]'
+   6  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
 
   the inner loop:  no API calls at all
 ```
