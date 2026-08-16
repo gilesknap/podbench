@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+
+# CodeRabbit reviews on request, not on push.
+#
+# The account's plan carries roughly one review at a time on a rolling window,
+# so a batch of pull requests starves: the first is reviewed and the rest get a
+# "Review limit reached" comment instead. That comment is the dangerous part —
+# it is posted by `coderabbitai`, it renders like a review, and it carries no
+# findings, so anything that concludes "CodeRabbit found nothing" from the
+# presence of a comment reads an outage as a clean bill of health.
+#
+# Reviewing on request spends the quota where it is wanted rather than on
+# whichever branch happened to be pushed first. Ask for one by commenting
+# `@coderabbitai review` on the pull request.
+#
+# Note that CodeRabbit reads this file from the *head* branch of the pull
+# request under review, not from `main` — so a branch cut before this landed
+# still auto-reviews until it is rebased.
+reviews:
+  auto_review:
+    enabled: false
