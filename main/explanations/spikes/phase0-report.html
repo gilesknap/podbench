@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.1.0b4.dev9+g761ef421a documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.1.0b4.dev13+g216fe9925 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=461b39fe"></script>
+    <script src="../../_static/documentation_options.js?v=9bfd69b6"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1330,7 +1330,8 @@ Document Alpine as unsupported.</p></li>
 <code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">$DATA/data/CachedExtensionVSIXs</span></code> (−190 MiB after 6 extensions).</p></li>
 <li><p>[ ] <strong>Size the pod before attaching:</strong> <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">pod</span> <span class="pre">--subresource</span> <span class="pre">resize</span></code> to raise the target
 container’s memory limit, restore on detach. Fall back to a loud pre-flight warning when the
-subresource is unavailable or a controller would fight it.</p></li>
+subresource is unavailable. Say, on success too, that the raised limit is on the pod and not
+on whatever owns it, so a rollout reverts it (R13).</p></li>
 <li><p>[ ] Treat the ephemeral container as <strong>strictly disposable</strong> — nothing may live only in its
 writable layer. Name containers <code class="docutils literal notranslate"><span class="pre">podbench-&lt;n&gt;</span></code> with an incrementing suffix: a dead ephemeral
 container name is <strong>burnt for the pod’s lifetime</strong>, and <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">…</span> <span class="pre">--</span> <span class="pre">true</span></code> leaves a
@@ -1510,11 +1511,71 @@ evicted mid-session was never exercised.</p>
 <p><strong>R12 — Air-gap is harder than two allowlists</strong> (§3.19). Four host groups, and extensions with
 <code class="docutils literal notranslate"><span class="pre">extensionDependencies</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">ms-python.debugpy</span></code>) still reach the marketplace even when installed
 from a local <code class="docutils literal notranslate"><span class="pre">.vsix</span></code>, so an offline bundle must ship the full dependency closure. Unspiked.</p>
-<p><strong>R13 — In-place pod resize as a load-bearing mechanism is only lightly proven.</strong> It worked here
-(3Gi→6Gi→7Gi, <code class="docutils literal notranslate"><span class="pre">ResizeCompleted</span></code>, no restarts, non-disruptive to a running ephemeral container), but
-it was tried on one k3s version, one pod, and never against a controller that would fight the
-change or a namespace with a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>/<code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code>. Podbench is being asked to depend on it
-to avoid the unrecoverable OOM of §3.9.</p>
+<p><strong>R13 — In-place pod resize works on a controller-managed pod, but it silently diverges that pod
+from its controller.</strong> The spike itself was thin evidence: 3Gi→6Gi→7Gi, <code class="docutils literal notranslate"><span class="pre">ResizeCompleted</span></code>, no
+restarts, non-disruptive to a running ephemeral container — but one standalone pod
+(<code class="docutils literal notranslate"><span class="pre">podbench-s2/target-amd64</span></code>), patched by hand, with no controller in the picture. It has since been
+measured on <strong>two further pods, both Deployment-managed, both resized by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--resize</span></code>
+rather than by raw kubectl</strong> — which settles the controller question and raises a different one
+nobody had written down. The Kubernetes version is <em>not</em> a second data point: everything below ran
+on the same k3s v1.34.6+k3s1 cluster as the spikes, so “one Kubernetes version” still stands.</p>
+<p><em>Measured 2026-08-15 on k3s v1.34.6+k3s1: <code class="docutils literal notranslate"><span class="pre">podbench-demo/demo-service</span></code>, a one-replica
+<code class="docutils literal notranslate"><span class="pre">python:3.12-slim</span></code> Deployment pinned to an amd64 node with <code class="docutils literal notranslate"><span class="pre">limits.memory:</span> <span class="pre">256Mi</span></code>, whose seat had
+just been OOM-killed. Raised by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span> <span class="pre">--resize</span> <span class="pre">4Gi</span></code>, then read back:</em></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>check</p></th>
+<th class="head"><p>result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>pod spec <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">256Mi</span></code> → <code class="docutils literal notranslate"><span class="pre">4Gi</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory.max</span></code> in the <strong>app</strong> container’s own cgroup</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4294967296</span></code> — the kernel applied it, not just the API server</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">app</span></code> container restarts</p></td>
+<td><p>0, <code class="docutils literal notranslate"><span class="pre">started=true</span></code> — genuinely in place</p></td>
+</tr>
+<tr class="row-odd"><td><p>pod conditions</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Ready=True</span></code>, <code class="docutils literal notranslate"><span class="pre">ContainersReady=True</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>the app through its Service</p></td>
+<td><p>uninterrupted throughout</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>A Deployment does not fight an in-place resize.</strong> The pod is owned by
+<code class="docutils literal notranslate"><span class="pre">ReplicaSet/demo-service-5cbbc6654f</span></code> and the ReplicaSet left the raised limit alone, which is what
+the controller’s contract predicts: a ReplicaSet reconciles pod <em>existence</em>, not pod <em>spec</em>. So the
+common case — resizing a pod under a Deployment — is fine, and “a controller that would fight the
+change” was the wrong thing to have been afraid of.</p>
+<p><strong>The right thing to be afraid of is drift.</strong> The resize writes to the pod; the Deployment’s
+template still says <code class="docutils literal notranslate"><span class="pre">256Mi</span></code>, and nothing reconciles the two. The divergence therefore holds
+indefinitely and then vanishes without warning: any rollout, scale, image bump or eviction
+regenerates the pod from the unchanged template at the original limit. Someone who resizes to make
+a seat viable and later triggers a rollout for an unrelated reason gets a pod that OOMs again with
+no visible connection to what they did. It is the same class of drift that <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">status</span></code>
+exists to surface — a pod quietly unlike the thing that declares it — arriving in a place nothing
+was watching.</p>
+<p>That reversion is measured, not predicted. The same manifest in a scratch namespace, resized to
+<code class="docutils literal notranslate"><span class="pre">1Gi</span></code> (pod <code class="docutils literal notranslate"><span class="pre">1Gi</span></code> / template <code class="docutils literal notranslate"><span class="pre">256Mi</span></code>, <code class="docutils literal notranslate"><span class="pre">memory.max</span></code> <code class="docutils literal notranslate"><span class="pre">1073741824</span></code>, 0 restarts, <code class="docutils literal notranslate"><span class="pre">started=true</span></code>), then
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">rollout</span> <span class="pre">restart</span> <span class="pre">deployment/demo-service</span></code>: the replacement pod came back at <strong><code class="docutils literal notranslate"><span class="pre">256Mi</span></code></strong>,
+carrying no seat, with nothing in the rollout that mentioned either.</p>
+<p>The divergence outlives a <em>container</em> restart, which is the same fact from the other side: re-read
+8 h later, the resized <code class="docutils literal notranslate"><span class="pre">podbench-demo</span></code> pod still carried <code class="docutils literal notranslate"><span class="pre">4Gi</span></code> against a <code class="docutils literal notranslate"><span class="pre">256Mi</span></code> template and
+<code class="docutils literal notranslate"><span class="pre">memory.max</span></code> was still <code class="docutils literal notranslate"><span class="pre">4294967296</span></code> <strong>after</strong> the <code class="docutils literal notranslate"><span class="pre">app</span></code> container had restarted once (exit 137).
+The raised limit lives on the pod object, so only regenerating the pod reverts it.</p>
+<p><strong>Still unproven, and still in the warning:</strong> a namespace with a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> or a <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code>.
+Neither namespace measured had either, so nothing here says how the resize behaves when the raised
+limit has to be re-admitted against a quota. A second Kubernetes version is also still untested.
+Podbench is still being asked to depend on this to avoid the unrecoverable OOM of §3.9.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is memory-only.</strong> It takes a memory value and patches <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code>; a CPU limit is
+not raised with it. That did not bite in this measurement — <code class="docutils literal notranslate"><span class="pre">cpu.stat</span></code> showed <code class="docutils literal notranslate"><span class="pre">nr_throttled</span> <span class="pre">0</span></code> with
+a vscode-server plus extensions running — but a throttled seat under a tight <code class="docutils literal notranslate"><span class="pre">limits.cpu</span></code> has no
+mitigation in the flag.</p>
 </section>
 </section>
 

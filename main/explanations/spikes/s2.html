@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>S2 — vscode-server inside an ephemeral container &#8212; podbench 0.1.0b4.dev9+g761ef421a documentation</title>
+    <title>S2 — vscode-server inside an ephemeral container &#8212; podbench 0.1.0b4.dev13+g216fe9925 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=461b39fe"></script>
+    <script src="../../_static/documentation_options.js?v=9bfd69b6"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1139,6 +1139,14 @@ before starting the server, restoring it on detach. Without this, Podbench will 
 <em>itself</em> inside tightly-limited production pods and lose all session state (Deviation 3).
 Fall back to a loud pre-flight warning when the resize subresource is unavailable or the
 pod is owned by a controller that would fight it.</p>
+<blockquote>
+<div><p><strong>Superseded on the controller half — see report R13.</strong> This spike only ever resized a
+standalone pod, so “a controller that would fight it” was a guess, and it was wrong: a
+ReplicaSet reconciles pod <em>existence</em>, not pod <em>spec</em>, and leaves an in-place resize
+alone. The real hazard is the opposite one — the raised limit lives on the pod while the
+controller’s template does not change, so the next rollout regenerates the pod without
+it. The recommendation above stands; only its fallback condition was mis-stated.</p>
+</div></blockquote>
 <p><strong>Treat the ephemeral container as strictly disposable.</strong> Nothing may live only in its
 writable layer. Put <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> on an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>-backed path if the target pod has
 one, or accept a full re-bootstrap on every attach (6 s, which is acceptable). Name

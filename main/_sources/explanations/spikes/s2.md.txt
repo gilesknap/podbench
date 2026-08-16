@@ -552,6 +552,13 @@ before starting the server, restoring it on detach. Without this, Podbench will 
 Fall back to a loud pre-flight warning when the resize subresource is unavailable or the
 pod is owned by a controller that would fight it.
 
+> **Superseded on the controller half — see report R13.** This spike only ever resized a
+> standalone pod, so "a controller that would fight it" was a guess, and it was wrong: a
+> ReplicaSet reconciles pod *existence*, not pod *spec*, and leaves an in-place resize
+> alone. The real hazard is the opposite one — the raised limit lives on the pod while the
+> controller's template does not change, so the next rollout regenerates the pod without
+> it. The recommendation above stands; only its fallback condition was mis-stated.
+
 **Treat the ephemeral container as strictly disposable.** Nothing may live only in its
 writable layer. Put `~/.vscode-server` on an `emptyDir`-backed path if the target pod has
 one, or accept a full re-bootstrap on every attach (6 s, which is acceptable). Name

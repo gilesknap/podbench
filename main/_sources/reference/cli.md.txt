@@ -366,8 +366,9 @@ Notes:
     volume, the `ssh seat` line explains that it cannot be projected into an
     ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
     the identity, the same line credits it.
-* `--resize` is opt-in and lightly proven; it prints a warning either way and
-  needs `pods/resize` `patch`.
+* `--resize` is opt-in and only partly proven; it prints a warning either way —
+  including that the raised limit is on the pod and not on its controller, so a
+  rollout reverts it — and needs `pods/resize` `patch`.
 * `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
   fallback from the identity volume: GID 0 lets the agent append its own
   `/etc/passwd` record (the image makes the file group-writable for it), at the

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b4.dev9+g761ef421a documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b4.dev13+g216fe9925 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=461b39fe"></script>
+    <script src="../_static/documentation_options.js?v=9bfd69b6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -599,11 +599,19 @@ already-running process. See <a class="reference internal" href="debug-with-gdb.
 (<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">pod</span> <span class="pre">--subresource</span> <span class="pre">resize</span></code>) before the seat lands, because the
 headroom has to exist before vscode-server starts allocating into a limit
 podbench cannot reserve.</p>
-<p>It is opt-in and it prints a warning either way, because it is only lightly
-proven: one Kubernetes version, one pod, never against a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>, a
-<code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code>, or a controller that would fight the change. Failure is
-reported, not fatal — a seat that lands with a loud warning beats one that does
-not land.</p>
+<p>It is opt-in and it prints a warning either way, for two reasons.</p>
+<p>It is only <strong>partly proven</strong>: three pods, two of them managed by a Deployment —
+a ReplicaSet reconciles pod <em>existence</em>, not pod <em>spec</em>, so it does not fight
+the resize — but all on one Kubernetes version, and never against a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>
+or a <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> (report R13).</p>
+<p>And the raised limit <strong>lives on the pod, not on its controller</strong>. The Deployment
+template still asks for the original limit, nothing reconciles the difference,
+and so any rollout, scale, image bump or eviction regenerates the pod from that
+template and silently reverts the resize. If you resize to make a seat viable,
+raise the template too, or expect the next unrelated rollout to take it away.</p>
+<p>Failure is reported, not fatal — a seat that lands with a loud warning beats one
+that does not land.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> takes a memory value only; it does not raise a CPU limit.</p>
 <p>It also needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>, which the chart grants separately from the
 rest.</p>
 </section>
