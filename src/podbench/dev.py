@@ -69,8 +69,13 @@ from .launcher import (
     declared_volumes,
     emit_ssh_config,
     forget_ssh_config,
+    kubectl_for,
+    match_pod_choices,
+    pod_choices,
     probe_ssh_identity,
     read_public_key,
+    resolve_among,
+    resolve_pod,
     resolve_pod_name,
     rung_of_spec,
     spec_env,
@@ -120,6 +125,7 @@ __all__ = [
     "dev_pod_name",
     "gitops_manager",
     "identify_owner",
+    "is_dev_pod",
     "listeners_on",
     "load_state",
     "main",
@@ -1083,6 +1089,25 @@ class DevPod:
     ``SYS_PTRACE``, so it is reported rather than left to be discovered."""
 
 
+def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
+    """Whether podbench authored this pod as a dev pod.
+
+    The one fact that decides both directions of Iterate mode: a dev pod is the
+    only thing ``--delete`` may tear down, and the only thing ``dev`` must not
+    be asked to clone. Read from the label rather than from the name, because
+    ``--name`` means the name proves nothing either way.
+
+    >>> is_dev_pod({"metadata": {"labels": {spec.DEVPOD_LABEL: "true"}}})
+    True
+    >>> is_dev_pod({"metadata": {"name": "demo-podbench"}})
+    False
+    """
+    return (
+        as_dict(as_dict(pod_json.get("metadata")).get("labels")).get(spec.DEVPOD_LABEL)
+        == "true"
+    )
+
+
 def dev_pod_name(origin: str, *, suffix: str = DEV_POD_SUFFIX) -> str:
     """The dev pod's name, derived from its origin and idempotent.
 
@@ -1294,6 +1319,16 @@ def create_dev_pod(
     reads the key before it creates anything, exactly as ``attach`` does.
     """
     origin_json = kube.get_pod(origin)
+    if is_dev_pod(origin_json):
+        # Reachable since `dev` took substring resolution: with the origin gone
+        # and its clone still there, `dev demo` matches `demo-podbench`. Cloning
+        # that copies the sidecar in as an ordinary container, so the result is
+        # a pod with two podbench containers and a target that is already idle —
+        # and the failures it produces name neither.
+        raise DevError(
+            f"{origin} is itself a podbench dev pod; clone the workload it was "
+            "made from instead"
+        )
     # Before anything is authored, and before the Service is touched: the point
     # of refusing is that the user finds out now rather than from traffic that
     # quietly stopped arriving.
@@ -1485,8 +1520,7 @@ def delete_dev_pod(
     except KubectlError:
         return [f"no pod {name} in {kube.namespace}; nothing to delete"]
 
-    labels = as_dict(as_dict(pod_json.get("metadata")).get("labels"))
-    if labels.get(spec.DEVPOD_LABEL) != "true":
+    if not is_dev_pod(pod_json):
         raise DevError(
             f"{name} is not a podbench dev pod (no {spec.DEVPOD_LABEL} label); "
             "refusing to delete it"
@@ -1613,20 +1647,40 @@ def _say(message: str) -> None:
 # -- CLI -------------------------------------------------------------------
 
 
-def _pod_argument(reference: str) -> str:
-    """``pod/NAME`` or a bare ``NAME``, exactly as the launcher verbs take it.
+def _delete_target(kube: Kubectl, reference: str | None, *, prompt: bool) -> str | None:
+    """Which pod ``dev --delete`` is about to tear down, or ``None`` for none.
 
-    The launcher's own helper rather than a second copy of it: the two halves of
-    one CLI disagreeing about pod syntax made ``podbench dev pod/api`` fail
-    twice over — kubectl refused the argument, and :func:`dev_pod_name` derived
-    a pod name containing a slash, which is not an RFC 1123 label. Its refusal
-    is re-raised as a :class:`DevError` so it exits like every other iterate
-    mode error rather than as a traceback.
+    :func:`dev_pod_name` is idempotent, so the dev pod's own name and the
+    origin's both derive to it, and confirming it is one ``get pod``: the
+    scripted teardown path neither lists the namespace nor is asked a question.
+    It is derived through :func:`resolve_pod_name` first because ``pod/api``
+    used to fail twice over here — kubectl refused the argument, and the derived
+    name carried a slash, which is not an RFC 1123 label.
+
+    Everything else is resolved against *dev pods only*. That is the whole
+    difference from :func:`podbench.launcher.resolve_pod`, and it is what keeps
+    teardown idempotent: `api` still matching two ordinary workload pods after
+    `api-podbench` is gone must stay "nothing to delete", not the ambiguity
+    refusal the create path owes the same reference. Listing only what
+    ``--delete`` can act on is also the only way the prompt is worth asking —
+    every row in it is deletable, and a pod created with ``--name`` is in it,
+    which is the one target no derived name can reach.
     """
-    try:
-        return resolve_pod_name(reference)
-    except LauncherError as error:
-        raise DevError(str(error)) from error
+    derived: str | None = None
+    named: str | None = None
+    if reference is not None:
+        named = resolve_pod_name(reference)
+        derived = dev_pod_name(named)
+        if kube.pod_exists(derived):
+            return derived
+    choices = pod_choices(kube, where=is_dev_pod)
+    matches = choices if named is None else match_pod_choices(choices, named)
+    if not matches:
+        # `derived` when there was a reference, so the miss keeps saying which
+        # pod it went looking for; `None` when there was not, and the caller
+        # has the namespace to name instead.
+        return derived
+    return resolve_among(kube.namespace, matches, named, noun="dev pod", prompt=prompt)
 
 
 def _identity_argument(identity: str) -> tuple[str, str]:
@@ -1644,7 +1698,21 @@ def _identity_argument(identity: str) -> tuple[str, str]:
 
 
 _Namespace = Annotated[
-    str, typer.Option("-n", "--namespace", metavar="NAMESPACE", help="namespace")
+    str | None,
+    typer.Option(
+        "-n",
+        "--namespace",
+        metavar="NAMESPACE",
+        help="namespace (default: the kubeconfig context's own)",
+    ),
+]
+_NoPrompt = Annotated[
+    bool,
+    typer.Option(
+        "--no-prompt",
+        help="never ask which pod: an ambiguous or missing POD is refused with "
+        "the candidates instead. Already implied when stdin is not a tty",
+    ),
 ]
 _Context = Annotated[
     str | None, typer.Option("--context", metavar="NAME", help="kubeconfig context")
@@ -1665,12 +1733,16 @@ def _build_app() -> typer.Typer:
     @app.command(help="create or delete the dev pod (runs on the laptop)")
     def dev(
         pod: Annotated[
-            str,
+            str | None,
             typer.Argument(
-                metavar="POD", help="the pod to clone, or the dev pod to delete"
+                metavar="POD",
+                help="the pod to clone, or the dev pod to delete: pod/NAME, a "
+                "bare NAME, or any substring of one. Anything that does not "
+                "settle on a single pod lists the candidates and asks — every "
+                "pod in the namespace, or with --delete only the dev pods",
             ),
-        ],
-        namespace: _Namespace = "default",
+        ] = None,
+        namespace: _Namespace = None,
         context: _Context = None,
         container: Annotated[
             str | None,
@@ -1753,25 +1825,31 @@ def _build_app() -> typer.Typer:
                 "--dry-run", help="print the authored pod instead of creating it"
             ),
         ] = False,
+        no_prompt: _NoPrompt = False,
     ) -> None:
-        kube = Kubectl(namespace, context=context)
-        pod_reference = _pod_argument(pod)
+        kube = kubectl_for(namespace, context=context)
         if delete:
+            target = _delete_target(kube, pod, prompt=not no_prompt)
+            if target is None:
+                print(f"no podbench dev pod in {kube.namespace}; nothing to delete")
+                raise typer.Exit(0)
             for action in delete_dev_pod(
-                kube,
-                dev_pod_name(pod_reference),
-                timeout=timeout,
-                config_dir=config_dir,
+                kube, target, timeout=timeout, config_dir=config_dir
             ):
                 print(action)
             raise typer.Exit(0)
-        # Before anything is created: the key is authored into the sidecar's
-        # env, which cannot be changed afterwards, so a missing key must refuse
-        # here rather than after a pod exists that can never be ssh'd into.
+        # The key before the pod, exactly as `attach` orders it: a missing key
+        # refuses this run whichever pod is chosen, and asking someone which pod
+        # they meant first would spend their answer on it. It is also the last
+        # moment it can be refused at all — the key is authored into the
+        # sidecar's env, and an ordinary container's env is immutable once the
+        # pod exists, so a dev pod created without one can only be deleted and
+        # made again.
         key_path, public_key = _identity_argument(identity)
+        origin = resolve_pod(kube, pod, prompt=not no_prompt)
         created, manifest = create_dev_pod(
             kube,
-            pod_reference,
+            origin,
             name=name,
             container=container,
             image=image,

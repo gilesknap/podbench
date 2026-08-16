@@ -120,6 +120,7 @@ __all__ = [
     "format_session",
     "host_alias_in",
     "identity_paths",
+    "kubectl_for",
     "list_seats",
     "main",
     "match_pod_choices",
@@ -129,6 +130,7 @@ __all__ = [
     "pod_choices",
     "probe_ssh_identity",
     "read_public_key",
+    "resolve_among",
     "resolve_mounts",
     "resolve_pod",
     "resolve_pod_name",
@@ -1896,6 +1898,34 @@ def current_namespace(
     return namespace
 
 
+def kubectl_for(
+    namespace: str | None,
+    *,
+    context: str | None = None,
+    binary: str = "kubectl",
+    runner: Runner | None = None,
+) -> Kubectl:
+    """The one ``Kubectl`` every cluster-side verb talks through.
+
+    Shared rather than reimplemented per module because the namespace default is
+    a promise about the whole CLI: ``-n`` unset means the kubeconfig context's
+    own namespace, and a verb that quietly means ``default`` instead sends
+    someone's ``dev`` at a pod they cannot see. That is issue #44, and it
+    happened because the two copies of these three lines were easier to add to
+    than to reach for.
+
+    The kubeconfig is consulted only when the flag gave nothing, because the
+    lookup is itself a ``kubectl`` call and every verb would otherwise pay for it
+    on top of the work it came to do.
+
+    >>> kubectl_for("demo").namespace
+    'demo'
+    """
+    if namespace is None:
+        namespace = current_namespace(binary=binary, context=context, runner=runner)
+    return Kubectl(namespace, context=context, binary=binary, runner=runner)
+
+
 def list_seats(kubectl: Kubectl) -> list[tuple[PodRef, list[SeatInfo]]]:
     """Every pod in the namespace that carries a podbench container.
 
@@ -2012,14 +2042,28 @@ class PodChoice:
     """The running podbench container's name, or ``None``."""
 
 
-def pod_choices(kubectl: Kubectl, *, now: datetime | None = None) -> list[PodChoice]:
+def pod_choices(
+    kubectl: Kubectl,
+    *,
+    now: datetime | None = None,
+    where: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> list[PodChoice]:
     """Every pod in the namespace, in the order the API server returned them.
+
+    ``where`` narrows the listing to the pods the caller can actually act on,
+    and is read from each pod's full JSON rather than from a
+    :class:`PodChoice`, because what narrows it is usually a label. Offering a
+    row that cannot be chosen is worse than not offering it: ``dev --delete``
+    lists only the dev pods podbench authored, since every other pod in the
+    namespace is one it would refuse to delete anyway.
 
     ``now`` is injected so a test can assert an age without owning the clock.
     """
     reference = now if now is not None else datetime.now(UTC)
     choices: list[PodChoice] = []
     for pod_json in kubectl.list_pods():
+        if where is not None and not where(pod_json):
+            continue
         metadata = as_dict(pod_json.get("metadata"))
         name = _entry_name(metadata)
         if name is None:
@@ -2169,26 +2213,58 @@ def resolve_pod(
             f"no pod in namespace {kubectl.namespace} is named {query!r} or has "
             f"it in its name. What is there:\n{format_pod_choices(choices)}"
         )
+    return resolve_among(
+        kubectl.namespace,
+        matches,
+        query,
+        prompt=prompt,
+        ask=ask,
+        interactive=interactive,
+    )
+
+
+def resolve_among(
+    namespace: str,
+    matches: Sequence[PodChoice],
+    query: str | None,
+    *,
+    noun: str = "pod",
+    prompt: bool = True,
+    ask: Callable[[], str] | None = None,
+    interactive: bool | None = None,
+) -> str:
+    """One name out of the rows a reference already narrowed to.
+
+    Split out of :func:`resolve_pod` rather than copied into the one caller
+    that cannot use it whole: ``dev --delete`` has its own answer for "nothing
+    matched" — a teardown that has already happened is exit 0, not a refusal —
+    but the echo, the prompt and the non-interactive refusal have to be the
+    ones every other verb gives, or two halves of one CLI ask the same question
+    differently.
+
+    ``matches`` must be non-empty; ``noun`` is what those rows are, so a
+    listing restricted to dev pods does not describe itself as the namespace.
+    """
     if len(matches) == 1:
         # Echoed, not assumed: the name is about to appear in a ProxyCommand, in
         # an ssh alias and in the pod's permanent spec, and the user typed four
         # characters of it — or, with no POD at all, none of it, which is the
         # case that most needs saying out loud.
         _say(
-            f"the only pod in namespace {kubectl.namespace} is {matches[0].name}"
+            f"the only {noun} in namespace {namespace} is {matches[0].name}"
             if query is None
-            else f"{query!r} matched pod {matches[0].name}"
+            else f"{query!r} matched {noun} {matches[0].name}"
         )
         return matches[0].name
 
     if not prompt or not (
         interactive if interactive is not None else sys.stdin.isatty()
     ):
-        raise LauncherError(_ambiguous(kubectl.namespace, query, matches, prompt))
+        raise LauncherError(_ambiguous(namespace, query, matches, prompt, noun))
     _say(
-        f"{len(matches)} pods in namespace {kubectl.namespace}"
+        f"{len(matches)} {noun}s in namespace {namespace}"
         if query is None
-        else f"{query!r} matches {len(matches)} pods in namespace {kubectl.namespace}"
+        else f"{query!r} matches {len(matches)} {noun}s in namespace {namespace}"
     )
     _say(format_pod_choices(matches))
     _say("which one? [number or name, empty to cancel]")
@@ -2196,7 +2272,11 @@ def resolve_pod(
 
 
 def _ambiguous(
-    namespace: str, query: str | None, matches: Sequence[PodChoice], prompt: bool
+    namespace: str,
+    query: str | None,
+    matches: Sequence[PodChoice],
+    prompt: bool,
+    noun: str = "pod",
 ) -> str:
     """The refusal that stands in for the prompt when nobody can answer it."""
     why = (
@@ -2205,9 +2285,9 @@ def _ambiguous(
         else "stdin is not a tty, so podbench will not prompt"
     )
     asked = (
-        f"namespace {namespace} has {len(matches)} pods and none was named"
+        f"namespace {namespace} has {len(matches)} {noun}s and none was named"
         if query is None
-        else f"{query!r} matches {len(matches)} pods in namespace {namespace}"
+        else f"{query!r} matches {len(matches)} {noun}s in namespace {namespace}"
     )
     return (
         f"{asked}, and {why}:\n{format_pod_choices(matches)}\n"
@@ -2413,20 +2493,6 @@ _PrintConfig = Annotated[
 ]
 
 
-def _kubectl(
-    namespace: str | None, context: str | None, binary: str, runner: Runner | None
-) -> Kubectl:
-    """The one Kubectl every verb here talks through.
-
-    The namespace is resolved from the kubeconfig only when the flag did not
-    give one, because that lookup is a ``kubectl`` call and every verb would
-    otherwise pay for it twice.
-    """
-    if namespace is None:
-        namespace = current_namespace(binary=binary, context=context, runner=runner)
-    return Kubectl(namespace, context=context, binary=binary, runner=runner)
-
-
 def _build_app(runner: Runner | None) -> typer.Typer:
     app = new_app()
 
@@ -2539,7 +2605,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         # Before the namespace is listed: a missing key refuses this attach
         # whichever pod is chosen, and asking someone to pick one first would
         # spend their answer on it.
@@ -2600,7 +2666,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         key_path, _ = read_public_key(identity)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         pod_json = kube.get_pod(name)
@@ -2646,7 +2712,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         present = seats(kube.get_pod(name))
         if not present:
@@ -2671,7 +2737,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         found = list_seats(kube)
         if not found:
             print(f"no podbench containers in namespace {kube.namespace}")

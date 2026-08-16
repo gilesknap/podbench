@@ -33,6 +33,7 @@ from podbench.launcher import (
     forget_ssh_config,
     format_session,
     host_alias_in,
+    kubectl_for,
     main,
     match_pod_names,
     parse_mount,
@@ -369,7 +370,7 @@ def _fail(stderr: str, returncode: int = 1) -> CommandResult:
     return CommandResult((), returncode, "", stderr)
 
 
-def kubectl_for(cluster: FakeCluster) -> Kubectl:
+def talking_to(cluster: FakeCluster) -> Kubectl:
     return Kubectl("demo", runner=cluster)
 
 
@@ -388,7 +389,7 @@ def running_status(name: str) -> dict[str, Any]:
 
 def test_full_rung_lands_when_the_namespace_allows_it() -> None:
     cluster = FakeCluster(pod_document(uid=1000))
-    session = attach(kubectl_for(cluster), "pod/target", public_key=CLIENT_KEY)
+    session = attach(talking_to(cluster), "pod/target", public_key=CLIENT_KEY)
 
     assert session.rung is Rung.FULL
     assert session.seat == ContainerRef(PodRef("demo", "target"), "podbench-1")
@@ -406,7 +407,7 @@ def test_full_rung_lands_when_the_namespace_allows_it() -> None:
 
 def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None:
     cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.rung is Rung.DEGRADED
     # A synchronous refusal means the container was never created, so the name
@@ -427,7 +428,7 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
 
 def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
     cluster = FakeCluster(pod_document(uid=1000), kubelet_refuses_root=True)
-    session = attach(kubectl_for(cluster), "target", poll_interval=0.0)
+    session = attach(talking_to(cluster), "target", poll_interval=0.0)
 
     assert session.rung is Rung.DEGRADED
     # The rejected container exists and is unrestartable, so its name is gone.
@@ -440,7 +441,7 @@ def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
 
 def test_run_as_non_root_pre_empts_the_full_rung_entirely() -> None:
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.rung is Rung.DEGRADED
     assert session.seat.container == "podbench-1"
@@ -457,7 +458,7 @@ def test_run_as_non_root_pre_empts_the_full_rung_entirely() -> None:
 
 def test_a_root_target_never_produces_a_degraded_spec() -> None:
     cluster = FakeCluster(pod_document(uid=0), psa_denies_ptrace=True)
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.rung is Rung.SEAT
     assert session.uid is None
@@ -482,7 +483,7 @@ def test_an_unknown_target_uid_skips_the_degraded_rung_rather_than_guessing() ->
 
 def test_target_uid_override_re_enables_the_degraded_rung() -> None:
     cluster = FakeCluster(pod_document(), psa_denies_ptrace=True)
-    session = attach(kubectl_for(cluster), "target", target_uid=1000)
+    session = attach(talking_to(cluster), "target", target_uid=1000)
 
     assert session.rung is Rung.DEGRADED
     assert security_contexts(cluster)[1]["runAsUser"] == 1000
@@ -495,7 +496,7 @@ def test_an_exhausted_ladder_raises_with_every_reason() -> None:
         pod_document(uid=0, non_root=True), kubelet_refuses_root_image=True
     )
     with pytest.raises(LauncherError) as raised:
-        attach(kubectl_for(cluster), "target", poll_interval=0.0)
+        attach(talking_to(cluster), "target", poll_interval=0.0)
     message = str(raised.value)
     assert "runAsNonRoot" in message
     assert "the target runs as root" in message
@@ -519,7 +520,7 @@ def test_attach_reconnects_to_a_running_container() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.reused
     assert session.rung is Rung.FULL
@@ -539,7 +540,7 @@ def test_force_new_appends_the_next_name() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target", force_new=True)
+    session = attach(talking_to(cluster), "target", force_new=True)
 
     assert not session.reused
     assert session.seat.container == "podbench-2"
@@ -559,7 +560,7 @@ def test_a_dead_container_is_not_reconnected_to() -> None:
             ],
         )
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert not session.reused
     assert session.seat.container == "podbench-2"
@@ -590,7 +591,7 @@ def patch_pod(**overrides: Any) -> dict[str, Any]:
 
 def test_a_mount_named_by_claim_lands_at_the_applications_own_path() -> None:
     cluster = FakeCluster(patch_pod())
-    session = attach(kubectl_for(cluster), "target", mounts=["myapp-venv"])
+    session = attach(talking_to(cluster), "target", mounts=["myapp-venv"])
 
     # The mount refers to the pod's *volume* entry, but the user has the claim
     # name in hand, so both are accepted.
@@ -623,7 +624,7 @@ def test_an_application_sub_path_is_refused_rather_than_copied_or_dropped() -> N
         )
     )
     with pytest.raises(LauncherError) as raised:
-        attach(kubectl_for(cluster), "target", mounts=["podbench-patch-venv"])
+        attach(talking_to(cluster), "target", mounts=["podbench-patch-venv"])
 
     message = str(raised.value)
     assert "subPath" in message
@@ -636,7 +637,7 @@ def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created
 ):
     cluster = FakeCluster(pod_document(uid=1000))
     with pytest.raises(LauncherError) as raised:
-        attach(kubectl_for(cluster), "target", mounts=["myapp-venv:/opt/venv"])
+        attach(talking_to(cluster), "target", mounts=["myapp-venv:/opt/venv"])
 
     message = str(raised.value)
     assert "myapp-venv" in message
@@ -650,7 +651,7 @@ def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created
 def test_an_explicit_mount_path_that_disagrees_is_warned_about() -> None:
     cluster = FakeCluster(patch_pod())
     session = attach(
-        kubectl_for(cluster), "target", mounts=["myapp-venv:/srv/venv"], probe=False
+        talking_to(cluster), "target", mounts=["myapp-venv:/srv/venv"], probe=False
     )
 
     assert cluster.added[0]["volumeMounts"] == [
@@ -664,9 +665,9 @@ def test_an_explicit_mount_path_that_disagrees_is_warned_about() -> None:
 def test_a_volume_the_application_does_not_mount_needs_an_explicit_path() -> None:
     cluster = FakeCluster(pod_document(uid=1000, volumes=[PATCH_VOLUME]))
     with pytest.raises(LauncherError, match="no mountPath to copy"):
-        attach(kubectl_for(cluster), "target", mounts=["myapp-venv"])
+        attach(talking_to(cluster), "target", mounts=["myapp-venv"])
 
-    session = attach(kubectl_for(cluster), "target", mounts=["myapp-venv:/opt/venv"])
+    session = attach(talking_to(cluster), "target", mounts=["myapp-venv:/opt/venv"])
     assert session.rung is Rung.FULL
     assert cluster.added[0]["volumeMounts"] == [
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
@@ -684,7 +685,7 @@ def test_reconnecting_cannot_add_a_mount_and_says_so() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target", mounts=["myapp-venv"])
+    session = attach(talking_to(cluster), "target", mounts=["myapp-venv"])
 
     assert session.reused
     assert cluster.added == []
@@ -786,7 +787,7 @@ def test_the_home_volume_is_mounted_by_convention_not_by_flag() -> None:
     every attach would waste the cooperation.
     """
     cluster = FakeCluster(identity_pod())
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.rung is Rung.DEGRADED
     assert cluster.added[0]["volumeMounts"] == EXPECTED_SEAT_MOUNTS
@@ -807,7 +808,7 @@ def test_the_identity_volume_is_never_mounted_into_an_ephemeral_seat() -> None:
     produce.
     """
     cluster = FakeCluster(identity_pod())
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     mounts = cast(list[dict[str, Any]], cluster.added[0]["volumeMounts"])
     assert not [mount for mount in mounts if mount["name"] == SEAT_IDENTITY_VOLUME]
@@ -821,7 +822,7 @@ def test_the_identity_volume_is_never_mounted_into_an_ephemeral_seat() -> None:
 def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
     """A bare attach against an uncooperative pod degrades, it does not fail."""
     cluster = FakeCluster(pod_document(uid=1000))
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert "volumeMounts" not in cluster.added[0]
     assert not session.identity_mounted
@@ -855,7 +856,7 @@ def test_an_explicit_mount_of_the_same_path_wins_over_the_convention() -> None:
     """Two mounts of one mountPath is not a tie the kubelet breaks sensibly."""
     cluster = FakeCluster(identity_pod())
     attach(
-        kubectl_for(cluster),
+        talking_to(cluster),
         "target",
         mounts=[f"{SEAT_HOME_VOLUME}:{SEAT_HOME_PATH}"],
     )
@@ -876,7 +877,7 @@ def test_an_explicit_mount_of_the_identity_volume_gets_no_subpath_from_podbench(
     """
     cluster = FakeCluster(identity_pod())
     attach(
-        kubectl_for(cluster),
+        talking_to(cluster),
         "target",
         mounts=[f"{SEAT_IDENTITY_VOLUME}:/etc/passwd"],
     )
@@ -891,7 +892,7 @@ def test_an_explicit_mount_of_the_identity_volume_gets_no_subpath_from_podbench(
 def test_a_pod_with_only_the_identity_volume_still_lands_a_seat() -> None:
     """Nothing to mount, and the attach is unaffected by the volume being there."""
     cluster = FakeCluster(identity_pod(volumes=[IDENTITY_VOLUME]))
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert "volumeMounts" not in cluster.added[0]
     assert session.identity_declared
@@ -908,7 +909,7 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     to the same identity is ``--seat-gid-root``.
     """
     cluster = FakeCluster(identity_pod(), login_user=None)
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     ssh_seat = features(session)[-2]
     assert not ssh_seat.available
@@ -921,7 +922,7 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     assert "--seat-gid-root" in text
 
     # …and a pod without the volume says nothing of the sort.
-    plain = attach(kubectl_for(FakeCluster(pod_document(uid=1000))), "target")
+    plain = attach(talking_to(FakeCluster(pod_document(uid=1000))), "target")
     assert SEAT_IDENTITY_VOLUME not in format_session(plain)
 
 
@@ -933,7 +934,7 @@ def test_a_seat_that_already_has_a_login_is_not_told_to_re_attach() -> None:
     the volume up on a re-attach anyway.
     """
     cluster = FakeCluster(identity_pod())
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     ssh_seat = features(session)[-2]
     assert ssh_seat.available
@@ -960,7 +961,7 @@ def test_a_seat_that_does_carry_the_identity_is_still_credited_with_it() -> None
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.identity_mounted
     note = features(session)[-2].note
@@ -1012,7 +1013,7 @@ def test_a_reconnect_is_not_told_to_relaunch_for_the_identity_volume() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.reused
     assert not session.identity_mounted
@@ -1035,7 +1036,7 @@ def test_reconnecting_to_a_seat_reads_its_home_back_from_the_spec() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.reused
     # Read back from the spec, so a reconnect from another machine — which
@@ -1060,7 +1061,7 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
             notes=["no Yama LSM on this node"],
         ),
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
     report = session.report
     assert report is not None
     assert report.verdict is Verdict.READ_ONLY
@@ -1091,7 +1092,7 @@ def test_a_probed_target_is_given_its_deadline_before_it_costs_anything() -> Non
     taking Service traffic, leaves no restart behind and recovers on continue —
     so the report has to state it up front or not at all."""
     cluster = FakeCluster(pod_document(uid=1000, probes=PROBES))
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert [budget.kind.value for budget in session.probes] == [
         "readiness",
@@ -1109,7 +1110,7 @@ def test_a_probed_target_is_given_its_deadline_before_it_costs_anything() -> Non
 
 def test_an_unprobed_target_is_told_so_rather_than_left_to_infer_it() -> None:
     cluster = FakeCluster(pod_document(uid=1000))
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.probes == ()
     text = format_session(session)
@@ -1120,7 +1121,7 @@ def test_an_unprobed_target_is_told_so_rather_than_left_to_infer_it() -> None:
 def test_a_missing_capreport_is_reported_rather_than_assumed() -> None:
     cluster = FakeCluster(pod_document(uid=1000))
     cluster.capreport_output = "capreport: command not found"
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
     assert session.report is None
     text = format_session(session)
     assert "not measured" in text
@@ -1296,7 +1297,7 @@ def test_the_capability_report_marks_the_ssh_seat_unavailable() -> None:
     cluster = FakeCluster(
         pod_document(uid=1000), psa_denies_ptrace=True, login_user=None
     )
-    session = attach(kubectl_for(cluster), "target")
+    session = attach(talking_to(cluster), "target")
 
     assert session.ssh is not None and not session.ssh.usable
     ssh_seat, exec_seat = features(session)[-2:]
@@ -1350,7 +1351,7 @@ def test_an_image_that_cannot_answer_still_gets_its_stanza(
 def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     """Opt-in, and the only difference it makes to the spec is the group."""
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
-    session = attach(kubectl_for(cluster), "target", seat_gid_root=True)
+    session = attach(talking_to(cluster), "target", seat_gid_root=True)
 
     assert session.rung is Rung.DEGRADED
     assert security_contexts(cluster)[0] == {
@@ -1365,7 +1366,7 @@ def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
 
 def test_the_default_seat_keeps_the_targets_group() -> None:
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
-    attach(kubectl_for(cluster), "target")
+    attach(talking_to(cluster), "target")
     assert "runAsGroup" not in security_contexts(cluster)[0]
 
 
@@ -1381,7 +1382,7 @@ def test_reconnecting_cannot_change_the_seats_group_and_says_so() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(kubectl_for(cluster), "target", seat_gid_root=True)
+    session = attach(talking_to(cluster), "target", seat_gid_root=True)
     assert session.reused
     assert any("--seat-gid-root" in warning for warning in session.warnings)
 
@@ -1422,7 +1423,7 @@ def test_the_stanza_generator_is_shared_and_takes_a_measured_login_name(
     same code as ``attach``, which is the point of it being a function.
     """
     cluster = FakeCluster(pod_document(uid=1000))
-    kubectl = kubectl_for(cluster)
+    kubectl = talking_to(cluster)
     session = attach(kubectl, "target")
 
     seat = emit_ssh_config(
@@ -1508,7 +1509,7 @@ def test_an_exact_name_wins_outright_and_never_lists_the_namespace() -> None:
     # question. It is also answered by one `get pod`, which is what keeps the
     # long form working for a user whose RBAC has get on pods but not list.
     cluster = namespace_of("api", "api-canary")
-    assert resolve_pod(kubectl_for(cluster), "api", interactive=False) == "api"
+    assert resolve_pod(talking_to(cluster), "api", interactive=False) == "api"
     assert not any("pods" in call for call in cluster.calls)
 
 
@@ -1516,7 +1517,7 @@ def test_the_pod_slash_name_form_still_resolves(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cluster = namespace_of("api-7f9", "web-3c1")
-    kube = kubectl_for(cluster)
+    kube = talking_to(cluster)
     assert resolve_pod(kube, "pod/api-7f9", interactive=False) == "api-7f9"
     # And the kind prefix is stripped before the substring search too, so
     # `pod/api` narrows exactly as `api` does.
@@ -1528,7 +1529,7 @@ def test_one_substring_hit_resolves_and_says_what_it_resolved_to(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cluster = namespace_of("web-6c9d7f4b8b-hq2vn", "api-7f9")
-    name = resolve_pod(kubectl_for(cluster), "hq2", interactive=False)
+    name = resolve_pod(talking_to(cluster), "hq2", interactive=False)
     assert name == "web-6c9d7f4b8b-hq2vn"
     # On stderr, so a redirected stdout still carries only the report. One
     # readouterr() for both halves: the first call drains the capture, so a
@@ -1550,7 +1551,7 @@ def test_several_hits_are_listed_with_enough_to_choose_by(
         others=[pod_document(name="api-canary", phase="Pending", ready=False)],
     )
     name = resolve_pod(
-        kubectl_for(cluster),
+        talking_to(cluster),
         "api",
         interactive=True,
         ask=answers("2"),
@@ -1566,7 +1567,7 @@ def test_several_hits_are_listed_with_enough_to_choose_by(
 
 def test_the_prompt_takes_a_name_or_a_narrower_substring_too() -> None:
     cluster = namespace_of("api-7f9", "api-canary")
-    kube = kubectl_for(cluster)
+    kube = talking_to(cluster)
     assert (
         resolve_pod(kube, "api", interactive=True, ask=answers("api-canary"))
         == "api-canary"
@@ -1579,7 +1580,7 @@ def test_an_answer_that_is_still_ambiguous_is_asked_again(
 ) -> None:
     cluster = namespace_of("api-7f9", "api-canary", "web-3c1")
     name = resolve_pod(
-        kubectl_for(cluster), "api", interactive=True, ask=answers("nope", "api", "1")
+        talking_to(cluster), "api", interactive=True, ask=answers("nope", "api", "1")
     )
     assert name == "api-7f9"
     err = capsys.readouterr().err
@@ -1592,14 +1593,14 @@ def test_an_empty_answer_cancels_rather_than_picking_the_first() -> None:
     # default.
     cluster = namespace_of("api-7f9", "api-canary")
     with pytest.raises(LauncherError, match="no pod chosen"):
-        resolve_pod(kubectl_for(cluster), "api", interactive=True, ask=answers(""))
+        resolve_pod(talking_to(cluster), "api", interactive=True, ask=answers(""))
 
 
 def test_no_argument_offers_every_pod_in_the_namespace_not_only_seats() -> None:
     # The difference between this and `podbench list`: list enumerates the pods
     # that already carry a seat, and this one enumerates the pods that could.
     cluster = namespace_of("api-7f9", "web-3c1")
-    name = resolve_pod(kubectl_for(cluster), None, interactive=True, ask=answers("2"))
+    name = resolve_pod(talking_to(cluster), None, interactive=True, ask=answers("2"))
     assert name == "web-3c1"
 
 
@@ -1610,7 +1611,7 @@ def test_no_argument_in_a_one_pod_namespace_resolves_without_asking(
     # echo still has to read as English. It used to interpolate the absent
     # query and say "None matched pod only-pod".
     cluster = namespace_of("only-pod")
-    assert resolve_pod(kubectl_for(cluster), None, interactive=False) == "only-pod"
+    assert resolve_pod(talking_to(cluster), None, interactive=False) == "only-pod"
     err = capsys.readouterr().err
     assert "only-pod" in err
     assert "None" not in err
@@ -1619,7 +1620,7 @@ def test_no_argument_in_a_one_pod_namespace_resolves_without_asking(
 def test_nothing_matches_names_the_namespace_and_shows_what_is_there() -> None:
     cluster = namespace_of("api-7f9", "web-3c1")
     with pytest.raises(LauncherError) as caught:
-        resolve_pod(kubectl_for(cluster), "postgres", interactive=False)
+        resolve_pod(talking_to(cluster), "postgres", interactive=False)
     message = str(caught.value)
     assert "'postgres'" in message
     assert "namespace demo" in message
@@ -1647,7 +1648,7 @@ def test_a_pipe_is_refused_with_the_candidates_rather_than_hung() -> None:
     # prompt is not a prompt but a hang.
     cluster = namespace_of("api-7f9", "api-canary")
     with pytest.raises(LauncherError) as caught:
-        resolve_pod(kubectl_for(cluster), "api", interactive=False)
+        resolve_pod(talking_to(cluster), "api", interactive=False)
     message = str(caught.value)
     assert "not a tty" in message
     assert "api-7f9" in message and "api-canary" in message
@@ -1658,7 +1659,7 @@ def test_no_prompt_refuses_on_a_terminal_too() -> None:
     cluster = namespace_of("api-7f9", "api-canary")
     with pytest.raises(LauncherError, match="--no-prompt was given"):
         resolve_pod(
-            kubectl_for(cluster),
+            talking_to(cluster),
             "api",
             prompt=False,
             interactive=True,
@@ -1707,7 +1708,7 @@ def test_matching_prefers_an_exact_name_over_every_substring() -> None:
 
 def test_an_unreadable_creation_stamp_costs_a_column_not_the_listing() -> None:
     cluster = namespace_of("api-7f9", created="last tuesday")
-    (choice,) = pod_choices(kubectl_for(cluster), now=NOW)
+    (choice,) = pod_choices(talking_to(cluster), now=NOW)
     assert choice.age == "?"
 
 
@@ -1892,14 +1893,14 @@ def test_the_host_line_is_read_however_it_was_spelled() -> None:
 
 def test_resize_failure_is_a_warning_not_a_dead_end() -> None:
     cluster = FakeCluster(pod_document(uid=1000), patch_error="unknown subresource")
-    note = try_resize(kubectl_for(cluster), "target", "app", "6Gi")
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
     assert "refused" in note
     assert "unknown subresource" in note
 
 
 def test_resize_asks_for_the_resize_subresource() -> None:
     cluster = FakeCluster(pod_document(uid=1000))
-    try_resize(kubectl_for(cluster), "target", "app", "6Gi")
+    try_resize(talking_to(cluster), "target", "app", "6Gi")
     patch = next(call for call in cluster.calls if "patch" in call)
     assert "--subresource=resize" in patch
     assert "--type=strategic" in patch
@@ -1913,7 +1914,7 @@ def test_a_successful_resize_says_the_controller_still_asks_for_the_old_limit() 
     shown.
     """
     cluster = FakeCluster(pod_document(uid=1000))
-    note = try_resize(kubectl_for(cluster), "target", "app", "6Gi")
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
     assert "6Gi" in note
     assert "template" in note
     assert "rollout" in note
@@ -1969,6 +1970,23 @@ def test_current_namespace_falls_back_to_default() -> None:
 def test_current_namespace_reads_the_kubeconfig() -> None:
     cluster = FakeCluster(pod_document())
     assert current_namespace(runner=cluster) == "demo"
+
+
+def test_kubectl_for_asks_the_kubeconfig_only_when_the_flag_did_not() -> None:
+    """One helper, so no verb can quietly mean the literal `default` (issue #44).
+
+    The second half matters as much as the first: the lookup is itself a
+    `kubectl` call, so a verb given `-n` must not pay for it.
+    """
+    cluster = FakeCluster(pod_document())
+    assert kubectl_for(None, runner=cluster).namespace == "demo"
+
+    def refuses(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        raise AssertionError(f"nothing should have run: {list(argv)}")
+
+    assert kubectl_for("chosen", runner=refuses).namespace == "chosen"
 
 
 def test_resolve_pod_name_refuses_other_kinds() -> None:

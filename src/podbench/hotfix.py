@@ -59,7 +59,7 @@ import typer
 
 from .cli import new_app, require_subcommand, run
 from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
-from .launcher import CONTAINER_BASE, current_namespace, running_seat
+from .launcher import CONTAINER_BASE, kubectl_for, running_seat
 from .model import (
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
@@ -1777,14 +1777,6 @@ def _report(actions: Sequence[str]) -> int:
     return 0
 
 
-def _kubectl(
-    namespace: str | None, context: str | None, binary: str, runner: Runner | None
-) -> Kubectl:
-    if namespace is None:
-        namespace = current_namespace(binary=binary, context=context, runner=runner)
-    return Kubectl(namespace, context=context, binary=binary, runner=runner)
-
-
 def _build_app(runner: Runner | None) -> typer.Typer:
     app = new_app()
 
@@ -1913,7 +1905,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = init(
@@ -1953,7 +1945,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = apply_hotfix(
@@ -1984,7 +1976,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         rows = status_rows(kube, probe=not no_probe, python=python)
         print(format_status(rows))
         raise typer.Exit(0 if all(row.health.ok for row in rows) else 1)
@@ -2017,7 +2009,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
         del author  # accepted for symmetry; this verb writes no commit
-        kube = _kubectl(namespace, context, kubectl, runner)
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = consolidate(
