@@ -33,6 +33,11 @@ from podbench.launcher import ssh_include_line
 
 VERSION_JSON = json.dumps({"clientVersion": {"gitVersion": "v1.31.2"}})
 
+MINE = "SHA256:0kQxHhr+mine"
+"""The fingerprint of the identity under test."""
+
+SOMEONE_ELSES = "SHA256:9pLwZzv+theirs"
+
 EVERYTHING = frozenset(
     (grant.verb, grant.resource) for feature in FEATURES for grant in feature.grants
 )
@@ -55,12 +60,15 @@ class FakeMachine:
     def __init__(
         self,
         *,
-        binaries: Sequence[str] = ("kubectl", "ssh"),
+        binaries: Sequence[str] = ("kubectl", "ssh", "ssh-add", "ssh-keygen"),
         version_json: str = VERSION_JSON,
         context: str = "kind-kind",
         namespace: str = "demo",
         allowed: frozenset[tuple[str, str]] = EVERYTHING,
         can_i_answers: bool = True,
+        identity_fingerprint: str = MINE,
+        identity_algorithm: str = "ED25519",
+        agent_keys: Sequence[str] | None = (),
     ) -> None:
         self.binaries = set(binaries)
         self.version_json = version_json
@@ -68,6 +76,11 @@ class FakeMachine:
         self.namespace = namespace
         self.allowed = allowed
         self.can_i_answers = can_i_answers
+        self.identity_fingerprint = identity_fingerprint
+        self.identity_algorithm = identity_algorithm
+        self.agent_keys = agent_keys
+        """What ``ssh-add -l`` lists, or ``None`` for an agent that never answers."""
+
         self.calls: list[tuple[str, ...]] = []
 
     def which(self, name: str) -> str | None:
@@ -85,6 +98,22 @@ class FakeMachine:
         return CommandResult(tuple(argv), *self._answer(list(argv)))
 
     def _answer(self, argv: list[str]) -> tuple[int, str, str]:
+        if argv[0] == "ssh-keygen":
+            return (
+                0,
+                f"256 {self.identity_fingerprint} dev@laptop "
+                f"({self.identity_algorithm})\n",
+                "",
+            )
+        if argv[0] == "ssh-add":
+            if self.agent_keys is None:
+                return 2, "", "Could not open a connection to your agent."
+            if not self.agent_keys:
+                return 1, "The agent has no identities.\n", ""
+            listed = "".join(
+                f"256 {key} dev@laptop (ED25519)\n" for key in self.agent_keys
+            )
+            return 0, listed, ""
         if "version" in argv:
             return 0, self.version_json, ""
         if argv[1:] == ["config", "current-context"] or argv[2:] == [
@@ -110,6 +139,9 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("PODBENCH_CONFIG_DIR", raising=False)
     monkeypatch.delenv("PODBENCH_IMAGE", raising=False)
+    # The machine running the suite very likely has an agent, and every test
+    # that does not ask about one must not inherit its answers.
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     ssh = tmp_path / ".ssh"
     ssh.mkdir()
     (ssh / "id_ed25519").write_text("private")
@@ -239,6 +271,134 @@ def test_a_missing_identity_is_named_and_never_generated(home: Path) -> None:
     assert statuses(fixed)["ssh identity"] is Status.FAIL
     assert not (home / ".ssh" / "id_ed25519.pub").exists()
     assert "ssh-keygen" in format_report(fixed)
+
+
+# -- the ssh agent ----------------------------------------------------------
+
+
+@pytest.fixture
+def agent(home: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """An ssh-agent socket in the environment, of the shape ssh-agent makes.
+
+    Depends on ``home`` rather than merely coexisting with it: that fixture
+    *unsets* SSH_AUTH_SOCK, and without an ordering between them a test that
+    asks for both silently gets whichever ran last.
+    """
+    del home
+    socket = "/tmp/ssh-XXXXaBcD/agent.4242"
+    monkeypatch.setenv("SSH_AUTH_SOCK", socket)
+    return socket
+
+
+def test_no_agent_at_all_says_the_file_will_sign_and_asks_nothing(home: Path) -> None:
+    # No SSH_AUTH_SOCK, no question to ask: nothing can stand between ssh and
+    # the file, and shelling out to ssh-add would only be able to agree.
+    wired(home)
+    machine = FakeMachine()
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.OK
+    assert not [call for call in machine.calls if call[0].startswith("ssh-")]
+    assert "passphrase prompt is expected" in format_report(report)
+
+
+def test_an_agent_holding_the_identity_is_named_with_both_escapes(
+    home: Path, agent: str
+) -> None:
+    # The one that opened #53: doctor passed, attach succeeded, and ssh then
+    # failed client-side with `agent refused operation` followed by a
+    # `Permission denied (publickey,...)` that reads as the seat's fault.
+    wired(home)
+    machine = FakeMachine(agent_keys=(SOMEONE_ELSES, MINE))
+    report = diagnose(runner=machine, which=machine.which)
+    rendered = format_report(report)
+
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert report.exit_code == 0
+    assert f"agent on {agent} holds {MINE}" in rendered
+    assert "sign with the AGENT" in rendered
+    # Both escapes, in the house spelling: one settles who refuses, the other
+    # changes it.
+    assert "SSH_AUTH_SOCK= ssh podbench-<namespace>-<pod>" in rendered
+    assert "IdentityAgent none" in rendered
+    # ...and never unqualified, because a FIDO key or a smartcard can only sign
+    # through an agent.
+    assert "sk-*" in rendered
+
+
+@pytest.mark.usefixtures("agent")
+def test_an_agent_without_the_identity_leaves_the_file_signing(home: Path) -> None:
+    wired(home)
+    machine = FakeMachine(agent_keys=(SOMEONE_ELSES,))
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.OK
+    assert "IdentityAgent" not in format_report(report)
+
+
+@pytest.mark.usefixtures("agent")
+def test_an_empty_agent_leaves_the_file_signing(home: Path) -> None:
+    wired(home)
+    machine = FakeMachine(agent_keys=())
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.OK
+
+
+def test_a_gnome_keyring_socket_is_named_with_the_ed25519_caveat(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gnome-keyring stands in for ssh-agent on most desktop logins and has a
+    # long history of refusing ED25519 keys with exactly that message.
+    wired(home)
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh")
+    machine = FakeMachine(agent_keys=(MINE,))
+    rendered = format_report(diagnose(runner=machine, which=machine.which))
+    assert "gnome-keyring" in rendered
+    assert "ED25519" in rendered
+    assert "agent refused operation" in rendered
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_fido_key_is_never_told_to_bypass_its_agent(home: Path) -> None:
+    # An sk-* key has no private half on disk: `IdentityAgent none` does not
+    # make it sign with the file, it stops it signing at all.
+    wired(home)
+    machine = FakeMachine(agent_keys=(MINE,), identity_algorithm="ED25519-SK")
+    rendered = format_report(diagnose(runner=machine, which=machine.which))
+    assert "do not set IdentityAgent none" in rendered
+    assert "Host podbench-*" not in rendered
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_dead_socket_warns_without_claiming_the_agent_will_sign(
+    home: Path,
+) -> None:
+    wired(home)
+    machine = FakeMachine(agent_keys=None)
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert "no agent answered" in format_report(report)
+    assert report.exit_code == 0
+
+
+@pytest.mark.usefixtures("agent")
+def test_no_ssh_add_on_path_is_not_measured_rather_than_guessed(home: Path) -> None:
+    wired(home)
+    machine = FakeMachine(binaries=("kubectl", "ssh", "ssh-keygen"))
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert "not measured" in format_report(report)
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_missing_public_half_is_not_measured_rather_than_guessed(
+    home: Path,
+) -> None:
+    wired(home)
+    (home / ".ssh" / "id_ed25519.pub").unlink()
+    machine = FakeMachine()
+    report = diagnose(runner=machine, which=machine.which)
+    assert statuses(report)["ssh agent"] is Status.WARN
+    assert statuses(report)["ssh identity"] is Status.FAIL
+    assert not [call for call in machine.calls if call[0] == "ssh-add"]
 
 
 # -- the Include splice -----------------------------------------------------

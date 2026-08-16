@@ -171,6 +171,13 @@ CHECKS
   [ok]    kubeconfig     context prod-eu
   [ok]    ssh client     /usr/bin/ssh
   [ok]    ssh identity   /home/dev/.ssh/id_ed25519 and /home/dev/.ssh/id_ed25519.pub
+  [warn]  ssh agent      agent on /run/user/1000/keyring/ssh holds SHA256:Ql+7…: ssh will sign with the AGENT, not with /home/dev/.ssh/id_ed25519
+          that socket is gnome-keyring standing in for ssh-agent, which has a long history of refusing ED25519 keys with `agent refused operation`
+          prove it is the agent and not the seat:  SSH_AUTH_SOCK= ssh podbench-<namespace>-<pod>
+          to sign with the file instead, add to ~/.ssh/config (not the generated stanza, which is rewritten on every attach):
+              Host podbench-*
+                  IdentityAgent none
+          never for a FIDO/sk-* key or a smartcard, though: those can only sign through an agent
   [ok]    config dir     /home/dev/.podbench/config.d
   [FAIL]  ssh include    /home/dev/.ssh/config does not include the generated stanzas
           add this line above any Host * block:  Include /home/dev/.podbench/config.d/*.conf
@@ -196,6 +203,7 @@ What it checks:
 | `kubeconfig` | there is no current context | — |
 | `ssh client` | `ssh` is not on `PATH` | — |
 | `ssh identity` | either half of the key is missing | — |
+| `ssh agent` | — | an agent is running **and holds the identity**, its socket is set but dead, or the comparison could not be made |
 | `config dir` | — | `~/.podbench/config.d` does not exist yet |
 | `ssh include` | `~/.ssh/config` does not include the generated stanzas | it includes them **below** a `Host`/`Match` block |
 | RBAC `attach` | any of its verbs is denied | kubectl could not answer |
@@ -223,6 +231,28 @@ Notes:
 * **`--fix` never creates an ssh key.** A missing identity is named, with the
   `ssh-keygen` line to run, because a key podbench minted would be a credential
   you never chose and `attach` would then authorise it inside your cluster.
+* **The `ssh agent` check names what will *sign*, which is not always the file.**
+  With `SSH_AUTH_SOCK` unset, ssh signs with the key file and a passphrase prompt
+  is expected. With it set, ssh offers the agent's keys first, so an identity the
+  agent also holds is signed for by the **agent** — the private file is never
+  opened, and `IdentitiesOnly yes` in the generated stanza does not change that:
+  it limits which keys are *offered*, not who signs for them. doctor compares
+  `ssh-keygen -lf <identity>.pub` against `ssh-add -l` and says which of the two
+  it will be. It does not ask for a signature, so it reports what would be asked,
+  never what it would answer — hence a warning and never a blocker.
+* A refusing agent is the one failure that looks like podbench's fault and is
+  not: ssh reports `agent refused operation` and then `Permission denied
+  (publickey,keyboard-interactive)`, which reads as the seat rejecting the key.
+  `SSH_AUTH_SOCK= ssh <alias>` settles it in one line — if that logs in, the
+  agent was the only thing refusing. A socket under `/run/user/*/keyring/` is
+  gnome-keyring standing in for ssh-agent, which has a long history of refusing
+  ED25519 keys exactly this way.
+* **`IdentityAgent none` is never recommended unconditionally**, by doctor or by
+  these docs: a FIDO/`sk-*` key or a smartcard has no private half on disk and
+  can *only* sign through an agent, so the fix that rescues an ED25519 key
+  disables those outright. doctor also does not write it — the generated stanza
+  is rewritten on every attach, so the keyword belongs in a `Host podbench-*`
+  block in your own `~/.ssh/config`.
 * An `Include` below a `Host *` block is a warning rather than a blocker: the
   stanza is still read, but ssh takes the **first** value it sees for each
   keyword, so anything that block also sets — a `ControlPath`, a `ProxyCommand` —

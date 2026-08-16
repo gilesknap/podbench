@@ -48,6 +48,7 @@ from .launcher import (
 from .model import DEFAULT_IMAGE, IMAGE_ENV, as_dict
 
 __all__ = [
+    "AGENT_SOCKET",
     "FEATURES",
     "MIN_KUBECTL",
     "SSH_CONFIG",
@@ -58,10 +59,13 @@ __all__ = [
     "RbacVerdict",
     "Report",
     "Status",
+    "agent_fingerprints",
+    "check_ssh_agent",
     "client_version",
     "diagnose",
     "format_report",
     "include_state",
+    "key_fingerprint",
     "main",
     "splice_include",
 ]
@@ -507,6 +511,172 @@ def check_identity(identity: str) -> Check:
     return Check("ssh identity", Status.OK, f"{private} and {public}")
 
 
+AGENT_SOCKET = "SSH_AUTH_SOCK"
+"""The variable that decides *what* signs with the identity, not merely whether.
+
+When it is set, ssh offers the agent's keys before it reads any file, so an
+identity the agent also holds is signed for by the agent and the private file is
+never opened. ``IdentitiesOnly yes`` in the generated stanza does not change
+that: it limits which keys are *offered*, not who signs for them.
+"""
+
+GNOME_KEYRING_SOCKET = re.compile(r"^/run/user/\d+/keyring/")
+"""gnome-keyring standing in as the agent, as against ssh-agent's ``/tmp/ssh-*``.
+
+It is the default on most desktop logins and has a long history of refusing to
+sign with ED25519 keys, which is the failure that made this check exist. podbench
+cannot prove it will refuse — only that it is the thing that would be asked.
+"""
+
+SSH_ADD_NO_AGENT = 2
+"""``ssh-add``'s exit code for "could not open a connection to the agent".
+
+Distinguished from 1, "the agent has no identities": a dead socket means ssh
+falls back to the key file, an empty agent means it never had anything to offer.
+Reporting either as the other would send a reader somewhere useless.
+"""
+
+_FINGERPRINT = re.compile(r"\b((?:SHA256|MD5):\S+)")
+_ALGORITHM = re.compile(r"\(([A-Za-z0-9-]+)\)\s*$")
+
+
+def key_fingerprint(line: str) -> tuple[str, str] | None:
+    """``(fingerprint, algorithm)`` from one ``ssh-keygen -l``/``ssh-add -l`` line.
+
+    The two commands print the same shape, which is the whole reason a file on
+    disk can be compared against the contents of an agent without asking either
+    of them to sign anything.
+
+    >>> key_fingerprint("256 SHA256:Ql+7 dev@laptop (ED25519)")
+    ('SHA256:Ql+7', 'ED25519')
+    >>> key_fingerprint("The agent has no identities.") is None
+    True
+    """
+    found = _FINGERPRINT.search(line)
+    if found is None:
+        return None
+    algorithm = _ALGORITHM.search(line.strip())
+    return found.group(1), algorithm.group(1) if algorithm else ""
+
+
+def agent_fingerprints(text: str) -> frozenset[str]:
+    r"""Every fingerprint ``ssh-add -l`` listed.
+
+    >>> sorted(agent_fingerprints("256 SHA256:a x (ED25519)\n256 SHA256:b y (RSA)"))
+    ['SHA256:a', 'SHA256:b']
+    """
+    found = (key_fingerprint(line) for line in text.splitlines())
+    return frozenset(entry[0] for entry in found if entry is not None)
+
+
+def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
+    """Which thing will sign with the identity — the agent, or the file.
+
+    The failure this precedes is entirely client-side and reads as the opposite:
+    ssh matches the identity to a key the agent holds, asks the agent to sign,
+    the agent refuses, and what reaches the user is ``Permission denied
+    (publickey,keyboard-interactive)`` — which sends them to the seat's passwd
+    record, the authorised key or ``--seat-gid-root``, none of which are in play.
+    Membership is inferred rather than a signature demanded, so this is a
+    ``WARN``: it names what would be asked, not what it would answer.
+    """
+    socket = os.environ.get(AGENT_SOCKET, "")
+    private, public = identity_paths(identity)
+    if not socket:
+        return Check(
+            "ssh agent",
+            Status.OK,
+            f"{AGENT_SOCKET} unset: ssh signs with {private} itself, so a "
+            "passphrase prompt is expected",
+        )
+    if not public.is_file():
+        return Check(
+            "ssh agent",
+            Status.WARN,
+            f"not measured: {public} is missing, so the agent's keys have "
+            "nothing to be compared against",
+        )
+    if which("ssh-add") is None or which("ssh-keygen") is None:
+        return Check(
+            "ssh agent",
+            Status.WARN,
+            "not measured: ssh-add or ssh-keygen is not on PATH",
+        )
+    fingerprinted = key_fingerprint(runner(["ssh-keygen", "-lf", str(public)]).stdout)
+    if fingerprinted is None:
+        return Check(
+            "ssh agent",
+            Status.WARN,
+            f"not measured: ssh-keygen printed no fingerprint for {public}",
+        )
+    fingerprint, algorithm = fingerprinted
+    listed = runner(["ssh-add", "-l"])
+    if listed.returncode == SSH_ADD_NO_AGENT:
+        return Check(
+            "ssh agent",
+            Status.WARN,
+            f"{AGENT_SOCKET}={socket}, but no agent answered on it",
+            "ssh falls back to the key file when the socket is dead, so this "
+            "does not block an attach — but a stale SSH_AUTH_SOCK is worth "
+            "clearing before it becomes the explanation for something else",
+        )
+    if fingerprint not in agent_fingerprints(listed.stdout):
+        return Check(
+            "ssh agent",
+            Status.OK,
+            f"agent on {socket} does not hold {fingerprint}: ssh signs with "
+            f"{private} itself",
+        )
+    return Check(
+        "ssh agent",
+        Status.WARN,
+        f"agent on {socket} holds {fingerprint}: ssh will sign with the AGENT, "
+        f"not with {private}",
+        _agent_hint(socket, algorithm),
+    )
+
+
+def _agent_hint(socket: str, algorithm: str) -> str:
+    """What to type when it is the agent, and not podbench, that refuses.
+
+    Both escapes, in the order a reader needs them: one settles who is at fault,
+    the other changes it. ``IdentityAgent none`` is never offered unqualified —
+    a FIDO/``sk-*`` key or a smartcard has no private half on disk and can *only*
+    sign through an agent, so the fix breaks exactly the keys most likely to be
+    in one deliberately. Applying it is not this verb's job either: doctor
+    diagnoses, and the generated stanza is rewritten on every attach, so the
+    keyword is named where a user's own config can hold it.
+    """
+    lines: list[str] = []
+    if GNOME_KEYRING_SOCKET.match(socket):
+        lines.append(
+            "that socket is gnome-keyring standing in for ssh-agent, which has "
+            "a long history of refusing ED25519 keys with `agent refused "
+            "operation`"
+        )
+    lines.append(
+        "prove it is the agent and not the seat:  "
+        "SSH_AUTH_SOCK= ssh podbench-<namespace>-<pod>"
+    )
+    if algorithm.upper().endswith("-SK"):
+        lines.append(
+            f"do not set IdentityAgent none for this key: a {algorithm} key has "
+            "no private half on disk and can only sign through an agent"
+        )
+        return "\n".join(lines)
+    lines.append(
+        "to sign with the file instead, add to ~/.ssh/config (not the generated "
+        "stanza, which is rewritten on every attach):"
+    )
+    lines.append("    Host podbench-*")
+    lines.append("        IdentityAgent none")
+    lines.append(
+        "never for a FIDO/sk-* key or a smartcard, though: those can only sign "
+        "through an agent"
+    )
+    return "\n".join(lines)
+
+
 def check_config_dir(directory: Path, *, fix: bool) -> Check:
     """The directory the generated per-pod stanzas land in.
 
@@ -636,6 +806,7 @@ def diagnose(
 
     checks.append(check_ssh_client(which=which))
     checks.append(check_identity(identity))
+    checks.append(check_ssh_agent(identity, runner=runner, which=which))
     directory = client_dir(config_dir)
     checks.append(check_config_dir(directory, fix=fix))
     checks.append(check_include(Path(SSH_CONFIG).expanduser(), directory, fix=fix))
