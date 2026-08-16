@@ -16,26 +16,37 @@ Nothing here touches a cluster: pids come from a synthetic ``/proc`` tree.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from podbench.flavour import Mode
 from podbench.gdbcmd import attach_commands
+from podbench.kubectl import CommandResult
 from podbench.vscode import (
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
     SEAT_CWD,
     SEAT_MACHINE_SETTINGS,
     cppdbg_configuration,
+    cppdbg_launch_configuration,
+    debugpy_attach_configuration,
+    debugpy_launch_configuration,
+    delve_configuration,
     launch_json_text,
+    launch_setup_commands,
     lldb_configuration,
     main,
     merge_launch_json,
     merge_machine_settings,
+    python_path_mappings,
     setup_commands,
     target_architecture,
 )
+from test_elf import EM_AARCH64
+from test_flavour import SITE_PACKAGES, python_proc, seat_debugpy, which_of
 
 PID = 597
 EXE = "/app/victim"
@@ -48,6 +59,18 @@ def proc_tree(tmp_path: Path) -> Path:
     entry.mkdir()
     (entry / "exe").symlink_to(EXE)
     return tmp_path
+
+
+def cli(
+    args: list[str], proc: Path, *, present: tuple[str, ...] = ("gdb", "gdb-podbench")
+) -> int:
+    """``main`` with the image's debugger inventory injected.
+
+    Whether a gdb configuration can be emitted depends on whether the *image*
+    ships gdb, and a unit test must not answer that from whatever happens to be
+    installed on the machine running the suite.
+    """
+    return main(args, proc=proc, which=which_of(*present))
 
 
 # -- the fields that fail silently when wrong -------------------------------
@@ -171,7 +194,7 @@ def test_root_source_map_is_refused(
     gdb re-applies the substitution on display, so the ``fullname`` the adapter
     hands the editor grows another ``/proc/<pid>/root`` on every stop.
     """
-    code = main(["--source-map", "/=/proc/1/root", "--print-config"], proc=proc_tree)
+    code = cli(["--source-map", "/=/proc/1/root", "--print-config"], proc_tree)
     assert code != 0
     assert "doubling anti-pattern" in capsys.readouterr().err
 
@@ -217,21 +240,21 @@ def test_merge_refuses_a_file_it_cannot_parse() -> None:
 def test_print_config_emits_valid_json(
     proc_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main([str(PID), "--print-config"], proc=proc_tree) == 0
+    assert cli([str(PID), "--print-config"], proc_tree) == 0
     document = json.loads(capsys.readouterr().out)
     assert document["configurations"][0]["processId"] == str(PID)
 
 
 def test_writes_to_the_named_path(proc_tree: Path, tmp_path: Path) -> None:
     output = tmp_path / "out" / "launch.json"
-    assert main([str(PID), "--output", str(output)], proc=proc_tree) == 0
+    assert cli([str(PID), "--output", str(output)], proc_tree) == 0
     assert json.loads(output.read_text())["configurations"][0]["type"] == "cppdbg"
 
 
 def test_lldb_flag_switches_adapter(
     proc_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main([str(PID), "--lldb", "--print-config"], proc=proc_tree) == 0
+    assert cli([str(PID), "--lldb", "--print-config"], proc_tree) == 0
     document = json.loads(capsys.readouterr().out)
     assert document["configurations"][0]["type"] == "lldb"
 
@@ -241,7 +264,7 @@ def test_unreadable_exe_is_refused_rather_than_guessed(
 ) -> None:
     """A guessed ``program`` is the silent failure this module exists to stop."""
     (tmp_path / str(PID)).mkdir()
-    code = main([str(PID), "--print-config"], proc=tmp_path)
+    code = cli([str(PID), "--print-config"], tmp_path)
     assert code != 0
     assert "--program" in capsys.readouterr().err
 
@@ -250,7 +273,7 @@ def test_explicit_program_overrides_an_unreadable_exe(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / str(PID)).mkdir()
-    code = main([str(PID), "--program", "/app/other", "--print-config"], proc=tmp_path)
+    code = cli([str(PID), "--program", "/app/other", "--print-config"], tmp_path)
     assert code == 0
     document = json.loads(capsys.readouterr().out)
     assert document["configurations"][0]["program"] == f"/proc/{PID}/root/app/other"
@@ -261,7 +284,7 @@ def test_no_pid_and_no_container_id_refuses_to_guess(
 ) -> None:
     """ "The target is PID 1" is wrong under ``shareProcessNamespace``."""
     monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
-    assert main(["--print-config"], proc=tmp_path) != 0
+    assert cli(["--print-config"], tmp_path) != 0
     assert "PID 1" in capsys.readouterr().err
 
 
@@ -371,3 +394,181 @@ def test_merge_refuses_a_settings_file_it_cannot_parse() -> None:
 def test_merge_refuses_a_document_that_is_not_an_object() -> None:
     with pytest.raises(ValueError, match="not a JSON object"):
         merge_machine_settings("[]")
+# -- one entry per flavour that applies --------------------------------------
+
+
+def test_every_applicable_flavour_is_emitted_and_named(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``launch.json`` holds a list, so no exclusive guess has to be made.
+
+    The flavour has to be *in* the name: VS Code's dropdown shows names, and two
+    entries called "podbench: attach to victim" are a coin toss.
+    """
+    assert cli([str(PID), "--print-config"], proc_tree) == 0
+    document = json.loads(capsys.readouterr().out)
+    names = [entry["name"] for entry in document["configurations"]]
+    assert names == [
+        "podbench: attach to victim (gdb)",
+        "podbench: attach to victim (lldb)",
+    ]
+
+
+def test_a_refused_flavour_names_its_mechanism(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole point of #20: not "cannot emit", but *what* says no."""
+    entry = tmp_path / str(PID)
+    entry.mkdir()
+    (entry / "exe").symlink_to("/app/victim")
+    assert cli([str(PID), "--flavour", "delve", "--print-config"], tmp_path) != 0
+    assert "no .gopclntab" in capsys.readouterr().err
+
+
+def test_an_irrelevant_flavour_is_silent_unless_asked_for(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nobody debugging a C binary needs to be told that delve is for Go."""
+    assert cli([str(PID), "--print-config"], proc_tree) == 0
+    assert "delve" not in capsys.readouterr().err
+
+
+def test_flavour_restricts_the_emitted_set(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli([str(PID), "--flavour", "gdb", "--print-config"], proc_tree) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert [entry["type"] for entry in document["configurations"]] == ["cppdbg"]
+
+
+def test_a_seat_without_gdb_says_so_rather_than_emitting_cppdbg(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Emitting a configuration the image cannot run is #18's failure again."""
+    code = main(
+        [str(PID), "--flavour", "gdb", "--print-config"],
+        proc=proc_tree,
+        which=which_of(),
+    )
+    assert code != 0
+    assert "no gdb on PATH" in capsys.readouterr().err
+
+
+# -- the mode-dependent shapes ----------------------------------------------
+
+
+def test_observe_mode_maps_the_source_through_the_sysroot() -> None:
+    """The editor sees the source through ``/proc/<pid>/root``; the app does not."""
+    assert python_path_mappings(1, "/src", Mode.OBSERVE) == [
+        {"localRoot": "/proc/1/root/src", "remoteRoot": "/src"}
+    ]
+
+
+def test_dev_mode_has_no_mappings_at_all() -> None:
+    """Editor and interpreter are the same inodes, and a spurious mapping is
+    the same silent wrong answer as a missing one: breakpoints never bind."""
+    assert python_path_mappings(1, "/src", Mode.DEV) == []
+
+
+def test_debugpy_connects_rather_than_listens() -> None:
+    """The server is in the app process; the editor is the client.
+
+    ``127.0.0.1`` is right even in Observe mode — separate containers, one
+    network namespace — so no port-forward is involved.
+    """
+    config = debugpy_attach_configuration(1, name="x", port=5678, source_root="/src")
+    assert config["connect"] == {"host": "127.0.0.1", "port": 5678}
+    assert "listen" not in config
+
+
+def test_dev_mode_native_is_a_launch_with_no_sysroot() -> None:
+    """gdb forks the inferior itself, which needs no capability (report §3.12)."""
+    config = cppdbg_launch_configuration("/workspace/victim")
+    assert config["request"] == "launch"
+    assert "processId" not in config
+    commands = [entry["text"] for entry in config["setupCommands"]]
+    assert not any(command.startswith("set sysroot") for command in commands)
+
+
+def test_dev_launch_setup_is_derived_from_the_cli_sequence() -> None:
+    """One definition of the launch ordering, not two that can diverge."""
+    assert launch_setup_commands() == [
+        "set pagination off",
+        "set debuginfod enabled on",
+    ]
+
+
+def test_dev_mode_python_offers_both_launch_and_connect(tmp_path: Path) -> None:
+    """Two real answers in a dev pod: start it under the debugger, or attach to
+    the one ``podbench run`` already started."""
+    config = debugpy_launch_configuration("/workspace/src/app.py")
+    assert config["request"] == "launch"
+    assert "pathMappings" not in config
+
+
+def test_delve_uses_substitute_path_and_an_int_pid() -> None:
+    config = delve_configuration(PID, "/app/server", source_map={"/w": "/app"})
+    assert config["processId"] == PID
+    assert config["substitutePath"] == [{"from": "/w", "to": "/app"}]
+
+
+# -- the Python path, end to end ---------------------------------------------
+
+
+def no_listeners(
+    argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+) -> CommandResult:
+    """An ``ss`` that reports an empty pod. Injected: the unit suite may not
+    shell out, and whether something is listening decides which debugpy shape
+    is emitted."""
+    return CommandResult(tuple(argv), 0, "State Recv-Q Send-Q Local Peer\n", "")
+
+
+def test_a_python_target_emits_debugpy_with_the_observe_mapping(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole language x mode x architecture path, through the CLI.
+
+    An amd64 Python service with debugpy on both sides: the configuration is a
+    ``connect``, and its ``pathMappings`` carries the sysroot on the left and
+    the target's own path on the right.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench"),
+        runner=no_listeners,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert code == 0
+    captured = capsys.readouterr()
+    configurations = json.loads(captured.out)["configurations"]
+    assert [entry["type"] for entry in configurations] == ["debugpy"]
+    assert configurations[0]["pathMappings"] == [
+        {"localRoot": f"/proc/{PID}/root/src", "remoteRoot": "/src"}
+    ]
+    # Nothing is listening yet, so the command that starts the server is printed
+    # rather than run: it ptraces the workload and leaves a server inside it.
+    assert "python -m debugpy --listen" in captured.err
+    assert f"PYTHONPATH=/proc/{PID}/root/{SITE_PACKAGES}" in captured.err
+
+
+def test_an_arm64_python_target_names_the_missing_helper(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The message issue #20 asks for, fired from the CLI.
+
+    ``podbench-demo``'s Python service on an arm64 node: everything else could
+    be fixed in the pod, and this cannot be fixed anywhere.
+    """
+    proc = python_proc(tmp_path, machine=EM_AARCH64, site_packages=SITE_PACKAGES)
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench"),
+        runner=no_listeners,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert code != 0
+    assert "attach_linux_arm64.so" in capsys.readouterr().err
