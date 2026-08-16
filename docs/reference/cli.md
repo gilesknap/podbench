@@ -885,10 +885,9 @@ the port.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Exits non-zero when the port is not owned
-by the process it started — a socket poll alone gives a false PASS, and
-`SO_REUSEPORT` will otherwise split traffic between old and new code with
-nothing in any log to say so.
+Exits non-zero when the port is not owned by the process it started — a socket
+poll alone gives a false PASS, and `SO_REUSEPORT` will otherwise split traffic
+between old and new code with nothing in any log to say so.
 
 ### `stop`
 
@@ -907,9 +906,8 @@ Stop it, by recorded pid.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Never `pkill -f`: under
-`shareProcessNamespace: true` that matches the invoking shell and every other
-container's processes.
+Never `pkill -f`: under `shareProcessNamespace: true` that matches the invoking
+shell and every other container's processes.
 
 ### `agent`
 

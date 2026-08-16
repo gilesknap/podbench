@@ -152,9 +152,9 @@ root@api-...-podbench:/workspace# podbench dev-bootstrap --repo https://github.c
 The two land in different directories, which is a fact about sshd rather than
 about podbench: an ssh session gets the home the *passwd record* names (`/root`,
 or `/home/podbench` with the identity volume), while `kubectl exec` inherits the
-container's environment, where `$HOME` is `/workspace`. `podbench dev-bootstrap` takes
-absolute paths and defaults to `/workspace/src`, so it does not care either way
-— but `~` means different things in the two shells.
+container's environment, where `$HOME` is `/workspace`. `podbench dev-bootstrap`
+takes absolute paths and defaults to `/workspace/src`, so it does not care
+either way — but `~` means different things in the two shells.
 
 `podbench dev-bootstrap` does three things, in order: `git clone` into
 `/workspace/src`, `uv sync --frozen` from the project's own lockfile, and
@@ -191,10 +191,8 @@ pid 214 owns the listening socket on port 8080
 
 Then edit, and run it again. `podbench run` stops the previous process (by
 recorded pid), starts yours, and **verifies** the result. It is spelled
-`podbench run` everywhere — in the seat as well as on your machine. The image
-briefly had a `podbench-run` helper on `PATH`, prefixed so that a bare `run` in
-`/usr/local/bin` could not shadow your own tooling; being longer than the verb
-it aliased, it was removed (`image/README.md`, deviation 6).
+`podbench run` everywhere — in the seat as well as on your machine, with no
+shorter alias on the seat's `PATH`.
 
 The verification is not decoration. Three separate silent failures make a naive
 "poll the port" wrapper lie to you:

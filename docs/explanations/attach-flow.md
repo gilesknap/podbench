@@ -320,9 +320,9 @@ When ptrace is denied, the report names *which* of the four mechanisms said no â
 missing capability, Yama's `ptrace_scope`, seccomp or AppArmor â€” because all four
 return the same `EPERM`, and that naming is the point of the whole probe.
 
-Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json` whose pid,
-sysroot-prefixed program path and setup ordering are things the launcher knows and a
-human cannot guess.
+Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
+whose pid, sysroot-prefixed program path and setup ordering are things the
+launcher knows and a human cannot guess.
 
 ## See also
 

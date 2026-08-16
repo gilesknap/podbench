@@ -46,9 +46,10 @@ all three probes by construction.
 :::
 
 Everything here is driven by `podbench dbg`, run from a terminal in the seat.
-`podbench dbg` is not `gdb -p`: it fixes seven commands in one order, and the order is a
-correctness property rather than a preference. Setting the sysroot *after*
-attaching gives you a backtrace that looks entirely believable and is wrong.
+`podbench dbg` is not `gdb -p`: it fixes seven commands in one order, and the
+order is a correctness property rather than a preference. Setting the sysroot
+*after* attaching gives you a backtrace that looks entirely believable and is
+wrong.
 
 ## 1. A distroless target
 
@@ -164,9 +165,9 @@ PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 38   0    no      7206c89bf0e1   sleep   sleep infinity
 ```
 
-`podbench pids` is not `ps`. Under a shared PID namespace every process in the pod is
-visible — including other podbench sessions' — so attribution keys off the
-target's container runtime ID, which the launcher injected as
+`podbench pids` is not `ps`. Under a shared PID namespace every process in the
+pod is visible — including other podbench sessions' — so attribution keys
+off the target's container runtime ID, which the launcher injected as
 `PODBENCH_TARGET_CID`. The rules that look obvious are all wrong: "the target is
 PID 1" breaks under `shareProcessNamespace: true` (PID 1 is `/pause`), and
 matching mount namespaces breaks there too.
@@ -179,10 +180,10 @@ If the `TARGET` column is a guess rather than a fact, `podbench pids` says so.
 root@victim:~# podbench dbg 1
 ```
 
-With no argument at all, `podbench dbg` discovers the pid from the target container ID.
-Before starting gdb it runs the capability probe, so if attach is going to be
-denied you are told *which mechanism* denies it rather than being handed an
-`EPERM`.
+With no argument at all, `podbench dbg` discovers the pid from the target
+container ID. Before starting gdb it runs the capability probe, so if attach is
+going to be denied you are told *which mechanism* denies it rather than being
+handed an `EPERM`.
 
 What it feeds gdb, in this order — see it without starting gdb using
 `podbench dbg --dry-run 1`:
@@ -390,10 +391,10 @@ debugging is not possible.  GDB will now terminate.
 
 No signal name, no backtrace — it crashes before it can format either — and
 VS Code surfaces only `ERROR: Unable to start debugging. GDB exited
-unexpectedly`, which points at the attach rather than at startup. `podbench dbg` never
-hits this because it never enables pretty-printing, so the CLI works perfectly
-on a seat where the VS Code debugger cannot start at all. Reproduce it in any
-seat with:
+unexpectedly`, which points at the attach rather than at startup. `podbench dbg`
+never hits this because it never enables pretty-printing, so the CLI works
+perfectly on a seat where the VS Code debugger cannot start at all. Reproduce it
+in any seat with:
 
 ```
 mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
@@ -472,8 +473,8 @@ the debug image's (here Ubuntu 24.04's 2.39 against the image's 2.36):
 `clock_nanosleep` reported as `wcsxfrm_l`, interleaved frames, and even the
 *user-code line number* wrong. Against a Debian-12 distroless target the bug is
 **invisible**, because both glibcs share a build ID and the backtrace comes out
-correct — a matched debug image hides this rather than fixing it. `podbench dbg` is what
-makes it impossible.
+correct — a matched debug image hides this rather than fixing it.
+`podbench dbg` is what makes it impossible.
 
 ## Three anti-patterns
 
@@ -500,11 +501,11 @@ itself needs no capability and is exempt from Yama:
 root@victim:/workspace# podbench dbg --launch ./myprog --some-flag
 ```
 
-`--launch` consumes the rest of the command line, so put any other `podbench dbg` flags
-before it. Add `--run` to start the program immediately.
+`--launch` consumes the rest of the command line, so put any other
+`podbench dbg` flags before it. Add `--run` to start the program immediately.
 
-`podbench dbg` will tell you this itself when attach is denied — it names the mechanism
-and points at the alternative:
+`podbench dbg` will tell you this itself when attach is denied — it names the
+mechanism and points at the alternative:
 
 ```
 podbench dbg: cannot attach to pid 1: yama-scope

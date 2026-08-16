@@ -54,8 +54,8 @@ Three shapes hold the conversion together:
   smoke test, and must not depend on every module importing cleanly.
 * `--launch` keeps its `argparse.REMAINDER` contract by having the program's own
   arguments lifted out of argv before click sees them. Click claims every option
-  it knows wherever it appears, and `podbench dbg --launch ./prog --fast` has to hand
-  `--fast` to the program.
+  it knows wherever it appears, and `podbench dbg --launch ./prog --fast` has to
+  hand `--fast` to the program.
 
 ## Consequences
 
