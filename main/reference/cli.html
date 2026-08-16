@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b5.dev53+gbd5b003a2 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b5.dev65+gb766a5930 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=cc79f0a7"></script>
+    <script src="../_static/documentation_options.js?v=0813fbbf"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -866,6 +866,10 @@ what that seat can actually do.</p>
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
+│ --open                                       open the seat&#39;s home in VS Code over Remote-SSH     │
+│                                              once it lands, with the /proc and /sys excludes,    │
+│                                              this target&#39;s launch.json and only the extensions   │
+│                                              its debugger needs. Needs `code` on PATH            │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -880,7 +884,7 @@ what that seat can actually do.</p>
 </pre></div>
 </div>
 <p>Notes:</p>
-<ul class="simple">
+<ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>, a substring of one, or nothing at
 all — see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--image</span></code> has no fixed default to print: the launcher asks for the image
@@ -899,7 +903,7 @@ carry is refused with that explanation rather than submitted. That immutability
 is the whole reason Patch mode asks for the chart’s cooperation at deploy time;
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
 seeding initContainer that put it there.</p>
-<ul>
+<ul class="simple">
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">MOUNTPATH</span></code> is optional and usually should be. Where the application
@@ -925,7 +929,7 @@ reconnect warns and does nothing. Use <code class="docutils literal notranslate"
 a volume named <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts it read-write at
 <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> and makes it the seat’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>, which keeps vscode-server and
 everything else the seat writes off the workload’s ephemeral-storage budget.</p>
-<ul>
+<ul class="simple">
 <li><p>It is a convention because the volume cannot be there by accident: an
 ephemeral container may only mount volumes the pod already declares and
 <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable, so anything called <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> was put in
@@ -945,7 +949,7 @@ mount, which an ephemeral container may not have: the API server answers
 at all. Mounting the volume whole is not an alternative either; a directory
 mount replaces the path, and over <code class="docutils literal notranslate"><span class="pre">/etc</span></code> it would take <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code> with it
 — the very lookup the identity exists to satisfy.</p>
-<ul>
+<ul class="simple">
 <li><p><strong>On a live pod, <code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is the route to the same identity.</strong> The
 debug image makes <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> group-writable (OpenShift’s convention) and
 the agent appends a record for whatever uid the seat turned out to run as,
@@ -971,6 +975,60 @@ fallback from the identity volume: GID 0 lets the agent append its own
 cost of the target’s own group. It is opt-in for that cost, not because a
 cluster would refuse it — the restricted Pod Security Standard does not
 constrain <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--open</span></code></strong> takes the seat from “landed” to “bound breakpoint” in one
+command. It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH, and the local VS Code needs the
+<strong>Remote - SSH</strong> extension; both are checked at the point of use and named in
+the failure rather than reported as a traceback. <code class="docutils literal notranslate"><span class="pre">code</span></code> is looked for
+<em>before</em> the seat is landed, because an ephemeral container’s name is
+permanent and a run that was always going to end at “no <code class="docutils literal notranslate"><span class="pre">code</span></code>” must not burn
+one.</p>
+<p>It has to be the <strong>desktop</strong> <code class="docutils literal notranslate"><span class="pre">code</span></code>. Inside a Remote-SSH window, a
+devcontainer or a Codespace, the <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH is VS Code’s <em>remote</em>
+CLI, which forwards to the window that terminal already belongs to:
+<code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> would install into that machine rather than into the
+seat, leaving breakpoints that never bind. podbench refuses that one by name
+before landing anything — run it from a terminal on the machine your VS Code
+itself runs on, or drop <code class="docutils literal notranslate"><span class="pre">--open</span></code> and use <strong>Remote-SSH: Connect to Host</strong>.</p>
+<p>In order it:</p>
+<ul class="simple">
+<li><p>writes <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/settings.json</span></code> with every exclude <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code>
+writes at machine scope — the watcher, search, Pylance and cpptools entries
+for <code class="docutils literal notranslate"><span class="pre">/proc</span></code>, <code class="docutils literal notranslate"><span class="pre">/sys</span></code>, <code class="docutils literal notranslate"><span class="pre">/dev</span></code> and <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> — <strong>before</strong> the window
+opens, because the walk starts the moment it does. A single folder makes
+that file the <em>workspace</em> settings, so none of the keys is dropped there,
+and this is the one copy that survives <em>Kill/Uninstall VS Code Server on
+Host</em>. Inside a home, <code class="docutils literal notranslate"><span class="pre">**/.vscode-server/**</span></code> is the entry that earns its
+place first, and <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code> the only one that stops cpptools’
+tag parser walking on its own account;</p></li>
+<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> in the seat and merges the result into
+<code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/launch.json</span></code>, matching on configuration name, so a second
+<code class="docutils literal notranslate"><span class="pre">--open</span></code> updates its own entries rather than appending copies;</p></li>
+<li><p>installs <strong>only</strong> the extensions the emitted configurations name, with
+<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span> <span class="pre">--install-extension</span></code> — which is the
+“Install in SSH: <code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code>” button as a flag. A locally installed extension
+runs the debug adapter on your laptop, where no <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path
+means anything, and the failure looks like a bad <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>. They are
+also recommended in <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/extensions.json</span></code> as a fallback;</p></li>
+<li><p>opens the <strong>seat’s home</strong> — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a
+<code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume. Never <code class="docutils literal notranslate"><span class="pre">/</span></code>: a folder there points the watcher at
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, which is a symlink into another container’s rootfs, and
+the walk has no bottom.</p></li>
+</ul>
+<p>It cannot be combined with <code class="docutils literal notranslate"><span class="pre">--print-config</span></code>, which writes no stanza:
+<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span></code> resolves the alias through ssh, and ssh
+reads the config dir. A target no debugger fits is not a failure — the
+excludes, the folder and the terminals are the rest of the seat, and
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> has already named every mechanism that said no.</p>
+<p>Each extension unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, which in Observe
+mode is on the <strong>workload’s</strong> ephemeral-storage budget: a server plus one
+extension measured 1215 MiB live, and <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> alone is 330 MiB.
+That is why only the flavour’s own extensions are installed — though “only”
+is the <em>list</em>, not the outcome: VS Code resolves each entry’s dependencies,
+and <code class="docutils literal notranslate"><span class="pre">ms-python.python</span></code> is an extension pack, so a Python target also lands
+<code class="docutils literal notranslate"><span class="pre">ms-python.vscode-pylance</span></code> (117 MiB) and <code class="docutils literal notranslate"><span class="pre">ms-python.vscode-python-envs</span></code>. The
+excludes are written for what actually arrives, which is why
+<code class="docutils literal notranslate"><span class="pre">python.analysis.exclude</span></code> is among them.</p>
+</li>
 <li><p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for any seat that lands, including a degraded one; <code class="docutils literal notranslate"><span class="pre">2</span></code> for a
 real error.</p></li>
 </ul>

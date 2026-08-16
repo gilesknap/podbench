@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b5.dev53+gbd5b003a2 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b5.dev65+gb766a5930 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=cc79f0a7"></script>
+    <script src="../_static/documentation_options.js?v=0813fbbf"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -685,6 +685,23 @@ that does not land.</p>
 <p>It also needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>, which the chart grants separately from the
 rest.</p>
 </section>
+<section id="opening-vs-code-on-the-seat">
+<h2>Opening VS Code on the seat<a class="headerlink" href="#opening-vs-code-on-the-seat" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web -n demo --open
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> finishes the job the stanza starts: it configures the folder, installs
+the extension this target’s debugger needs <strong>in the remote window</strong>, and opens
+the seat’s home — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume.
+Never <code class="docutils literal notranslate"><span class="pre">/</span></code>, which is the one folder that can end the seat.</p>
+<p>It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH and the <strong>Remote - SSH</strong> extension in the local VS
+Code. <code class="docutils literal notranslate"><span class="pre">code</span></code> is looked for before the pod is touched, so a laptop without it
+costs you a message and not a burnt container name. <code class="docutils literal notranslate"><span class="pre">--open</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--print-config</span></code> are mutually exclusive: the second writes no stanza, and
+<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span></code> resolves the alias through ssh.</p>
+<p><a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a> has what it writes and why, and the
+warning that no GUI client has driven this yet.</p>
+</section>
 <section id="getting-the-ssh-stanza-again">
 <h2>Getting the ssh stanza again<a class="headerlink" href="#getting-the-ssh-stanza-again" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench ssh-config web -n demo
@@ -854,6 +871,7 @@ would make an honest report look like a failure.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-refuses-sys-ptrace">When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-reads-are-denied-too">When the reads are denied too</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-headroom-first">Making memory headroom first</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opening-vs-code-on-the-seat">Opening VS Code on the seat</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-the-ssh-stanza-again">Getting the ssh stanza again</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#host-keys-and-known-hosts">Host keys and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seeing-what-is-out-there">Seeing what is out there</a></li>

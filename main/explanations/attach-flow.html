@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.1.0b5.dev53+gbd5b003a2 documentation</title>
+    <title>What attach does &#8212; podbench 0.1.0b5.dev65+gb766a5930 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=cc79f0a7"></script>
+    <script src="../_static/documentation_options.js?v=0813fbbf"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -607,6 +607,20 @@ this codebase.</p>
                                   ├─ seat has no NSS login ──▶ print why, no stanza
                                   ▼
         ssh podbench-&lt;ns&gt;-&lt;pod&gt;   ·   Remote-SSH: Connect to Host      exit 0
+                                  │
+                                  ▼   (only with --open)
+┌──────────────────────────────────────────────────────────────────┐
+│ DRIVE THE CLIENT                                                 │
+│                                                                  │
+│   exec -c SEAT -- podbench debug-config --print-config           │
+│        one assessment; its adapter types name the extensions     │
+│   write &lt;home&gt;/.vscode/settings.json   ← the /proc excludes,     │
+│        BEFORE the window: the walk starts when it opens          │
+│   write &lt;home&gt;/.vscode/launch.json, extensions.json              │
+│   code --remote ssh-remote+&lt;alias&gt; --install-extension …         │
+│        the &quot;Install in SSH:&quot; button, and only this flavour&#39;s     │
+│   code --remote ssh-remote+&lt;alias&gt; &lt;home&gt;       never /          │
+└──────────────────────────────────────────────────────────────────┘
 </pre></div>
 </div>
 <p>A degraded seat is still <code class="docutils literal notranslate"><span class="pre">exit</span> <span class="pre">0</span></code>. Returning non-zero because the cluster would not
@@ -850,7 +864,12 @@ missing capability, Yama’s <code class="docutils literal notranslate"><span cl
 return the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>, and that naming is the point of the whole probe.</p>
 <p>Then, inside the seat, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code> writes a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code>
 whose pid, sysroot-prefixed program path and setup ordering are things the
-launcher knows and a human cannot guess.</p>
+launcher knows and a human cannot guess. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--open</span></code> runs that same command
+over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> and follows it with the two steps nobody should have to get
+right by hand: which folder to open — a verb that picks the folder is a verb
+that cannot pick <code class="docutils literal notranslate"><span class="pre">/</span></code> — and installing the extension in the <em>remote</em> window,
+where the debug adapter has to run for any <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path to mean
+anything.</p>
 </section>
 <section id="see-also">
 <h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>

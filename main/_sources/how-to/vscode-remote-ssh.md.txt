@@ -108,6 +108,41 @@ Which pod that lands in decides how much it matters:
 4. **Remote-SSH: Connect to Host…**, pick the alias, and wait out the first
    connect while the server downloads.
 
+### Or let `attach` do steps 3 and 4
+
+`podbench attach --open` lands the seat and then drives the client for you:
+
+```
+podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open
+```
+
+It writes `.vscode/settings.json`, `.vscode/launch.json` and
+`.vscode/extensions.json` into the folder it is about to open, installs only the
+extensions this target's debugger needs **in the remote window**, and opens the
+seat's home. Those are the two steps most easily got wrong by hand, and both
+fail quietly: the wrong folder can end the seat, and a locally installed
+extension runs the debug adapter on your laptop. See
+[the CLI reference](../reference/cli.md) for the order and the refusals.
+
+It needs `code` on your PATH — VS Code's Command Palette has *Shell Command:
+Install 'code' command in PATH* — and the local **Remote - SSH** extension,
+without which `--remote` cannot resolve anything. `--open` is on `attach` only,
+and drives `code` only; `cursor`, `codium` and `windsurf` take the same flags
+but have not been tried, and a flatpak VS Code cannot put `code` on the host
+PATH at all.
+
+Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
+window, a devcontainer or a Codespace, `code` on the PATH is the *remote* CLI,
+which talks to the window you are already in: it would install the extensions
+into that machine instead of into the seat. podbench refuses that `code` by name
+rather than driving it.
+
+:::{warning}
+`--open` has not been driven against a real VS Code GUI client. The flags it
+uses were verified by hand on 2026-08-16; the sequence podbench runs them in has
+unit tests and no live proof.
+:::
+
 Do **not** reach an Iterate-mode dev pod with `podbench attach`. It works, but
 it lands a *second*, ephemeral container inside the dev pod and ignores the
 sidecar that is already there — a second copy of the image, a second
@@ -290,6 +325,25 @@ that kills a seat is the first one.
 `files.exclude` is deliberately **not** set: that would hide `/proc` from the
 explorer, and reading the workload's files through `/proc/<pid>/root` is what
 Observe mode is for.
+
+`attach --open` writes all of those a second time, into the
+`.vscode/settings.json` of the folder it opens. It opens a *single* folder, so
+that file is VS Code's **workspace** settings, where window- and resource-scoped
+keys are both honoured — including `C_Cpp.files.exclude`, which is the only one
+that stops cpptools' tag parser, and cpptools is what `--open` installs for a
+C/C++ target. The folder copy matters because it is the one podbench fully
+controls: `~/.vscode-server` belongs to the client, and **Kill/Uninstall VS Code
+Server on Host** takes the machine file with it. Inside a home the entry that
+earns its place first is `**/.vscode-server/**` — 700 MiB before a single
+extension, in the folder podbench is about to open.
+
+The `/proc` and `/sys` entries in that copy are belt-and-braces rather than the
+working guard. `search.exclude` patterns are matched **workspace-relative**, so
+from a folder at `$HOME` its `**/proc/**` cannot match anything;
+`files.watcherExclude` and `python.analysis.exclude` are matched against
+absolute paths and do work from either scope. Machine scope is what covers the
+folder you open *next* — including the `/` that starts the walk with no bottom —
+which is why both copies exist.
 
 Settings you have written yourself are never overwritten. The agent adds only
 the keys that are missing, so a deliberate `"**/proc/**": false` survives, and a

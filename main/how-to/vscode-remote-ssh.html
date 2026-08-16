@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b5.dev53+gbd5b003a2 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b5.dev65+gb766a5930 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=cc79f0a7"></script>
+    <script src="../_static/documentation_options.js?v=0813fbbf"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -623,6 +623,36 @@ stanza to the same place, and both print the alias on the last line:</p>
 <li><p><strong>Remote-SSH: Connect to Host…</strong>, pick the alias, and wait out the first
 connect while the server downloads.</p></li>
 </ol>
+<section id="or-let-attach-do-steps-3-and-4">
+<h3>Or let <code class="docutils literal notranslate"><span class="pre">attach</span></code> do steps 3 and 4<a class="headerlink" href="#or-let-attach-do-steps-3-and-4" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--open</span></code> lands the seat and then drives the client for you:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="nb">open</span>
+</pre></div>
+</div>
+<p>It writes <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> and
+<code class="docutils literal notranslate"><span class="pre">.vscode/extensions.json</span></code> into the folder it is about to open, installs only the
+extensions this target’s debugger needs <strong>in the remote window</strong>, and opens the
+seat’s home. Those are the two steps most easily got wrong by hand, and both
+fail quietly: the wrong folder can end the seat, and a locally installed
+extension runs the debug adapter on your laptop. See
+<a class="reference internal" href="../reference/cli.html"><span class="std std-doc">the CLI reference</span></a> for the order and the refusals.</p>
+<p>It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH — VS Code’s Command Palette has <em>Shell Command:
+Install ‘code’ command in PATH</em> — and the local <strong>Remote - SSH</strong> extension,
+without which <code class="docutils literal notranslate"><span class="pre">--remote</span></code> cannot resolve anything. <code class="docutils literal notranslate"><span class="pre">--open</span></code> is on <code class="docutils literal notranslate"><span class="pre">attach</span></code> only,
+and drives <code class="docutils literal notranslate"><span class="pre">code</span></code> only; <code class="docutils literal notranslate"><span class="pre">cursor</span></code>, <code class="docutils literal notranslate"><span class="pre">codium</span></code> and <code class="docutils literal notranslate"><span class="pre">windsurf</span></code> take the same flags
+but have not been tried, and a flatpak VS Code cannot put <code class="docutils literal notranslate"><span class="pre">code</span></code> on the host
+PATH at all.</p>
+<p>Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
+window, a devcontainer or a Codespace, <code class="docutils literal notranslate"><span class="pre">code</span></code> on the PATH is the <em>remote</em> CLI,
+which talks to the window you are already in: it would install the extensions
+into that machine instead of into the seat. podbench refuses that <code class="docutils literal notranslate"><span class="pre">code</span></code> by name
+rather than driving it.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> has not been driven against a real VS Code GUI client. The flags it
+uses were verified by hand on 2026-08-16; the sequence podbench runs them in has
+unit tests and no live proof.</p>
+</div>
 <p>Do <strong>not</strong> reach an Iterate-mode dev pod with <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code>. It works, but
 it lands a <em>second</em>, ephemeral container inside the dev pod and ignores the
 sidecar that is already there — a second copy of the image, a second
@@ -631,6 +661,7 @@ pod’s lifetime. <code class="docutils literal notranslate"><span class="pre">p
 <p>If Remote-SSH does not offer the alias, it is reading a different config file.
 Set <code class="docutils literal notranslate"><span class="pre">remote.SSH.configFile</span></code> to the file that has the <code class="docutils literal notranslate"><span class="pre">Include</span></code>, or point it
 straight at <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/&lt;namespace&gt;-&lt;pod&gt;.conf</span></code>.</p>
+</section>
 </section>
 <section id="the-generated-stanza-and-why-each-line-is-there">
 <h2>The generated stanza, and why each line is there<a class="headerlink" href="#the-generated-stanza-and-why-each-line-is-there" title="Link to this heading">#</a></h2>
@@ -845,6 +876,23 @@ that kills a seat is the first one.</p>
 <p><code class="docutils literal notranslate"><span class="pre">files.exclude</span></code> is deliberately <strong>not</strong> set: that would hide <code class="docutils literal notranslate"><span class="pre">/proc</span></code> from the
 explorer, and reading the workload’s files through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is what
 Observe mode is for.</p>
+<p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--open</span></code> writes all of those a second time, into the
+<code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code> of the folder it opens. It opens a <em>single</em> folder, so
+that file is VS Code’s <strong>workspace</strong> settings, where window- and resource-scoped
+keys are both honoured — including <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code>, which is the only one
+that stops cpptools’ tag parser, and cpptools is what <code class="docutils literal notranslate"><span class="pre">--open</span></code> installs for a
+C/C++ target. The folder copy matters because it is the one podbench fully
+controls: <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> belongs to the client, and <strong>Kill/Uninstall VS Code
+Server on Host</strong> takes the machine file with it. Inside a home the entry that
+earns its place first is <code class="docutils literal notranslate"><span class="pre">**/.vscode-server/**</span></code> — 700 MiB before a single
+extension, in the folder podbench is about to open.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">/proc</span></code> and <code class="docutils literal notranslate"><span class="pre">/sys</span></code> entries in that copy are belt-and-braces rather than the
+working guard. <code class="docutils literal notranslate"><span class="pre">search.exclude</span></code> patterns are matched <strong>workspace-relative</strong>, so
+from a folder at <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> its <code class="docutils literal notranslate"><span class="pre">**/proc/**</span></code> cannot match anything;
+<code class="docutils literal notranslate"><span class="pre">files.watcherExclude</span></code> and <code class="docutils literal notranslate"><span class="pre">python.analysis.exclude</span></code> are matched against
+absolute paths and do work from either scope. Machine scope is what covers the
+folder you open <em>next</em> — including the <code class="docutils literal notranslate"><span class="pre">/</span></code> that starts the walk with no bottom —
+which is why both copies exist.</p>
 <p>Settings you have written yourself are never overwritten. The agent adds only
 the keys that are missing, so a deliberate <code class="docutils literal notranslate"><span class="pre">&quot;**/proc/**&quot;:</span> <span class="pre">false</span></code> survives, and a
 file it cannot parse — VS Code allows comments in <code class="docutils literal notranslate"><span class="pre">settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">json</span></code> does
@@ -951,7 +999,10 @@ behaviour when the pod is deleted mid-session.</p>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#size-the-pod-first">Size the pod first</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#client-setup">Client setup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#client-setup">Client setup</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#or-let-attach-do-steps-3-and-4">Or let <code class="docutils literal notranslate"><span class="pre">attach</span></code> do steps 3 and 4</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-generated-stanza-and-why-each-line-is-there">The generated stanza, and why each line is there</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first-connect">First connect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#extensions-and-staying-slim">Extensions, and staying slim</a></li>
