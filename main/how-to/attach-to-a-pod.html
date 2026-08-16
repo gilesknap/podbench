@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b4.dev7+ga5a31a4b7 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b4.dev9+g761ef421a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=a9c2fe91"></script>
+    <script src="../_static/documentation_options.js?v=461b39fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -648,7 +648,11 @@ re-attach.</p>
 $ podbench list -n demo        # every pod in the namespace carrying one
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">status</span></code> shows dead containers too, because their names remain burnt.</p>
+<p><code class="docutils literal notranslate"><span class="pre">status</span></code> shows dead containers too, because their names remain burnt. Both
+print the ssh alias for each pod, read from the stanza on disk — so a seat
+someone else landed, or one you landed from another machine, is reported as
+having no config here rather than under an alias that would not resolve. Run
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">ssh-config</span></code> to mint the missing one.</p>
 </section>
 <section id="removing-a-seat">
 <h2>Removing a seat<a class="headerlink" href="#removing-a-seat" title="Link to this heading">#</a></h2>

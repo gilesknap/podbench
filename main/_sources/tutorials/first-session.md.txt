@@ -217,7 +217,9 @@ $ uvx podbench list -n podbench-demo
 
 `status` lists every podbench container in a pod, including dead ones whose
 names are burnt. `list` does the same across the namespace — useful for finding
-the session you forgot about last week.
+the session you forgot about last week. Each pod's block ends with the `ssh`
+line to reconnect with, taken from the stanza `attach` wrote, so the alias
+survives the attach output scrolling away.
 
 ## 8. Clean up
 

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b4.dev7+ga5a31a4b7 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b4.dev9+g761ef421a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=a9c2fe91"></script>
+    <script src="../_static/documentation_options.js?v=461b39fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -992,6 +992,11 @@ burnt.</p>
 <section id="list">
 <h3><code class="docutils literal notranslate"><span class="pre">list</span></code><a class="headerlink" href="#list" title="Link to this heading">#</a></h3>
 <p>The same, across the namespace.</p>
+<p>Both verbs end each pod’s block with the ssh alias to connect with, read out of
+the stanza in <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> rather than derived from the pod’s name: <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--host-alias</span> <span class="pre">NAME</span></code> is recorded nowhere in the cluster, so a derived alias would
+be wrong for whoever used the flag. When there is no stanza on this machine —
+the seat was landed from another one — they say so and name <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, the
+verb that writes the missing half. Neither verb writes anything.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
  Usage: podbench list [OPTIONS]
 

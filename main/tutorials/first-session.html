@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.1.0b4.dev7+ga5a31a4b7 documentation</title>
+    <title>Your first session &#8212; podbench 0.1.0b4.dev9+g761ef421a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=a9c2fe91"></script>
+    <script src="../_static/documentation_options.js?v=461b39fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -684,7 +684,9 @@ $ uvx podbench list -n podbench-demo
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">status</span></code> lists every podbench container in a pod, including dead ones whose
 names are burnt. <code class="docutils literal notranslate"><span class="pre">list</span></code> does the same across the namespace — useful for finding
-the session you forgot about last week.</p>
+the session you forgot about last week. Each pod’s block ends with the <code class="docutils literal notranslate"><span class="pre">ssh</span></code>
+line to reconnect with, taken from the stanza <code class="docutils literal notranslate"><span class="pre">attach</span></code> wrote, so the alias
+survives the attach output scrolling away.</p>
 </section>
 <section id="clean-up">
 <h2>8. Clean up<a class="headerlink" href="#clean-up" title="Link to this heading">#</a></h2>
