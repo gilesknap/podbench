@@ -2829,9 +2829,15 @@ def _build_app(runner: Runner | None) -> typer.Typer:
 
         # Resize before attaching, not after: the headroom has to exist before
         # vscode-server starts allocating into a limit podbench cannot reserve.
-        if resize is None:
-            resize_note = RESIZE_WARNING
-        else:
+        #
+        # Nothing is said when the flag is absent. The caveats in
+        # RESIZE_WARNING are all about a limit that has been raised - that it
+        # lives on the pod and not on its controller, that a LimitRange was
+        # never tested against it - and none of them is true of a pod nobody
+        # resized, which is how this warning came to be printed at every attach
+        # that did not use the flag (issue #54).
+        resize_note: str | None = None
+        if resize is not None:
             workload = target_container_name(kube.get_pod(name), target)
             resize_note = try_resize(kube, name, workload, resize)
 
@@ -2849,7 +2855,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             probe=not no_probe,
             timeout=timeout,
         )
-        session = replace(session, warnings=(*session.warnings, resize_note))
+        if resize_note is not None:
+            session = replace(session, warnings=(*session.warnings, resize_note))
         print(format_session(session))
         print()
         print(

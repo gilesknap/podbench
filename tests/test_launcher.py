@@ -2348,28 +2348,50 @@ def test_the_resize_warning_keeps_the_quota_caveats_it_has_not_narrowed() -> Non
     assert "ReplicaSet" in RESIZE_WARNING
 
 
-def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
+def attach_argv(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "attach",
+        "target",
+        "-n",
+        "demo",
+        "--identity",
+        identity(tmp_path),
+        "--config-dir",
+        str(tmp_path / "cfg"),
+        *extra,
+    ]
+
+
+def test_an_attach_that_resized_nothing_says_nothing_about_a_resize(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The caveats are all about a limit that has been raised.
+
+    They were printed on the branch where the flag was *absent* (issue #54), so
+    a Diamond attach that never touched `--resize` got ten lines about how its
+    resize might silently revert.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
-    code = main(
-        [
-            "attach",
-            "target",
-            "-n",
-            "demo",
-            "--identity",
-            identity(tmp_path),
-            "--config-dir",
-            str(tmp_path / "cfg"),
-        ],
-        runner=cluster,
-    )
-    assert code == 0
-    # The report wraps warnings, so match words rather than phrases.
+    assert main(attach_argv(tmp_path), runner=cluster) == 0
+
     out = capsys.readouterr().out
-    assert "LimitRange" in out
-    assert "ResourceQuota" in out
+    assert "LimitRange" not in out
+    assert "reverts" not in out
+    assert not [call for call in cluster.calls if "patch" in call]
+
+
+def test_a_resize_that_happened_carries_its_own_caveat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Where the caveat belongs: beside the limit it is about.
+
+    The report wraps warnings, so this matches words rather than phrases.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert main(attach_argv(tmp_path, "--resize", "4Gi"), runner=cluster) == 0
+
+    out = capsys.readouterr().out
+    assert "4Gi" in out
     assert "reverts" in out
 
 
