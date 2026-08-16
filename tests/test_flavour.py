@@ -83,6 +83,7 @@ def make_proc(
 def python_proc(
     tmp_path: Path,
     *,
+    exe: str | None = "/usr/local/bin/python3.12",
     machine: int = EM_X86_64,
     site_packages: str | None = None,
     cap_sys_ptrace: bool = True,
@@ -90,7 +91,7 @@ def python_proc(
     """``podbench-demo/demo-service``, as a synthetic tree."""
     return make_proc(
         tmp_path,
-        exe="/usr/local/bin/python3.12",
+        exe=exe,
         cmdline="python /src/demo_service.py",
         machine=machine,
         site_packages=site_packages,
@@ -315,6 +316,113 @@ def test_amd64_still_fails_on_the_dlopen_path_first(tmp_path: Path) -> None:
     assert not result.available
     assert "not importable by the target" in result.reason
     assert "mount namespace" in result.reason
+
+
+def test_the_remedy_is_a_runnable_install_not_an_image_rebuild(
+    tmp_path: Path,
+) -> None:
+    """The remedy for "not importable by the target" has to run where it prints.
+
+    Both old remedies were image changes, and neither is available to someone
+    already attached to a running pod. The bench proved the seat can do it
+    itself, so what is printed is the command, with the *target's* version and
+    the destination already in it (issue #45).
+    """
+    proc = python_proc(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
+    assert (
+        "uv pip install --python-version 3.12 --target "
+        f"/proc/{PID}/root/opt/podbench-debugpy debugpy" in remedy
+    )
+    # The image change is still named, as the thing that survives a restart -
+    # but second, and no longer as the only way out.
+    assert remedy.startswith("install it into the target from this seat")
+
+
+def test_the_targets_python_version_is_read_from_its_own_rootfs(
+    tmp_path: Path,
+) -> None:
+    """``/usr/local/bin/python`` names no version, and the seat's is the wrong one.
+
+    Seat 3.11 and target 3.12 is the bench's own arrangement: uv resolves for
+    whichever version it is told, and told the seat's it lands a wheel whose
+    accelerator the target skips without a word.
+    """
+    proc = python_proc(
+        tmp_path, exe="/usr/local/bin/python", site_packages=SITE_PACKAGES
+    )
+    assert inspect_target(PID, proc=proc).python_version == "3.12"
+
+
+def test_an_unversioned_python_is_admitted_rather_than_guessed(
+    tmp_path: Path,
+) -> None:
+    """With nothing to read it from, the paste carries a gap and says so."""
+    proc = make_proc(tmp_path, exe="/usr/local/bin/python", cmdline="python app.py")
+    target = inspect_target(PID, proc=proc)
+    assert target.python_version is None
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
+    assert "--python-version <the target's X.Y>" in remedy
+
+
+def test_the_provisioned_copy_is_found_by_one_more_fixed_path(
+    tmp_path: Path,
+) -> None:
+    """A copy nobody can find is a copy that was never installed.
+
+    ``_SEARCH_ROOTS`` covers ``usr/local/lib`` and ``usr/lib``, and a
+    ``--target`` install is under neither. One more fixed path answers it; a
+    glob wide enough to have found it anyway would be a walk of another
+    container's rootfs, which is the unrecoverable OOM.
+    """
+    proc = python_proc(tmp_path)
+    package = proc / str(PID) / "root" / "opt" / "podbench-debugpy" / "debugpy"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    assert seat.debugpy_there == f"/proc/{PID}/root/opt/podbench-debugpy"
+    assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).available
+
+
+def test_a_chosen_destination_is_the_one_searched_and_the_one_printed(
+    tmp_path: Path,
+) -> None:
+    """Read-only rootfs is common, and then the copy goes on a writable mount.
+
+    So the destination is a parameter everywhere it appears: the path searched,
+    the path in the remedy and the path a later run has to find again are one
+    value, not three.
+    """
+    proc = python_proc(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+        provision_dest="/scratch/debugpy",
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
+    assert f"--target /proc/{PID}/root/scratch/debugpy debugpy" in remedy
 
 
 def test_a_missing_sysroot_gdb_is_named_too(tmp_path: Path) -> None:
