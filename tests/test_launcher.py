@@ -1084,9 +1084,9 @@ PROBES: dict[str, Any] = {
 
 
 def test_a_probed_target_is_given_its_deadline_before_it_costs_anything() -> None:
-    """The readiness half of this is invisible after the fact — the pod leaves
-    the endpoints with no event and comes back on continue — so the report has
-    to state it up front or not at all."""
+    """The readiness half of this is invisible after the fact — the pod stops
+    taking Service traffic, leaves no restart behind and recovers on continue —
+    so the report has to state it up front or not at all."""
     cluster = FakeCluster(pod_document(uid=1000, probes=PROBES))
     session = attach(kubectl_for(cluster), "target")
 

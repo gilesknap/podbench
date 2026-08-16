@@ -2,11 +2,14 @@
 
 A breakpoint in ``attach`` mode stops the target answering its probes, and the
 kubelet cannot tell a process stopped in a debugger from one that has hung. Two
-deadlines follow, and **the quiet one is worse**: readiness failing drops the
-pod from its Service's endpoints with no event and no restart count, and it
-re-joins on continue — so the symptom is traffic that stopped arriving, and it
-will not look like the debugger did it. Liveness failing kills the container,
-and the seat's debug session goes with it.
+deadlines follow, and **the quiet one is worse**: readiness failing stops the
+pod taking Service traffic — measured on a live cluster, its EndpointSlice
+keeps the address and flips ``conditions.ready`` and ``serving`` to false — with
+no restart count, and it re-joins on continue. Quiet rather than silent:
+``Unhealthy`` events are emitted while it lasts, but nothing survives it, so
+afterwards the symptom is traffic that stopped arriving and it will not look
+like the debugger did it. Liveness failing kills the container, and the seat's
+debug session goes with it.
 
 Neither can be turned off in place. A pod update may change only
 ``containers[*].image``, ``initContainers[*].image``, ``activeDeadlineSeconds``,
