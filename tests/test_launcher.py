@@ -156,7 +156,10 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "node_name": "node02",
         "child_attach_ok": True,
         "target_attach_ok": True,
-        "proc_reads": {"root": True, "maps": True},
+        # All three, because the launcher recomputes the read-only tick from
+        # exactly these and a subset is no longer a yes: the healthy default
+        # has to be a healthy matrix.
+        "proc_reads": {"root": True, "maps": True, "environ": True},
         "notes": [],
     }
     payload.update(overrides)

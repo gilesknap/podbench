@@ -311,15 +311,16 @@ The report is four to six lines of *measured* capability, not of requested capab
 * **live attach** — `gdb -p <pid>`, qualified by the probe deadline this pod puts on a
   breakpoint (a stopped process stops answering probes, and the kubelet cannot tell
   that from a hang);
-* **read-only inspect** — `/proc/<pid>/root`, maps, environ, exe; ticked from those
-  reads themselves and never from the verdict, with the matrix printed under it. The
-  other three reads capreport takes — `cmdline`, `status`, `fd` — need no permission
-  and so are reported but never counted (issue #51);
-* **debug launched processes** — `podbench dbg --launch ./prog`, from the scratch attach
-  on the
-  probe's own forked child. It is the rung that survives when the reads do not, and it
-  is measured rather than assumed: a seccomp filter that rejects `ptrace` takes it away
-  along with everything else;
+* **read-only inspect** — `/proc/<pid>/root`, maps, environ; ticked from those three
+  reads themselves and never from the verdict, with the matrix printed under it, and
+  all three have to land. The other three reads capreport takes — `cmdline`, `status`,
+  `fd` — need no permission and so are reported but never counted (issue #51). `exe`
+  takes the same permission as the first three but is not in the matrix, so it does
+  not decide anything either;
+* **debug launched processes** — `podbench dbg --launch ./prog`, from the scratch
+  attach on the probe's own forked child. It is the rung that survives when the reads
+  do not, and it is measured rather than assumed: a seccomp filter that rejects
+  `ptrace` takes it away along with everything else;
 * **iterate** — always unavailable here, naming `podbench dev` as the way to it;
 * **ssh seat** and **exec seat**, reported separately, because the ssh half needs an
   NSS identity the exec half does not.

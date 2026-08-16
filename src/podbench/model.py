@@ -210,11 +210,14 @@ def ptrace_reads_ok(proc_reads: Mapping[str, bool]) -> bool:
     False
     >>> ptrace_reads_ok({"cmdline": True, "status": True})
     False
+    >>> ptrace_reads_ok({"maps": True})
+    False
     """
-    # An unmeasured matrix is not a yes: `all` over an empty set is True, and
-    # that would tick the box for a probe that never ran.
-    gated = [proc_reads[name] for name in PTRACE_READ_PATHS if name in proc_reads]
-    return bool(gated) and all(gated)
+    # An absent key is a no, not an abstention. Skipping the ones that were
+    # never measured would let a single `maps: true` from an older image's
+    # matrix carry the whole claim — the same overclaim as issue #51, one path
+    # smaller — and it makes `all` over an empty matrix answer True as well.
+    return all(proc_reads.get(name) is True for name in PTRACE_READ_PATHS)
 
 
 def describe_reads(proc_reads: Mapping[str, bool]) -> str:
