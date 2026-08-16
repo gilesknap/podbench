@@ -1,9 +1,25 @@
 name: CI
 
+# Every branch, not just `main`, because the only way to test an image change
+# against a real cluster is to pull a published image: the devcontainer has no
+# docker, and `_e2e.yml`'s side-loaded kind image never leaves the runner. A
+# branch push therefore publishes a prerelease image tagged after the branch
+# (see `_container.yml`), which is what makes an in-image change reviewable.
+#
+# `gh-pages` is excluded because it is a publishing target, not source: it holds
+# built HTML, and a CI run over it would be checking nothing. (The `peaceiris`
+# push uses `GITHUB_TOKEN`, which cannot trigger a workflow, so this is belt and
+# braces rather than a loop-breaker.)
+#
+# The cost is deliberate and worth naming: a branch that also has an open PR
+# gets two runs per push, one from each trigger. Nothing else in the pipeline
+# changes — `_docs.yml` and `_helm.yml` already gate their publish steps on tag
+# or `main`, so a branch build stays a build.
 on:
   push:
     branches:
-      - main
+      - '**'
+      - '!gh-pages'
     tags:
       - '*'
   pull_request:

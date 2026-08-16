@@ -70,7 +70,9 @@ silent.
   `PODBENCH_E2E_NODE_SELECTOR=kubernetes.io/arch=amd64`. Without it the probe pod
   lands where the image cannot run and everything skips.
 - No docker, podman or kind in the devcontainer — images are built by CI. To test an
-  image against a cluster, push a tag.
+  image against a cluster, **push the branch**: every branch push publishes a
+  multi-arch prerelease image named after it, e.g.
+  `ghcr.io/gilesknap/podbench:0.1.0-beta.4-my-branch`. See `tests/e2e/README.md`.
 
 ## Two environment foot-guns
 

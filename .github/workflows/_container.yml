@@ -87,9 +87,15 @@ jobs:
       # Pushed by digest and left untagged: a per-architecture tag would be a
       # published artefact people could pull by accident. The merge job below is
       # what gives these digests their tags, as a single manifest list.
+      # Any push publishes; a pull_request never does. That is wider than it
+      # used to be (tag or `main`) because a branch image is the only way to run
+      # an in-image change against a real cluster — see the trigger comment in
+      # `ci.yml`. The event test, not a ref test, is what keeps a fork's PR out:
+      # the login step above is skipped for `pull_request`, so a push here would
+      # fail on credentials rather than leak one.
       - name: Push image by digest
         id: push
-        if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+        if: inputs.publish && github.event_name == 'push'
         uses: docker/build-push-action@v7
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
@@ -125,10 +131,20 @@ jobs:
   # the bytes published under a tag are exactly the bytes the smoke tests ran.
   merge:
     needs: build
-    if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+    if: inputs.publish && github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
+      # Only a branch build needs the repo, and only for `git describe` below.
+      # `docker/metadata-action` reads the ref out of the event context, so the
+      # tag and `main` paths still run without a checkout, as they always have.
+      - name: Checkout
+        if: github.ref_type == 'branch' && github.ref != 'refs/heads/main'
+        uses: actions/checkout@v7
+        with:
+          # `git describe` needs the tag history, and a shallow clone has none.
+          fetch-depth: 0
+
       - name: Download the digests
         uses: actions/download-artifact@v8
         with:
@@ -146,9 +162,67 @@ jobs:
       # which would risk an ImagePullBackOff in an unrestartable ephemeral
       # container. The normalisation is done by packaging itself, so it is the
       # same code PyPI will apply to the wheel rather than an imitation of it.
+      #
+      # A branch build asks the same parser a different question, below, so both
+      # paths need uv.
       - name: Install uv
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || github.ref != 'refs/heads/main'
         uses: astral-sh/setup-uv@v10.0.0
+
+      # A branch image must be unmistakably not-a-release, and must sort after
+      # the release it descends from. SemVer gives both for free: appending an
+      # identifier extends a prerelease and orders after it, so
+      # `0.1.0-beta.4-my-branch` reads as "past beta.3, on a branch" and cannot
+      # collide with the eventual `0.1.0-beta.4` tag — different strings, and
+      # the real release sorts ahead of every branch that anticipated it.
+      #
+      # The bump is a guess about the *name* of the next release and nothing
+      # depends on it being right; if the tag convention ever stops ending in a
+      # number the guess is skipped rather than fabricated, because a tag that
+      # sorted *before* its parent would be worse than a longer one.
+      - name: Compute the branch prerelease tag
+        id: branch
+        if: github.ref_type == 'branch' && github.ref != 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          last=$(git describe --tags --abbrev=0)
+          suffix=${last##*.}
+          if [[ $suffix =~ ^[0-9]+$ ]]; then
+            base="${last%.*}.$((suffix + 1))"
+          else
+            echo "::notice::last tag $last does not end in a number, not bumping"
+            base="$last"
+          fi
+          # OCI tags are [A-Za-z0-9_][A-Za-z0-9._-]{0,127} and a branch name is
+          # none of those things: it carries slashes, and may carry anything
+          # else a person typed. Fold the unusable characters to `-`, collapse
+          # the runs and trim, so `feat/debug-config` becomes `feat-debug-config`.
+          slug=$(printf '%s' "$GITHUB_REF_NAME" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -e 's/[^a-z0-9._-]/-/g' -e 's/-\{2,\}/-/g' -e 's/^[-._]*//' -e 's/[-._]*$//' \
+            | cut -c1-60)
+          if [[ -z $slug ]]; then
+            echo "::error::branch name $GITHUB_REF_NAME slugifies to nothing"
+            exit 1
+          fi
+          # Two assertions, because the tag answers to two grammars and only the
+          # *base* answers to PEP 440. `packaging` parses `0.1.0-beta.4` — and
+          # so can say whether it is a prerelease, which is the property that
+          # matters — but rejects the branch slug outright, because SemVer
+          # allows a prerelease identifier PEP 440 has no spelling for. Asking
+          # it about the whole tag would be a check that always fails.
+          uv run --no-project --with packaging python -c \
+            'import sys; from packaging.version import Version; sys.exit(0 if Version(sys.argv[1]).is_prerelease else "not a prerelease, so a branch image could be mistaken for a release: " + sys.argv[1])' \
+            "$base"
+          # The second grammar is the registry's. `distribution`'s TagRegexp is
+          # narrower than either version spelling, and a reference it rejects is
+          # a malformed request rather than a failed pull — the same regex
+          # `podbench.model` applies before asking for an image.
+          if [[ ! $base-$slug =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::computed tag is not a valid OCI tag: $base-$slug"
+            exit 1
+          fi
+          echo "tag=$base-$slug" >> "$GITHUB_OUTPUT"
 
       # `prerelease` comes from the same parse, because "does the tag contain a
       # hyphen" is a fact about *our* SemVer tag convention, not about
@@ -192,7 +266,8 @@ jobs:
             type=raw,value=${{ steps.ver.outputs.pep440 }},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' && steps.ver.outputs.prerelease == 'false' }}
             type=raw,value=main,enable={{is_default_branch}}
-            type=sha,format=long,enable={{is_default_branch}}
+            type=raw,value=${{ steps.branch.outputs.tag }},enable=${{ steps.branch.outputs.tag != '' }}
+            type=sha,format=long,enable=${{ github.ref_type == 'branch' }}
 
       # Asserted rather than trusted: the tag list is assembled by an action
       # whose defaults have already put `latest` on a prerelease once, and the
@@ -207,6 +282,23 @@ jobs:
           if jq -e '.["tag-names"] | index("latest")' <<< "$TAGS" > /dev/null; then
             echo "::error::$GITHUB_REF_NAME is a prerelease, but the computed" \
                  "tags include \`latest\`: $(jq -c '.["tag-names"]' <<< "$TAGS")"
+            exit 1
+          fi
+
+      # The same assertion for the tags a *branch* must never claim. `main` is
+      # the one that matters: `podbench.model.FLOATING_TAG` is `main`, so every
+      # launcher built off a checkout pulls it. A branch quietly taking that tag
+      # would hand unreviewed code to everyone running from source, and the
+      # symptom would appear in an ephemeral container that cannot be restarted.
+      - name: Refuse to publish a branch under a released tag
+        if: github.ref_type == 'branch' && github.ref != 'refs/heads/main'
+        env:
+          TAGS: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          if jq -e '.["tag-names"] | index("latest") // index("main")' <<< "$TAGS" > /dev/null; then
+            echo "::error::branch $GITHUB_REF_NAME computed a released tag:" \
+                 "$(jq -c '.["tag-names"]' <<< "$TAGS")"
             exit 1
           fi
 
@@ -225,7 +317,12 @@ jobs:
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${REGISTRY_IMAGE}@sha256:%s " *)
 
+      # Inspected by a tag that was actually emitted rather than by
+      # `steps.meta.outputs.version`: on a branch push that output is derived
+      # from the ref, and the branch name is deliberately *not* one of the tags
+      # this job publishes, so it would name an image that does not exist.
       - name: Inspect the pushed manifest
         run: |
+          set -euo pipefail
           docker buildx imagetools inspect \
-            "${REGISTRY_IMAGE}:${{ steps.meta.outputs.version }}"
+            "$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
