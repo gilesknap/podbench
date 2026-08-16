@@ -627,7 +627,7 @@ automatically after every attach; run it yourself when something changes.
 
 ```
 
- Usage: capreport [OPTIONS] [PID]
+ Usage: podbench capreport [OPTIONS] [PID]
 
  Name the mechanism that denies ptrace in this container.
 
@@ -748,7 +748,7 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 
 ```
 
- Usage: debug-config [OPTIONS] [PID]
+ Usage: podbench debug-config [OPTIONS] [PID]
 
  Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
  with the pid, the sysroot-prefixed program path and the mode's path mappings already filled in.

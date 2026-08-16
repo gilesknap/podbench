@@ -714,7 +714,10 @@ def main(
             )
         )
 
-    return run(app, args, prog="capreport")
+    # ``podbench capreport``, matching ``podbench doctor`` and ``podbench
+    # agent``: the usage line has to name something a reader can type, and since
+    # #47 the image ships no bare ``capreport``.
+    return run(app, args, prog="podbench capreport")
 
 
 def _run(

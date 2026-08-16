@@ -21,12 +21,10 @@ import pytest
 from podbench.gdbcmd import (
     attach_commands,
     command_file_text,
-    dbg_main,
     format_process_table,
     gdb_argv,
     launch_commands,
     main,
-    pids_main,
     read_exe,
     resolve_target_pid,
     strip_deleted,
@@ -275,7 +273,7 @@ def test_pids_table_marks_only_the_target(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     proc = make_proc(tmp_path)
-    assert pids_main(["--container-id", TARGET_CID], proc=proc) == 0
+    assert main(["pids", "--container-id", TARGET_CID], proc=proc) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split() == ["PID", "UID", "TARGET", "CONTAINER", "COMM", "CMDLINE"]
     marked = [line for line in lines[1:] if line.split()[2] == "yes"]
@@ -285,7 +283,7 @@ def test_pids_table_marks_only_the_target(
 
 def test_pids_targets_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     proc = make_proc(tmp_path)
-    pids_main(["--container-id", TARGET_CID, "--targets"], proc=proc)
+    main(["pids", "--container-id", TARGET_CID, "--targets"], proc=proc)
     body = capsys.readouterr().out.splitlines()[1:]
     assert len(body) == 1
 
@@ -297,7 +295,7 @@ def test_pids_warns_rather_than_presenting_the_fallback_as_fact(
     # marked as target too (report 4.3), so the guess must be labelled.
     monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
     proc = make_proc(tmp_path)
-    assert pids_main([], proc=proc) == 0
+    assert main(["pids"], proc=proc) == 0
     captured = capsys.readouterr()
     assert "PODBENCH_TARGET_CID" in captured.err
     assert captured.err.startswith("warning:")
@@ -309,7 +307,7 @@ def test_pids_json_carries_the_attribution(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     proc = make_proc(tmp_path)
-    pids_main(["--container-id", TARGET_CID, "--json"], proc=proc)
+    main(["pids", "--container-id", TARGET_CID, "--json"], proc=proc)
     payload = json.loads(capsys.readouterr().out)
     assert payload["attribution"] == "container-id"
     assert payload["warning"] is None
@@ -322,15 +320,16 @@ def test_pids_json_records_the_fallback_warning(
 ) -> None:
     monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
     proc = make_proc(tmp_path)
-    pids_main(["--json"], proc=proc)
+    main(["pids", "--json"], proc=proc)
     payload = json.loads(capsys.readouterr().out)
     assert payload["attribution"] == "cgroup-fallback"
     assert payload["warning"] is not None
 
 
 def test_pids_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
-    # CI smoke-tests this, so a broken parser fails there rather than in a pod.
-    assert pids_main(["--help"]) == 0
+    # CI smoke-tests `podbench pids --help` against the built image, so a broken
+    # parser fails there rather than in a pod.
+    assert main(["pids", "--help"]) == 0
     assert "pids" in capsys.readouterr().out
 
 
@@ -339,7 +338,7 @@ def test_empty_table_still_has_a_header(
 ) -> None:
     proc = tmp_path / "proc"
     proc.mkdir()
-    pids_main(["--container-id", TARGET_CID], proc=proc)
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
     assert (
         capsys.readouterr().out.strip() == "PID  UID  TARGET  CONTAINER  COMM  CMDLINE"
     )
@@ -360,7 +359,7 @@ def test_dbg_dry_run_prints_the_command_file_without_gdb(
 ) -> None:
     proc = make_proc(tmp_path)
     runner = RecordingRunner()
-    assert dbg_main([str(TARGET_PID), "--dry-run"], proc=proc, runner=runner) == 0
+    assert main(["dbg", str(TARGET_PID), "--dry-run"], proc=proc, runner=runner) == 0
     assert runner.calls == []
     assert capsys.readouterr().out == command_file_text(
         attach_commands(TARGET_PID, exe="/app/victim")
@@ -371,14 +370,20 @@ def test_dbg_print_commands_is_the_same_flag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     proc = make_proc(tmp_path)
-    dbg_main([str(TARGET_PID), "--print-commands"], proc=proc, runner=RecordingRunner())
+    main(
+        ["dbg", str(TARGET_PID), "--print-commands"],
+        proc=proc,
+        runner=RecordingRunner(),
+    )
     assert capsys.readouterr().out.startswith("set pagination off\n")
 
 
 def test_dbg_execs_gdb_when_attach_is_permitted(tmp_path: Path) -> None:
     proc = make_proc(tmp_path, capeff=CAP_WITH_PTRACE)
     runner = RecordingRunner(returncode=0)
-    code = dbg_main([str(TARGET_PID)], proc=proc, attacher=OkAttacher(), runner=runner)
+    code = main(
+        ["dbg", str(TARGET_PID)], proc=proc, attacher=OkAttacher(), runner=runner
+    )
     assert code == 0
     assert runner.calls == [gdb_argv(attach_commands(TARGET_PID, exe="/app/victim"))]
 
@@ -390,8 +395,8 @@ def test_dbg_names_the_blocker_and_offers_launch(
     # mechanism said no, not merely that gdb failed (report 4.3, model.Blocker).
     proc = make_proc(tmp_path, capeff=CAP_WITHOUT_PTRACE)
     runner = RecordingRunner()
-    code = dbg_main(
-        [str(TARGET_PID)],
+    code = main(
+        ["dbg", str(TARGET_PID)],
         proc=proc,
         attacher=SkippedAttacher("no ptrace here"),
         runner=runner,
@@ -415,8 +420,8 @@ def test_dbg_launch_never_probes_or_attaches(tmp_path: Path) -> None:
         def attach(self, pid: int) -> AttachOutcome:
             raise AssertionError("launch mode must not attach")
 
-    code = dbg_main(
-        ["--launch", "./victim", "--fast"],
+    code = main(
+        ["dbg", "--launch", "./victim", "--fast"],
         proc=proc,
         attacher=ExplodingAttacher(),
         runner=runner,
@@ -431,7 +436,7 @@ def test_dbg_launch_without_a_program_is_a_usage_error(
     # The parser's own refusal, not a hand-written one: --launch is declared as
     # taking a PROGRAM, and only the program's *arguments* are lifted out of
     # argv before parsing.
-    assert dbg_main(["--launch"], runner=RecordingRunner()) == 2
+    assert main(["dbg", "--launch"], runner=RecordingRunner()) == 2
     assert "--launch" in capsys.readouterr().err
 
 
@@ -439,7 +444,7 @@ def test_dbg_warns_when_the_exe_link_is_unreadable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     proc = make_proc(tmp_path)
-    dbg_main(["603", "--dry-run"], proc=proc, runner=RecordingRunner())
+    main(["dbg", "603", "--dry-run"], proc=proc, runner=RecordingRunner())
     captured = capsys.readouterr()
     assert "PTRACE_MODE_READ" in captured.err
     assert not any(line.startswith("file ") for line in captured.out.splitlines())
@@ -450,7 +455,7 @@ def test_dbg_without_a_target_exits_usage(
 ) -> None:
     monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
     runner = RecordingRunner()
-    assert dbg_main([], proc=make_proc(tmp_path), runner=runner) == 2
+    assert main(["dbg"], proc=make_proc(tmp_path), runner=runner) == 2
     assert runner.calls == []
     assert "PODBENCH_TARGET_CID" in capsys.readouterr().err
 
@@ -460,7 +465,7 @@ def test_dbg_discovers_the_pid_from_the_environment(
 ) -> None:
     monkeypatch.setenv("PODBENCH_TARGET_CID", f"containerd://{TARGET_CID}")
     proc = make_proc(tmp_path)
-    dbg_main(["--dry-run"], proc=proc, runner=RecordingRunner())
+    main(["dbg", "--dry-run"], proc=proc, runner=RecordingRunner())
     assert f"attach {TARGET_PID}\n" in capsys.readouterr().out
 
 
