@@ -20,9 +20,12 @@ podbench dev POD -n NS [--container NAME] [--port 8080]
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ LOCAL                                                            │
-│   namespace : -n, DEFAULTING TO LITERAL "default"                │
-│              (unlike attach, dev does not read the kubeconfig's) │
-│   POD       : required, exact. No substring match, no prompt     │
+│   namespace : -n, else the kubeconfig context's own              │
+│              config view --minify -o jsonpath={..namespace}      │
+│   POD       : pod/NAME, a bare NAME, a substring, or nothing —   │
+│              resolved by attach's own helper, so an ambiguous    │
+│              one lists the namespace and asks (--no-prompt, or   │
+│              a stdin that is not a tty, refuses instead)         │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -303,6 +306,13 @@ So `dev-bootstrap` and `run` refuse the layout rather than let it be discovered.
 podbench dev --delete POD-podbench -n NS
     │
     ▼
+   the dev pod's name, or the origin's: one derives from the other, and
+   `get pod NAME -o name` confirms it without listing the namespace. Only
+   a reference that names no such pod is resolved the way `dev` resolves
+   its target — and one that matches nothing at all is a teardown that
+   has already happened, so it falls through to "nothing to delete"
+    │
+    ▼
    get pod NAME -o json
     │
     ├─ no such pod ───────────────────────────▶ "nothing to delete", exit 0
@@ -326,23 +336,31 @@ podbench dev --delete POD-podbench -n NS
 
 ```text
   create:
-   1  kubectl -n NS get pod POD -o json
-   2  kubectl -n NS get replicaset NAME -o json     ┐ GitOps ownership walk,
-   3  kubectl -n NS get deployment NAME -o json     ┘ up to 3 hops, errors ignored
-   4  kubectl -n NS get service SVC -o json         # --cutover only
-   5  kubectl -n NS create -f - -o json             # the authored manifest, on stdin
-   6  kubectl -n NS wait pod/NAME \
+   1  kubectl config view --minify -o jsonpath={..namespace}
+                                                    # only when -n was not given
+   2  kubectl -n NS get pod POD -o name             # an exact reference stops here;
+                                                    # a substring or no POD at all
+                                                    # adds get pods -o json to list
+   3  kubectl -n NS get pod NAME -o json
+   4  kubectl -n NS get replicaset NAME -o json     ┐ GitOps ownership walk,
+   5  kubectl -n NS get deployment NAME -o json     ┘ up to 3 hops, errors ignored
+   6  kubectl -n NS get service SVC -o json         # --cutover only
+   7  kubectl -n NS create -f - -o json             # the authored manifest, on stdin
+   8  kubectl -n NS wait pod/NAME \
           --for=jsonpath={.status.phase}=Running --timeout=120s
-   7  kubectl -n NS patch service SVC --type=json -p '[{"op":"replace",…}]'
+   9  kubectl -n NS patch service SVC --type=json -p '[{"op":"replace",…}]'
                                                     # --cutover only
-   8  kubectl -n NS exec -c podbench NAME -- podbench agent --print-login-user
-   9  kubectl -n NS get pod NAME -o json            # metadata.uid
-  10  kubectl -n NS exec -c podbench NAME -- podbench agent --print-host-key …
+  10  kubectl -n NS exec -c podbench NAME -- podbench agent --print-login-user
+  11  kubectl -n NS get pod NAME -o json            # metadata.uid
+  12  kubectl -n NS exec -c podbench NAME -- podbench agent --print-host-key …
 
   delete:
-   1  kubectl -n NS get pod NAME -o json
-   2  kubectl -n NS patch service SVC --type=json -p '[…original selector…]'
-   3  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
+   1  kubectl config view --minify -o jsonpath={..namespace}
+   2  kubectl -n NS get pod NAME -o name            # the derived dev pod name; only
+                                                    # a miss lists the namespace
+   3  kubectl -n NS get pod NAME -o json
+   4  kubectl -n NS patch service SVC --type=json -p '[…original selector…]'
+   5  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
 
   the inner loop:  no API calls at all
 ```

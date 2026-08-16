@@ -475,15 +475,17 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 
 ```
 
- Usage: podbench dev [OPTIONS] {POD}
+ Usage: podbench dev [OPTIONS] [POD]
 
  create or delete the dev pod (runs on the laptop)
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    POD      <str>  the pod to clone, or the dev pod to delete [required]                       │
+│   POD      <str>  the pod to clone, or the dev pod to delete: pod/NAME, a bare NAME, or any      │
+│                   substring of one. Anything that does not settle on a single pod lists the      │
+│                   namespace and asks                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --namespace     -n      NAMESPACE  namespace [default: default]                                  │
+│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
 │ --context               NAME       kubeconfig context                                            │
 │ --container             NAME       container to take over                                        │
 │ --name                  NAME       dev pod name (default: POD-podbench)                          │
@@ -504,16 +506,23 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 │ --delete                           tear the dev pod down                                         │
 │ --timeout               SECONDS    seconds to wait [default: 120.0]                              │
 │ --dry-run                          print the authored pod instead of creating it                 │
+│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
+│                                    with the candidates instead. Already implied when stdin is    │
+│                                    not a tty                                                     │
 │ --help                             Show this message and exit.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Notes:
 
-* `pod` accepts `pod/NAME` or a bare `NAME`, the same as the launcher verbs —
-  it is the same helper, so the two halves of the CLI cannot drift apart.
-* The namespace defaults to `default` here, not to your current context's
-  namespace as the launcher verbs do. Pass `-n` explicitly.
+* `POD` is resolved exactly as `attach` resolves it, through the same helper:
+  `pod/NAME`, a bare `NAME`, a substring of one, or nothing at all, in which
+  case the namespace is listed and you are asked. A substring that settles on
+  one pod is echoed rather than assumed, and `--no-prompt` — or a stdin that is
+  not a tty — turns the question into a refusal that lists the candidates.
+* The namespace comes from your kubeconfig context when `-n` is not given, the
+  same as everywhere else. It used to mean the literal namespace `default`
+  here, which is the fix in issue #44.
 * The origin pod is never modified.
 * `--take-traffic` and `--cutover` are the only ways the dev pod sees Service
   traffic, and both are explicit. `--cutover` uses a JSON *replace* patch — a
@@ -531,6 +540,10 @@ Notes:
   stanza and the `known_hosts` entry it wrote. `attach` deliberately leaves its
   stanza in place — that seat is reconnectable while its pod lives, this one is
   not.
+* `--delete` takes either the dev pod's name or its origin's, since one derives
+  from the other, and it still exits 0 saying "nothing to delete" when the pod
+  is already gone: a reference that matches nothing in the namespace is a
+  teardown that has already happened, not a mistake.
 * `--dry-run` is the best available description of what this mode does. It
   still needs a readable public key, so that what it prints is what `dev` would
   actually create.

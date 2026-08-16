@@ -93,7 +93,12 @@ def null_runner(
 
 
 def always(kube: Kubectl) -> Callable[..., Kubectl]:
-    """A ``Kubectl`` factory the CLI can be pointed at."""
+    """A stand-in for :func:`podbench.launcher.kubectl_for`.
+
+    It is the namespace resolution that has to be stubbed, not just the client:
+    with ``-n`` unset the real helper asks ``kubectl config view`` for the
+    context's namespace, and a unit test may not shell out to a cluster.
+    """
 
     def make(*args: Any, **kwargs: Any) -> Kubectl:
         return kube
@@ -700,6 +705,13 @@ ORIGIN_POD: dict[str, Any] = {
 }
 
 
+def named_pod(name: str) -> dict[str, Any]:
+    """``ORIGIN_POD`` under another name, deep-copied so the fixture stays put."""
+    document = copy.deepcopy(ORIGIN_POD)
+    document["metadata"]["name"] = name
+    return document
+
+
 def origin_with_identity(**container_context: Any) -> dict[str, Any]:
     """``ORIGIN_POD`` as somebody who deployed the identity ConfigMap wrote it."""
     pod = json.loads(json.dumps(ORIGIN_POD))
@@ -759,7 +771,19 @@ class FakeKubectl(Kubectl):
         self.commands.append(tuple(argv))
         args = list(argv)
         stdout = ""
-        if args[3:5] == ["get", "pod"]:
+        if args[3:5] == ["get", "pods"]:
+            # The namespace listing `resolve_pod` searches when the reference is
+            # a substring or absent, as distinct from the `get pod NAME` below.
+            stdout = json.dumps(
+                {
+                    "items": [
+                        document
+                        for key, document in self.objects.items()
+                        if key.startswith("pod/")
+                    ]
+                }
+            )
+        elif args[3:5] == ["get", "pod"]:
             stdout = json.dumps(self.objects.get(f"pod/{args[5]}", {}))
             if stdout == "{}":
                 return CommandResult(tuple(argv), 1, "", "pods 'x' not found")
@@ -1136,7 +1160,7 @@ def test_cli_dry_run_prints_the_pod_it_would_create(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     assert (
         dev.main(
@@ -1169,7 +1193,7 @@ def test_cli_refuses_before_creating_anything_when_there_is_no_key(
     the same words ``attach`` does, before a pod exists.
     """
     kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     code = dev.main(
         ["dev", "demo", "-n", "podbench-test", "--identity", str(tmp_path / "absent")]
@@ -1187,7 +1211,7 @@ def test_cli_prints_the_ssh_route_and_the_exec_route(
     kube = FakeKubectl(
         **{"pod/demo": origin_with_identity(), "pod/demo-podbench": dev_pod_document()}
     )
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     code = dev.main(
         [
@@ -1220,7 +1244,7 @@ def test_cli_accepts_pod_slash_name_exactly_as_attach_does(
     # refused the argument, and dev_pod_name derived `pod/demo-podbench`, which
     # is not an RFC 1123 label.
     kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     assert (
         dev.main(
@@ -1253,7 +1277,7 @@ def test_cli_delete_accepts_pod_slash_name_too(
         "spec": {"containers": [{"name": "app"}]},
     }
     kube = FakeKubectl(**{"pod/demo-podbench": dev_pod})
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     assert (
         dev.main(
@@ -1276,7 +1300,7 @@ def test_cli_refuses_a_reference_that_is_not_a_pod(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     kube = FakeKubectl()
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     assert dev.main(["dev", "deployment/api", "-n", "podbench-test"]) == 1
     assert "works on pods" in capsys.readouterr().err
@@ -1289,7 +1313,7 @@ def test_cli_reports_a_refusal_without_a_traceback(
     # A pod occupying the dev pod's name that podbench did not author: the
     # guard fires rather than deleting somebody else's workload.
     kube = FakeKubectl(**{"pod/demo-podbench": ORIGIN_POD})
-    monkeypatch.setattr(dev, "Kubectl", always(kube))
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
     assert (
         dev.main(
@@ -1298,6 +1322,124 @@ def test_cli_reports_a_refusal_without_a_traceback(
         == 1
     )
     assert "not a podbench dev pod" in capsys.readouterr().err
+
+
+def test_cli_takes_the_namespace_from_the_kubeconfig(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """`-n` unset means the context's namespace here as it does everywhere else.
+
+    `dev` used to mean the literal namespace `default` (issue #44), which is the
+    one direction that costs: it is the mode that creates and deletes objects,
+    so pointing it at a namespace the user is not looking at either fails to
+    find their pod or clones something they never meant.
+    """
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    asked: list[tuple[str | None, dict[str, Any]]] = []
+
+    def factory(namespace: str | None, **kwargs: Any) -> Kubectl:
+        asked.append((namespace, kwargs))
+        return kube
+
+    monkeypatch.setattr(dev, "kubectl_for", factory)
+
+    assert (
+        dev.main(["dev", "demo", "--identity", identity_file(tmp_path), "--dry-run"])
+        == 0
+    )
+
+    assert json.loads(capsys.readouterr().out)["metadata"]["name"] == "demo-podbench"
+    # `None`, not `"default"`: the shared helper is what asks the kubeconfig,
+    # and it is tested in test_launcher.
+    assert asked == [(None, {"context": None})]
+
+
+def test_cli_resolves_a_substring_the_way_attach_does(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    kube = FakeKubectl(**{"pod/demo": ORIGIN_POD})
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    assert (
+        dev.main(
+            [
+                "dev",
+                "dem",
+                "-n",
+                "podbench-test",
+                "--identity",
+                identity_file(tmp_path),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["metadata"]["name"] == "demo-podbench"
+    # Echoed, not assumed: the resolved name is about to become a pod.
+    assert "'dem' matched pod demo" in captured.err
+
+
+def test_cli_will_not_guess_between_two_pods_it_cannot_ask_about(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """Ambiguity is a question, and a question nobody can answer is a refusal.
+
+    `dev` clones what it is given, so picking the first match on the user's
+    behalf would author a second copy of the wrong workload.
+    """
+    kube = FakeKubectl(
+        **{
+            "pod/demo-7f9": named_pod("demo-7f9"),
+            "pod/demo-canary": named_pod("demo-canary"),
+        }
+    )
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "demo",
+            "-n",
+            "podbench-test",
+            "--no-prompt",
+            "--identity",
+            identity_file(tmp_path),
+        ]
+    )
+
+    assert code == 1
+    error = capsys.readouterr().err
+    assert "matches 2 pods" in error and "--no-prompt was given" in error
+    assert not any("create" in argv for argv in kube.commands)
+
+
+def test_cli_delete_of_a_pod_already_gone_is_still_a_no_op(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """Teardown scripts run `--delete` twice, and the second run must exit 0.
+
+    Substring resolution must not turn "there is nothing here by that name"
+    into the refusal it is for the create path.
+    """
+    kube = FakeKubectl(**{"pod/other": named_pod("other")})
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "demo-podbench",
+            "-n",
+            "podbench-test",
+            "--delete",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ]
+    )
+
+    assert code == 0
+    assert "nothing to delete" in capsys.readouterr().out
 
 
 def test_cli_run_will_not_relaunch_without_being_told_the_port():

@@ -69,8 +69,12 @@ from .launcher import (
     declared_volumes,
     emit_ssh_config,
     forget_ssh_config,
+    kubectl_for,
+    match_pod_names,
+    pod_choices,
     probe_ssh_identity,
     read_public_key,
+    resolve_pod,
     resolve_pod_name,
     rung_of_spec,
     spec_env,
@@ -1613,20 +1617,32 @@ def _say(message: str) -> None:
 # -- CLI -------------------------------------------------------------------
 
 
-def _pod_argument(reference: str) -> str:
-    """``pod/NAME`` or a bare ``NAME``, exactly as the launcher verbs take it.
+def _delete_target(kube: Kubectl, reference: str | None, *, prompt: bool) -> str:
+    """Which pod ``dev --delete`` is about to tear down.
 
-    The launcher's own helper rather than a second copy of it: the two halves of
-    one CLI disagreeing about pod syntax made ``podbench dev pod/api`` fail
-    twice over — kubectl refused the argument, and :func:`dev_pod_name` derived
-    a pod name containing a slash, which is not an RFC 1123 label. Its refusal
-    is re-raised as a :class:`DevError` so it exits like every other iterate
-    mode error rather than as a traceback.
+    :func:`dev_pod_name` is idempotent, so the dev pod's own name and the
+    origin's both derive to it, and confirming it is one ``get pod``: the
+    scripted teardown path neither lists the namespace nor is asked a question.
+    It is derived through :func:`resolve_pod_name` first because ``pod/api``
+    used to fail twice over here — kubectl refused the argument, and the derived
+    name carried a slash, which is not an RFC 1123 label.
+
+    A reference nothing in the namespace matches is deliberately *not* refused:
+    ``--delete`` on a pod that is already gone has always exited 0 saying
+    "nothing to delete", and teardown scripts run it that way. Everything else
+    goes through :func:`resolve_pod`, so a substring resolves and an ambiguous
+    one is asked about exactly as on the create path — at the cost of listing
+    the namespace twice, which only happens on the path that is about to stop
+    and ask anyway.
     """
-    try:
-        return resolve_pod_name(reference)
-    except LauncherError as error:
-        raise DevError(str(error)) from error
+    if reference is not None:
+        named = resolve_pod_name(reference)
+        derived = dev_pod_name(named)
+        if kube.pod_exists(derived) or not match_pod_names(
+            [choice.name for choice in pod_choices(kube)], named
+        ):
+            return derived
+    return dev_pod_name(resolve_pod(kube, reference, prompt=prompt))
 
 
 def _identity_argument(identity: str) -> tuple[str, str]:
@@ -1644,7 +1660,21 @@ def _identity_argument(identity: str) -> tuple[str, str]:
 
 
 _Namespace = Annotated[
-    str, typer.Option("-n", "--namespace", metavar="NAMESPACE", help="namespace")
+    str | None,
+    typer.Option(
+        "-n",
+        "--namespace",
+        metavar="NAMESPACE",
+        help="namespace (default: the kubeconfig context's own)",
+    ),
+]
+_NoPrompt = Annotated[
+    bool,
+    typer.Option(
+        "--no-prompt",
+        help="never ask which pod: an ambiguous or missing POD is refused with "
+        "the candidates instead. Already implied when stdin is not a tty",
+    ),
 ]
 _Context = Annotated[
     str | None, typer.Option("--context", metavar="NAME", help="kubeconfig context")
@@ -1665,12 +1695,15 @@ def _build_app() -> typer.Typer:
     @app.command(help="create or delete the dev pod (runs on the laptop)")
     def dev(
         pod: Annotated[
-            str,
+            str | None,
             typer.Argument(
-                metavar="POD", help="the pod to clone, or the dev pod to delete"
+                metavar="POD",
+                help="the pod to clone, or the dev pod to delete: pod/NAME, a "
+                "bare NAME, or any substring of one. Anything that does not "
+                "settle on a single pod lists the namespace and asks",
             ),
-        ],
-        namespace: _Namespace = "default",
+        ] = None,
+        namespace: _Namespace = None,
         context: _Context = None,
         container: Annotated[
             str | None,
@@ -1753,25 +1786,29 @@ def _build_app() -> typer.Typer:
                 "--dry-run", help="print the authored pod instead of creating it"
             ),
         ] = False,
+        no_prompt: _NoPrompt = False,
     ) -> None:
-        kube = Kubectl(namespace, context=context)
-        pod_reference = _pod_argument(pod)
+        kube = kubectl_for(namespace, context=context)
         if delete:
             for action in delete_dev_pod(
                 kube,
-                dev_pod_name(pod_reference),
+                _delete_target(kube, pod, prompt=not no_prompt),
                 timeout=timeout,
                 config_dir=config_dir,
             ):
                 print(action)
             raise typer.Exit(0)
+        # Which pod first, in `attach`'s own words and by the same rules: a
+        # mistyped reference is refused before a missing key is complained
+        # about, so the two verbs fail identically on identical input.
+        origin = resolve_pod(kube, pod, prompt=not no_prompt)
         # Before anything is created: the key is authored into the sidecar's
         # env, which cannot be changed afterwards, so a missing key must refuse
         # here rather than after a pod exists that can never be ssh'd into.
         key_path, public_key = _identity_argument(identity)
         created, manifest = create_dev_pod(
             kube,
-            pod_reference,
+            origin,
             name=name,
             container=container,
             image=image,
