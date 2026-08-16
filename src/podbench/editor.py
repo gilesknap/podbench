@@ -81,6 +81,14 @@ found`` — which arrives here as "printed no JSON", blaming the assessment for 
 command that never ran.
 """
 
+_ABSENT = 3
+"""Exit code :func:`_read`'s script uses for "there is no such file".
+
+Not 1: that is what ``cat`` itself exits with when it *found* the file and could
+not read it, which is the case this whole arrangement exists to tell apart. 2
+and 127 belong to ``sh``.
+"""
+
 _STORAGE_NOTE = (
     "these unpack into the seat's ~/.vscode-server, which in Observe mode is on "
     "the workload's ephemeral-storage budget - an ephemeral container may not "
@@ -281,11 +289,30 @@ def _merge_into(
 
 
 def _read(kubectl: Kubectl, seat: ContainerRef, path: str) -> str | None:
-    """The seat's copy of ``path``, or ``None`` if it has none."""
+    """The seat's copy of ``path``, or ``None`` if it has none.
+
+    The ``test`` is what separates the two, and a bare ``cat`` cannot: it exits
+    non-zero both for a file that is not there and for one it could not read,
+    and reading the second as the first turns :func:`_merge_into`'s merge into a
+    replacement of whatever the seat was already carrying. Anything else is
+    raised rather than guessed at.
+    """
     result = kubectl.exec_(
-        seat.pod.name, ["cat", path], container=seat.container, check=False
+        seat.pod.name,
+        ["sh", "-c", f"test -e {quote(path)} || exit {_ABSENT}; cat {quote(path)}"],
+        container=seat.container,
+        check=False,
     )
-    return result.stdout if result.returncode == 0 else None
+    if result.returncode == _ABSENT:
+        return None
+    if result.returncode != 0:
+        raise EditorError(
+            f"cannot read {path} in the seat: {_detail(result.stderr)}. --open "
+            "adds to that file rather than replacing it, so one it cannot read "
+            "stops the run instead of being overwritten with podbench's own "
+            "copy."
+        )
+    return result.stdout
 
 
 def _write(kubectl: Kubectl, seat: ContainerRef, path: str, text: str) -> None:
@@ -297,11 +324,26 @@ def _write(kubectl: Kubectl, seat: ContainerRef, path: str, text: str) -> None:
     a quote in it. Note what the shell does *not* do — no redirection of stderr,
     which would tear down the CRI exec stream and truncate the write with a zero
     exit (report 3.1).
+
+    A refusal ends ``--open`` with a sentence rather than with ``kubectl``'s
+    argv, and ends it *before* the folder opens: the first of these files is the
+    exclude list, and a window opened without it is the walk that OOMs a seat
+    which cannot be restarted.
     """
     directory = path.rsplit("/", 1)[0]
-    kubectl.exec_(
+    result = kubectl.exec_(
         seat.pod.name,
         ["sh", "-c", f"mkdir -p {quote(directory)} && cat > {quote(path)}"],
         container=seat.container,
         stdin=text,
+        check=False,
     )
+    if result.returncode != 0:
+        raise EditorError(
+            f"cannot write {path} in the seat: {_detail(result.stderr)}. A "
+            "read-only root filesystem, or a home owned by a uid this seat does "
+            "not run as, is the usual cause - `--mount` a writable volume, or "
+            "land a seat whose home it can write. Nothing is opened: without "
+            f"{VSCODE_DIR}/settings.json the window walks /proc/<pid>/root and "
+            "ends the seat."
+        )

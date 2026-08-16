@@ -50,6 +50,8 @@ class FakeSeat:
         debug_config_rc: int = 0,
         debug_config_stderr: str = "",
         files: dict[str, str] | None = None,
+        unreadable: Sequence[str] = (),
+        unwritable: Sequence[str] = (),
         install_rc: int = 0,
         open_rc: int = 0,
     ) -> None:
@@ -57,6 +59,8 @@ class FakeSeat:
         self.debug_config_rc = debug_config_rc
         self.debug_config_stderr = debug_config_stderr
         self.files = dict(files or {})
+        self.unreadable = set(unreadable)
+        self.unwritable = set(unwritable)
         self.install_rc = install_rc
         self.open_rc = open_rc
         self.calls: list[tuple[str, ...]] = []
@@ -82,15 +86,21 @@ class FakeSeat:
                 return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
             document = {"version": "0.2.0", "configurations": self.configurations}
             return _result(0, stdout=json.dumps(document))
-        if command[0] == "cat":
-            text = self.files.get(command[1])
-            if text is None:
-                return _result(1, stderr=f"cat: {command[1]}: No such file")
-            return _result(0, stdout=text)
-        if command[:2] == ["sh", "-c"]:
+        if command[:2] == ["sh", "-c"] and command[2].startswith("mkdir -p"):
             assert stdin is not None, "a write must carry its content on stdin"
-            self.files[_written_path(command[2])] = stdin
+            path = _written_path(command[2])
+            if path in self.unwritable:
+                return _result(1, stderr=f"sh: cannot create {path}: Permission denied")
+            self.files[path] = stdin
             return _result(0)
+        if command[:2] == ["sh", "-c"]:
+            path = _read_path(command[2])
+            if path in self.unreadable:
+                return _result(1, stderr=f"cat: {path}: Permission denied")
+            text = self.files.get(path)
+            # 3 is the script's own "there is no such file", which is the one
+            # answer a bare `cat` cannot distinguish from "could not read it".
+            return _result(0, stdout=text) if text is not None else _result(3)
         raise AssertionError(f"unexpected exec: {command}")
 
     # -- the laptop --------------------------------------------------------
@@ -112,7 +122,9 @@ class FakeSeat:
 
     def index_of_write(self, path: str) -> int:
         for index, call in enumerate(self.calls):
-            if call[0] != "code" and call[-2:-1] == ("-c",) and path in call[-1]:
+            # `mkdir -p`, so a *read* of the same path a moment earlier is not
+            # mistaken for the write whose ordering is being asserted.
+            if call[-1].startswith("mkdir -p") and path in call[-1]:
                 return index
         raise AssertionError(f"nothing wrote {path}: {self.calls}")
 
@@ -131,6 +143,11 @@ def _result(returncode: int, *, stdout: str = "", stderr: str = "") -> CommandRe
 def _written_path(script: str) -> str:
     """The path a ``mkdir -p … && cat > …`` script writes to."""
     return script.rsplit("> ", 1)[1].strip("'")
+
+
+def _read_path(script: str) -> str:
+    """The path a ``test -e … || exit 3; cat …`` script reads."""
+    return script.rsplit("cat ", 1)[1].strip("'")
 
 
 def run_open(seat: FakeSeat, *, folder: str = HOME) -> list[str]:
@@ -343,6 +360,41 @@ def test_a_remote_that_cannot_be_reached_names_remote_ssh() -> None:
         run_open(seat)
 
 
+def test_a_file_that_cannot_be_written_ends_the_run_before_anything_opens() -> None:
+    """The first of these files is the exclude list, and a window opened without
+    it walks /proc/<pid>/root. The sentence names the layer that refused, which
+    a raw KubectlError - argv and all - does not."""
+    seat = FakeSeat(unwritable=[f"{HOME}/.vscode/settings.json"])
+    with pytest.raises(EditorError, match="cannot write /root/.vscode/settings.json"):
+        run_open(seat)
+
+    assert [call for call in seat.calls if call[0] == "code"] == []
+
+
+def test_a_file_that_cannot_be_read_is_not_replaced_with_a_fresh_one() -> None:
+    """`cat` exits non-zero for "not there" and for "could not read it" alike,
+    and reading the second as the first turns the merge this promises into a
+    replacement of whatever the seat was already carrying."""
+    settings = '{"files.watcherExclude": {"**/mine/**": true}}'
+    seat = FakeSeat(
+        files={f"{HOME}/.vscode/settings.json": settings},
+        unreadable=[f"{HOME}/.vscode/settings.json"],
+    )
+    with pytest.raises(EditorError, match="cannot read /root/.vscode/settings.json"):
+        run_open(seat)
+
+    assert seat.files[f"{HOME}/.vscode/settings.json"] == settings
+
+
+def test_a_file_that_is_simply_absent_is_written_rather_than_refused() -> None:
+    """The common case, and the one the exit code has to keep distinct: a first
+    --open meets a seat with no .vscode directory at all."""
+    seat = FakeSeat()
+    run_open(seat)
+
+    assert f"{HOME}/.vscode/settings.json" in seat.files
+
+
 def test_the_editor_is_found_on_path_and_named_by_its_absolute_route() -> None:
     assert (
         resolve_editor(lambda name: f"/usr/local/bin/{name}") == "/usr/local/bin/code"
@@ -369,8 +421,11 @@ def test_a_write_creates_the_directory_and_never_redirects_stderr() -> None:
     scripts = [call[-1] for call in seat.calls if call[-2:-1] == ("-c",)]
     assert scripts, seat.calls
     for script in scripts:
-        assert script.startswith("mkdir -p ")
         assert "2>" not in script and ">/dev/null" not in script
+    writes = [script for script in scripts if "cat > " in script]
+    assert writes, scripts
+    for script in writes:
+        assert script.startswith("mkdir -p ")
 
 
 def test_nothing_here_shells_out_to_a_second_assessment() -> None:
