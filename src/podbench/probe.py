@@ -389,12 +389,21 @@ def _accounting_notes(
             "0): it logs AVC denials and allows the call, so it can never be "
             "what refuses ptrace here"
         )
+    if lsm.kind is Lsm.APPARMOR and lsm.enforcing is False:
+        # The mirror of the permissive-SELinux line, and there for the same
+        # reason: a visibly-present profile that was not blamed reads as an
+        # oversight unless the report says why it was let off.
+        notes.append(
+            f"the AppArmor profile here is in complain mode ({lsm.context}): "
+            "it logs what it would have denied and permits the call, so it can "
+            "never be what refuses ptrace here"
+        )
     if lsm.kind is Lsm.UNKNOWN and lsm.context is not None:
         notes.append(
-            f"a security context is set ({lsm.context}) but /sys could not be "
-            "read, so which LSM wrote it is unknown - and that string alone "
-            "does not say, which is how an SELinux denial was once reported as "
-            "an AppArmor profile"
+            f"a security context is set ({lsm.context}) but neither module "
+            "claimed it, so which LSM wrote it is unknown - and that string "
+            "alone does not say, which is how an SELinux denial was once "
+            "reported as an AppArmor profile"
         )
     if caps_bounding and not caps_effective and self_uid != 0:
         notes.append(
@@ -493,6 +502,7 @@ def derive_verdict(
             lsm=lsm,
             target_context=target_context,
             cap_sys_ptrace=cap_sys_ptrace,
+            child=child,
         )
         notes.extend(denial_notes)
 
@@ -533,8 +543,9 @@ def derive_verdict(
             "this is a limit on attaching to someone else's process, not on "
             "debugging: `podbench dev` and `podbench hotfix` run the code as "
             "the seat's own child, the case the scratch attach above just "
-            "measured as permitted, so neither mode is affected by whatever "
-            "denied attach here"
+            "measured as permitted. That measurement is this seat on this "
+            "node - Yama and the LSM are both per-node (report 4.5), so a dev "
+            "pod scheduled elsewhere is measured again rather than assumed"
         )
         return Verdict.LAUNCH_ONLY, blocker, notes
     return Verdict.NONE, blocker, notes
@@ -587,6 +598,7 @@ def _classify_denial(
     lsm: LsmStatus,
     target_context: str | None,
     cap_sys_ptrace: bool,
+    child: AttachOutcome,
 ) -> tuple[Blocker, list[str]]:
     if tracer_pid:
         # First, and ahead of the capability check: a tracee has exactly one
@@ -600,12 +612,13 @@ def _classify_denial(
             "capabilities, Yama or the LSM is implicated"
         ]
     if cap_sys_ptrace:
-        denial = _lsm_denial(lsm, target_context)
+        denial = _lsm_denial(lsm, target_context, child)
         if denial is not None:
             return denial
         return Blocker.UNKNOWN, [
             "CAP_SYS_PTRACE is effective and our own child attached fine, so "
-            "this is not a capability problem"
+            "this is not a capability problem, and "
+            f"{_lsm_exoneration(lsm, target_context, child)}"
         ]
     if target_uid is None:
         return Blocker.NO_CAP_SYS_PTRACE, [
@@ -631,21 +644,48 @@ def _classify_denial(
     # "blocker: unknown" (issue #52): every mechanism above says "not me", and
     # the LSM was never asked because its context had been filed as an AppArmor
     # profile. It is asked here, ahead of giving up.
-    lsm_denial = _lsm_denial(lsm, target_context)
+    lsm_denial = _lsm_denial(lsm, target_context, child)
     if lsm_denial is not None:
         return lsm_denial
     return Blocker.UNKNOWN, [
         "same uid, no existing tracer, no Yama restriction, no capability in "
-        f"play and no LSM confining this seat ({lsm.summary}), yet attach was "
-        "refused. Everything visible from inside the container has been ruled "
-        "out, so the next evidence is on the node: `ausearch -m avc -ts recent` "
-        "if it runs SELinux, `dmesg | grep -i apparmor` if AppArmor. Please "
-        "report this with the full capreport output"
+        f"play and {_lsm_exoneration(lsm, target_context, child)}, yet attach "
+        "was refused. Two mechanisms fit this shape and neither is visible "
+        "from inside the seat: a target that is not dumpable - "
+        "prctl(PR_SET_DUMPABLE, 0), or a process that dropped privileges - "
+        "refuses attach and exactly these gated reads to any tracer without "
+        "CAP_SYS_PTRACE, and shows up as /proc/<pid> owned by root while "
+        "status still names the target's uid; and a user namespace boundary "
+        "between the two containers. Past those the next evidence is on the "
+        "node: `ausearch -m avc -ts recent` if it runs SELinux, `dmesg | grep "
+        "-i apparmor` if AppArmor. Please report this with the full capreport "
+        "output"
     ]
 
 
+def _lsm_exoneration(
+    lsm: LsmStatus, target_context: str | None, child: AttachOutcome
+) -> str:
+    """Why the LSM is not being named, which is three different sentences.
+
+    "No LSM confining this seat" was printed for all three, and one of them is
+    the opposite claim: an unreadable ``/sys`` rules nothing out.
+    """
+    if _permitted_this_pair(lsm, target_context, child):
+        return (
+            f"an LSM ({lsm.summary}) that gave this seat's own child the "
+            "identical context pair moments earlier"
+        )
+    if lsm.kind is Lsm.UNKNOWN and lsm.context is not None:
+        return (
+            f"a security context ({lsm.context}) whose module /sys could not "
+            "name, so the LSM is not ruled out either"
+        )
+    return f"no LSM confining this seat ({lsm.summary})"
+
+
 def _lsm_denial(
-    lsm: LsmStatus, target_context: str | None
+    lsm: LsmStatus, target_context: str | None, child: AttachOutcome
 ) -> tuple[Blocker, list[str]] | None:
     """Name the LSM as the blocker, or ``None`` if it cannot be one.
 
@@ -653,6 +693,8 @@ def _lsm_denial(
     acted on from inside the pod - which is precisely why the module has to be
     detected rather than assumed (issue #52).
     """
+    if _permitted_this_pair(lsm, target_context, child):
+        return None
     if lsm.kind is Lsm.SELINUX:
         if not lsm.confines:
             return None
@@ -666,17 +708,46 @@ def _lsm_denial(
     return None
 
 
-def _selinux_note(lsm: LsmStatus, target_context: str | None) -> str:
-    """Say what the contexts are, and that identical ones settle nothing.
+def _permitted_this_pair(
+    lsm: LsmStatus, target_context: str | None, child: AttachOutcome
+) -> bool:
+    """Whether the scratch attach already measured this LSM permitting this pair.
 
-    Diamond's seat and target both ran as ``spc_t:s0``, so the tempting reading
-    - "different domains, obvious denial" - is not available, and a reader who
-    assumes it will look for a cross-domain rule that does not exist.
+    Both modules decide ptrace on the pair of labels, not on one of them:
+    SELinux checks ``process:ptrace`` between the two contexts and AppArmor a
+    ``ptrace`` rule between the two profiles. A fork inherits its parent's
+    label, so the scratch attach was that check with the seat's context on both
+    sides - and where the target carries the *same* context, it was this check.
+    Naming the LSM anyway sends the reader to a node sysadmin for an AVC that
+    cannot exist, which is worse than the ``unknown`` it replaced: it was the
+    Diamond pod's own shape, ``spc_t:s0`` on both sides with the scratch attach
+    permitted (issue #52).
+    """
+    if child.measured_ok is not True:
+        return False
+    if lsm.kind not in (Lsm.SELINUX, Lsm.APPARMOR):
+        return False
+    if lsm.context is None or lsm.context != target_context:
+        return False
+    # Only where the module would otherwise have been named: two unconfined
+    # peers are not an LSM being exonerated, they are an LSM that was never a
+    # candidate, and the report has a different sentence for that.
+    return lsm.confines or _confined(target_context)
+
+
+def _selinux_note(lsm: LsmStatus, target_context: str | None) -> str:
+    """Say what the contexts are, and what an identical pair would take.
+
+    Diamond's seat and target both ran as ``spc_t:s0``. Reached with the same
+    context on both sides, this branch means the scratch attach was never
+    measured - a measured one permits the pair and :func:`_permitted_this_pair`
+    takes SELinux off the list before here.
     """
     same = lsm.context is not None and lsm.context == target_context
     shared = (
-        " - the same context on both sides, so this is not a cross-domain "
-        "denial and the policy question is a real one"
+        " - the same context on both sides, which takes a policy that refuses "
+        "a domain the right to trace itself; the scratch attach that would "
+        "have settled it was not measured here"
         if same
         else ""
     )

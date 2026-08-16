@@ -440,14 +440,16 @@ class Blocker(enum.Enum):
                 "the target's. Both must be in a profile that permits it."
             ),
             Blocker.SELINUX: (
-                "SELinux is enforcing and its policy denies ptrace between "
-                "this seat's context and the target's. It is node policy: no "
-                "securityContext or capability changes it, and the seat cannot "
-                "read the node's audit log, so the specific rule has to be "
-                "fetched there - `ausearch -m avc -ts recent` on the node named "
-                "in this report prints the AVC denial, which names the source "
-                "type, target type, class and permission a policy module would "
-                "have to allow."
+                "SELinux is enforcing and nothing else refused this attach, so "
+                "its policy is what is left - named by elimination, not by a "
+                "rule anyone has read. It is node policy: no securityContext "
+                "or capability changes it, and the seat cannot read the node's "
+                "audit log, so the rule has to be fetched there - `ausearch -m "
+                "avc -ts recent` on the node named in this report prints the "
+                "AVC denial, which names the source type, target type, class "
+                "and permission a policy module would have to allow. No denial "
+                "there means the refusal was something podbench cannot see "
+                "from inside the seat."
             ),
             Blocker.UID_MISMATCH: (
                 "this container's UID differs from the target's and it has no "

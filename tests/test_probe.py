@@ -97,6 +97,7 @@ def make_proc(
     nnp: int = 0,
     yama: int | None = 1,
     context: str | None = "cri-containerd.apparmor.d (enforce)",
+    target_context: str | None = None,
     lsm: Lsm = Lsm.APPARMOR,
     selinux_enforce: int = 1,
     target_uid: int = 1000,
@@ -140,8 +141,11 @@ def make_proc(
     write(proc / "1" / "comm", "python3\n")
     write(proc / "1" / "cmdline", "python3\x00-u\x00-c\x00app\x00")
     write(proc / "1" / "cgroup", f"0::/../cri-containerd-{TARGET_CID}.scope\n")
-    if context is not None:
-        write(proc / "1" / "attr" / "current", context + "\n")
+    # The target shares our context unless a test says otherwise: whether the
+    # pair matches is what decides whether the LSM can be the blocker at all.
+    peer = context if target_context is None else target_context
+    if peer is not None:
+        write(proc / "1" / "attr" / "current", peer + "\n")
     if target_reads:
         write(proc / "1" / "maps", "6549010cd000-6549010ce000 r--p /usr/bin/python3\n")
         write(proc / "1" / "environ", "PODBENCH_SECRET_MARKER=s5-environ-canary\x00")
@@ -536,19 +540,21 @@ DIAMOND_CONTEXT = "system_u:system_r:spc_t:s0"
 
 Four fields, so an SELinux context — and it arrived in the report under the key
 `apparmor_profile`, which is how the denial went unrecognised (issue #52). Seat
-and target share it, which is what makes the policy question a real one rather
-than an obvious cross-domain refusal.
+and target share it, which is also what takes SELinux back off the list of
+candidates: the scratch attach measured that very pair as permitted.
 """
 
 
-def diamond_proc(tmp_path: Path) -> Path:
+def diamond_proc(tmp_path: Path, *, target_context: str | None = None) -> Path:
     """A /proc matching :data:`DIAMOND_READS` — ptrace-gated reads gone, the
     world-readable ones intact.
 
     The rest of the accounting is that pod's too: ``ptrace_scope`` 0, seccomp
     filter mode, uid 1000 on both sides and no capability anywhere. Every
-    mechanism podbench knew therefore says "not me", which is the state the
-    report has to survive without saying ``unknown``.
+    mechanism podbench knows therefore says "not me".
+
+    ``target_context`` moves the target into another domain, which is the one
+    shape where SELinux is still a candidate on this accounting.
     """
     proc = make_proc(
         tmp_path,
@@ -558,6 +564,7 @@ def diamond_proc(tmp_path: Path) -> Path:
         seccomp=2,
         lsm=Lsm.SELINUX,
         context=DIAMOND_CONTEXT,
+        target_context=target_context,
     )
     for name in ("maps", "environ"):
         (proc / "1" / name).unlink()
@@ -593,17 +600,16 @@ def test_the_diamond_shape_says_what_still_works(tmp_path: Path) -> None:
     assert "podbench dbg --launch" in text
 
 
-def test_the_diamond_shape_names_selinux_rather_than_giving_up(
-    tmp_path: Path,
-) -> None:
-    """The regression for issue #52: everything else says "not me".
+def test_selinux_is_named_when_the_two_contexts_differ(tmp_path: Path) -> None:
+    """Issue #52's mechanism, on the accounting where it can still be true.
 
     uid 1000 on both sides, no capability in either set, ptrace_scope 0, a
-    seccomp mode that permits ptrace, and the seat's own child attaches. The
-    only mechanism left is the one whose context was being filed as an AppArmor
-    profile, and the report used to answer ``unknown``.
+    seccomp mode that permits ptrace — and a target in another domain, which
+    the seat's own child says nothing about. The module comes from /sys, which
+    is the half that was missing when this came back ``unknown``.
     """
-    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+    proc = diamond_proc(tmp_path, target_context="system_u:system_r:container_t:s0")
+    report = probe(1, proc=proc, attacher=attacher())
 
     assert report.blocker is Blocker.SELINUX
     assert report.lsm == LsmStatus(Lsm.SELINUX, DIAMOND_CONTEXT, True)
@@ -614,7 +620,33 @@ def test_the_diamond_shape_names_selinux_rather_than_giving_up(
     assert "ausearch -m avc -ts recent" in notes
     assert "audit log" in notes
     assert DIAMOND_CONTEXT in notes
-    assert "the same context on both sides" in notes
+    assert "container_t" in notes
+    # And that this rung is not a verdict on the other two modes.
+    assert "podbench hotfix" in notes
+
+
+def test_the_diamond_shape_does_not_blame_selinux_for_a_pair_it_permitted(
+    tmp_path: Path,
+) -> None:
+    """The seat's own attach is the measurement that clears SELinux here.
+
+    Both sides carried ``spc_t:s0`` on that pod, and SELinux decides
+    ``process:ptrace`` on the pair of contexts — the same pair the scratch
+    attach on our own fork had just been allowed. Naming it would send the
+    reader to a node sysadmin for an AVC that cannot exist, so the report says
+    what it eliminated and what is left that it cannot see.
+    """
+    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+
+    assert report.lsm == LsmStatus(Lsm.SELINUX, DIAMOND_CONTEXT, True)
+    assert report.verdict is Verdict.LAUNCH_ONLY
+    assert report.blocker is Blocker.UNKNOWN
+    notes = " ".join(report.notes)
+    assert "identical context pair" in notes
+    # The two candidates left, neither of which podbench can measure from here.
+    assert "PR_SET_DUMPABLE" in notes
+    assert "user namespace" in notes
+    assert "ausearch -m avc -ts recent" in notes
     # And that this rung is not a verdict on the other two modes.
     assert "podbench hotfix" in notes
 
@@ -730,12 +762,35 @@ def test_unclassified_structural_failure(tmp_path: Path) -> None:
 
 
 def test_denied_despite_capability_is_apparmor(tmp_path: Path) -> None:
+    """A *different* profile on the target, which is what the containerd
+    default refuses. The same profile on both sides is the case below."""
+    report = probe(
+        1,
+        proc=make_proc(
+            tmp_path,
+            self_uid=0,
+            capeff=CAP_WITH_PTRACE,
+            target_uid=0,
+            target_context="podbench-custom (enforce)",
+        ),
+        attacher=attacher(),
+    )
+    assert report.blocker is Blocker.APPARMOR
+
+
+def test_one_profile_on_both_sides_is_not_blamed_for_the_denial(
+    tmp_path: Path,
+) -> None:
+    """AppArmor mediates ptrace on the *pair* of profiles, so a confining
+    profile is only a candidate when the two differ: our own child carries our
+    profile, and attaching to it succeeded, which is that rule measured."""
     report = probe(
         1,
         proc=make_proc(tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0),
         attacher=attacher(),
     )
-    assert report.blocker is Blocker.APPARMOR
+    assert report.blocker is Blocker.UNKNOWN
+    assert any("identical context pair" in note for note in report.notes)
 
 
 def test_denied_despite_capability_unconfined_is_unknown(tmp_path: Path) -> None:
@@ -1165,7 +1220,8 @@ def test_json_carries_the_module_beside_the_context(tmp_path: Path) -> None:
     A consumer that reads ``lsm_context`` alone can no longer conclude AppArmor
     from it, which is the whole of the rename (issue #52).
     """
-    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+    proc = diamond_proc(tmp_path, target_context="system_u:system_r:container_t:s0")
+    report = probe(1, proc=proc, attacher=attacher())
     payload = json.loads(format_report(report, True))
 
     assert payload["lsm"] == "selinux"
@@ -1176,7 +1232,8 @@ def test_json_carries_the_module_beside_the_context(tmp_path: Path) -> None:
 
 
 def test_the_human_report_names_the_module_it_read(tmp_path: Path) -> None:
-    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+    proc = diamond_proc(tmp_path, target_context="system_u:system_r:container_t:s0")
+    report = probe(1, proc=proc, attacher=attacher())
     text = format_report(report, False)
 
     assert "AppArmor" not in text
