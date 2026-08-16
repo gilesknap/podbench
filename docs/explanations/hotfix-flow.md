@@ -335,6 +335,8 @@ being able to see it
 
 ## See also
 
+* [Glossary](../reference/glossary.md) — PSA, Yama, the ambient set, `subPath` and every
+  other term used here without explanation.
 * [Ways in](ways-in.md) — why you would reach for this rather than `attach` or `dev`.
 * [Architecture](architecture.md) — the mount-namespace rule this mode dissolves.
 * [What `attach` does](attach-flow.md) — the seat this mode reaches the claim through.

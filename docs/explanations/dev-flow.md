@@ -354,6 +354,8 @@ replicasets and deployments is optional: a refusal reads as "not GitOps-managed"
 
 ## See also
 
+* [Glossary](../reference/glossary.md) — PSA, Yama, the ambient set, `subPath` and every
+  other term used here without explanation.
 * [Ways in](ways-in.md) — singleton-safety, GitOps-safety, and when not to use this.
 * [Architecture](architecture.md) — why the launcher authors pod specs itself.
 * [Phase 0 gate report](spikes/phase0-report.md) — §3.5 `--copy-to`, §3.6 the

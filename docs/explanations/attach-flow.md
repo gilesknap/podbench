@@ -325,6 +325,8 @@ human cannot guess.
 
 ## See also
 
+* [Glossary](../reference/glossary.md) — PSA, Yama, the ambient set, `subPath` and every
+  other term used here without explanation.
 * [Ways in](ways-in.md) — why you would pick this mode over the other two.
 * [Architecture](architecture.md) — why each mechanism has the shape it has.
 * [Phase 0 gate report](spikes/phase0-report.md) — the measurements behind every
