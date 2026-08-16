@@ -51,6 +51,8 @@ from podbench.model import (
     SEAT_IDENTITY_VOLUME,
     Blocker,
     ContainerRef,
+    Lsm,
+    LsmStatus,
     PodRef,
     Rung,
     Verdict,
@@ -149,7 +151,9 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "yama_scope": 1,
         "seccomp_mode": 2,
         "no_new_privs": False,
-        "apparmor_profile": "cri-containerd.apparmor.d (enforce)",
+        "lsm": "apparmor",
+        "lsm_context": "cri-containerd.apparmor.d (enforce)",
+        "lsm_enforcing": True,
         "self_uid": 0,
         "target_uid": 1000,
         "target_pid": 17,
@@ -1280,6 +1284,74 @@ def test_an_unknown_verdict_is_said_rather_than_flattened() -> None:
     assert report.verdict is Verdict.NONE
     assert any("single_step_only" in note for note in report.notes)
     assert any("single-step only" in note for note in report.notes)
+
+
+def test_an_older_images_apparmor_field_is_carried_without_being_believed() -> None:
+    """A pre-#52 image emits `apparmor_profile`, holding whatever the LSM wrote.
+
+    On the pod that produced the issue that string was an SELinux context, so
+    the launcher keeps the evidence and refuses to name a module for it: a
+    guess from the shape here would re-create the bug in the half that is
+    supposed to correct older images.
+    """
+    payload = capreport_payload()
+    del payload["lsm"], payload["lsm_context"], payload["lsm_enforcing"]
+    payload["apparmor_profile"] = "system_u:system_r:spc_t:s0"
+
+    report = capability_report_from_json(payload)
+
+    assert report.lsm == LsmStatus(Lsm.UNKNOWN, "system_u:system_r:spc_t:s0")
+    assert report.lsm.confines is False
+
+
+def test_an_unknown_module_name_keeps_the_context() -> None:
+    report = capability_report_from_json(
+        capreport_payload(lsm="tomoyo", lsm_context="something", lsm_enforcing=None)
+    )
+    assert report.lsm.kind is Lsm.UNKNOWN
+    assert report.lsm.context == "something"
+
+
+def test_the_launch_only_rung_says_the_other_modes_are_untouched() -> None:
+    """Attach is denied, `dev` and `hotfix` are not, and nothing said so.
+
+    On this rung the debuggee in the other two modes is the sidecar's own
+    child — the attach this very seat measured as permitted — so a reader who
+    concludes "this pod is closed to podbench" has been misled by omission
+    (issue #52).
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="launch_only",
+            exit_code=15,
+            blocker="selinux",
+            summary=Verdict.LAUNCH_ONLY.summary,
+            explanation=Blocker.SELINUX.explanation,
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            lsm="selinux",
+            lsm_context="system_u:system_r:spc_t:s0",
+            child_attach_ok=True,
+            target_attach_ok=False,
+            proc_reads=DIAMOND_READS,
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    text = format_session(session)
+    assert "[ ] iterate" in text
+    assert "`podbench hotfix` debug the sidecar's own child" in text
+    # And the blocker the launcher never had to understand to relay.
+    assert "ausearch -m avc -ts recent" in text
+
+
+def test_a_live_attach_does_not_advertise_the_other_modes() -> None:
+    # The same note under a working attach is noise, and a report people skim
+    # past has stopped working.
+    session = attach(talking_to(FakeCluster(pod_document(uid=0))), "target")
+    assert "sidecar's own child" not in format_session(session)
 
 
 def test_capability_report_from_json_keeps_an_unreadable_target_uid_none() -> None:

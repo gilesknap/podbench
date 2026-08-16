@@ -718,12 +718,41 @@ whose own forked child refuses to be traced can still read all three gated paths
 at the target's uid. `child_attach_ok` in the JSON is the only thing that claims
 that rung.
 
-It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
-profile of both itself and the target, and `yama/ptrace_scope`; then runs a
-scratch `PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a
-failure there is structural) and a live attach on the target; then a six-path
-`/proc` read matrix. Yama is a **node-level** knob that differs by kernel
-flavour, so this must be re-run per pod and never cached cluster-wide.
+It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the LSM context of
+both itself and the target, and `yama/ptrace_scope`; then runs a scratch
+`PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a failure
+there is structural) and a live attach on the target; then a six-path `/proc` read
+matrix. Yama is a **node-level** knob that differs by kernel flavour, so this must
+be re-run per pod and never cached cluster-wide.
+
+**Which LSM wrote that context is read from `/sys`, not inferred.**
+`/proc/self/attr/current` belongs to whichever module is loaded — an AppArmor
+profile on a containerd/Ubuntu node, an SELinux context
+(`user_u:role_r:type_t:level`) on a RHEL-family one — so `capreport` settles it with
+`/sys/fs/selinux/enforce` and `/sys/module/apparmor/parameters/enabled` and reports
+three separate fields:
+
+```
+$ podbench capreport --json | jq '{lsm, lsm_context, lsm_enforcing, blocker}'
+{
+  "lsm": "selinux",
+  "lsm_context": "system_u:system_r:spc_t:s0",
+  "lsm_enforcing": true,
+  "blocker": "selinux"
+}
+```
+
+They replace a single `apparmor_profile` field, which held SELinux contexts on
+every RHEL-family node and named the wrong module for them (issue #52). A launcher
+reading an older image's JSON keeps the string and reports the module as `unknown`
+rather than guessing it back.
+
+`selinux` is the blocker whose rule cannot be read from the pod: `lsm_enforcing`
+says the policy is live, but the AVC denial naming the source type, target type,
+class and permission is in the node's audit log. The explanation points at
+`ausearch -m avc -ts recent` **on the node**, which takes a sysadmin. A permissive
+policy (`lsm_enforcing` false) logs and allows, so it is never named as the
+blocker.
 
 Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
 `PTRACE_MODE_READ`; `cmdline`, `status` and `fd` need no permission at all and are

@@ -31,19 +31,25 @@ from .model import (
     PTRACE_READ_PATHS,
     TARGET_CID_ENV,
     WORLD_READ_PATHS,
+    Lsm,
+    LsmStatus,
     ProcInfo,
 )
 
 __all__ = [
+    "APPARMOR_ENABLED_PATH",
     "CAP_SYS_PTRACE_BIT",
     "DEFAULT_PROC",
+    "DEFAULT_SYSFS",
     "DELETED_SUFFIX",
     "READ_MATRIX_PATHS",
+    "SELINUX_ENFORCE_PATH",
     "Attribution",
     "Capabilities",
     "ProcessListing",
-    "apparmor_profile",
+    "detect_lsm",
     "env_target_container_id",
+    "lsm_context",
     "list_processes",
     "no_new_privs",
     "proc_read_matrix",
@@ -67,6 +73,31 @@ __all__ = [
 
 DEFAULT_PROC = Path("/proc")
 """Where ``/proc`` is mounted. A parameter so tests can use a synthetic tree."""
+
+DEFAULT_SYSFS = Path("/sys")
+"""Where ``/sys`` is mounted, and the only place an LSM says which one it is.
+
+A second root rather than a path under :data:`DEFAULT_PROC`, for the same
+reason: a test that let this default through would ask the *runner's* kernel
+which module is loaded, and CI, the devcontainer and the cluster nodes all
+answer differently.
+"""
+
+SELINUX_ENFORCE_PATH = Path("fs/selinux/enforce")
+"""Under :data:`DEFAULT_SYSFS`: present only when SELinux is loaded, ``1`` when
+it is enforcing and ``0`` when it is permissive — and a permissive policy logs
+the AVC denial while allowing the call, so it can never be the blocker."""
+
+APPARMOR_ENABLED_PATH = Path("module/apparmor/parameters/enabled")
+"""Under :data:`DEFAULT_SYSFS`: ``Y`` when the AppArmor module is enabled."""
+
+_APPARMOR_MODES = {"(enforce)": True, "(complain)": False, "(unconfined)": False}
+"""AppArmor states its mode in the profile string, unlike SELinux.
+
+Read once the module is known to be AppArmor, and never as a way of *deciding*
+that it is: taking meaning from the shape of ``/proc/self/attr/current`` is the
+mistake this whole file now avoids (issue #52).
+"""
 
 CAP_SYS_PTRACE_BIT = 19
 """CAP_SYS_PTRACE's bit position in the 64-bit capability masks."""
@@ -371,19 +402,64 @@ def yama_scope(*, proc: Path = DEFAULT_PROC) -> int | None:
     return _parse_int(_read_text(proc / "sys" / "kernel" / "yama" / "ptrace_scope"))
 
 
-def apparmor_profile(
-    pid: int | str = "self", *, proc: Path = DEFAULT_PROC
-) -> str | None:
-    """The AppArmor profile confining a process.
+def lsm_context(pid: int | str = "self", *, proc: Path = DEFAULT_PROC) -> str | None:
+    """The security context confining a process, whoever wrote it.
 
-    ``None`` means the attribute could not be read (no AppArmor, or denied);
-    an empty attribute means the process is genuinely unconfined.
+    ``/proc/<pid>/attr/current`` belongs to the *active* LSM, so this is an
+    AppArmor profile on a containerd/Ubuntu node and an SELinux context
+    (``user_u:role_r:type_t:level``) on a RHEL-family one. Which of the two it
+    is comes from :func:`detect_lsm` and never from this string; podbench called
+    this function ``apparmor_profile`` and a Diamond SELinux denial went
+    unrecognised for it (issue #52).
+
+    ``None`` means the attribute could not be read (no LSM writes it, or the
+    read was denied); an empty attribute means the process is genuinely
+    unconfined.
     """
     text = _read_text(_pid_dir(pid, proc) / "attr" / "current")
     if text is None:
         return None
-    profile = text.replace("\x00", "").strip()
-    return profile or "unconfined"
+    context = text.replace("\x00", "").strip()
+    return context or "unconfined"
+
+
+def detect_lsm(*, proc: Path = DEFAULT_PROC, sysfs: Path = DEFAULT_SYSFS) -> LsmStatus:
+    """Which LSM is active here, and whether it is in a position to deny.
+
+    Each module publishes its own state, so this asks them: SELinux exposes
+    :data:`SELINUX_ENFORCE_PATH` only when it is loaded, AppArmor answers ``Y``
+    at :data:`APPARMOR_ENABLED_PATH`. Both absent is a real answer — no LSM —
+    and is not the same as an unreadable ``/sys``, where nothing was ruled out
+    and the honest verdict is :attr:`~podbench.model.Lsm.UNKNOWN`.
+
+    SELinux is checked first because it is the one that was being misread: a
+    node can have the AppArmor module compiled in and inactive, but a readable
+    ``enforce`` file means SELinux is the module writing the contexts.
+    """
+    context = lsm_context("self", proc=proc)
+
+    enforce = _read_text(sysfs / SELINUX_ENFORCE_PATH)
+    if enforce is not None:
+        return LsmStatus(Lsm.SELINUX, context, _parse_int(enforce) == 1)
+
+    apparmor = _read_text(sysfs / APPARMOR_ENABLED_PATH)
+    if apparmor is not None and apparmor.strip().upper().startswith("Y"):
+        return LsmStatus(Lsm.APPARMOR, context, _apparmor_mode(context))
+
+    if apparmor is not None or _listable(sysfs):
+        return LsmStatus(Lsm.NONE, context)
+    return LsmStatus(Lsm.UNKNOWN, context)
+
+
+def _apparmor_mode(context: str | None) -> bool | None:
+    """Whether an AppArmor profile enforces, from the mode it names itself.
+
+    A complain-mode profile logs and permits, so blaming it for a denial sends
+    someone to edit a profile that allowed the call.
+    """
+    if context is None:
+        return None
+    return _APPARMOR_MODES.get(context.rsplit(" ", 1)[-1])
 
 
 def seccomp_mode(*, proc: Path = DEFAULT_PROC) -> int | None:

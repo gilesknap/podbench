@@ -191,6 +191,47 @@ descendant needs no capability and no Yama exemption. So go straight to
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.
 
+The empty box beside **iterate** is not a verdict on the other two modes, and on
+this rung the report says so:
+
+```
+  [ ] iterate (edit, relaunch, verify through the Service)
+      what closed this pod does not close the other two modes: `podbench dev`
+      and `podbench hotfix` debug the sidecar's own child, the attach this seat
+      just measured as permitted, so on a pod like this one they are the way in
+```
+
+Whatever refused attach here refuses *someone else's* process. In Iterate and
+Hotfix the debuggee is the sidecar's own child, and tracing a descendant needs no
+capability and no policy exemption — which is why the Diamond pod that produced
+this report can still be debugged, through `podbench dev` or `podbench hotfix`,
+with breakpoints and a live inner loop.
+
+### When the blocker is `selinux`
+
+```
+measured
+  verdict     launch-only: `podbench dbg --launch` works; the target is closed
+  blocker     selinux
+```
+
+Nothing you can put in a pod spec changes this: SELinux policy is node
+configuration, and the seat is not the thing that has to be fixed. The report
+prints both contexts and, when they are identical (`system_u:system_r:spc_t:s0`
+on both sides, on the pod this was measured on), says so — because that rules out
+the obvious cross-domain explanation and makes the policy question a real one.
+
+The specific rule is not readable from the pod. Ask whoever administers the node
+for the AVC denial:
+
+```
+$ ausearch -m avc -ts recent      # on the node, not in the seat
+```
+
+That names the source type, target type, class and permission, which is what a
+policy module would have to allow. Until it has been read, `selinux` here is a
+blocker reached by eliminating the other four, not a confirmed rule.
+
 ## Making memory headroom first
 
 ```

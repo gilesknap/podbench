@@ -199,9 +199,10 @@ container runs and ptrace fails with a bare `EPERM`. podbench refuses to author
 that combination rather than tell you that you have live attach when you do not.
 
 Even on the full rung, attach can still be denied — by Yama's `ptrace_scope`,
-by seccomp, or by AppArmor, all of which are **per node** and none of which can
-be cached cluster-wide. All four subsystems refuse with the same `EPERM`, so
-podbench probes and **names the blocker** instead of leaving you an errno.
+by seccomp, or by the node's LSM, AppArmor or SELinux, all of which are **per
+node** and none of which can be cached cluster-wide. All five subsystems refuse
+with the same `EPERM`, so podbench probes and **names the blocker** instead of
+leaving you an errno.
 See the *Security model* explanation for the RBAC verbs and the
 admission-policy escape hatch.
 

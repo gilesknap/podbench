@@ -31,16 +31,18 @@ capability ladder
 
 capreport
   The probe that runs *inside* the landed seat, on that node, and reports what
-  debugging is actually possible — and, when it is not, which of the four
+  debugging is actually possible — and, when it is not, which of the five
   {term}`ptrace` {term}`blocker`s said no. Its exit code is its verdict: 0 live
   attach, 10 read-only, 15 {term}`launch-only`, 20 nothing. Everything `attach` prints
   about capability comes from here, never from the spec that was submitted.
 
 blocker
-  The named mechanism that denied {term}`ptrace`. Four unrelated subsystems refuse
+  The named mechanism that denied {term}`ptrace`. Five unrelated subsystems refuse
   with the same {term}`EPERM` — a missing {term}`CAP_SYS_PTRACE`, {term}`Yama`,
-  {term}`seccomp` and {term}`AppArmor` — so naming which one is the entire point of
-  {term}`capreport`.
+  {term}`seccomp`, {term}`AppArmor` and {term}`SELinux` — so naming which one is the
+  entire point of {term}`capreport`. The fifth was added by elimination on a Diamond
+  pod that ruled out the other four and was told `unknown`, with the SELinux context
+  sitting in the report under a field called `apparmor_profile`.
 
 dev pod
   Iterate mode's sacrificial clone of a running pod: same image, same volumes, same
@@ -343,9 +345,23 @@ ambient set
   seat that looks privileged and behaves unprivileged.
 
 AppArmor
-  A Linux security module that confines processes by profile. One of the four
-  {term}`blocker`s: a profile can deny ptrace between two domains, returning the same
-  {term}`EPERM` as everything else.
+  A Linux security module that confines processes by profile — the one Debian- and
+  Ubuntu-based nodes run. One of the five {term}`blocker`s: a profile can deny ptrace
+  between two domains, returning the same {term}`EPERM` as everything else. Which
+  module wrote `/proc/PID/attr/current` is detected from
+  `/sys/module/apparmor/parameters/enabled`, never from the shape of the string —
+  see {term}`SELinux`.
+
+SELinux
+  The other Linux security module that writes `/proc/PID/attr/current`, and the one
+  RHEL-family nodes run. Its context is four fields, `user_u:role_r:type_t:level`,
+  which is what a Diamond seat reported while podbench was labelling that file an
+  AppArmor profile. One of the five {term}`blocker`s, and the one whose evidence a
+  seat cannot reach: the AVC denial naming the exact rule is in the *node's* audit
+  log, so `ausearch -m avc -ts recent` there is the next step and it needs a
+  sysadmin. `/sys/fs/selinux/enforce` says whether the policy is enforcing (1) or
+  permissive (0) — permissive logs the denial and allows the call, so it can never
+  be the blocker.
 
 bounding set
   The ceiling on the capabilities a process can ever hold. A capability here but not
@@ -376,7 +392,7 @@ EADDRINUSE
   explicitly when that is what happened, rather than leaving you to suspect your code.
 
 EPERM
-  "Operation not permitted". Every one of the four {term}`blocker`s returns it, which
+  "Operation not permitted". Every one of the five {term}`blocker`s returns it, which
   is why a report that only prints the errno is worth nothing.
 
 NSS
@@ -411,7 +427,7 @@ reaping
   {term}`agent` does it.
 
 seccomp
-  A kernel facility filtering which system calls a process may make. One of the four
+  A kernel facility filtering which system calls a process may make. One of the five
   {term}`blocker`s: a profile can reject `ptrace` itself.
 
 SO_REUSEPORT

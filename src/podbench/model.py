@@ -32,6 +32,8 @@ __all__ = [
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
+    "Lsm",
+    "LsmStatus",
     "PodRef",
     "ProcInfo",
     "Rung",
@@ -375,10 +377,15 @@ class Verdict(enum.Enum):
 class Blocker(enum.Enum):
     """The mechanism that denied ptrace.
 
-    Four unrelated subsystems refuse ``PTRACE_ATTACH`` with the same ``EPERM``,
+    Five unrelated subsystems refuse ``PTRACE_ATTACH`` with the same ``EPERM``,
     and a previous hand-rolled attempt at this tool reached same-UID and still
     could not tell which one had said no. Naming the blocker — rather than
     reporting the errno — is the point of the whole probe.
+
+    The fifth arrived late and by elimination: a Diamond production pod ruled
+    out every mechanism podbench knew and was told ``unknown``, while the
+    evidence sat in the report mislabelled as an AppArmor profile (issue #52).
+    Two LSMs write ``/proc/<pid>/attr/current``, so both are named here.
     """
 
     NONE = "none"
@@ -395,6 +402,9 @@ class Blocker(enum.Enum):
 
     APPARMOR = "apparmor"
     """An AppArmor profile denies ptrace between these two domains."""
+
+    SELINUX = "selinux"
+    """SELinux policy denies ptrace between these two contexts."""
 
     UID_MISMATCH = "uid-mismatch"
     """The debug container runs as a different UID than the target."""
@@ -429,6 +439,16 @@ class Blocker(enum.Enum):
                 "AppArmor denies ptrace between this container's profile and "
                 "the target's. Both must be in a profile that permits it."
             ),
+            Blocker.SELINUX: (
+                "SELinux is enforcing and its policy denies ptrace between "
+                "this seat's context and the target's. It is node policy: no "
+                "securityContext or capability changes it, and the seat cannot "
+                "read the node's audit log, so the specific rule has to be "
+                "fetched there - `ausearch -m avc -ts recent` on the node named "
+                "in this report prints the AVC denial, which names the source "
+                "type, target type, class and permission a policy module would "
+                "have to allow."
+            ),
             Blocker.UID_MISMATCH: (
                 "this container's UID differs from the target's and it has no "
                 "CAP_SYS_PTRACE. Relaunch with runAsUser matching the target."
@@ -445,6 +465,107 @@ class Blocker(enum.Enum):
                 "for it. Please report this with the full capreport output."
             ),
         }[self]
+
+
+class Lsm(enum.Enum):
+    """Which Linux Security Module wrote ``/proc/<pid>/attr/current``.
+
+    That file belongs to whichever LSM is loaded, and podbench read it as an
+    AppArmor profile unconditionally. A Diamond node answered
+    ``system_u:system_r:spc_t:s0`` — an SELinux context — and the report
+    labelled it ``apparmor_profile``, which is how an SELinux denial reached the
+    user as ``blocker: unknown`` (issue #52). So the module is *detected*, from
+    the state each one publishes about itself, and never guessed from the shape
+    of the string it wrote.
+    """
+
+    SELINUX = "selinux"
+    APPARMOR = "apparmor"
+
+    NONE = "none"
+    """No LSM that writes a context is loaded, so none of them denied anything."""
+
+    UNKNOWN = "unknown"
+    """Neither module could be confirmed or ruled out — ``/sys`` was not
+    readable. Distinct from :attr:`NONE`, because "no LSM here" and "could not
+    ask" send a reader to different places."""
+
+
+@dataclass(frozen=True)
+class LsmStatus:
+    """The active LSM, its context for this process, and whether it enforces.
+
+    ``enforcing`` is three-valued on purpose. SELinux publishes it as a number
+    and *permissive* is the interesting case — the denial is logged and the
+    call succeeds, so a permissive policy can never be the blocker. AppArmor
+    carries the mode in the profile string instead (``… (complain)``), and
+    ``None`` means the mode was not stated.
+    """
+
+    kind: Lsm
+    context: str | None = None
+    enforcing: bool | None = None
+
+    @property
+    def confines(self) -> bool:
+        """Whether this LSM is in a position to have denied ptrace.
+
+        >>> LsmStatus(Lsm.SELINUX, "system_u:system_r:spc_t:s0", True).confines
+        True
+        >>> LsmStatus(Lsm.SELINUX, "system_u:system_r:spc_t:s0", False).confines
+        False
+        >>> LsmStatus(Lsm.APPARMOR, "cri-containerd.apparmor.d (enforce)").confines
+        True
+        >>> LsmStatus(Lsm.APPARMOR, "unconfined").confines
+        False
+        >>> LsmStatus(Lsm.UNKNOWN, "something").confines
+        False
+        """
+        if self.kind is Lsm.SELINUX:
+            # A context is not required: SELinux enforces whether or not this
+            # process can read its own label.
+            return self.enforcing is True
+        if self.kind is Lsm.APPARMOR:
+            confined = self.context not in (None, "", "unconfined")
+            return confined and self.enforcing is not False
+        return False
+
+    @property
+    def blocker(self) -> Blocker | None:
+        """The blocker this LSM would be, or ``None`` if it cannot be one.
+
+        >>> LsmStatus(Lsm.SELINUX, "u:r:spc_t:s0", True).blocker
+        <Blocker.SELINUX: 'selinux'>
+        >>> LsmStatus(Lsm.APPARMOR, "unconfined").blocker is None
+        True
+        """
+        if not self.confines:
+            return None
+        return Blocker.SELINUX if self.kind is Lsm.SELINUX else Blocker.APPARMOR
+
+    @property
+    def summary(self) -> str:
+        """One line naming the module, its mode and its context.
+
+        The module comes first because it is the half that was wrong: a reader
+        who sees ``selinux`` here does not spend the afternoon on AppArmor
+        documentation for a context AppArmor never wrote.
+
+        >>> LsmStatus(Lsm.SELINUX, "system_u:system_r:spc_t:s0", True).summary
+        'selinux (enforcing) - system_u:system_r:spc_t:s0'
+        >>> LsmStatus(Lsm.SELINUX, "system_u:system_r:spc_t:s0", False).summary
+        'selinux (permissive) - system_u:system_r:spc_t:s0'
+        >>> LsmStatus(Lsm.APPARMOR, "cri-containerd.apparmor.d (enforce)").summary
+        'apparmor - cri-containerd.apparmor.d (enforce)'
+        >>> LsmStatus(Lsm.NONE).summary
+        'none - no LSM context'
+        >>> LsmStatus(Lsm.UNKNOWN, "system_u:system_r:spc_t:s0").summary
+        'unknown LSM - system_u:system_r:spc_t:s0'
+        """
+        name = self.kind.value if self.kind is not Lsm.UNKNOWN else "unknown LSM"
+        if self.kind is Lsm.SELINUX and self.enforcing is not None:
+            name += " (enforcing)" if self.enforcing else " (permissive)"
+        return f"{name} - {self.context or 'no LSM context'}"
 
 
 class Rung(enum.Enum):
@@ -528,7 +649,7 @@ class CapabilityReport:
 
     Everything here is measured, never assumed: the probe reads the kernel's
     own accounting and then attempts a real scratch attach, because the
-    permission rules involve four subsystems whose interactions are not worth
+    permission rules involve five subsystems whose interactions are not worth
     predicting.
     """
 
@@ -539,7 +660,11 @@ class CapabilityReport:
     yama_scope: int | None
     seccomp_mode: int
     no_new_privs: bool
-    apparmor_profile: str | None
+    lsm: LsmStatus
+    """The module confining this seat, named rather than assumed. It replaces an
+    ``apparmor_profile`` field that held whatever ``/proc/self/attr/current``
+    said, SELinux contexts included (issue #52)."""
+
     self_uid: int
     target_uid: int | None
     target_pid: int | None

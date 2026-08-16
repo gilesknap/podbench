@@ -13,27 +13,30 @@ import ctypes
 import errno
 import json
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from podbench.model import Blocker, Verdict
+from podbench.model import Blocker, CapabilityReport, Lsm, LsmStatus, Verdict
 from podbench.probe import (
     PTRACE_ATTACH,
     PTRACE_DETACH,
+    Attacher,
     AttachOutcome,
     CtypesAttacher,
     SkippedAttacher,
     derive_verdict,
     format_report,
     main,
-    probe,
 )
+from podbench.probe import probe as _probe
 from podbench.proc import (
     Attribution,
-    apparmor_profile,
+    detect_lsm,
     list_processes,
+    lsm_context,
     no_new_privs,
     proc_read_matrix,
     read_status_field,
@@ -93,12 +96,21 @@ def make_proc(
     seccomp: int = 0,
     nnp: int = 0,
     yama: int | None = 1,
-    apparmor: str | None = "cri-containerd.apparmor.d (enforce)",
+    context: str | None = "cri-containerd.apparmor.d (enforce)",
+    lsm: Lsm = Lsm.APPARMOR,
+    selinux_enforce: int = 1,
     target_uid: int = 1000,
     target_reads: bool = True,
     target_tracer_pid: int = 0,
 ) -> Path:
-    """A synthetic /proc with our own container (pid 42) and a target (pid 1)."""
+    """A synthetic /proc with our own container (pid 42) and a target (pid 1).
+
+    It builds a matching ``/sys`` beside it — see :func:`make_sysfs` — because
+    which LSM wrote ``attr/current`` is now read from there rather than guessed
+    from the string, and a test that let the real ``/sys`` through would be
+    asserting whatever module the runner happens to load (issue #52).
+    """
+    make_sysfs(tmp_path, lsm=lsm, selinux_enforce=selinux_enforce)
     proc = tmp_path / "proc"
 
     write(
@@ -107,8 +119,8 @@ def make_proc(
     )
     write(proc / "self" / "comm", "capreport\n")
     write(proc / "self" / "cgroup", OWN_CGROUP + "\n")
-    if apparmor is not None:
-        write(proc / "self" / "attr" / "current", apparmor + "\n")
+    if context is not None:
+        write(proc / "self" / "attr" / "current", context + "\n")
 
     if yama is not None:
         write(proc / "sys" / "kernel" / "yama" / "ptrace_scope", f"{yama}\n")
@@ -128,8 +140,8 @@ def make_proc(
     write(proc / "1" / "comm", "python3\n")
     write(proc / "1" / "cmdline", "python3\x00-u\x00-c\x00app\x00")
     write(proc / "1" / "cgroup", f"0::/../cri-containerd-{TARGET_CID}.scope\n")
-    if apparmor is not None:
-        write(proc / "1" / "attr" / "current", apparmor + "\n")
+    if context is not None:
+        write(proc / "1" / "attr" / "current", context + "\n")
     if target_reads:
         write(proc / "1" / "maps", "6549010cd000-6549010ce000 r--p /usr/bin/python3\n")
         write(proc / "1" / "environ", "PODBENCH_SECRET_MARKER=s5-environ-canary\x00")
@@ -148,8 +160,58 @@ def make_proc(
     return proc
 
 
+def make_sysfs(
+    tmp_path: Path,
+    *,
+    lsm: Lsm = Lsm.APPARMOR,
+    selinux_enforce: int = 1,
+) -> Path:
+    """A synthetic /sys carrying what the LSMs publish about themselves.
+
+    ``Lsm.NONE`` is a directory with neither file in it, which is a different
+    answer from the directory being absent: absent means nothing was ruled out.
+    """
+    sysfs = tmp_path / "sys"
+    sysfs.mkdir(parents=True, exist_ok=True)
+    if lsm is Lsm.SELINUX:
+        write(sysfs / "fs" / "selinux" / "enforce", f"{selinux_enforce}\n")
+    elif lsm is Lsm.APPARMOR:
+        write(sysfs / "module" / "apparmor" / "parameters" / "enabled", "Y\n")
+    return sysfs
+
+
+def sysfs_for(proc: Path) -> Path:
+    """The /sys tree :func:`make_proc` built beside this /proc."""
+    return proc.parent / "sys"
+
+
+def probe(
+    target_pid: int | None,
+    *,
+    proc: Path,
+    sysfs: Path | None = None,
+    attacher: Attacher | None = None,
+    node_name: str | None = None,
+    extra_notes: Sequence[str] = (),
+) -> CapabilityReport:
+    """The real probe, pointed at the synthetic /sys as well as the /proc.
+
+    Every call in this module goes through here so that none of them can ask
+    the *runner's* kernel which LSM is loaded: CI is AppArmor, a RHEL node is
+    SELinux, and the answer decides which blocker gets named.
+    """
+    return _probe(
+        target_pid,
+        proc=proc,
+        sysfs=sysfs if sysfs is not None else sysfs_for(proc),
+        attacher=attacher,
+        node_name=node_name,
+        extra_notes=extra_notes,
+    )
+
+
 class FakeAttacher:
-    """A scripted ptrace backend, so a test can pose any of the four denials."""
+    """A scripted ptrace backend, so a test can pose any of the five denials."""
 
     def __init__(self, *, child: AttachOutcome, target: AttachOutcome) -> None:
         self._child = child
@@ -189,7 +251,7 @@ def test_readers_tolerate_missing_paths(tmp_path: Path) -> None:
     empty.mkdir()
     assert read_uid(1, proc=empty) is None
     assert yama_scope(proc=empty) is None
-    assert apparmor_profile("self", proc=empty) is None
+    assert lsm_context("self", proc=empty) is None
     assert seccomp_mode(proc=empty) is None
     assert no_new_privs(proc=empty) is None
     assert self_capabilities(proc=empty).readable is False
@@ -212,9 +274,56 @@ def test_self_capabilities_bit_19(tmp_path: Path) -> None:
     assert caps.effective_hex == CAP_WITHOUT_PTRACE
 
 
-def test_apparmor_empty_attribute_means_unconfined(tmp_path: Path) -> None:
-    proc = make_proc(tmp_path, apparmor="")
-    assert apparmor_profile("self", proc=proc) == "unconfined"
+def test_an_empty_attribute_means_unconfined(tmp_path: Path) -> None:
+    proc = make_proc(tmp_path, context="")
+    assert lsm_context("self", proc=proc) == "unconfined"
+
+
+def test_the_lsm_is_detected_from_sysfs_not_from_the_context(
+    tmp_path: Path,
+) -> None:
+    """The four-field context is SELinux's, but the shape is not the evidence.
+
+    ``/proc/self/attr/current`` is written by whichever module is loaded, so a
+    string that looks like one module's is asserted here against a ``/sys`` that
+    says the other. Detection has to follow ``/sys``, or the answer is a guess
+    dressed as a measurement (issue #52).
+    """
+    selinux = make_proc(tmp_path / "a", lsm=Lsm.SELINUX, context=DIAMOND_CONTEXT)
+    assert detect_lsm(proc=selinux, sysfs=sysfs_for(selinux)) == LsmStatus(
+        Lsm.SELINUX, DIAMOND_CONTEXT, True
+    )
+
+    # The same string on a node where AppArmor is the module that wrote it.
+    misleading = make_proc(tmp_path / "b", lsm=Lsm.APPARMOR, context=DIAMOND_CONTEXT)
+    assert detect_lsm(proc=misleading, sysfs=sysfs_for(misleading)).kind is Lsm.APPARMOR
+
+
+def test_lsm_detection_distinguishes_absent_from_unreadable(tmp_path: Path) -> None:
+    none = make_proc(tmp_path / "a", lsm=Lsm.NONE, context="")
+    assert detect_lsm(proc=none, sysfs=sysfs_for(none)) == LsmStatus(
+        Lsm.NONE, "unconfined"
+    )
+    assert detect_lsm(proc=none, sysfs=tmp_path / "nothing").kind is Lsm.UNKNOWN
+
+
+def test_a_disabled_apparmor_module_is_not_an_active_one(tmp_path: Path) -> None:
+    proc = make_proc(tmp_path, lsm=Lsm.NONE, context="unconfined")
+    write(sysfs_for(proc) / "module" / "apparmor" / "parameters" / "enabled", "N\n")
+    assert detect_lsm(proc=proc, sysfs=sysfs_for(proc)).kind is Lsm.NONE
+
+
+def test_a_complain_mode_profile_does_not_confine(tmp_path: Path) -> None:
+    """AppArmor states its mode in the profile string; complain permits.
+
+    Read only once ``/sys`` has said the module is AppArmor — the mode suffix
+    is not what decides which module wrote the line.
+    """
+    proc = make_proc(tmp_path, lsm=Lsm.APPARMOR, context="podbench-custom (complain)")
+    status = detect_lsm(proc=proc, sysfs=sysfs_for(proc))
+    assert status.enforcing is False
+    assert status.confines is False
+    assert status.blocker is None
 
 
 def test_proc_read_matrix(tmp_path: Path) -> None:
@@ -371,10 +480,34 @@ maps, environ)" (issue #51).
 """
 
 
+DIAMOND_CONTEXT = "system_u:system_r:spc_t:s0"
+"""The context both the seat and the target carried on that pod.
+
+Four fields, so an SELinux context — and it arrived in the report under the key
+`apparmor_profile`, which is how the denial went unrecognised (issue #52). Seat
+and target share it, which is what makes the policy question a real one rather
+than an obvious cross-domain refusal.
+"""
+
+
 def diamond_proc(tmp_path: Path) -> Path:
     """A /proc matching :data:`DIAMOND_READS` — ptrace-gated reads gone, the
-    world-readable ones intact."""
-    proc = make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=1)
+    world-readable ones intact.
+
+    The rest of the accounting is that pod's too: ``ptrace_scope`` 0, seccomp
+    filter mode, uid 1000 on both sides and no capability anywhere. Every
+    mechanism podbench knew therefore says "not me", which is the state the
+    report has to survive without saying ``unknown``.
+    """
+    proc = make_proc(
+        tmp_path,
+        self_uid=1000,
+        target_uid=1000,
+        yama=0,
+        seccomp=2,
+        lsm=Lsm.SELINUX,
+        context=DIAMOND_CONTEXT,
+    )
     for name in ("maps", "environ"):
         (proc / "1" / name).unlink()
     (proc / "1" / "root" / "etc").rmdir()
@@ -407,6 +540,88 @@ def test_the_diamond_shape_says_what_still_works(tmp_path: Path) -> None:
     assert "read-only inspect" in text
     assert "cmdline, status and fd only" in text
     assert "podbench dbg --launch" in text
+
+
+def test_the_diamond_shape_names_selinux_rather_than_giving_up(
+    tmp_path: Path,
+) -> None:
+    """The regression for issue #52: everything else says "not me".
+
+    uid 1000 on both sides, no capability in either set, ptrace_scope 0, a
+    seccomp mode that permits ptrace, and the seat's own child attaches. The
+    only mechanism left is the one whose context was being filed as an AppArmor
+    profile, and the report used to answer ``unknown``.
+    """
+    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+
+    assert report.blocker is Blocker.SELINUX
+    assert report.lsm == LsmStatus(Lsm.SELINUX, DIAMOND_CONTEXT, True)
+    assert report.verdict is Verdict.LAUNCH_ONLY
+    notes = " ".join(report.notes)
+    # The specific rule is not readable from here, so the report has to say
+    # where it is instead of inventing one.
+    assert "ausearch -m avc -ts recent" in notes
+    assert "audit log" in notes
+    assert DIAMOND_CONTEXT in notes
+    assert "the same context on both sides" in notes
+    # And that this rung is not a verdict on the other two modes.
+    assert "podbench hotfix" in notes
+
+
+def test_a_permissive_policy_is_not_blamed_for_a_denial(tmp_path: Path) -> None:
+    """Permissive SELinux logs the AVC and allows the call.
+
+    Naming it here would send someone to write a policy module for a policy
+    that permitted the syscall, so the honest answer is still ``unknown``.
+    """
+    proc = make_proc(
+        tmp_path,
+        self_uid=1000,
+        target_uid=1000,
+        yama=0,
+        lsm=Lsm.SELINUX,
+        selinux_enforce=0,
+        context=DIAMOND_CONTEXT,
+    )
+    report = probe(1, proc=proc, attacher=attacher())
+
+    assert report.lsm.enforcing is False
+    assert report.blocker is Blocker.UNKNOWN
+    assert any("permissive" in note for note in report.notes)
+
+
+def test_the_unknown_note_no_longer_sends_the_reader_to_apparmor(
+    tmp_path: Path,
+) -> None:
+    """ "check AppArmor and user namespaces" named two things it was not.
+
+    On the pod that produced issue #52 the LSM *was* the answer, and on a pod
+    where it is not, saying so is what stops the next reader repeating the
+    search.
+    """
+    proc = make_proc(
+        tmp_path, self_uid=1000, target_uid=1000, yama=0, lsm=Lsm.NONE, context=""
+    )
+    report = probe(1, proc=proc, attacher=attacher())
+
+    assert report.blocker is Blocker.UNKNOWN
+    notes = " ".join(report.notes)
+    assert "check AppArmor and user namespaces" not in notes
+    assert "no LSM confining this seat" in notes
+
+
+def test_an_unreadable_sys_leaves_the_module_unknown(tmp_path: Path) -> None:
+    """Absent /sys is not "no LSM": nothing was ruled out.
+
+    An SELinux context reported as an AppArmor profile is the failure; a
+    context reported as nobody's is merely honest.
+    """
+    proc = make_proc(tmp_path, lsm=Lsm.NONE, context=DIAMOND_CONTEXT)
+    report = probe(1, proc=proc, sysfs=tmp_path / "absent", attacher=attacher())
+
+    assert report.lsm == LsmStatus(Lsm.UNKNOWN, DIAMOND_CONTEXT)
+    assert report.lsm.confines is False
+    assert any("which LSM wrote it is unknown" in note for note in report.notes)
 
 
 def test_bounding_only_capability_is_flagged(tmp_path: Path) -> None:
@@ -448,7 +663,7 @@ def test_yama_scope_three_blocks_own_child(tmp_path: Path) -> None:
 def test_apparmor_blocks_own_child(tmp_path: Path) -> None:
     report = probe(
         1,
-        proc=make_proc(tmp_path, seccomp=0, yama=1, apparmor="podbench-custom"),
+        proc=make_proc(tmp_path, seccomp=0, yama=1, context="podbench-custom"),
         attacher=attacher(child=EPERM),
     )
     assert report.blocker is Blocker.APPARMOR
@@ -457,7 +672,7 @@ def test_apparmor_blocks_own_child(tmp_path: Path) -> None:
 def test_unclassified_structural_failure(tmp_path: Path) -> None:
     report = probe(
         1,
-        proc=make_proc(tmp_path, seccomp=0, yama=1, apparmor=""),
+        proc=make_proc(tmp_path, seccomp=0, yama=1, context=""),
         attacher=attacher(child=EPERM),
     )
     assert report.blocker is Blocker.UNKNOWN
@@ -476,7 +691,7 @@ def test_denied_despite_capability_unconfined_is_unknown(tmp_path: Path) -> None
     report = probe(
         1,
         proc=make_proc(
-            tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0, apparmor=""
+            tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0, context=""
         ),
         attacher=attacher(),
     )
@@ -510,8 +725,8 @@ def test_an_existing_tracer_outranks_a_uid_mismatch(tmp_path: Path) -> None:
         cap_sys_ptrace=True,
         yama=1,
         seccomp=0,
-        apparmor_self="cri-containerd.apparmor.d (enforce)",
-        apparmor_target="custom",
+        lsm=LsmStatus(Lsm.APPARMOR, "cri-containerd.apparmor.d (enforce)", True),
+        target_context="custom",
         self_uid=0,
         target_uid=1000,
         target_pid=1,
@@ -577,28 +792,42 @@ def test_skipped_probe_with_capability_names_no_blocker(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("seccomp", "yama", "apparmor", "expected"),
+    ("seccomp", "yama", "lsm", "expected"),
     [
-        (2, 1, "unconfined", Blocker.SECCOMP),
-        (0, 3, "unconfined", Blocker.YAMA_SCOPE),
+        (2, 1, LsmStatus(Lsm.APPARMOR, "unconfined"), Blocker.SECCOMP),
+        (0, 3, LsmStatus(Lsm.APPARMOR, "unconfined"), Blocker.YAMA_SCOPE),
         # Scope 2 is the one Yama setting with no descendant exemption, so a
         # scratch attach can fail on it — and it used to fall past this table
         # to "none of the known mechanisms accounts for it", with the scope
         # printed six lines above in the same report.
-        (0, 2, "unconfined", Blocker.YAMA_SCOPE),
-        (0, 1, "custom", Blocker.APPARMOR),
-        (0, None, "unconfined", Blocker.UNKNOWN),
+        (0, 2, LsmStatus(Lsm.APPARMOR, "unconfined"), Blocker.YAMA_SCOPE),
+        (0, 1, LsmStatus(Lsm.APPARMOR, "custom"), Blocker.APPARMOR),
+        # The structural half of issue #52: ptrace(2) unusable, nothing else to
+        # blame, and an enforcing SELinux policy that used to be invisible here.
+        (
+            0,
+            1,
+            LsmStatus(Lsm.SELINUX, "system_u:system_r:spc_t:s0", True),
+            Blocker.SELINUX,
+        ),
+        (
+            0,
+            1,
+            LsmStatus(Lsm.SELINUX, "system_u:system_r:spc_t:s0", False),
+            Blocker.UNKNOWN,
+        ),
+        (0, None, LsmStatus(Lsm.NONE), Blocker.UNKNOWN),
     ],
 )
 def test_structural_classification(
-    seccomp: int, yama: int | None, apparmor: str, expected: Blocker
+    seccomp: int, yama: int | None, lsm: LsmStatus, expected: Blocker
 ) -> None:
     _, blocker, _ = derive_verdict(
         cap_sys_ptrace=False,
         yama=yama,
         seccomp=seccomp,
-        apparmor_self=apparmor,
-        apparmor_target=apparmor,
+        lsm=lsm,
+        target_context=lsm.context,
         self_uid=1000,
         target_uid=1000,
         target_pid=1,
@@ -620,8 +849,8 @@ def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
         cap_sys_ptrace=True,
         yama=2,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=LsmStatus(Lsm.APPARMOR, "unconfined"),
+        target_context="unconfined",
         self_uid=1000,
         target_uid=1000,
         target_pid=1,
@@ -637,8 +866,8 @@ def test_no_reads_but_our_own_child_attaches_is_launch_only() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=LsmStatus(Lsm.APPARMOR, "unconfined"),
+        target_context="unconfined",
         self_uid=0,
         target_uid=1000,
         target_pid=1,
@@ -658,8 +887,8 @@ def test_no_reads_and_no_ptrace_at_all_is_verdict_none() -> None:
         cap_sys_ptrace=False,
         yama=3,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=LsmStatus(Lsm.APPARMOR, "unconfined"),
+        target_context="unconfined",
         self_uid=0,
         target_uid=1000,
         target_pid=1,
@@ -682,8 +911,8 @@ def test_a_partly_denied_matrix_still_points_at_the_sysroot() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=LsmStatus(Lsm.APPARMOR, "unconfined"),
+        target_context="unconfined",
         self_uid=0,
         target_uid=1000,
         target_pid=1,
@@ -704,8 +933,8 @@ def test_read_only_does_not_claim_gdb_launch_it_never_measured() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=LsmStatus(Lsm.APPARMOR, "unconfined"),
+        target_context="unconfined",
         self_uid=1000,
         target_uid=1000,
         target_pid=1,
@@ -724,8 +953,8 @@ def test_an_unmeasured_scratch_attach_does_not_claim_launch_only() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=LsmStatus(Lsm.APPARMOR, "unconfined"),
+        target_context="unconfined",
         self_uid=0,
         target_uid=1000,
         target_pid=1,
@@ -837,7 +1066,11 @@ JSON_KEYS = {
     "yama_scope",
     "seccomp_mode",
     "no_new_privs",
-    "apparmor_profile",
+    # Three fields where `apparmor_profile` was one, and named the wrong module
+    # on every SELinux node (issue #52).
+    "lsm",
+    "lsm_context",
+    "lsm_enforcing",
     "self_uid",
     "target_uid",
     "target_pid",
@@ -873,6 +1106,30 @@ def test_json_shape_is_stable(tmp_path: Path) -> None:
     assert payload["child_attach_ok"] is True
     assert payload["target_attach_ok"] is False
     assert payload["proc_reads"]["root"] is True
+
+
+def test_json_carries_the_module_beside_the_context(tmp_path: Path) -> None:
+    """One field held both answers and got one of them wrong.
+
+    A consumer that reads ``lsm_context`` alone can no longer conclude AppArmor
+    from it, which is the whole of the rename (issue #52).
+    """
+    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+    payload = json.loads(format_report(report, True))
+
+    assert payload["lsm"] == "selinux"
+    assert payload["lsm_context"] == DIAMOND_CONTEXT
+    assert payload["lsm_enforcing"] is True
+    assert payload["blocker"] == "selinux"
+    assert "ausearch -m avc" in payload["explanation"]
+
+
+def test_the_human_report_names_the_module_it_read(tmp_path: Path) -> None:
+    report = probe(1, proc=diamond_proc(tmp_path), attacher=attacher())
+    text = format_report(report, False)
+
+    assert "AppArmor" not in text
+    assert f"LSM selinux (enforcing) - {DIAMOND_CONTEXT}" in " ".join(text.split())
 
 
 def test_json_verdict_names_round_trip(tmp_path: Path) -> None:
@@ -914,11 +1171,8 @@ def test_human_report_without_target(tmp_path: Path) -> None:
 def test_main_returns_the_exit_code(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code = main(
-        ["1", "--json"],
-        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000),
-        attacher=attacher(),
-    )
+    proc = make_proc(tmp_path, self_uid=1000, target_uid=1000)
+    code = main(["1", "--json"], proc=proc, sysfs=sysfs_for(proc), attacher=attacher())
     assert code == Verdict.READ_ONLY.value
     payload = json.loads(capsys.readouterr().out)
     assert payload["exit_code"] == code
@@ -927,9 +1181,11 @@ def test_main_returns_the_exit_code(
 def test_main_discovers_the_target_from_the_container_id(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    proc = make_proc(tmp_path, self_uid=1000, target_uid=1000)
     code = main(
         ["--json", "--container-id", f"containerd://{TARGET_CID}"],
-        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000),
+        proc=proc,
+        sysfs=sysfs_for(proc),
         attacher=attacher(),
     )
     payload = json.loads(capsys.readouterr().out)
@@ -942,7 +1198,8 @@ def test_main_refuses_to_guess_the_target(
 ) -> None:
     """PID 1 is /pause under shareProcessNamespace, so no id means no target."""
     monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
-    code = main(["--json"], proc=make_proc(tmp_path), attacher=attacher())
+    proc = make_proc(tmp_path)
+    code = main(["--json"], proc=proc, sysfs=sysfs_for(proc), attacher=attacher())
     payload = json.loads(capsys.readouterr().out)
     assert payload["target_pid"] is None
     assert code == Verdict.LIVE_ATTACH.value

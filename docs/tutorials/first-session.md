@@ -149,9 +149,9 @@ Three lines are worth learning to read:
 * **`rung`** — what the *cluster* admitted. `degraded` means `SYS_PTRACE` was
   refused by Pod Security Admission and podbench fell back to the target's own
   UID. That is a normal outcome, not a failure, and the command still exits `0`.
-* **`blocker`** — what actually stops ptrace, if anything. Four unrelated
-  subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
-  `EPERM`; this line names which.
+* **`blocker`** — what actually stops ptrace, if anything. Five unrelated
+  subsystems (missing capability, Yama, seccomp, and the node's LSM — AppArmor or
+  SELinux) refuse with the same `EPERM`; this line names which.
 * **`yama` and `node`** — both are per-node. Attach working on one pod and being
   denied on the next, in the same cluster, is expected: kernel flavours differ.
   podbench never caches a cluster-wide answer.

@@ -44,6 +44,7 @@ from .model import CapabilityReport, ProcInfo, Verdict, describe_gated_fallback
 from .probe import Attacher, probe
 from .proc import (
     DEFAULT_PROC,
+    DEFAULT_SYSFS,
     DELETED_SUFFIX,
     ProcessListing,
     env_target_container_id,
@@ -245,7 +246,7 @@ def resolve_target_pid(
 def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
     """Say which mechanism denies attach, and offer the way that always works.
 
-    Four subsystems refuse ``PTRACE_ATTACH`` with the same ``EPERM``, so a bare
+    Five subsystems refuse ``PTRACE_ATTACH`` with the same ``EPERM``, so a bare
     "attach failed" costs an afternoon. The probe has already named the
     mechanism; this only has to spend it, and to point at gdb-launch, which
     needs no capability at all (3.12).
@@ -446,6 +447,7 @@ def _pids_command(*, proc: Path) -> _Command:
 def _dbg_command(
     *,
     proc: Path,
+    sysfs: Path,
     attacher: Attacher | None,
     runner: GdbRunner,
     program_args: Sequence[str],
@@ -519,6 +521,7 @@ def _dbg_command(
                 launch=launch,
                 program_args=program_args,
                 proc=proc,
+                sysfs=sysfs,
                 attacher=attacher,
                 runner=runner,
             )
@@ -555,6 +558,7 @@ def _run_dbg(
     launch: str | None,
     program_args: Sequence[str],
     proc: Path,
+    sysfs: Path,
     attacher: Attacher | None,
     runner: GdbRunner,
 ) -> int:
@@ -593,7 +597,7 @@ def _run_dbg(
         print(command_file_text(commands), end="")
         return 0
 
-    report = probe(pid, proc=proc, attacher=attacher)
+    report = probe(pid, proc=proc, sysfs=sysfs, attacher=attacher)
     if report.verdict is not Verdict.LIVE_ATTACH:
         print(attach_blocked_message(report, pid), file=sys.stderr)
         # capreport's exit codes, so a script can branch on the same numbers.
@@ -605,6 +609,7 @@ def main(
     args: Sequence[str] | None = None,
     *,
     proc: Path = DEFAULT_PROC,
+    sysfs: Path = DEFAULT_SYSFS,
     attacher: Attacher | None = None,
     runner: GdbRunner = exec_gdb,
 ) -> int:
@@ -624,7 +629,11 @@ def main(
     app.command(name="pids", help=_PIDS_DESCRIPTION)(_pids_command(proc=proc))
     app.command(name="dbg", help=_DBG_DESCRIPTION)(
         _dbg_command(
-            proc=proc, attacher=attacher, runner=runner, program_args=program_args
+            proc=proc,
+            sysfs=sysfs,
+            attacher=attacher,
+            runner=runner,
+            program_args=program_args,
         )
     )
     return run(app, argv, prog="podbench")

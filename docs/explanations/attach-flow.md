@@ -83,7 +83,7 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH
 │   exec -c SEAT -- podbench agent --print-login-user              │
 │        can sshd resolve a login name for the uid it runs as?     │
 │   exec -c SEAT -- podbench capreport --json (unless --no-probe)  │
-│        which of ptrace's four blockers is saying no?             │
+│        which of ptrace's five blockers is saying no?             │
 │                                                                  │
 │   Nothing here is inferred from the spec that was submitted.     │
 └─────────────────────────────────┬────────────────────────────────┘
@@ -325,9 +325,14 @@ The report is six lines of *measured* capability, not of requested capability:
 * **ssh seat** and **exec seat**, reported separately, because the ssh half needs an
   NSS identity the exec half does not.
 
-When ptrace is denied, the report names *which* of the four mechanisms said no —
-missing capability, Yama's `ptrace_scope`, seccomp or AppArmor — because all four
-return the same `EPERM`, and that naming is the point of the whole probe.
+When ptrace is denied, the report names *which* of the five mechanisms said no —
+missing capability, Yama's `ptrace_scope`, seccomp, or whichever LSM the node runs,
+AppArmor or SELinux — because all five return the same `EPERM`, and that naming is
+the point of the whole probe. The LSM is *detected*, from
+`/sys/fs/selinux/enforce` and `/sys/module/apparmor/parameters/enabled`, rather than
+guessed from the context string: podbench guessed AppArmor for a year, and an
+SELinux denial on a Diamond pod was reported as `unknown` with the evidence
+mislabelled in its own output (issue #52).
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
 whose pid, sysroot-prefixed program path and setup ordering are things the

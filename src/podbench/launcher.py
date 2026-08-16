@@ -59,6 +59,8 @@ from .model import (
     Blocker,
     CapabilityReport,
     ContainerRef,
+    Lsm,
+    LsmStatus,
     PodRef,
     Rung,
     Verdict,
@@ -1200,7 +1202,7 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         yama_scope=_as_int(payload.get("yama_scope")),
         seccomp_mode=_as_int(payload.get("seccomp_mode")) or 0,
         no_new_privs=bool(payload.get("no_new_privs")),
-        apparmor_profile=_as_str(payload.get("apparmor_profile")),
+        lsm=_lsm_from_json(payload),
         self_uid=_as_int(payload.get("self_uid")) or 0,
         target_uid=_as_int(payload.get("target_uid")),
         target_pid=_as_int(payload.get("target_pid")),
@@ -1210,6 +1212,28 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         proc_reads=reads,
         notes=notes,
     )
+
+
+def _lsm_from_json(payload: Mapping[str, Any]) -> LsmStatus:
+    """Rebuild the LSM status, including from an image that predates issue #52.
+
+    Such an image emits ``apparmor_profile``, which on any RHEL-family node
+    holds an SELinux context — the mislabelling this replaced. The string is
+    worth carrying over, so it is; the module it came from is left
+    :attr:`Lsm.UNKNOWN`, because guessing it from the shape of the context is
+    the mistake, not the fix.
+    """
+    raw = _as_str(payload.get("lsm"))
+    try:
+        kind = Lsm(raw) if raw is not None else Lsm.UNKNOWN
+    except ValueError:
+        # A newer image naming a module this launcher has never heard of. The
+        # context still reads, so report it rather than dropping the evidence.
+        kind = Lsm.UNKNOWN
+    context = _as_str(payload.get("lsm_context")) or _as_str(
+        payload.get("apparmor_profile")
+    )
+    return LsmStatus(kind, context, _as_bool(payload.get("lsm_enforcing")))
 
 
 def _verdict_from(value: object) -> Verdict | None:
@@ -1260,8 +1284,9 @@ def features(session: Session) -> tuple[Feature, ...]:
     """What the landed seat supports, naming the blocker for what it does not.
 
     Never inferred from the rung alone. The rung is what the *cluster* admitted;
-    whether ptrace actually works also depends on Yama, seccomp and AppArmor,
-    which are node-local and were measured inside the container (report 4.5).
+    whether ptrace actually works also depends on Yama, seccomp and whichever
+    LSM the node runs, all of which are node-local and were measured inside the
+    container (report 4.5).
     """
     report = session.report
     # Qualifies the tick rather than repeating the warning: a bare [x] says the
@@ -1275,7 +1300,7 @@ def features(session: Session) -> tuple[Feature, ...]:
             Feature("live attach (gdb -p <pid>)", False, unknown, note=deadline),
             Feature(READS_FEATURE, False, unknown),
             Feature(LAUNCH_FEATURE, False, unknown),
-            _iterate_feature(),
+            _iterate_feature(report),
             *_seat_features(session),
         )
     return (
@@ -1306,7 +1331,7 @@ def features(session: Session) -> tuple[Feature, ...]:
             if report.child_attach_ok is False
             else "the scratch attach was not measured, so this is not claimed",
         ),
-        _iterate_feature(),
+        _iterate_feature(report),
         *_seat_features(session),
     )
 
@@ -1415,13 +1440,35 @@ def _identity_note(session: Session, *, usable: bool) -> str:
     )
 
 
-def _iterate_feature() -> Feature:
+def _iterate_feature(report: CapabilityReport | None) -> Feature:
+    """Why Observe cannot iterate — and, on the closed rungs, that the other
+    two modes are not closed with it.
+
+    A reader who has just watched attach and every read be denied assumes the
+    pod is shut to podbench altogether. It is not: `dev` and `hotfix` debug the
+    sidecar's *own child*, which is the one attach no policy in play refuses and
+    which this very seat has just measured as permitted (issue #52). Saying so
+    beside the empty box is what turns a dead end into the next command."""
     return Feature(
         "iterate (edit, relaunch, verify through the Service)",
         False,
         "attach shares a live pod, where killing PID 1 restarts the container "
         "and a liveness probe would kill a stopped one. The relaunch loop needs "
         "a sacrificial dev pod (`podbench dev`), never the live workload.",
+        note=_other_modes_note(report),
+    )
+
+
+def _other_modes_note(report: CapabilityReport | None) -> str:
+    # Only on the rung that needs it. Under a live-attach verdict this would be
+    # noise, and a report people skim is one that has stopped working.
+    if report is None or report.verdict is not Verdict.LAUNCH_ONLY:
+        return ""
+    return (
+        "what closed this pod does not close the other two modes: `podbench "
+        "dev` and `podbench hotfix` debug the sidecar's own child, the attach "
+        "this seat just measured as permitted, so on a pod like this one they "
+        "are the way in"
     )
 
 

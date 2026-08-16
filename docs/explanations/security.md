@@ -138,7 +138,7 @@ matches the **target's UID** and never defaults to root.
 `PTRACE_MODE_ATTACH`, so any "read-only memory inspection" feature planned on
 them does not work in the degraded rung.
 
-## Four ways to be denied, one errno
+## Five ways to be denied, one errno
 
 Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
 
@@ -151,12 +151,34 @@ Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
 4. **AppArmor** — a profile denying ptrace between the two domains. Everything
    observed ran under `cri-containerd.apparmor.d (enforce)`, which permits
    ptrace between peers *in the same profile*; a target with a custom profile
-   breaks that.
+   breaks that;
+5. **SELinux** — policy denying ptrace between the two contexts, on any
+   RHEL-family node. A Diamond production pod ruled out all four of the above —
+   same uid, no capability anywhere, `ptrace_scope=0`, seccomp permitting
+   `ptrace` — and attach still failed, with both sides carrying
+   `system_u:system_r:spc_t:s0`.
 
-All four return `EPERM`. `capreport` reads the capability sets, `Seccomp`,
-`NoNewPrivs`, both AppArmor profiles and the Yama scope, then runs a scratch
-`PTRACE_ATTACH` on its own forked child — always permitted by Yama, so a failure
-*there* is structural — and a live attach on the target. It names the mechanism.
+All five return `EPERM`. `capreport` reads the capability sets, `Seccomp`,
+`NoNewPrivs`, the security context of both itself and the target and the Yama
+scope, then runs a scratch `PTRACE_ATTACH` on its own forked child — always
+permitted by Yama, so a failure *there* is structural — and a live attach on the
+target. It names the mechanism.
+
+**Which LSM wrote that context is detected, not assumed.** `/proc/PID/attr/current`
+belongs to whichever module is loaded, and podbench read it as an AppArmor profile
+unconditionally — which is how the Diamond denial came back as `blocker: unknown`
+with `"apparmor_profile": "system_u:system_r:spc_t:s0"`, an SELinux context, printed
+beside it (issue #52). The module now comes from `/sys/fs/selinux/enforce` and
+`/sys/module/apparmor/parameters/enabled`, and the report carries `lsm`,
+`lsm_context` and `lsm_enforcing` rather than one field naming the wrong module.
+
+**SELinux is the one blocker whose evidence is off the pod.** Enforcing tells you
+the policy is live, but the AVC record naming the source type, target type, class
+and permission is in the *node's* audit log, which no seat can read. `capreport`
+says so and points at `ausearch -m avc -ts recent` on the node named in the report,
+which needs someone with access to it. A permissive policy
+(`/sys/fs/selinux/enforce` is `0`) logs the denial and allows the call, so podbench
+never names it as the blocker.
 
 Yama is per node and differs by **kernel flavour, not architecture**: two arm64
 nodes in the same cluster disagreed, one denying and one allowing the
@@ -293,6 +315,12 @@ Stated so nobody relies on them:
   profile, and ptrace worked because that profile permits ptrace between peers
   within it. A custom profile on the target breaks that, and the diagnostic text
   for that case has never been seen in the field.
+* **The SELinux blocker is named by elimination.** On the Diamond pod every other
+  mechanism measurably said "not me" and the policy is enforcing, which is a strong
+  inference and not yet a fact: no AVC record has been read back from that node, and
+  until one is, the specific rule — and whether it is a ptrace denial at all — is
+  unconfirmed. Both sides carried the *same* context, so it is not an obvious
+  cross-domain refusal.
 * **Targets in user namespaces**, and targets with unusual UID mappings, were
   never tested.
 * **Behaviour through konnectivity or an API gateway** is unknown; every
