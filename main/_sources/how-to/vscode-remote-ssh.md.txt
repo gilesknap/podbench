@@ -248,8 +248,19 @@ arguments. It kills the server after exactly five minutes idle.
   Only the sidecar's tooling (uv's caches, toolchains and venvs) is pinned to
   the workspace volume; `~/.vscode-server` follows the passwd home. Declaring a
   `podbench-home` volume is what keeps that off the container's writable layer.
-* Open `/` in Observe mode and browse the workload's filesystem through
-  `/proc/<pid>/root`. The `pids` helper tells you which pid.
+* In Observe mode open the seat's **home** — `/root`, or `/home/podbench` where
+  the pod declares a `podbench-home` volume — and reach the workload's
+  filesystem through `/proc/<pid>/root` from there. The `pids` helper tells you
+  which pid.
+
+  Do **not** open `/`. Opening a *file* under `/proc` is fine; opening a
+  *folder* at `/` points the file watcher and the search indexer at `/proc`,
+  where every `/proc/<pid>/root` is a symlink into another container's rootfs
+  and the walk has no bottom. A seat cannot reserve memory of its own, and an
+  OOM-killed ephemeral container **cannot be restarted** — the seat is gone and
+  its name is burnt for the pod's lifetime. The seat ships the settings that
+  make this survivable (below), which is a second line of defence and not a
+  reason to try it.
 * `.vscode/launch.json` lives **in the remote window**; every path in it is a
   path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
   [Debug with gdb](debug-with-gdb.md) and
@@ -257,6 +268,38 @@ arguments. It kills the server after exactly five minutes idle.
 * Terminals are ordinary ssh sessions with the container's `PATH`, so `pids`,
   `dbg`, `capreport`, `dev-bootstrap`, `podbench-run` and `podbench-stop` are
   all there.
+
+## What the seat configures for you
+
+`podbench agent` writes VS Code's **machine-level** settings into the seat as
+part of the same idempotent start-up that writes the host key and the authorized
+keys, at `~/.vscode-server/data/Machine/settings.json` — where `~` is the home
+the *passwd record* names, so on a `podbench-home` volume they persist across
+re-attaches. Machine scope is the only scope that applies to every folder you
+open without you having configured anything, which matters because the folder
+that kills a seat is the first one.
+
+| Setting | Why |
+|---|---|
+| `files.watcherExclude`, `search.exclude`, `C_Cpp.files.exclude` for `**/proc/**`, `**/sys/**`, `**/dev/**` | the walk with no bottom, above. `/dev/fd` is a symlink to `/proc/self/fd`, so excluding `/proc` alone leaves a way back in, and cpptools' tag parser walks the workspace on its own account |
+| the same three for `**/.vscode-server/**` | the seat's own home is a folder you are told to open, and `~/.vscode-server` is 700 MiB before a single extension |
+| `search.followSymlinks: false` | ripgrep is given `--follow` by default. `/proc/<pid>/root` is the doorway into every other container in the pod, and `/proc/self/root` makes the search re-enter itself |
+| `python.analysis.exclude` for `/proc/**`, `/sys/**`, `/dev/**` | Pylance walks separately from search, and spells its excludes as a list of absolute globs |
+
+`files.exclude` is deliberately **not** set: that would hide `/proc` from the
+explorer, and reading the workload's files through `/proc/<pid>/root` is what
+Observe mode is for.
+
+Settings you have written yourself are never overwritten. The agent adds only
+the keys that are missing, so a deliberate `"**/proc/**": false` survives, and a
+file it cannot parse — VS Code allows comments in `settings.json`, `json` does
+not — is left exactly as it is, with the reason reported by
+`podbench agent --self-check` and in the container's start-up output.
+
+The one thing that removes them is Remote-SSH's **Kill/Uninstall VS Code Server
+on Host**, which deletes `~/.vscode-server` wholesale. Nothing rewrites the file
+until the agent next starts, so re-attach (`podbench attach --new`) or re-create
+the dev pod before opening a folder again.
 
 ## When it goes wrong
 

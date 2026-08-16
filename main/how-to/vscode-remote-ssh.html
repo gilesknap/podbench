@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b4.dev17+g331b68300 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b4.dev21+g80565f8df documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=632bb75b"></script>
+    <script src="../_static/documentation_options.js?v=eb918b62"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -789,8 +789,19 @@ Only the sidecar’s tooling (uv’s caches, toolchains and venvs) is pinned to
 the workspace volume; <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> follows the passwd home. Declaring a
 <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume is what keeps that off the container’s writable layer.</p>
 </li>
-<li><p>Open <code class="docutils literal notranslate"><span class="pre">/</span></code> in Observe mode and browse the workload’s filesystem through
-<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>. The <code class="docutils literal notranslate"><span class="pre">pids</span></code> helper tells you which pid.</p></li>
+<li><p>In Observe mode open the seat’s <strong>home</strong> — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> where
+the pod declares a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume — and reach the workload’s
+filesystem through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> from there. The <code class="docutils literal notranslate"><span class="pre">pids</span></code> helper tells you
+which pid.</p>
+<p>Do <strong>not</strong> open <code class="docutils literal notranslate"><span class="pre">/</span></code>. Opening a <em>file</em> under <code class="docutils literal notranslate"><span class="pre">/proc</span></code> is fine; opening a
+<em>folder</em> at <code class="docutils literal notranslate"><span class="pre">/</span></code> points the file watcher and the search indexer at <code class="docutils literal notranslate"><span class="pre">/proc</span></code>,
+where every <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a symlink into another container’s rootfs
+and the walk has no bottom. A seat cannot reserve memory of its own, and an
+OOM-killed ephemeral container <strong>cannot be restarted</strong> — the seat is gone and
+its name is burnt for the pod’s lifetime. The seat ships the settings that
+make this survivable (below), which is a second line of defence and not a
+reason to try it.</p>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> lives <strong>in the remote window</strong>; every path in it is a
 path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
 <a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a> and
@@ -799,6 +810,50 @@ path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
 <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code> are
 all there.</p></li>
 </ul>
+</section>
+<section id="what-the-seat-configures-for-you">
+<h2>What the seat configures for you<a class="headerlink" href="#what-the-seat-configures-for-you" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code> writes VS Code’s <strong>machine-level</strong> settings into the seat as
+part of the same idempotent start-up that writes the host key and the authorized
+keys, at <code class="docutils literal notranslate"><span class="pre">~/.vscode-server/data/Machine/settings.json</span></code> — where <code class="docutils literal notranslate"><span class="pre">~</span></code> is the home
+the <em>passwd record</em> names, so on a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume they persist across
+re-attaches. Machine scope is the only scope that applies to every folder you
+open without you having configured anything, which matters because the folder
+that kills a seat is the first one.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Why</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">files.watcherExclude</span></code>, <code class="docutils literal notranslate"><span class="pre">search.exclude</span></code>, <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code> for <code class="docutils literal notranslate"><span class="pre">**/proc/**</span></code>, <code class="docutils literal notranslate"><span class="pre">**/sys/**</span></code>, <code class="docutils literal notranslate"><span class="pre">**/dev/**</span></code></p></td>
+<td><p>the walk with no bottom, above. <code class="docutils literal notranslate"><span class="pre">/dev/fd</span></code> is a symlink to <code class="docutils literal notranslate"><span class="pre">/proc/self/fd</span></code>, so excluding <code class="docutils literal notranslate"><span class="pre">/proc</span></code> alone leaves a way back in, and cpptools’ tag parser walks the workspace on its own account</p></td>
+</tr>
+<tr class="row-odd"><td><p>the same three for <code class="docutils literal notranslate"><span class="pre">**/.vscode-server/**</span></code></p></td>
+<td><p>the seat’s own home is a folder you are told to open, and <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> is 700 MiB before a single extension</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">search.followSymlinks:</span> <span class="pre">false</span></code></p></td>
+<td><p>ripgrep is given <code class="docutils literal notranslate"><span class="pre">--follow</span></code> by default. <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is the doorway into every other container in the pod, and <code class="docutils literal notranslate"><span class="pre">/proc/self/root</span></code> makes the search re-enter itself</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">python.analysis.exclude</span></code> for <code class="docutils literal notranslate"><span class="pre">/proc/**</span></code>, <code class="docutils literal notranslate"><span class="pre">/sys/**</span></code>, <code class="docutils literal notranslate"><span class="pre">/dev/**</span></code></p></td>
+<td><p>Pylance walks separately from search, and spells its excludes as a list of absolute globs</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">files.exclude</span></code> is deliberately <strong>not</strong> set: that would hide <code class="docutils literal notranslate"><span class="pre">/proc</span></code> from the
+explorer, and reading the workload’s files through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is what
+Observe mode is for.</p>
+<p>Settings you have written yourself are never overwritten. The agent adds only
+the keys that are missing, so a deliberate <code class="docutils literal notranslate"><span class="pre">&quot;**/proc/**&quot;:</span> <span class="pre">false</span></code> survives, and a
+file it cannot parse — VS Code allows comments in <code class="docutils literal notranslate"><span class="pre">settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">json</span></code> does
+not — is left exactly as it is, with the reason reported by
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span> <span class="pre">--self-check</span></code> and in the container’s start-up output.</p>
+<p>The one thing that removes them is Remote-SSH’s <strong>Kill/Uninstall VS Code Server
+on Host</strong>, which deletes <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> wholesale. Nothing rewrites the file
+until the agent next starts, so re-attach (<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span></code>) or re-create
+the dev pod before opening a folder again.</p>
 </section>
 <section id="when-it-goes-wrong">
 <h2>When it goes wrong<a class="headerlink" href="#when-it-goes-wrong" title="Link to this heading">#</a></h2>
@@ -898,6 +953,7 @@ behaviour when the pod is deleted mid-session.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first-connect">First connect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#extensions-and-staying-slim">Extensions, and staying slim</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#once-you-are-connected">Once you are connected</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-seat-configures-for-you">What the seat configures for you</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-it-goes-wrong">When it goes wrong</a></li>
 </ul>
   </nav></div>
