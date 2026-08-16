@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -40,6 +41,7 @@ import typer
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
 from .budget import ProbeBudget, probe_budgets, probe_qualifier, probe_warning
 from .cli import new_app, require_subcommand, run
+from .editor import EditorError, open_seat, resolve_editor
 from .kubectl import (
     EphemeralContainerError,
     Kubectl,
@@ -2493,7 +2495,62 @@ _PrintConfig = Annotated[
 ]
 
 
-def _build_app(runner: Runner | None) -> typer.Typer:
+def _editor_for(
+    open_editor: bool, print_config: bool, which: Callable[[str], str | None]
+) -> str | None:
+    """The editor ``--open`` will drive, or ``None`` when it was not asked for.
+
+    ``--print-config`` is refused rather than tolerated: it prints the stanza
+    instead of writing it, and ``code --remote ssh-remote+<alias>`` can only
+    reach a host **ssh** resolves — so the pair would land a seat, print a
+    stanza and then fail on a host that exists nowhere.
+    """
+    if not open_editor:
+        return None
+    if print_config:
+        raise EditorError(
+            "--open needs the ssh stanza on disk and --print-config writes "
+            "none: `code --remote ssh-remote+<alias>` resolves the alias "
+            "through ssh, which reads the config dir. Use one or the other."
+        )
+    return resolve_editor(which)
+
+
+def _open_editor(
+    kubectl: Kubectl,
+    session: Session,
+    wiring: SshSeat,
+    *,
+    editor: str,
+    runner: Runner | None,
+) -> list[str]:
+    """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
+
+    The folder is the seat's **home**, taken from the same layout the
+    ProxyCommand is derived from rather than hardcoded: a pod that declares
+    :data:`podbench.model.SEAT_HOME_VOLUME` moves it, and the guarantee that
+    matters is that this is never ``/`` — the walk from there has no bottom and
+    ends the seat.
+    """
+    if wiring.alias is None:
+        raise EditorError(
+            "--open: this seat has no ssh alias, so there is nothing for "
+            "Remote-SSH to connect to. The block above names the mechanism and "
+            "the ways out; the kubectl exec helpers work now regardless."
+        )
+    return open_seat(
+        kubectl,
+        session.seat,
+        alias=wiring.alias,
+        folder=seat_layout(session).home,
+        editor=editor,
+        runner=runner,
+    )
+
+
+def _build_app(
+    runner: Runner | None, which: Callable[[str], str | None]
+) -> typer.Typer:
     app = new_app()
 
     @app.callback(invoke_without_command=True)
@@ -2593,6 +2650,16 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
+        open_editor: Annotated[
+            bool,
+            typer.Option(
+                "--open",
+                help="open the seat's home in VS Code over Remote-SSH once it "
+                "lands, with the /proc and /sys excludes, this target's "
+                "launch.json and only the extensions its debugger needs. Needs "
+                "`code` on PATH",
+            ),
+        ] = False,
         timeout: Annotated[
             float,
             typer.Option(
@@ -2610,6 +2677,10 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         # whichever pod is chosen, and asking someone to pick one first would
         # spend their answer on it.
         key_path, public_key = read_public_key(identity)
+        # Same rule, and it costs more here: an ephemeral container's name is
+        # permanent, so a run that was always going to end at "no `code`" must
+        # not burn one on the way.
+        editor = _editor_for(open_editor, print_config, which)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         chosen = image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
 
@@ -2638,17 +2709,26 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         session = replace(session, warnings=(*session.warnings, resize_note))
         print(format_session(session))
         print()
-        print(
-            _emit(
-                kube,
-                session,
-                identity=key_path,
-                config_dir=config_dir,
-                host_alias=host_alias,
-                ssh_user=ssh_user,
-                print_config=print_config,
-            ).note
+        wiring = _emit(
+            kube,
+            session,
+            identity=key_path,
+            config_dir=config_dir,
+            host_alias=host_alias,
+            ssh_user=ssh_user,
+            print_config=print_config,
         )
+        print(wiring.note)
+        if editor is not None:
+            print()
+            for note in _open_editor(
+                kube, session, wiring, editor=editor, runner=runner
+            ):
+                # Wrapped like every other block this verb prints: one of these
+                # notes carries the ephemeral-storage figures and is a paragraph
+                # rather than a line.
+                for line in _paragraph(note, first="", indent="  "):
+                    print(line)
         raise typer.Exit(0)
 
     @app.command(
@@ -2781,24 +2861,32 @@ def _emit(
     )
 
 
-def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
+def main(
+    args: Sequence[str] | None = None,
+    *,
+    runner: Runner | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> int:
     """Entry point for the cluster-side ``podbench`` verbs.
 
     ``runner`` is the seam the tests use; the CLI passes none and the calls go
     to the real ``kubectl``, which is what makes auth the kubeconfig's problem
     and not podbench's. It is also why the app is built here rather than at
-    import time: every command closes over it.
+    import time: every command closes over it. ``which`` is the same seam for
+    ``--open``: whether this laptop has ``code`` on PATH decides what that flag
+    does, and a unit test must not answer it from the machine it runs on.
 
     A degraded seat is a success. Returning non-zero for "the cluster would not
     grant SYS_PTRACE" would make the honest capability report look like a
     failure, which is exactly the outcome the brief asks for instead.
     """
     try:
-        return run(_build_app(runner), args, prog="podbench")
+        return run(_build_app(runner, which), args, prog="podbench")
     except (
         LauncherError,
         KubectlError,
         EphemeralContainerError,
+        EditorError,
         TimeoutError,
     ) as error:
         print(f"podbench: {error}", file=sys.stderr)

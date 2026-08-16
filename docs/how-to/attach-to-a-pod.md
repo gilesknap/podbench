@@ -192,6 +192,26 @@ that does not land.
 It also needs `pods/resize` `patch`, which the chart grants separately from the
 rest.
 
+## Opening VS Code on the seat
+
+```
+$ podbench attach web -n demo --open
+```
+
+`--open` finishes the job the stanza starts: it configures the folder, installs
+the extension this target's debugger needs **in the remote window**, and opens
+the seat's home — `/root`, or `/home/podbench` on a `podbench-home` volume.
+Never `/`, which is the one folder that can end the seat.
+
+It needs `code` on your PATH and the **Remote - SSH** extension in the local VS
+Code. `code` is looked for before the pod is touched, so a laptop without it
+costs you a message and not a burnt container name. `--open` and
+`--print-config` are mutually exclusive: the second writes no stanza, and
+`code --remote` resolves the alias through ssh.
+
+[VS Code Remote-SSH](vscode-remote-ssh.md) has what it writes and why, and the
+warning that no GUI client has driven this yet.
+
 ## Getting the ssh stanza again
 
 ```

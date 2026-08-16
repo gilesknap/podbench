@@ -321,6 +321,10 @@ what that seat can actually do.
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
+│ --open                                       open the seat's home in VS Code over Remote-SSH     │
+│                                              once it lands, with the /proc and /sys excludes,    │
+│                                              this target's launch.json and only the extensions   │
+│                                              its debugger needs. Needs `code` on PATH            │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -418,6 +422,43 @@ Notes:
   cost of the target's own group. It is opt-in for that cost, not because a
   cluster would refuse it — the restricted Pod Security Standard does not
   constrain `runAsGroup`.
+* **`--open`** takes the seat from "landed" to "bound breakpoint" in one
+  command. It needs `code` on your PATH, and the local VS Code needs the
+  **Remote - SSH** extension; both are checked at the point of use and named in
+  the failure rather than reported as a traceback. `code` is looked for
+  *before* the seat is landed, because an ephemeral container's name is
+  permanent and a run that was always going to end at "no `code`" must not burn
+  one. In order it:
+  * writes `<home>/.vscode/settings.json` with the `files.watcherExclude`,
+    `search.exclude` and `python.analysis.exclude` entries for `/proc`, `/sys`
+    and `/dev` — **before** the window opens, because the walk starts the
+    moment it does. This is the same guard `podbench agent` writes at machine
+    scope, in the one place that survives *Kill/Uninstall VS Code Server on
+    Host*;
+  * runs `debug-config --print-config` in the seat and merges the result into
+    `<home>/.vscode/launch.json`, matching on configuration name, so a second
+    `--open` updates its own entries rather than appending copies;
+  * installs **only** the extensions the emitted configurations name, with
+    `code --remote ssh-remote+<alias> --install-extension` — which is the
+    "Install in SSH: `<alias>`" button as a flag. A locally installed extension
+    runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
+    means anything, and the failure looks like a bad `launch.json`. They are
+    also recommended in `<home>/.vscode/extensions.json` as a fallback;
+  * opens the **seat's home** — `/root`, or `/home/podbench` on a
+    `podbench-home` volume. Never `/`: a folder there points the watcher at
+    `/proc/<pid>/root`, which is a symlink into another container's rootfs, and
+    the walk has no bottom.
+
+  It cannot be combined with `--print-config`, which writes no stanza:
+  `code --remote ssh-remote+<alias>` resolves the alias through ssh, and ssh
+  reads the config dir. A target no debugger fits is not a failure — the
+  excludes, the folder and the terminals are the rest of the seat, and
+  `debug-config` has already named every mechanism that said no.
+
+  Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
+  mode is on the **workload's** ephemeral-storage budget: a server plus one
+  extension measured 1215 MiB live, and `ms-vscode.cpptools` alone is 330 MiB.
+  That is why only the flavour's own extensions are installed.
 * Exit code is `0` for any seat that lands, including a degraded one; `2` for a
   real error.
 

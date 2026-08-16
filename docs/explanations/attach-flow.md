@@ -102,6 +102,20 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH
                                   ├─ seat has no NSS login ──▶ print why, no stanza
                                   ▼
         ssh podbench-<ns>-<pod>   ·   Remote-SSH: Connect to Host      exit 0
+                                  │
+                                  ▼   (only with --open)
+┌──────────────────────────────────────────────────────────────────┐
+│ DRIVE THE CLIENT                                                 │
+│                                                                  │
+│   exec -c SEAT -- debug-config --print-config                    │
+│        one assessment; its adapter types name the extensions     │
+│   write <home>/.vscode/settings.json   ← the /proc excludes,     │
+│        BEFORE the window: the walk starts when it opens          │
+│   write <home>/.vscode/launch.json, extensions.json              │
+│   code --remote ssh-remote+<alias> --install-extension …         │
+│        the "Install in SSH:" button, and only this flavour's     │
+│   code --remote ssh-remote+<alias> <home>       never /          │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 A degraded seat is still `exit 0`. Returning non-zero because the cluster would not
@@ -322,7 +336,12 @@ return the same `EPERM`, and that naming is the point of the whole probe.
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
 whose pid, sysroot-prefixed program path and setup ordering are things the
-launcher knows and a human cannot guess.
+launcher knows and a human cannot guess. `attach --open` runs that same command
+over `kubectl exec` and follows it with the two steps nobody should have to get
+right by hand: which folder to open — a verb that picks the folder is a verb
+that cannot pick `/` — and installing the extension in the *remote* window,
+where the debug adapter has to run for any `/proc/<pid>/root` path to mean
+anything.
 
 ## See also
 

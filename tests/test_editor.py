@@ -1,0 +1,334 @@
+"""Tests for ``attach --open``.
+
+Nothing here starts an editor or touches a cluster. :class:`FakeSeat` is both
+the ``kubectl`` and the ``code`` on the far end of the injected runner: it keeps
+a dictionary of files so a write is visible to the next read, which is what lets
+the merge behaviour be asserted the way a second ``--open`` would meet it.
+
+Two orderings are asserted rather than implied, because both fail *silently*
+when broken: the excludes must be on disk before the window that starts the
+walk, and an extension must install with ``--remote``, since a locally installed
+one runs the debug adapter on the laptop where no ``/proc/<pid>/root`` path
+means anything.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from typing import Any
+
+import pytest
+
+from podbench.editor import EditorError, open_seat, resolve_editor
+from podbench.kubectl import CommandResult, Kubectl
+from podbench.model import ContainerRef, PodRef
+
+SEAT = ContainerRef(PodRef("demo", "api-7f9"), "podbench-1")
+ALIAS = "podbench-demo-api-7f9"
+HOME = "/root"
+
+DEBUGPY_CONFIG: dict[str, Any] = {
+    "name": "podbench: attach to app.py (debugpy)",
+    "type": "debugpy",
+    "request": "attach",
+}
+CPPDBG_CONFIG: dict[str, Any] = {
+    "name": "podbench: attach to victim (gdb)",
+    "type": "cppdbg",
+    "request": "attach",
+}
+
+
+class FakeSeat:
+    """One runner for both ends: ``kubectl exec`` into a dict, and ``code``."""
+
+    def __init__(
+        self,
+        *,
+        configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
+        debug_config_rc: int = 0,
+        debug_config_stderr: str = "",
+        files: dict[str, str] | None = None,
+        install_rc: int = 0,
+        open_rc: int = 0,
+    ) -> None:
+        self.configurations = list(configurations)
+        self.debug_config_rc = debug_config_rc
+        self.debug_config_stderr = debug_config_stderr
+        self.files = dict(files or {})
+        self.install_rc = install_rc
+        self.open_rc = open_rc
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+    ) -> CommandResult:
+        self.calls.append(tuple(argv))
+        if argv[0] == "code":
+            return self._editor(list(argv))
+        command = list(argv)[list(argv).index("--") + 1 :]
+        return self._in_seat(command, stdin)
+
+    # -- the seat ----------------------------------------------------------
+
+    def _in_seat(self, command: list[str], stdin: str | None) -> CommandResult:
+        if command[0] == "debug-config":
+            if self.debug_config_rc != 0:
+                return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
+            document = {"version": "0.2.0", "configurations": self.configurations}
+            return _result(0, stdout=json.dumps(document))
+        if command[0] == "cat":
+            text = self.files.get(command[1])
+            if text is None:
+                return _result(1, stderr=f"cat: {command[1]}: No such file")
+            return _result(0, stdout=text)
+        if command[:2] == ["sh", "-c"]:
+            assert stdin is not None, "a write must carry its content on stdin"
+            self.files[_written_path(command[2])] = stdin
+            return _result(0)
+        raise AssertionError(f"unexpected exec: {command}")
+
+    # -- the laptop --------------------------------------------------------
+
+    def _editor(self, argv: list[str]) -> CommandResult:
+        assert argv[1:3] == ["--remote", f"ssh-remote+{ALIAS}"], (
+            "every code invocation must name the remote, or the extension "
+            "installs on the laptop and the adapter runs there too"
+        )
+        if "--install-extension" in argv:
+            return _result(self.install_rc, stderr="no Remote-SSH here")
+        return _result(self.open_rc, stderr="cannot resolve host")
+
+    # -- assertions --------------------------------------------------------
+
+    @property
+    def installed(self) -> list[str]:
+        return [call[-1] for call in self.calls if "--install-extension" in call]
+
+    def index_of_write(self, path: str) -> int:
+        for index, call in enumerate(self.calls):
+            if call[0] != "code" and call[-2:-1] == ("-c",) and path in call[-1]:
+                return index
+        raise AssertionError(f"nothing wrote {path}: {self.calls}")
+
+    @property
+    def index_of_open(self) -> int:
+        for index, call in enumerate(self.calls):
+            if call[0] == "code" and "--install-extension" not in call:
+                return index
+        raise AssertionError(f"nothing opened a folder: {self.calls}")
+
+
+def _result(returncode: int, *, stdout: str = "", stderr: str = "") -> CommandResult:
+    return CommandResult((), returncode, stdout, stderr if returncode else "")
+
+
+def _written_path(script: str) -> str:
+    """The path a ``mkdir -p … && cat > …`` script writes to."""
+    return script.rsplit("> ", 1)[1].strip("'")
+
+
+def run_open(seat: FakeSeat, *, folder: str = HOME) -> list[str]:
+    return open_seat(
+        Kubectl("demo", runner=seat),
+        SEAT,
+        alias=ALIAS,
+        folder=folder,
+        editor="code",
+        runner=seat,
+    )
+
+
+# -- the OOM guard -----------------------------------------------------------
+
+
+def test_the_excludes_are_written_into_the_folder_that_opens() -> None:
+    """/proc/<pid>/root is a symlink into another container's root, so a walk
+    from a folder that does not exclude it has no bottom — and an OOM-killed
+    ephemeral container cannot be restarted."""
+    seat = FakeSeat()
+    run_open(seat)
+
+    settings = json.loads(seat.files[f"{HOME}/.vscode/settings.json"])
+    assert settings["files.watcherExclude"]["**/proc/**"] is True
+    assert settings["search.exclude"]["**/sys/**"] is True
+    assert "/proc/**" in settings["python.analysis.exclude"]
+
+
+def test_the_excludes_land_before_the_window_does() -> None:
+    """The watcher starts walking the moment the folder opens, so configuring
+    afterwards is a race whose loser is a seat that cannot be restarted."""
+    seat = FakeSeat()
+    run_open(seat)
+
+    assert seat.index_of_write("settings.json") < seat.index_of_open
+
+
+def test_the_folder_opened_is_the_seats_home_and_never_the_root() -> None:
+    seat = FakeSeat()
+    notes = run_open(seat)
+
+    assert seat.calls[seat.index_of_open] == (
+        "code",
+        "--remote",
+        f"ssh-remote+{ALIAS}",
+        HOME,
+    )
+    assert f"opened {HOME}" in notes[-1]
+
+
+def test_settings_a_user_wrote_are_not_clobbered() -> None:
+    seat = FakeSeat(
+        files={f"{HOME}/.vscode/settings.json": json.dumps({"editor.tabSize": 2})}
+    )
+    run_open(seat)
+
+    settings = json.loads(seat.files[f"{HOME}/.vscode/settings.json"])
+    assert settings["editor.tabSize"] == 2
+    assert settings["search.exclude"]["**/proc/**"] is True
+
+
+def test_a_settings_file_that_will_not_parse_is_left_alone() -> None:
+    """VS Code permits comments and :mod:`json` does not. Rewriting would drop
+    what this parser cannot see, so the file stands and the note says so."""
+    seat = FakeSeat(files={f"{HOME}/.vscode/settings.json": "{ // mine\n}"})
+    notes = run_open(seat)
+
+    assert seat.files[f"{HOME}/.vscode/settings.json"] == "{ // mine\n}"
+    assert any("left exactly as it is" in note for note in notes)
+
+
+# -- launch.json -------------------------------------------------------------
+
+
+def test_the_targets_launch_json_is_written_into_the_same_folder() -> None:
+    seat = FakeSeat()
+    run_open(seat)
+
+    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
+    assert document["configurations"] == [DEBUGPY_CONFIG]
+
+
+def test_a_second_open_updates_its_own_entry_rather_than_appending() -> None:
+    seat = FakeSeat()
+    run_open(seat)
+    run_open(seat)
+
+    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
+    assert document["configurations"] == [DEBUGPY_CONFIG]
+
+
+def test_a_target_no_debugger_fits_still_gets_the_guard_and_the_folder() -> None:
+    """debug-config already named every mechanism that said no on its stderr.
+    The excludes and the folder are the rest of the seat, and they are the half
+    that keeps it alive."""
+    seat = FakeSeat(
+        debug_config_rc=2, debug_config_stderr="no debugger flavour could be emitted"
+    )
+    notes = run_open(seat)
+
+    assert f"{HOME}/.vscode/launch.json" not in seat.files
+    assert f"{HOME}/.vscode/settings.json" in seat.files
+    assert seat.installed == []
+    assert any("no launch.json" in note for note in notes)
+
+
+# -- extensions --------------------------------------------------------------
+
+
+def test_only_the_flavours_own_extensions_are_installed_and_remotely() -> None:
+    """In Observe mode these land on the workload's ephemeral-storage budget
+    (issue #42), so a bundle is somebody else's disk. And ``--remote`` is what
+    makes it the "Install in SSH:" button rather than a local install whose
+    adapter runs on the laptop."""
+    seat = FakeSeat()
+    run_open(seat)
+
+    assert seat.installed == ["ms-python.python", "ms-python.debugpy"]
+    assert "ms-vscode.cpptools" not in seat.installed
+
+
+def test_a_c_target_asks_for_cpptools_alone() -> None:
+    seat = FakeSeat(configurations=[CPPDBG_CONFIG])
+    run_open(seat)
+
+    assert seat.installed == ["ms-vscode.cpptools"]
+
+
+def test_the_same_extensions_are_recommended_to_the_folder() -> None:
+    seat = FakeSeat()
+    run_open(seat)
+
+    document = json.loads(seat.files[f"{HOME}/.vscode/extensions.json"])
+    assert document["recommendations"] == ["ms-python.python", "ms-python.debugpy"]
+
+
+def test_an_install_that_fails_is_reported_and_the_folder_still_opens() -> None:
+    seat = FakeSeat(install_rc=1)
+    notes = run_open(seat)
+
+    assert any("could not install ms-python.python" in note for note in notes)
+    assert any("opened" in note for note in notes)
+
+
+# -- the two refusals --------------------------------------------------------
+
+
+def test_no_code_on_path_is_a_sentence_not_a_traceback() -> None:
+    with pytest.raises(EditorError, match="VS Code CLI"):
+        resolve_editor(lambda _: None)
+
+
+def test_a_remote_that_cannot_be_reached_names_remote_ssh() -> None:
+    """``--remote`` fails when the local VS Code has no Remote-SSH extension, or
+    when ssh cannot resolve the alias — the Include line podbench has always
+    asked for."""
+    seat = FakeSeat(open_rc=1)
+    with pytest.raises(EditorError, match="ms-vscode-remote.remote-ssh"):
+        run_open(seat)
+
+
+def test_the_editor_is_found_on_path_and_named_by_its_absolute_route() -> None:
+    assert (
+        resolve_editor(lambda name: f"/usr/local/bin/{name}") == "/usr/local/bin/code"
+    )
+
+
+def test_the_files_are_written_where_the_folder_is_and_nowhere_else() -> None:
+    seat = FakeSeat()
+    run_open(seat, folder="/home/podbench")
+
+    assert set(seat.files) == {
+        "/home/podbench/.vscode/settings.json",
+        "/home/podbench/.vscode/launch.json",
+        "/home/podbench/.vscode/extensions.json",
+    }
+
+
+def test_a_write_creates_the_directory_and_never_redirects_stderr() -> None:
+    """Closing or replacing fd 2 in a ``kubectl exec``'d process tears down the
+    CRI exec stream and truncates the write with a zero exit (report 3.1)."""
+    seat = FakeSeat()
+    run_open(seat)
+
+    scripts = [call[-1] for call in seat.calls if call[-2:-1] == ("-c",)]
+    assert scripts, seat.calls
+    for script in scripts:
+        assert script.startswith("mkdir -p ")
+        assert "2>" not in script and ">/dev/null" not in script
+
+
+def test_nothing_here_shells_out_to_a_second_assessment() -> None:
+    """One ``debug-config``, so the extensions installed and the configurations
+    written cannot come from two measurements of the same target."""
+    seat = FakeSeat()
+    run_open(seat)
+
+    assessments = [call for call in seat.calls if "debug-config" in call]
+    assert len(assessments) == 1
+    assert assessments[0][-1] == "--print-config"

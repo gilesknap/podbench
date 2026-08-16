@@ -49,6 +49,10 @@ place *before* the user does anything: File -> Open Folder -> ``/`` is the
 obvious first move in a seat and it can OOM the container unrecoverably. See
 that constant for why each entry is there. :func:`podbench.agent.ensure_vscode_settings`
 is what installs it, because the file lives in a directory the client creates.
+:data:`SEAT_FOLDER_SETTINGS` is the same guard spelled for a folder, which is
+the one copy that survives *Kill/Uninstall VS Code Server on Host* — and the
+only one podbench can put in place from the laptop, which is what
+``attach --open`` does.
 """
 
 from __future__ import annotations
@@ -103,9 +107,12 @@ __all__ = [
     "ADAPTER_DEBUGPY",
     "ADAPTER_DELVE",
     "ADAPTER_LLDB",
+    "EXTENSIONS",
+    "FOLDER_SETTINGS_KEYS",
     "GDB_WRAPPER",
     "MACHINE_SETTINGS_PATH",
     "SEAT_CWD",
+    "SEAT_FOLDER_SETTINGS",
     "SEAT_MACHINE_SETTINGS",
     "configurations_for",
     "cppdbg_configuration",
@@ -113,11 +120,15 @@ __all__ = [
     "debugpy_attach_configuration",
     "debugpy_launch_configuration",
     "delve_configuration",
+    "extensions_for",
+    "extensions_json_text",
     "launch_json_text",
     "launch_setup_commands",
     "lldb_configuration",
     "machine_settings_text",
     "main",
+    "merge_extensions_json",
+    "merge_folder_settings",
     "merge_launch_configs",
     "merge_launch_json",
     "merge_machine_settings",
@@ -232,6 +243,118 @@ recursive walk a folder starts that is not.
 """
 
 
+FOLDER_SETTINGS_KEYS = (
+    "files.watcherExclude",
+    "search.exclude",
+    "python.analysis.exclude",
+)
+"""The keys of :data:`SEAT_MACHINE_SETTINGS` that VS Code scopes to a *resource*.
+
+Machine scope reaches every folder and is therefore the right home for all of
+them, but the machine file lives under ``~/.vscode-server`` — a directory the
+client owns and *Kill/Uninstall VS Code Server on Host* deletes wholesale. A
+folder's own ``.vscode/settings.json`` is a file podbench fully controls and can
+write before any client exists, and these three keys are the ones VS Code will
+honour from there; the rest are silently ignored outside machine scope, so
+copying them in would be a guard that reads as present and is not.
+"""
+
+SEAT_FOLDER_SETTINGS: dict[str, Any] = {
+    key: SEAT_MACHINE_SETTINGS[key] for key in FOLDER_SETTINGS_KEYS
+}
+"""The OOM guard as a folder can carry it — derived, never restated.
+
+Two copies of an exclude list would be two things to keep true, and the one
+that drifted would go on looking correct right up to the walk that ends the
+seat.
+"""
+
+#: Adapter ``type`` to the extension that contributes it. Keyed on the type
+#: rather than on :class:`podbench.flavour.Flavour` because the type in an
+#: emitted configuration *is* the extension's own identifier for it: install
+#: what the types name and a configuration VS Code cannot start is impossible by
+#: construction. ``debugpy`` takes two because ``ms-python.debugpy`` is the
+#: adapter and ``ms-python.python`` is what registers the interpreter it debugs.
+EXTENSIONS: dict[str, tuple[str, ...]] = {
+    ADAPTER_CPPDBG: ("ms-vscode.cpptools",),
+    ADAPTER_LLDB: ("vadimcn.vscode-lldb",),
+    ADAPTER_DEBUGPY: ("ms-python.python", "ms-python.debugpy"),
+    ADAPTER_DELVE: ("golang.go",),
+}
+
+
+def extensions_for(configurations: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The extensions ``configurations`` cannot run without, in emission order.
+
+    Exactly these and no bundle. In Observe mode an extension is unpacked into
+    the seat's ``~/.vscode-server``, which sits on the *workload's*
+    ephemeral-storage budget — an ephemeral container may not declare
+    ``resources`` (report 3.9) — and ``ms-vscode.cpptools`` alone is 330 MiB
+    against a server that already measured 1215 MiB live. Installing a language
+    the target does not use spends the workload's disk on nothing (issue #42).
+
+    >>> extensions_for([{"type": "debugpy"}, {"type": "debugpy"}])
+    ['ms-python.python', 'ms-python.debugpy']
+    >>> extensions_for([{"type": "coreclr"}])
+    []
+    """
+    found: list[str] = []
+    for configuration in configurations:
+        adapter = configuration.get("type")
+        for extension in (
+            EXTENSIONS.get(adapter, ()) if isinstance(adapter, str) else ()
+        ):
+            if extension not in found:
+                found.append(extension)
+    return found
+
+
+def extensions_json_text(recommendations: Sequence[str]) -> str:
+    """A whole ``extensions.json`` document, newline-terminated."""
+    return json.dumps({"recommendations": list(recommendations)}, indent=2) + "\n"
+
+
+def merge_extensions_json(
+    existing: str | None, recommendations: Sequence[str]
+) -> str | None:
+    """Add ``recommendations`` to a folder's ``extensions.json``.
+
+    ``None`` means every one of them is already recommended. Recommendations are
+    a *fallback* for the install podbench performs itself: the prompt VS Code
+    raises from this file offers "Install in SSH: ``<alias>``", which is the one
+    place the choice can still be got wrong by hand.
+
+    Raises ``ValueError`` on a file that will not parse, for the reason
+    :func:`merge_launch_configs` does.
+
+    >>> print(merge_extensions_json(None, ["golang.go"]), end="")
+    {
+      "recommendations": [
+        "golang.go"
+      ]
+    }
+    >>> merge_extensions_json('{"recommendations": ["golang.go"]}', ["golang.go"])
+    """
+    if existing is None or not existing.strip():
+        return extensions_json_text(recommendations)
+    document: Any
+    try:
+        document = json.loads(existing)
+    except ValueError as error:
+        raise ValueError(
+            f"cannot parse the existing extensions.json: {error}"
+        ) from error
+    if not isinstance(document, dict):
+        raise ValueError("the existing extensions.json is not a JSON object")
+    settings = cast("dict[str, Any]", document)
+    raw: Any = settings.get("recommendations")
+    current = cast("list[Any]", raw) if isinstance(raw, list) else []
+    if not _append_missing(current, recommendations):
+        return None
+    settings["recommendations"] = current
+    return json.dumps(settings, indent=2) + "\n"
+
+
 def machine_settings_text(settings: Mapping[str, Any]) -> str:
     """A whole machine ``settings.json`` document, newline-terminated."""
     return json.dumps(dict(settings), indent=2) + "\n"
@@ -285,8 +408,25 @@ def merge_machine_settings(existing: str | None) -> str | None:
     >>> json.loads(mine)["search.exclude"]["**/proc/**"]
     True
     """
+    return _merge_settings(existing, SEAT_MACHINE_SETTINGS)
+
+
+def merge_folder_settings(existing: str | None) -> str | None:
+    """The same, for the ``.vscode/settings.json`` of the folder about to open.
+
+    A narrower set — see :data:`FOLDER_SETTINGS_KEYS` — and the same key-by-key
+    merge, so a folder that already carries a user's excludes keeps every one of
+    them.
+
+    >>> json.loads(merge_folder_settings(None))["files.watcherExclude"]["**/proc/**"]
+    True
+    """
+    return _merge_settings(existing, SEAT_FOLDER_SETTINGS)
+
+
+def _merge_settings(existing: str | None, defaults: Mapping[str, Any]) -> str | None:
     if existing is None or not existing.strip():
-        return machine_settings_text(copy.deepcopy(SEAT_MACHINE_SETTINGS))
+        return machine_settings_text(copy.deepcopy(dict(defaults)))
     document: Any
     try:
         document = json.loads(existing)
@@ -297,7 +437,7 @@ def merge_machine_settings(existing: str | None) -> str | None:
     settings = cast("dict[str, Any]", document)
 
     changed = False
-    for key, default in SEAT_MACHINE_SETTINGS.items():
+    for key, default in defaults.items():
         current: Any = settings.get(key)
         if isinstance(default, dict) and isinstance(current, dict):
             changed |= _add_missing_keys(

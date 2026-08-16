@@ -26,19 +26,24 @@ from podbench.flavour import Mode
 from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
 from podbench.vscode import (
+    FOLDER_SETTINGS_KEYS,
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
     SEAT_CWD,
+    SEAT_FOLDER_SETTINGS,
     SEAT_MACHINE_SETTINGS,
     cppdbg_configuration,
     cppdbg_launch_configuration,
     debugpy_attach_configuration,
     debugpy_launch_configuration,
     delve_configuration,
+    extensions_for,
     launch_json_text,
     launch_setup_commands,
     lldb_configuration,
     main,
+    merge_extensions_json,
+    merge_folder_settings,
     merge_launch_json,
     merge_machine_settings,
     python_path_mappings,
@@ -400,6 +405,91 @@ def test_merge_refuses_a_settings_file_it_cannot_parse() -> None:
 def test_merge_refuses_a_document_that_is_not_an_object() -> None:
     with pytest.raises(ValueError, match="not a JSON object"):
         merge_machine_settings("[]")
+
+
+# -- the same guard, in a folder ---------------------------------------------
+
+
+def test_folder_settings_carry_the_three_resource_scoped_excludes() -> None:
+    """The OOM guard as a folder can carry it. Everything else in the machine
+    document is ignored outside machine scope, and a key VS Code drops would be
+    a guard that reads as present and is not."""
+    document = json.loads(merge_folder_settings(None) or "")
+    assert set(document) == set(FOLDER_SETTINGS_KEYS)
+    assert document["files.watcherExclude"]["**/proc/**"] is True
+    assert document["search.exclude"]["**/sys/**"] is True
+    assert "/proc/**" in document["python.analysis.exclude"]
+
+
+def test_folder_settings_are_the_machine_ones_and_not_a_second_copy() -> None:
+    """Two exclude lists would be two things to keep true, and the one that
+    drifted would look correct until the walk that ends the seat."""
+    for key in FOLDER_SETTINGS_KEYS:
+        assert SEAT_FOLDER_SETTINGS[key] == SEAT_MACHINE_SETTINGS[key]
+
+
+def test_a_folders_own_settings_survive_the_merge() -> None:
+    merged = merge_folder_settings(
+        json.dumps({"editor.tabSize": 2, "search.exclude": {"**/proc/**": False}})
+    )
+    document = json.loads(merged or "")
+    assert document["editor.tabSize"] == 2
+    assert document["search.exclude"]["**/proc/**"] is False
+    assert document["files.watcherExclude"]["**/proc/**"] is True
+
+
+def test_merging_folder_settings_twice_changes_nothing() -> None:
+    assert merge_folder_settings(merge_folder_settings(None)) is None
+
+
+# -- extensions --------------------------------------------------------------
+
+
+def test_each_flavour_names_only_its_own_extensions() -> None:
+    """Never a bundle: in Observe mode an extension is unpacked into the seat's
+    ~/.vscode-server, which is on the *workload's* ephemeral-storage budget, and
+    cpptools alone is 330 MiB (issue #42)."""
+    assert extensions_for([{"type": "cppdbg"}]) == ["ms-vscode.cpptools"]
+    assert extensions_for([{"type": "lldb"}]) == ["vadimcn.vscode-lldb"]
+    assert extensions_for([{"type": "go"}]) == ["golang.go"]
+    assert extensions_for([{"type": "debugpy"}]) == [
+        "ms-python.python",
+        "ms-python.debugpy",
+    ]
+
+
+def test_two_configurations_of_one_flavour_ask_for_one_install() -> None:
+    """dev mode for Python emits both a launch and a connect entry."""
+    assert extensions_for(
+        [{"type": "debugpy", "request": "launch"}, {"type": "debugpy"}]
+    ) == ["ms-python.python", "ms-python.debugpy"]
+
+
+def test_an_adapter_podbench_never_emits_asks_for_nothing() -> None:
+    """A hand-written configuration in the same file is not a licence to spend
+    the workload's disk on an extension podbench did not choose."""
+    assert extensions_for([{"type": "coreclr"}, {}]) == []
+
+
+def test_recommendations_are_added_to_a_folders_own() -> None:
+    merged = merge_extensions_json(
+        json.dumps({"recommendations": ["esbenp.prettier-vscode"]}),
+        ["ms-vscode.cpptools"],
+    )
+    assert json.loads(merged or "")["recommendations"] == [
+        "esbenp.prettier-vscode",
+        "ms-vscode.cpptools",
+    ]
+
+
+def test_recommending_what_is_already_recommended_writes_nothing() -> None:
+    text = merge_extensions_json(None, ["golang.go"]) or ""
+    assert merge_extensions_json(text, ["golang.go"]) is None
+
+
+def test_extensions_json_that_will_not_parse_is_refused() -> None:
+    with pytest.raises(ValueError, match="cannot parse"):
+        merge_extensions_json("{ // mine\n}", ["golang.go"])
 
 
 # -- one entry per flavour that applies --------------------------------------
