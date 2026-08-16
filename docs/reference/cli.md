@@ -903,6 +903,6 @@ stream.
 | Code | Meaning |
 |---|---|
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
-| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); or `patch status` found a pod needing attention |
-| `2` | a launcher error, a `patch` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), or `podbench` with no verb |
+| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `patch status` found a pod needing attention; or `doctor` found something blocking an attach |
+| `2` | a launcher error, a `patch` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
 | `0` / `10` / `20` | `capreport` only: the capability verdict |
