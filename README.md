@@ -173,9 +173,11 @@ What to do about it:
   the target's files through the sysroot, fetch symbols over debuginfod, install
   as few extensions as you can live with.
 * **`attach --resize 6Gi`** raises the target container's memory limit in place
-  before attaching. It is opt-in because it is only lightly proven: one k3s
-  version, one pod, never against a `LimitRange`, a `ResourceQuota`, or a
-  controller that would fight the change.
+  before attaching. It is opt-in because it is only partly proven — three pods,
+  two of them Deployment-managed, but one Kubernetes version and never against a
+  `LimitRange` or a `ResourceQuota` — and because the raised limit lives on the
+  pod, not on its controller: a rollout regenerates the pod from an unchanged
+  template and silently reverts it.
 
 ### 2. `SYS_PTRACE` is outside the Pod Security Standards, so refusal is normal
 
@@ -244,7 +246,8 @@ Known-unproven, stated plainly:
   cover source lookup at all. See the
   *Debug with gdb* how-to for where sources
   actually come from.
-* **In-place pod resize is lightly proven** — see `--resize` above.
+* **In-place pod resize is partly proven, and it diverges a pod from its
+  controller** — see `--resize` above.
 * **Patch mode has never been run against a cluster.** The workflow exists
   (`podbench patch init|apply|status|consolidate`, and `patch --print-values`
   for the chart snippet) and is unit-tested, but every one of those tests drives

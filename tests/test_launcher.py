@@ -21,6 +21,7 @@ import pytest
 
 from podbench.kubectl import CommandResult, Kubectl
 from podbench.launcher import (
+    RESIZE_WARNING,
     LauncherError,
     Session,
     attach,
@@ -1853,6 +1854,58 @@ def test_resize_asks_for_the_resize_subresource() -> None:
     patch = next(call for call in cluster.calls if "patch" in call)
     assert "--subresource=resize" in patch
     assert "--type=strategic" in patch
+
+
+def test_a_successful_resize_says_the_controller_still_asks_for_the_old_limit() -> None:
+    """The resize writes to the pod and nothing reconciles the template (R13).
+
+    A rollout then reverts it with no symptom but a seat that OOMs again, so the
+    success note has to carry the caveat: nobody reads a warning they were not
+    shown.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    note = try_resize(kubectl_for(cluster), "target", "app", "6Gi")
+    assert "6Gi" in note
+    assert "template" in note
+    assert "rollout" in note
+
+
+def test_the_resize_warning_keeps_the_quota_caveats_it_has_not_narrowed() -> None:
+    """R13 was narrowed by measurement, not retired.
+
+    A `LimitRange` and a `ResourceQuota` are still untested — the namespace that
+    was measured had neither — so narrowing the controller half of the warning
+    must not quietly drop the half that still stands.
+    """
+    assert "LimitRange" in RESIZE_WARNING
+    assert "ResourceQuota" in RESIZE_WARNING
+    assert "partly proven" in RESIZE_WARNING
+    assert "ReplicaSet" in RESIZE_WARNING
+
+
+def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    # The report wraps warnings, so match words rather than phrases.
+    out = capsys.readouterr().out
+    assert "LimitRange" in out
+    assert "ResourceQuota" in out
+    assert "reverts" in out
 
 
 def test_current_namespace_falls_back_to_default() -> None:

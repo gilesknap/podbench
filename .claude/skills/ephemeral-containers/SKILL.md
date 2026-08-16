@@ -68,8 +68,11 @@ product, and the reason Iterate mode authors a real pod (where the sidecar *can*
 resources) instead of attaching.
 
 The mitigation is `kubectl patch pod --subresource resize`, offered behind `--resize`
-and only lightly proven (one cluster, one pod, never against a `LimitRange` or a
-controller that would fight it).
+and only partly proven (three pods, one k3s version, never against a `LimitRange` or a
+`ResourceQuota`). A Deployment does **not** fight it — a ReplicaSet reconciles pod
+existence, not pod spec — but the raised limit lives on the pod alone, so anything that
+regenerates the pod from the unchanged template silently reverts it. Both halves belong
+in the warning text (report R13).
 
 ## `capabilities.add` on a non-root uid is a silent no-op
 
