@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=64e2b681"></script>
+    <script src="../_static/documentation_options.js?v=828493f6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -489,11 +489,11 @@
                   
   <section id="command-line-reference">
 <h1>Command-line reference<a class="headerlink" href="#command-line-reference" title="Link to this heading">#</a></h1>
-<p>One binary serves both halves of podbench, under one spelling. On your machine
-it is reached as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>; inside the debug container the same binary
-is PID 1 and answers to the same <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. Keeping it as one package
-means the capability logic that decides what a session can do is the same code
-in both places, rather than a launcher’s guess and a helper’s separate guess.</p>
+<p>One binary serves both halves of podbench. On your machine it is reached as
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>; inside the debug container the same binary is PID 1 and backs
+the helpers on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. Keeping it as one package means the capability logic that
+decides what a session can do is the same code in both places, rather than a
+launcher’s guess and a helper’s separate guess.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench --help
 
  Usage: podbench [OPTIONS] COMMAND [ARGS]...
@@ -567,10 +567,9 @@ choice, and all three run the same code:</p>
 </div>
 <p>See <a class="reference internal" href="../tutorials/installation.html"><span class="std std-doc">Installation</span></a> for the details, including how
 to run it before the first PyPI release.</p>
-<p>The in-pod verbs are spelled the same way from a terminal in the seat:
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, and so on. There are no shorter aliases on
-<code class="docutils literal notranslate"><span class="pre">PATH</span></code> — the image once shipped one file per subcommand and no longer does
-(<code class="docutils literal notranslate"><span class="pre">image/README.md</span></code>, deviation 6).</p>
+<p>The in-pod verbs are also reachable as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> from a terminal in the
+seat; several have shorter aliases on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (<code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>,
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>).</p>
 <section id="common-options">
 <h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
 <p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these,
@@ -1222,7 +1221,7 @@ application’s own chart.</p>
 <p>Name the mechanism that denies ptrace in this container. The launcher runs it
 automatically after every attach; run it yourself when something changes.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench capreport [OPTIONS] [PID]
+ Usage: capreport [OPTIONS] [PID]
 
  Name the mechanism that denies ptrace in this container.
 
@@ -1345,7 +1344,7 @@ Every configuration that applies is emitted at once, each named for its flavour,
 so <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>’s list and VS Code’s own dropdown become the choice. Every
 flavour that does <em>not</em> apply gets a sentence naming the mechanism.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench debug-config [OPTIONS] [PID]
+ Usage: debug-config [OPTIONS] [PID]
 
  Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
  with the pid, the sysroot-prefixed program path and the mode&#39;s path mappings already filled in.
@@ -1492,9 +1491,10 @@ the port.</p>
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
-<p>Exits non-zero when the port is not owned by the process it started — a socket
-poll alone gives a false PASS, and <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> will otherwise split traffic
-between old and new code with nothing in any log to say so.</p>
+<p>Installed on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> as <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code>. Exits non-zero when the port is not owned
+by the process it started — a socket poll alone gives a false PASS, and
+<code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> will otherwise split traffic between old and new code with
+nothing in any log to say so.</p>
 </section>
 <section id="stop">
 <h3><code class="docutils literal notranslate"><span class="pre">stop</span></code><a class="headerlink" href="#stop" title="Link to this heading">#</a></h3>
@@ -1511,8 +1511,9 @@ between old and new code with nothing in any log to say so.</p>
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
-<p>Never <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code>: under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> that matches the invoking
-shell and every other container’s processes.</p>
+<p>Installed on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> as <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code>. Never <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code>: under
+<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> that matches the invoking shell and every other
+container’s processes.</p>
 </section>
 <section id="agent">
 <h3><code class="docutils literal notranslate"><span class="pre">agent</span></code><a class="headerlink" href="#agent" title="Link to this heading">#</a></h3>

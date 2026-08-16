@@ -139,17 +139,22 @@ construction. Do not prune `/usr/lib/python3.11` to save space.
 
 ## Helpers on `PATH`
 
-Two, and both are structural rather than convenient.
+Each is a one-line wrapper around the same Python implementation the launcher
+uses, called by absolute path — `ssh <host> capreport` runs a non-login,
+non-interactive shell that sources nothing.
 
-| On `PATH` | What it is |
+| On `PATH` | Verb |
 |---|---|
-| `podbench` | `exec /app/.venv/bin/podbench "$@"` — the venv is on no default `PATH`, and `ssh <host> podbench capreport` runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve |
-| `gdb-podbench` | installed as `gdb` as well, so anything that shells out to `gdb --pid <n>` in the seat gets a sysroot and a working directory that exists |
+| `pids` | `podbench pids` |
+| `dbg` | `podbench dbg` |
+| `capreport` | `podbench capreport` |
+| `dev-bootstrap` | `podbench dev-bootstrap` |
+| `podbench-run` | `podbench run` |
+| `podbench-stop` | `podbench stop` |
 
-Every in-pod verb is reached as `podbench <verb>`: `podbench pids`, `podbench
-dbg`, `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
-`podbench run`, `podbench stop`. There are no shorter aliases — `podbench
---help` lists the lot.
+`run` and `stop` are installed under prefixed names on purpose: `/usr/local/bin`
+precedes `/usr/bin`, and helpers called `run` and `stop` would shadow far too
+much of your own tooling inside your own shell.
 
 ## Environment it reads
 
@@ -158,7 +163,7 @@ dbg`, `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
 | `PODBENCH_SSH_PUBKEY` | authorized key, injected by the launcher |
 | `PODBENCH_SSH_PUBKEY_FILE` | read it from a file instead (default mount `/etc/podbench/ssh/authorized_keys`) |
 | `PODBENCH_SSH_HOST_KEY` / `..._FILE` | supply a host key rather than minting one; the file default is `/etc/podbench/ssh/ssh_host_ed25519_key` |
-| `PODBENCH_TARGET_CID` | the target container's runtime ID, injected at attach time; how `podbench pids` and `podbench dbg` find the workload |
+| `PODBENCH_TARGET_CID` | the target container's runtime ID, injected at attach time; how `pids` and `dbg` find the workload |
 | `DEBUGINFOD_URLS` | defaults to `https://debuginfod.debian.net`; point it at a mirror |
 
 ## Building it yourself

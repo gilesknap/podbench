@@ -250,7 +250,7 @@ arguments. It kills the server after exactly five minutes idle.
   `podbench-home` volume is what keeps that off the container's writable layer.
 * In Observe mode open the seat's **home** — `/root`, or `/home/podbench` where
   the pod declares a `podbench-home` volume — and reach the workload's
-  filesystem through `/proc/<pid>/root` from there. `podbench pids` tells you
+  filesystem through `/proc/<pid>/root` from there. The `pids` helper tells you
   which pid.
 
   Do **not** open `/`. Opening a *file* under `/proc` is fine; opening a
@@ -265,10 +265,9 @@ arguments. It kills the server after exactly five minutes idle.
   path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
   [Debug with gdb](debug-with-gdb.md) and
   [Iterate on Python](iterate-on-python.md).
-* Terminals are ordinary ssh sessions with the container's `PATH`, so every
-  in-pod verb is there as `podbench <verb>` — `podbench pids`, `podbench dbg`,
-  `podbench capreport`, `podbench dev-bootstrap`, `podbench run`, `podbench
-  stop`.
+* Terminals are ordinary ssh sessions with the container's `PATH`, so `pids`,
+  `dbg`, `capreport`, `dev-bootstrap`, `podbench-run` and `podbench-stop` are
+  all there.
 
 ## What the seat configures for you
 

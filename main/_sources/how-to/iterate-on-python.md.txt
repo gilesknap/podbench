@@ -139,24 +139,24 @@ not declare the volume at all.
 
 ```
 $ ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench
-root@api-...-podbench:~# podbench dev-bootstrap --repo https://github.com/you/api --ref my-branch
+root@api-...-podbench:~# dev-bootstrap --repo https://github.com/you/api --ref my-branch
 ```
 
 or, when ssh is not what you want:
 
 ```
 $ kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
-root@api-...-podbench:/workspace# podbench dev-bootstrap --repo https://github.com/you/api --ref my-branch
+root@api-...-podbench:/workspace# dev-bootstrap --repo https://github.com/you/api --ref my-branch
 ```
 
 The two land in different directories, which is a fact about sshd rather than
 about podbench: an ssh session gets the home the *passwd record* names (`/root`,
 or `/home/podbench` with the identity volume), while `kubectl exec` inherits the
-container's environment, where `$HOME` is `/workspace`. `podbench dev-bootstrap`
-takes absolute paths and defaults to `/workspace/src`, so it does not care
-either way — but `~` means different things in the two shells.
+container's environment, where `$HOME` is `/workspace`. `dev-bootstrap` takes
+absolute paths and defaults to `/workspace/src`, so it does not care either way
+— but `~` means different things in the two shells.
 
-`podbench dev-bootstrap` does three things, in order: `git clone` into
+`dev-bootstrap` does three things, in order: `git clone` into
 `/workspace/src`, `uv sync --frozen` from the project's own lockfile, and
 `uv pip install -e .`. Flags: `--dir` for a different checkout path, `--python`
 for an interpreter version, `--no-sync` and `--no-editable` to skip a step.
@@ -175,7 +175,7 @@ later as an unrelated-looking `ModuleNotFoundError`. An exec-style `.pth` (what
 modern PEP-660 editable installs emit) prints a traceback and is non-fatal.
 
 podbench standardises on: everything in the debug container. That is why
-`podbench dev-bootstrap` refuses a `--dir` on the wrong side of the boundary.
+`dev-bootstrap` refuses a `--dir` on the wrong side of the boundary.
 :::
 
 Once you are connected with VS Code Remote-SSH, `/workspace/src` is just a
@@ -185,14 +185,15 @@ laptop.
 ## 3. The relaunch loop
 
 ```
-root@...:/workspace# podbench run --port 8080 -- python -m api
+root@...:/workspace# podbench-run --port 8080 -- python -m api
 pid 214 owns the listening socket on port 8080
 ```
 
 Then edit, and run it again. `podbench run` stops the previous process (by
-recorded pid), starts yours, and **verifies** the result. It is spelled
-`podbench run` everywhere — in the seat as well as on your machine, with no
-shorter alias on the seat's `PATH`.
+recorded pid), starts yours, and **verifies** the result. Inside the container
+the helper is `podbench-run` rather than `run`, because `/usr/local/bin`
+precedes `/usr/bin` and a helper called `run` would shadow far too much of your
+own tooling. `podbench run` works from anywhere.
 
 The verification is not decoration. Three separate silent failures make a naive
 "poll the port" wrapper lie to you:
@@ -211,7 +212,7 @@ The verification is not decoration. Three separate silent failures make a naive
   serving stale code. So `podbench run` tracks its own child pid, confirms it is
   alive, and matches the listening socket's inode against `/proc/<pid>/fd`.
 
-Stop it explicitly with `podbench stop` (`--grace` seconds before `SIGKILL`).
+Stop it explicitly with `podbench-stop` (`--grace` seconds before `SIGKILL`).
 Nothing here ever uses `pkill -f`: under `shareProcessNamespace: true` that
 matches the invoking shell and every other container's processes.
 
@@ -269,7 +270,7 @@ installable. When it is not — or when you want to override one module inside a
 dependency you do not own — put your checkout ahead of everything on the path:
 
 ```
-root@...:/workspace# PYTHONPATH=/workspace/src podbench run --port 8080 -- python -m api
+root@...:/workspace# PYTHONPATH=/workspace/src podbench-run --port 8080 -- python -m api
 ```
 
 `PYTHONPATH` entries are inserted before site-packages, so `/workspace/src/api/`
@@ -291,7 +292,7 @@ If you would rather not type `podbench run` after every save, wrap the command:
 
 ```
 root@...:/workspace# uv pip install watchfiles
-root@...:/workspace# podbench run --port 8080 -- \
+root@...:/workspace# podbench-run --port 8080 -- \
     watchfiles --filter python 'python -m api' /workspace/src
 ```
 
@@ -304,7 +305,7 @@ sits squarely in the `SO_REUSEPORT`/`TIME_WAIT` territory above, so a
 restart-storm can leave you serving stale code with nothing in the logs; and an
 editor saving through ssh can produce write patterns that fire the watcher more
 than once. If a change does not appear, fall back to an explicit
-`podbench stop` and `podbench run` — that path verifies.
+`podbench-stop` and `podbench-run` — that path verifies.
 
 ## The ptrace-free live attach for Python: debugpy
 
@@ -335,7 +336,7 @@ A debug port on the pod IP is an unauthenticated code-execution endpoint.
 Run the app with the variable set:
 
 ```
-root@...:/workspace# DEBUGPY_LISTEN=1 podbench run --port 8080 -- python -m api
+root@...:/workspace# DEBUGPY_LISTEN=1 podbench-run --port 8080 -- python -m api
 ```
 
 Then attach from the remote VS Code window:

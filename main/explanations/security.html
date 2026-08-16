@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
+    <title>Security model &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=64e2b681"></script>
+    <script src="../_static/documentation_options.js?v=828493f6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -768,8 +768,8 @@ process — and even that has workarounds:</p>
 <li><p><strong>Iterate mode is untouched.</strong> Relaunched processes are the debug container’s
 own children, and debugging your own descendants is always permitted; Yama and
 the capability check both exempt them.</p></li>
-<li><p><strong>gdb-launch survives.</strong> <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code> gives breakpoints,
-<code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">continue</span></code>, backtraces, arguments and locals at uid 1000 with
+<li><p><strong>gdb-launch survives.</strong> <code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code> gives breakpoints, <code class="docutils literal notranslate"><span class="pre">run</span></code>,
+<code class="docutils literal notranslate"><span class="pre">continue</span></code>, backtraces, arguments and locals at uid 1000 with
 <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>, under <code class="docutils literal notranslate"><span class="pre">restricted</span></code> with <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp.
 Document the inner loop as gdb-<strong>launch</strong>; attach is the privileged special
 case.</p></li>

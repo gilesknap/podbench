@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>The container image &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
+    <title>The container image &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=64e2b681"></script>
+    <script src="../_static/documentation_options.js?v=828493f6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -631,25 +631,40 @@ construction. Do not prune <code class="docutils literal notranslate"><span clas
 </section>
 <section id="helpers-on-path">
 <h2>Helpers on <code class="docutils literal notranslate"><span class="pre">PATH</span></code><a class="headerlink" href="#helpers-on-path" title="Link to this heading">#</a></h2>
-<p>Two, and both are structural rather than convenient.</p>
+<p>Each is a one-line wrapper around the same Python implementation the launcher
+uses, called by absolute path — <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;host&gt;</span> <span class="pre">capreport</span></code> runs a non-login,
+non-interactive shell that sources nothing.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>On <code class="docutils literal notranslate"><span class="pre">PATH</span></code></p></th>
-<th class="head"><p>What it is</p></th>
+<th class="head"><p>Verb</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">podbench</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">exec</span> <span class="pre">/app/.venv/bin/podbench</span> <span class="pre">&quot;$&#64;&quot;</span></code> — the venv is on no default <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, and <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;host&gt;</span> <span class="pre">podbench</span> <span class="pre">capreport</span></code> runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pids</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code></p></td>
-<td><p>installed as <code class="docutils literal notranslate"><span class="pre">gdb</span></code> as well, so anything that shells out to <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span> <span class="pre">&lt;n&gt;</span></code> in the seat gets a sysroot and a working directory that exists</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dbg</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">podbench-run</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Every in-pod verb is reached as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>,
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>. There are no shorter aliases — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--help</span></code> lists the lot.</p>
+<p><code class="docutils literal notranslate"><span class="pre">run</span></code> and <code class="docutils literal notranslate"><span class="pre">stop</span></code> are installed under prefixed names on purpose: <code class="docutils literal notranslate"><span class="pre">/usr/local/bin</span></code>
+precedes <code class="docutils literal notranslate"><span class="pre">/usr/bin</span></code>, and helpers called <code class="docutils literal notranslate"><span class="pre">run</span></code> and <code class="docutils literal notranslate"><span class="pre">stop</span></code> would shadow far too
+much of your own tooling inside your own shell.</p>
 </section>
 <section id="environment-it-reads">
 <h2>Environment it reads<a class="headerlink" href="#environment-it-reads" title="Link to this heading">#</a></h2>
@@ -670,7 +685,7 @@ construction. Do not prune <code class="docutils literal notranslate"><span clas
 <td><p>supply a host key rather than minting one; the file default is <code class="docutils literal notranslate"><span class="pre">/etc/podbench/ssh/ssh_host_ed25519_key</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code></p></td>
-<td><p>the target container’s runtime ID, injected at attach time; how <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> find the workload</p></td>
+<td><p>the target container’s runtime ID, injected at attach time; how <code class="docutils literal notranslate"><span class="pre">pids</span></code> and <code class="docutils literal notranslate"><span class="pre">dbg</span></code> find the workload</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS</span></code></p></td>
 <td><p>defaults to <code class="docutils literal notranslate"><span class="pre">https://debuginfod.debian.net</span></code>; point it at a mirror</p></td>

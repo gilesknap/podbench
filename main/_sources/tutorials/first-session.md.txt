@@ -102,8 +102,7 @@ your kubeconfig and leaves nothing behind. It does five things:
    UID with no capabilities if admission refuses that — posting each attempt to
    the `ephemeralcontainers` subresource;
 3. waits for the container to be genuinely *running*, not merely accepted;
-4. runs `podbench capreport` **inside** the container it just landed, on that
-   node;
+4. runs `capreport` **inside** the container it just landed, on that node;
 5. writes an ssh stanza to `~/.podbench/config.d/` and tells you the host alias.
 
 ## 3. Wait — what did it just do to my pod?
@@ -170,7 +169,7 @@ now — it adds the line above any `Host *` block, which is where it has to be
 
 ```
 $ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
-root@web-6c9d7f4b8b-hq2vn:~# podbench pids
+root@web-6c9d7f4b8b-hq2vn:~# pids
 PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 1    0    yes     87d20e23a1b4   python  python -m http.server 8080
 42   0    no      7206c89bf0e1   sleep   sleep infinity

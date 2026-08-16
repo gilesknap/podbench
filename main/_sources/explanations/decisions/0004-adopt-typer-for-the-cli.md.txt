@@ -42,8 +42,7 @@ Three shapes hold the conversion together:
 
 * `cli.py` owns the one adapter between click's world and this package's. Every
   `main()` is still `(argv) -> int`, because the tests drive them directly and
-  the `image/bin/podbench` wrapper passes an argv straight through; click's
-  standalone mode
+  the `image/bin` wrappers care about nothing else; click's standalone mode
   renders its own errors and then exits, so exactly one place catches
   `SystemExit`. Command callbacks end in `raise typer.Exit(code)`, since click
   discards a callback's return value on purpose.
@@ -54,8 +53,8 @@ Three shapes hold the conversion together:
   smoke test, and must not depend on every module importing cleanly.
 * `--launch` keeps its `argparse.REMAINDER` contract by having the program's own
   arguments lifted out of argv before click sees them. Click claims every option
-  it knows wherever it appears, and `podbench dbg --launch ./prog --fast` has to
-  hand `--fast` to the program.
+  it knows wherever it appears, and `dbg --launch ./prog --fast` has to hand
+  `--fast` to the program.
 
 ## Consequences
 

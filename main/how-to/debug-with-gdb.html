@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0b5.dev26+ga7af2e17e documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=64e2b681"></script>
+    <script src="../_static/documentation_options.js?v=828493f6"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -545,11 +545,10 @@ look, continue. Logpoints and conditional breakpoints never stop the process.
 For an unlimited pause use <a class="reference internal" href="iterate-on-python.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code></span></a>, which strips
 all three probes by construction.</p>
 </div>
-<p>Everything here is driven by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, run from a terminal in the seat.
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> is not <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span></code>: it fixes seven commands in one order, and the
-order is a correctness property rather than a preference. Setting the sysroot
-<em>after</em> attaching gives you a backtrace that looks entirely believable and is
-wrong.</p>
+<p>Everything here is driven by <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, the helper on the debug container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.
+<code class="docutils literal notranslate"><span class="pre">dbg</span></code> is not <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span></code>: it fixes seven commands in one order, and the order is a
+correctness property rather than a preference. Setting the sysroot <em>after</em>
+attaching gives you a backtrace that looks entirely believable and is wrong.</p>
 <section id="a-distroless-target">
 <h2>1. A distroless target<a class="headerlink" href="#a-distroless-target" title="Link to this heading">#</a></h2>
 <p>An initContainer compiles the program into an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>; the distroless
@@ -651,31 +650,31 @@ debugging, just not of the already-running process.</p>
 <section id="find-the-process">
 <h2>3. Find the process<a class="headerlink" href="#find-the-process" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-gdb-victim
-root@victim:~# podbench pids
+root@victim:~# pids
 PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 1    0    yes     87d20e23a1b4   victim  /app/victim
 38   0    no      7206c89bf0e1   sleep   sleep infinity
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> is not <code class="docutils literal notranslate"><span class="pre">ps</span></code>. Under a shared PID namespace every process in the
-pod is visible — including other podbench sessions’ — so attribution keys
-off the target’s container runtime ID, which the launcher injected as
+<p><code class="docutils literal notranslate"><span class="pre">pids</span></code> is not <code class="docutils literal notranslate"><span class="pre">ps</span></code>. Under a shared PID namespace every process in the pod is
+visible — including other podbench sessions’ — so attribution keys off the
+target’s container runtime ID, which the launcher injected as
 <code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code>. The rules that look obvious are all wrong: “the target is
 PID 1” breaks under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> (PID 1 is <code class="docutils literal notranslate"><span class="pre">/pause</span></code>), and
 matching mount namespaces breaks there too.</p>
-<p>If the <code class="docutils literal notranslate"><span class="pre">TARGET</span></code> column is a guess rather than a fact, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> says so.</p>
+<p>If the <code class="docutils literal notranslate"><span class="pre">TARGET</span></code> column is a guess rather than a fact, <code class="docutils literal notranslate"><span class="pre">pids</span></code> says so.</p>
 </section>
 <section id="attach-gdb">
 <h2>4. Attach gdb<a class="headerlink" href="#attach-gdb" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># podbench dbg 1</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># dbg 1</span>
 </pre></div>
 </div>
-<p>With no argument at all, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> discovers the pid from the target
-container ID. Before starting gdb it runs the capability probe, so if attach is
-going to be denied you are told <em>which mechanism</em> denies it rather than being
-handed an <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>.</p>
+<p>With no argument at all, <code class="docutils literal notranslate"><span class="pre">dbg</span></code> discovers the pid from the target container ID.
+Before starting gdb it runs the capability probe, so if attach is going to be
+denied you are told <em>which mechanism</em> denies it rather than being handed an
+<code class="docutils literal notranslate"><span class="pre">EPERM</span></code>.</p>
 <p>What it feeds gdb, in this order — see it without starting gdb using
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--dry-run</span> <span class="pre">1</span></code>:</p>
+<code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--dry-run</span> <span class="pre">1</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">set</span> <span class="n">pagination</span> <span class="n">off</span>
 <span class="nb">set</span> <span class="n">sysroot</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
 <span class="n">directory</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
@@ -776,9 +775,9 @@ one deliberately:</p>
 <code class="docutils literal notranslate"><span class="pre">/app/src</span></code> in the workload image (or on a volume) and <code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> finds it with no path mapping at all. Simplest, and the
 only option that needs nothing on the client.</p></li>
 <li><p><strong>A checkout in the debug container.</strong> Clone the source into the seat and
-point <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> at it:</p>
+point <code class="docutils literal notranslate"><span class="pre">dbg</span></code> at it:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># git clone https://github.com/you/app /workspace/src</span>
-<span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># podbench dbg --source-dir /workspace/src 1</span>
+<span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># dbg --source-dir /workspace/src 1</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">--source-dir</span></code> is repeatable and is wired with gdb’s <code class="docutils literal notranslate"><span class="pre">directory</span></code>. gdb searches
@@ -800,7 +799,7 @@ that container.</p>
 <section id="let-podbench-write-it">
 <h3>Let podbench write it<a class="headerlink" href="#let-podbench-write-it" title="Link to this heading">#</a></h3>
 <p>Do not hand-copy the templates below unless you have to. In the seat:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># podbench debug-config</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># debug-config</span>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">,</span> <span class="n">observe</span> <span class="n">mode</span><span class="p">,</span> <span class="n">x86_64</span>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">emitting</span> <span class="n">gdb</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">,</span> <span class="n">observe</span> <span class="n">mode</span>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">emitting</span> <span class="n">lldb</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">;</span> <span class="n">CodeLLDB</span> <span class="n">brings</span> <span class="n">its</span> <span class="n">own</span> <span class="n">lldb</span> <span class="n">to</span> <span class="n">the</span> <span class="n">seat</span>
@@ -875,10 +874,10 @@ CPython calls <code class="docutils literal notranslate"><span class="pre">getcw
 </pre></div>
 </div>
 <p>No signal name, no backtrace — it crashes before it can format either — and
-VS Code surfaces only <code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">start</span> <span class="pre">debugging.</span> <span class="pre">GDB</span> <span class="pre">exited</span> <span class="pre">unexpectedly</span></code>, which points at the attach rather than at startup. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>
-never hits this because it never enables pretty-printing, so the CLI works
-perfectly on a seat where the VS Code debugger cannot start at all. Reproduce it
-in any seat with:</p>
+VS Code surfaces only <code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">start</span> <span class="pre">debugging.</span> <span class="pre">GDB</span> <span class="pre">exited</span> <span class="pre">unexpectedly</span></code>, which points at the attach rather than at startup. <code class="docutils literal notranslate"><span class="pre">dbg</span></code> never
+hits this because it never enables pretty-printing, so the CLI works perfectly
+on a seat where the VS Code debugger cannot start at all. Reproduce it in any
+seat with:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">mkdir</span> <span class="o">-</span><span class="n">p</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">gone</span> <span class="o">&amp;&amp;</span> <span class="n">cd</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">gone</span> <span class="o">&amp;&amp;</span> <span class="n">rmdir</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">gone</span>
 <span class="n">printf</span> <span class="o">--</span> <span class="s2">&quot;-enable-pretty-printing</span><span class="se">\n</span><span class="s2">-gdb-exit</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">|</span> <span class="n">gdb</span> <span class="o">--</span><span class="n">interpreter</span><span class="o">=</span><span class="n">mi</span>
 </pre></div>
@@ -952,8 +951,8 @@ the debug image’s (here Ubuntu 24.04’s 2.39 against the image’s 2.36):</p>
 <p><code class="docutils literal notranslate"><span class="pre">clock_nanosleep</span></code> reported as <code class="docutils literal notranslate"><span class="pre">wcsxfrm_l</span></code>, interleaved frames, and even the
 <em>user-code line number</em> wrong. Against a Debian-12 distroless target the bug is
 <strong>invisible</strong>, because both glibcs share a build ID and the backtrace comes out
-correct — a matched debug image hides this rather than fixing it.
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> is what makes it impossible.</p>
+correct — a matched debug image hides this rather than fixing it. <code class="docutils literal notranslate"><span class="pre">dbg</span></code> is what
+makes it impossible.</p>
 </section>
 <section id="three-anti-patterns">
 <h2>Three anti-patterns<a class="headerlink" href="#three-anti-patterns" title="Link to this heading">#</a></h2>
@@ -976,19 +975,19 @@ come back as <code class="docutils literal notranslate"><span class="pre">??</sp
 <p>Losing the capability costs exactly one thing: attach to an <strong>already running</strong>
 process. Full source-level debugging survives, because gdb starting the program
 itself needs no capability and is exempt from Yama:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># podbench dbg --launch ./myprog --some-flag</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># dbg --launch ./myprog --some-flag</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> consumes the rest of the command line, so put any other
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> flags before it. Add <code class="docutils literal notranslate"><span class="pre">--run</span></code> to start the program immediately.</p>
-<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> will tell you this itself when attach is denied — it names the
-mechanism and points at the alternative:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>podbench dbg: cannot attach to pid 1: yama-scope
+<p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> consumes the rest of the command line, so put any other <code class="docutils literal notranslate"><span class="pre">dbg</span></code> flags
+before it. Add <code class="docutils literal notranslate"><span class="pre">--run</span></code> to start the program immediately.</p>
+<p><code class="docutils literal notranslate"><span class="pre">dbg</span></code> will tell you this itself when attach is denied — it names the mechanism
+and points at the alternative:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>dbg: cannot attach to pid 1: yama-scope
   Yama&#39;s ptrace_scope forbids attaching to a non-descendant...
   verdict: read-only debugging available
-  the target&#39;s rootfs, maps and environ are still readable, so `podbench pids`
-  and read-only inspection work.
-  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. gdb forks the
+  the target&#39;s rootfs, maps and environ are still readable, so `pids` and
+  read-only inspection work.
+  ptrace-free alternative: `dbg --launch ./yourprog [args]`. gdb forks the
   inferior itself, which needs no capability and is not subject to Yama.
   to keep attaching to this process, the target can opt in with one line:
   prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY).
@@ -1010,7 +1009,7 @@ node-level knob and differs by kernel <em>flavour</em>, not by architecture — 
 arm64 nodes in the same cluster disagreed in testing. podbench probes per
 node and prints the node name for this reason.</p></li>
 <li><p><strong>A target already being traced</strong> refuses with the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code> as a policy
-denial, because a tracee has exactly one tracer. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> reports
+denial, because a tracee has exactly one tracer. <code class="docutils literal notranslate"><span class="pre">capreport</span></code> reports
 <code class="docutils literal notranslate"><span class="pre">already-traced</span></code> when it can tell.</p></li>
 <li><p><strong>Multithreaded targets are unproven.</strong> <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> loaded and <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code> listed the single LWP in testing; a genuinely multithreaded target
 was never tried. Nor was a target in a user namespace.</p></li>

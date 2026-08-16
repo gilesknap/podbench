@@ -82,7 +82,7 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH
 │                                                                  │
 │   exec -c SEAT -- podbench agent --print-login-user              │
 │        can sshd resolve a login name for the uid it runs as?     │
-│   exec -c SEAT -- podbench capreport --json (unless --no-probe)  │
+│   exec -c SEAT -- capreport --json          (unless --no-probe)  │
 │        which of ptrace's four blockers is saying no?             │
 │                                                                  │
 │   Nothing here is inferred from the spec that was submitted.     │
@@ -193,8 +193,7 @@ around the API call:
  8  kubectl -n NS get pod POD -o json                    # polled until running
  --- always: ---
  9  kubectl -n NS exec -c SEAT POD -- podbench agent --print-login-user
-10  kubectl -n NS exec -c SEAT POD -- podbench capreport --json
-                                                        # unless --no-probe
+10  kubectl -n NS exec -c SEAT POD -- capreport --json   # unless --no-probe
 11  kubectl -n NS get pod POD -o json                    # metadata.uid
 12  kubectl -n NS exec -c SEAT POD -- podbench agent --print-host-key --no-self-check
 ```
@@ -221,7 +220,7 @@ subresource takes the spec verbatim, so the launcher posts to it directly.
 | target uid absent → skip the degraded rung | a root seat that quietly loses the sysroot, maps, environ and exe reads that rung exists for |
 | `SYS_PTRACE` beside a non-zero `runAsUser` → raise | a container that looks privileged and behaves unprivileged (`CapEff: 0`, bare `EPERM` on every ptrace) |
 | readiness is `state.running.startedAt` only | treating the API server's acceptance as the node's |
-| `podbench capreport` runs in the container, on the node | reporting what was *requested* rather than what was granted; Yama differs per node by kernel flavour |
+| `capreport` runs in the container, on the node | reporting what was *requested* rather than what was granted; Yama differs per node by kernel flavour |
 | login name measured, not derived | writing a stanza for a login sshd refuses before it looks at a key |
 
 ## What the seat is, once it is up
@@ -320,9 +319,9 @@ When ptrace is denied, the report names *which* of the four mechanisms said no �
 missing capability, Yama's `ptrace_scope`, seccomp or AppArmor — because all four
 return the same `EPERM`, and that naming is the point of the whole probe.
 
-Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
-whose pid, sysroot-prefixed program path and setup ordering are things the
-launcher knows and a human cannot guess.
+Then, inside the seat, `debug-config` writes a `.vscode/launch.json` whose pid,
+sysroot-prefixed program path and setup ordering are things the launcher knows and a
+human cannot guess.
 
 ## See also
 

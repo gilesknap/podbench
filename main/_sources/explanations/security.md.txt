@@ -172,8 +172,8 @@ process — and even that has workarounds:
 * **Iterate mode is untouched.** Relaunched processes are the debug container's
   own children, and debugging your own descendants is always permitted; Yama and
   the capability check both exempt them.
-* **gdb-launch survives.** `podbench dbg --launch ./prog` gives breakpoints,
-  `run`, `continue`, backtraces, arguments and locals at uid 1000 with
+* **gdb-launch survives.** `dbg --launch ./prog` gives breakpoints, `run`,
+  `continue`, backtraces, arguments and locals at uid 1000 with
   `CapEff: 0000000000000000`, under `restricted` with `RuntimeDefault` seccomp.
   Document the inner loop as gdb-**launch**; attach is the privileged special
   case.
