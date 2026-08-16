@@ -116,6 +116,14 @@ Which pod that lands in decides how much it matters:
 podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open
 ```
 
+It proves the alias first — one `ssh <alias> true`, before anything is written
+or downloaded — and if that does not reach the seat, it prints ssh's own words
+and stops rather than opening a window that will fail. This is the one thing
+VS Code cannot be asked: `code --remote` returns as soon as a window has the
+argv, so the connection happens in the GUI afterwards, and a `--install-extension`
+that never connected still exits 0. The successful probe also leaves a
+`ControlMaster` behind, so the window's own connect is the fast one.
+
 It writes `.vscode/settings.json`, `.vscode/launch.json` and
 `.vscode/extensions.json` into the folder it is about to open, installs only the
 extensions this target's debugger needs **in the remote window**, and opens the

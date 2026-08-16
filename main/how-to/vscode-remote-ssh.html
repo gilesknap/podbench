@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b6.dev12+gb9a5dba51 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b6.dev16+g641a9bebe documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=6d6c7802"></script>
+    <script src="../_static/documentation_options.js?v=6db1aae4"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -629,6 +629,13 @@ connect while the server downloads.</p></li>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="nb">open</span>
 </pre></div>
 </div>
+<p>It proves the alias first — one <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span> <span class="pre">true</span></code>, before anything is written
+or downloaded — and if that does not reach the seat, it prints ssh’s own words
+and stops rather than opening a window that will fail. This is the one thing
+VS Code cannot be asked: <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span></code> returns as soon as a window has the
+argv, so the connection happens in the GUI afterwards, and a <code class="docutils literal notranslate"><span class="pre">--install-extension</span></code>
+that never connected still exits 0. The successful probe also leaves a
+<code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> behind, so the window’s own connect is the fast one.</p>
 <p>It writes <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> and
 <code class="docutils literal notranslate"><span class="pre">.vscode/extensions.json</span></code> into the folder it is about to open, installs only the
 extensions this target’s debugger needs <strong>in the remote window</strong>, and opens the
