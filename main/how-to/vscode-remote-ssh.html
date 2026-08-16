@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b6.dev5+gc69cf5d8d documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b6.dev12+gb9a5dba51 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=0b56b83f"></script>
+    <script src="../_static/documentation_options.js?v=6d6c7802"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -642,6 +642,60 @@ without which <code class="docutils literal notranslate"><span class="pre">--rem
 and drives <code class="docutils literal notranslate"><span class="pre">code</span></code> only; <code class="docutils literal notranslate"><span class="pre">cursor</span></code>, <code class="docutils literal notranslate"><span class="pre">codium</span></code> and <code class="docutils literal notranslate"><span class="pre">windsurf</span></code> take the same flags
 but have not been tried, and a flatpak VS Code cannot put <code class="docutils literal notranslate"><span class="pre">code</span></code> on the host
 PATH at all.</p>
+</section>
+<section id="a-stock-python-workload-gets-no-launch-json-without-provision">
+<h3>A stock Python workload gets no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> without <code class="docutils literal notranslate"><span class="pre">--provision</span></code><a class="headerlink" href="#a-stock-python-workload-gets-no-launch-json-without-provision" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> does not compute the debug configuration itself: it asks the seat, and
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> is the only thing that can see the target. On a Python app whose
+image has no debugpy that ask <em>refuses</em>, because the injection bootstrap runs in
+the target’s own interpreter and therefore needs debugpy importable <strong>there</strong>.
+You get the excludes, the folder and the alias, and no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> at all.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--provision</span></code> is the way through:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="nb">open</span> <span class="o">--</span><span class="n">provision</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--provision</span></code> means <em>make this target debuggable</em>, and it is both halves of
+that: the seat installs debugpy into the target with <code class="docutils literal notranslate"><span class="pre">uv</span></code>, then starts the
+debugpy server inside the app so the configuration it writes has something to
+connect to. F5 works when it finishes.</p>
+<p>It is opt-in and stays that way. It writes ~15 MB into the workload’s writable
+layer, on an ephemeral-storage budget the seat <em>shares with the workload and
+cannot reserve</em>; it needs egress from the pod, since uv downloads from an index;
+starting the server ptraces the app, which stops answering probes for the few
+seconds that takes (~3 s measured — compare it against the deadlines <code class="docutils literal notranslate"><span class="pre">attach</span></code>
+prints); and a restart of the target container ends the debugging. Without
+<code class="docutils literal notranslate"><span class="pre">--open</span></code> it is refused rather than ignored — there is no configuration run for
+it to change.</p>
+<p>The two halves do not expire together. The <strong>server</strong> never survives a restart:
+it is a live process inside the one that died. The <strong>install</strong> survives one only
+where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>
+is pod-scoped and outlives a container. At the default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>
+it does not: that is the container’s own writable layer, which a restart
+rebuilds from the image. Either way you are re-running <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, since
+without the server there is nothing to connect to.</p>
+<p>Baking <code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app image is the durable answer, and the only
+one that survives a restart. <code class="docutils literal notranslate"><span class="pre">--provision</span></code> is for the pod that is already
+misbehaving.</p>
+<p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, with no <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, still only prints the
+injection command rather than running it: that really is authoring a
+<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> and nothing more, and ptracing the workload is not something it
+may do on its own. <code class="docutils literal notranslate"><span class="pre">--open</span></code> relays the seat’s own output either way, so the
+command is printed with the rest, along with every mechanism that said no.</p>
+</section>
+<section id="re-running-open-on-a-window-that-is-already-connected-reload-it">
+<h3>Re-running <code class="docutils literal notranslate"><span class="pre">--open</span></code> on a window that is already connected? Reload it<a class="headerlink" href="#re-running-open-on-a-window-that-is-already-connected-reload-it" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>. A window that
+is <em>already</em> connected started its extension host before that, and does not pick
+it up: the extension is installed, the debug adapter is not registered, and its
+<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> entry cannot run. Nothing on the remote side says so — the
+debugger is simply not there.</p>
+<p>The first <code class="docutils literal notranslate"><span class="pre">--open</span></code> is unaffected, because the install finishes before the window
+opens. A later run needs <strong>Command Palette → Developer: Reload Window</strong> only if
+it actually put a <em>new</em> extension in the seat — but <code class="docutils literal notranslate"><span class="pre">--open</span></code> cannot tell that
+from “already installed” (<code class="docutils literal notranslate"><span class="pre">code</span></code> exits 0 for both), and cannot tell an open
+window from a fresh one either, so it prints the reminder whenever an install
+succeeded. On the runs where nothing changed, reloading costs a few seconds and
+nothing else.</p>
 <p>Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
 window, a devcontainer or a Codespace, <code class="docutils literal notranslate"><span class="pre">code</span></code> on the PATH is the <em>remote</em> CLI,
 which talks to the window you are already in: it would install the extensions
@@ -1004,6 +1058,8 @@ behaviour when the pod is deleted mid-session.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#size-the-pod-first">Size the pod first</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#client-setup">Client setup</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#or-let-attach-do-steps-3-and-4">Or let <code class="docutils literal notranslate"><span class="pre">attach</span></code> do steps 3 and 4</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-stock-python-workload-gets-no-launch-json-without-provision">A stock Python workload gets no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> without <code class="docutils literal notranslate"><span class="pre">--provision</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#re-running-open-on-a-window-that-is-already-connected-reload-it">Re-running <code class="docutils literal notranslate"><span class="pre">--open</span></code> on a window that is already connected? Reload it</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-generated-stanza-and-why-each-line-is-there">The generated stanza, and why each line is there</a></li>

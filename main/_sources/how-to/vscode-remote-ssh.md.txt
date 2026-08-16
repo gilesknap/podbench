@@ -131,6 +131,68 @@ and drives `code` only; `cursor`, `codium` and `windsurf` take the same flags
 but have not been tried, and a flatpak VS Code cannot put `code` on the host
 PATH at all.
 
+### A stock Python workload gets no `launch.json` without `--provision`
+
+`--open` does not compute the debug configuration itself: it asks the seat, and
+`debug-config` is the only thing that can see the target. On a Python app whose
+image has no debugpy that ask *refuses*, because the injection bootstrap runs in
+the target's own interpreter and therefore needs debugpy importable **there**.
+You get the excludes, the folder and the alias, and no `launch.json` at all.
+
+`--provision` is the way through:
+
+```
+podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open --provision
+```
+
+`--provision` means *make this target debuggable*, and it is both halves of
+that: the seat installs debugpy into the target with `uv`, then starts the
+debugpy server inside the app so the configuration it writes has something to
+connect to. F5 works when it finishes.
+
+It is opt-in and stays that way. It writes ~15 MB into the workload's writable
+layer, on an ephemeral-storage budget the seat *shares with the workload and
+cannot reserve*; it needs egress from the pod, since uv downloads from an index;
+starting the server ptraces the app, which stops answering probes for the few
+seconds that takes (~3 s measured — compare it against the deadlines `attach`
+prints); and a restart of the target container ends the debugging. Without
+`--open` it is refused rather than ignored — there is no configuration run for
+it to change.
+
+The two halves do not expire together. The **server** never survives a restart:
+it is a live process inside the one that died. The **install** survives one only
+where `--provision-dest` names a volume mounted into the target — an `emptyDir`
+is pod-scoped and outlives a container. At the default `/opt/podbench-debugpy`
+it does not: that is the container's own writable layer, which a restart
+rebuilds from the image. Either way you are re-running `--provision`, since
+without the server there is nothing to connect to.
+
+Baking `debugpy.listen()` into the app image is the durable answer, and the only
+one that survives a restart. `--provision` is for the pod that is already
+misbehaving.
+
+A **bare** `debug-config`, with no `--provision`, still only prints the
+injection command rather than running it: that really is authoring a
+`launch.json` and nothing more, and ptracing the workload is not something it
+may do on its own. `--open` relays the seat's own output either way, so the
+command is printed with the rest, along with every mechanism that said no.
+
+### Re-running `--open` on a window that is already connected? Reload it
+
+`--install-extension` unpacks into the seat's `~/.vscode-server`. A window that
+is *already* connected started its extension host before that, and does not pick
+it up: the extension is installed, the debug adapter is not registered, and its
+`launch.json` entry cannot run. Nothing on the remote side says so — the
+debugger is simply not there.
+
+The first `--open` is unaffected, because the install finishes before the window
+opens. A later run needs **Command Palette → Developer: Reload Window** only if
+it actually put a *new* extension in the seat — but `--open` cannot tell that
+from "already installed" (`code` exits 0 for both), and cannot tell an open
+window from a fresh one either, so it prints the reminder whenever an install
+succeeded. On the runs where nothing changed, reloading costs a few seconds and
+nothing else.
+
 Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
 window, a devcontainer or a Codespace, `code` on the PATH is the *remote* CLI,
 which talks to the window you are already in: it would install the extensions

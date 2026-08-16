@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b6.dev5+gc69cf5d8d documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b6.dev12+gb9a5dba51 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=0b56b83f"></script>
+    <script src="../_static/documentation_options.js?v=6d6c7802"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -870,6 +870,14 @@ what that seat can actually do.</p>
 │                                              once it lands, with the /proc and /sys excludes,    │
 │                                              this target&#39;s launch.json and only the extensions   │
 │                                              its debugger needs. Needs `code` on PATH            │
+│ --provision                                  with --open, make the target debuggable: install    │
+│                                              debugpy when it cannot import one, then start the   │
+│                                              server so F5 has something to connect to -          │
+│                                              otherwise a stock Python workload gets no           │
+│                                              launch.json at all. Mutates the workload: ~15 MB of │
+│                                              shared ephemeral storage, needs egress from the     │
+│                                              pod, ptraces the app for a few seconds, and no      │
+│                                              restart survives it                                 │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -1008,7 +1016,17 @@ tag parser walking on its own account;</p></li>
 “Install in SSH: <code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code>” button as a flag. A locally installed extension
 runs the debug adapter on your laptop, where no <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path
 means anything, and the failure looks like a bad <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>. They are
-also recommended in <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/extensions.json</span></code> as a fallback;</p></li>
+also recommended in <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/extensions.json</span></code> as a fallback. An
+install only unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, so a window that
+was <strong>already</strong> connected keeps the extension host it started and never
+loads it — the adapter stays unregistered and its <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> entry
+cannot run. A first <code class="docutils literal notranslate"><span class="pre">--open</span></code> is unaffected, since the install finishes
+before the window opens; a later run needs the reload only where it put a
+<em>new</em> extension in the seat, and the <em>Developer: Reload Window</em> reminder is
+printed whenever an install <strong>succeeded</strong>, because <code class="docutils literal notranslate"><span class="pre">code</span></code> exits 0 for
+“already installed” too and this side cannot tell an open window from a
+fresh one. A run whose every install failed prints no reminder, having
+unpacked nothing;</p></li>
 <li><p>opens the <strong>seat’s home</strong> — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a
 <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume. Never <code class="docutils literal notranslate"><span class="pre">/</span></code>: a folder there points the watcher at
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, which is a symlink into another container’s rootfs, and
@@ -1017,8 +1035,52 @@ the walk has no bottom.</p></li>
 <p>It cannot be combined with <code class="docutils literal notranslate"><span class="pre">--print-config</span></code>, which writes no stanza:
 <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span></code> resolves the alias through ssh, and ssh
 reads the config dir. A target no debugger fits is not a failure — the
-excludes, the folder and the terminals are the rest of the seat, and
-<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> has already named every mechanism that said no.</p>
+excludes, the folder and the terminals are the rest of the seat.</p>
+<p><code class="docutils literal notranslate"><span class="pre">debug-config</span></code>’s own stderr is relayed line by line rather than summarised.
+It is the only thing in the run that can see the target, so its narration is
+the diagnosis — it names every mechanism that said no, and on success it also
+carries the injection command, which the emitted debugpy configuration needs
+and cannot state: the entry is written once the <em>prerequisites</em> are met, and
+nothing is listening until that command is run.</p>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--provision</span></code></strong> passes through to that <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> run and means <em>make
+this target debuggable</em>. It is the answer to the commonest empty-handed case:
+a Python target whose image has no debugpy. The injection bootstrap runs
+inside the target’s interpreter, so debugpy has to be importable <em>there</em>;
+without it no configuration can be emitted and <code class="docutils literal notranslate"><span class="pre">--open</span></code> writes no
+<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> at all.</p>
+<p>It does both halves. The seat installs debugpy into the target with <code class="docutils literal notranslate"><span class="pre">uv</span></code>,
+resolved for the <em>target’s</em> Python version rather than the seat’s, and then
+starts the debugpy server inside the app — so the emitted configuration has
+something to connect to and F5 works when the command finishes. The two are
+one flag because issue #45 ordered these mutations and put <em>installing</em> above
+<em>injecting</em>: a run already allowed the larger one has been allowed the
+smaller, and asking twice left the configuration emitted, the port closed and
+the first F5 at <code class="docutils literal notranslate"><span class="pre">ECONNREFUSED</span></code>.</p>
+<p>It is opt-in and stays so. It writes ~15 MB into the workload’s writable
+layer, on an ephemeral-storage budget the seat shares with the workload and
+<strong>cannot reserve</strong> — an ephemeral container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code>
+(report 3.9); it needs egress from the pod, since uv resolves and downloads
+from an index; starting the server ptraces the app, so it stops answering
+probes for the few seconds that takes (~3 s measured, against the deadlines
+the report above prints); and a restart of the target container ends the
+debugging. The two halves do not expire together: the <strong>server</strong> never
+survives a restart, being a live process in the container that died, while the
+<strong>install</strong> survives one where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into
+the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is pod-scoped and outlives a container — and not at
+the default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>, which is the container’s own writable
+layer. Either way the next step is <code class="docutils literal notranslate"><span class="pre">--provision</span></code> again, since without the
+server nothing is listening. Installing debugpy into the app image, or baking
+<code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app, is the durable answer.</p>
+<p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> still only prints the injection command. That is
+<code class="docutils literal notranslate"><span class="pre">injection_command</span></code>’s rule unchanged — authoring a <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> may not
+ptrace the workload on its own — and <code class="docutils literal notranslate"><span class="pre">--provision</span></code> is what revokes it.</p>
+<p>Without <code class="docutils literal notranslate"><span class="pre">--open</span></code> it is <strong>refused</strong>, not ignored: there is no <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>
+run for it to change, and a flag that reads as a promise to mutate the
+workload must not quietly decline to keep it. Where the target’s rootfs is
+read-only the write fails with <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> — the mount flag lives in the target’s
+mount namespace — and the seat’s own <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision-dest</span></code>
+is what points it at a writable volume instead.</p>
 <p>Each extension unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, which in Observe
 mode is on the <strong>workload’s</strong> ephemeral-storage budget: a server plus one
 extension measured 1215 MiB live, and <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> alone is 330 MiB.
