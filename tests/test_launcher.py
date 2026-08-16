@@ -2557,6 +2557,24 @@ def test_the_bench_run_fits_on_a_screen_and_contradicts_nothing(
     assert "explain     podbench status -n demo target --explain" in report
 
 
+def test_the_explain_hint_names_the_cluster_this_report_was_measured_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pod name is unique to a namespace in *a cluster*. Handed back without
+    the flags that chose it, the hint reads another cluster's Yama scope, node
+    and limits as if they were this pod's - or refuses a pod the reader is
+    looking at."""
+    cluster = FakeCluster(pod_document(uid=0))
+    argv = attach_argv(tmp_path, "--context", "prod", "--kubectl", "/opt/kubectl")
+    assert main(argv, runner=cluster) == 0
+
+    out = capsys.readouterr().out
+    assert (
+        "explain     podbench status --context prod --kubectl /opt/kubectl "
+        "-n demo target --explain" in out
+    )
+
+
 def test_a_pod_with_no_room_for_a_seat_is_told_so_in_its_own_numbers() -> None:
     cluster = FakeCluster(
         pod_document(uid=1000, memory_limit="512Mi", memory_request="256Mi")

@@ -1601,7 +1601,13 @@ def _other_modes_note(report: CapabilityReport | None) -> str:
     )
 
 
-def format_session(session: Session, *, explain: bool = False) -> str:
+def format_session(
+    session: Session,
+    *,
+    explain: bool = False,
+    context: str | None = None,
+    binary: str = "kubectl",
+) -> str:
     """The capability report, which is the product of an attach.
 
     Two shapes of the same facts. The default is what ``attach`` prints: every
@@ -1614,9 +1620,13 @@ def format_session(session: Session, *, explain: bool = False) -> str:
     the same features with the mechanism that decided each, the ladder, and
     every warning in full. Nothing is dropped by the compact shape - it is one
     command away, and that command mutates nothing.
+
+    ``context`` and ``binary`` are how this attach reached its cluster, and are
+    here only so that the command the compact shape ends with is the one that
+    reaches the same cluster again (:func:`explain_hint`).
     """
     if not explain:
-        return _compact_session(session)
+        return _compact_session(session, context=context, binary=binary)
     lines = [
         f"seat        {session.seat}"
         + ("  (reconnected)" if session.reused else "  (new)"),
@@ -1665,7 +1675,9 @@ def format_session(session: Session, *, explain: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _compact_session(session: Session) -> str:
+def _compact_session(
+    session: Session, *, context: str | None = None, binary: str = "kubectl"
+) -> str:
     """The report as ``attach`` prints it: conclusions, one line each."""
     lines = [
         f"seat        {session.seat}"
@@ -1738,7 +1750,9 @@ def _compact_session(session: Session) -> str:
 
     for warning in session.warnings:
         lines.extend(_paragraph(warning, first="! ", indent="  "))
-    lines.append(f"explain     {explain_hint(session.pod)}")
+    lines.append(
+        f"explain     {explain_hint(session.pod, context=context, binary=binary)}"
+    )
     return "\n".join(lines)
 
 
@@ -2434,7 +2448,9 @@ def probe_spend_note(
     )
 
 
-def explain_hint(pod: PodRef) -> str:
+def explain_hint(
+    pod: PodRef, *, context: str | None = None, binary: str = "kubectl"
+) -> str:
     """The command that prints the reasoning, spelled for *this* pod.
 
     A command nobody has heard of is not "one command away", so the compact
@@ -2443,10 +2459,26 @@ def explain_hint(pod: PodRef) -> str:
     ``podbench status`` in a namespace of more than one pod asks a question
     instead of answering one.
 
+    It carries ``--context`` and ``--kubectl`` for the same reason and a worse
+    failure: a pod name is unique to a namespace *in a cluster*, and this
+    attach chose its cluster on the command line. Handed back without them the
+    line either reports another cluster's Yama scope, node and limits as if
+    they were this pod's, or refuses a pod the reader is looking at. The ssh
+    stanza already holds this standard through
+    :class:`podbench.sshcfg.KubectlInvocation`. Nothing else of the client is
+    dropped: no verb takes a ``--kubeconfig`` flag, so there is none to spell.
+
     >>> explain_hint(PodRef("demo", "web-6c9d7f4b8b-hq2vn"))
     'podbench status -n demo web-6c9d7f4b8b-hq2vn --explain'
+    >>> explain_hint(PodRef("demo", "web"), context="prod", binary="/opt/kubectl")
+    'podbench status --context prod --kubectl /opt/kubectl -n demo web --explain'
     """
-    return f"podbench status -n {pod.namespace} {pod.name} --explain"
+    selectors = ""
+    if context is not None:
+        selectors += f"--context {context} "
+    if binary != "kubectl":
+        selectors += f"--kubectl {binary} "
+    return f"podbench status {selectors}-n {pod.namespace} {pod.name} --explain"
 
 
 def explain_note(
@@ -3173,7 +3205,10 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         )
         if resize_note is not None:
             session = replace(session, warnings=(*session.warnings, resize_note))
-        print(format_session(session))
+        # Through the client rather than the flags: `--namespace` is resolved
+        # from the kubeconfig when it was not given, and the hint has to name
+        # the cluster this report was measured on however it was chosen.
+        print(format_session(session, context=kube.context, binary=kube.binary))
         print()
         print(
             _emit(
