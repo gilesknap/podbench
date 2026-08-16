@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b6.dev2+gca1f9154e documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.1.0b6.dev5+gc69cf5d8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=ad08bfea"></script>
+    <script src="../_static/documentation_options.js?v=0b56b83f"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -921,25 +921,28 @@ the dev pod before opening a folder again.</p>
 <tr class="row-even"><td><p>connection hangs with no output</p></td>
 <td><p>keepalives removed, or a genuinely stalled apiserver path</p></td>
 </tr>
-<tr class="row-odd"><td><p>server download stalls</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">…/sshd_config:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code>, then <code class="docutils literal notranslate"><span class="pre">kex_exchange_identification:</span> <span class="pre">Connection</span> <span class="pre">closed</span> <span class="pre">by</span> <span class="pre">remote</span> <span class="pre">host</span></code></p></td>
+<td><p>the ProxyCommand names sshd’s config where the seat’s agent did not write it. The seat’s <em>uid</em> decides that path — root keeps it in <code class="docutils literal notranslate"><span class="pre">/etc/podbench</span></code>, anyone else under <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> — and a reconnect used to infer the uid from the rung it read back off the container. A cluster that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root seat looking like the degraded rung, and the two answers came apart. Fixed; on an older launcher, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span></code> lands a seat whose rung is remembered rather than read back</p></td>
+</tr>
+<tr class="row-even"><td><p>server download stalls</p></td>
 <td><p>the container has no egress to the four host groups above</p></td>
 </tr>
-<tr class="row-even"><td><p>session dies and the workload restarts</p></td>
+<tr class="row-odd"><td><p>session dies and the workload restarts</p></td>
 <td><p>the pod hit its memory limit. This is the Observe-mode footgun; an OOM inside an ephemeral container is unrecoverable</p></td>
 </tr>
-<tr class="row-odd"><td><p>session dies and the workload restarts <em>while you were stopped at a breakpoint</em></p></td>
+<tr class="row-even"><td><p>session dies and the workload restarts <em>while you were stopped at a breakpoint</em></p></td>
 <td><p>the liveness budget expired — same symptom, different cause. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">describe</span> <span class="pre">pod</span></code> says <code class="docutils literal notranslate"><span class="pre">failed</span> <span class="pre">liveness</span> <span class="pre">probe</span></code>, and there is no <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>the app stops answering through the Service while you are stopped, and is fine again after you continue</p></td>
+<tr class="row-odd"><td><p>the app stops answering through the Service while you are stopped, and is fine again after you continue</p></td>
 <td><p>the readiness budget expired. Nothing is broken and nothing restarted; the pod left the Service’s routing and re-joined</p></td>
 </tr>
-<tr class="row-odd"><td><p>everything is gone after a reconnect</p></td>
+<tr class="row-even"><td><p>everything is gone after a reconnect</p></td>
 <td><p>the container restarted, or the pod did. Fresh rootfs, fresh host key. Re-attach (Observe) or make the dev pod again and re-bootstrap (Iterate)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey,keyboard-interactive)</span></code> with <code class="docutils literal notranslate"><span class="pre">agent</span> <span class="pre">refused</span> <span class="pre">operation</span></code> above it in the Remote-SSH log</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey,keyboard-interactive)</span></code> with <code class="docutils literal notranslate"><span class="pre">agent</span> <span class="pre">refused</span> <span class="pre">operation</span></code> above it in the Remote-SSH log</p></td>
 <td><p>your ssh agent holds that key, so ssh asked the agent to sign and it refused — nothing in the pod is involved. <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK=</span> <span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span></code> in a terminal proves it, and <code class="docutils literal notranslate"><span class="pre">IdentityAgent</span> <span class="pre">none</span></code> in a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">podbench-*</span></code> block in your own <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, below the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line, makes ssh use the file (never for a FIDO/<code class="docutils literal notranslate"><span class="pre">sk-*</span></code> key or a smartcard). <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> names it in advance</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code> on a dev pod</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code> on a dev pod</p></td>
 <td><p>the key is authorised from the sidecar’s environment, which is fixed when the pod is created — so a dev pod made with a different <code class="docutils literal notranslate"><span class="pre">--identity</span></code> needs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span> <span class="pre">--delete</span></code> and a fresh one, not a re-run</p></td>
 </tr>
 </tbody>
