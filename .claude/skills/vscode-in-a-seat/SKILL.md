@@ -63,6 +63,30 @@ unlimited pause use `podbench dev`, which strips all three probes by
 construction. This is the same reason `attach`'s report refuses to tick
 `iterate`.
 
+## Nothing VS Code reports proves it connected
+
+`code --remote ssh-remote+<alias> <folder>` hands the argv to a window and
+returns 0; the authority is resolved *in that window*, afterwards, and every way
+it can fail shows up there as a dialog and in the Remote-SSH log. Worse,
+`code --install-extension --remote …` also exits 0 without a connection, and
+podbench prints "`<ext>` is installed in SSH: `<alias>`" on the strength of it —
+which is exactly what a DLS run reported on 2026-08-16 while every connection was
+being refused.
+
+So `--open` proves the alias itself first: one `ssh <alias> true` before anything
+is written, installed or launched, and a refusal carries ssh's stderr *whole* —
+the mechanism is on the first line (`…/sshd_config: No such file or directory`)
+and ssh's own summary, on the last, names a port that does not exist. Do not
+"tidy" that into `_detail`, and do not add `BatchMode=yes`: a passphrase-protected
+key with no agent prompts and succeeds there, exactly as it would for VS Code, and
+a preflight whose false negatives block a working setup is worse than no
+preflight.
+
+The same rule applies to a listing: `list`/`status` offer `ssh <alias>` only where
+a seat is *running*. The stanza outlives the container — nothing deletes it, and
+the name is burnt once it exits — so a terminated seat would otherwise be given a
+connect line one row under the words `name burnt for this pod's lifetime`.
+
 ## Extensions must install in the *remote* window
 
 The button has to read "Install in SSH: `<alias>`". A locally-installed
