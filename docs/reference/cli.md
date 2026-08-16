@@ -173,8 +173,8 @@ CHECKS
   [ok]    ssh identity   /home/dev/.ssh/id_ed25519 and /home/dev/.ssh/id_ed25519.pub
   [warn]  ssh agent      agent on /run/user/1000/keyring/ssh holds SHA256:Ql+7…: ssh will sign with the AGENT, not with /home/dev/.ssh/id_ed25519
           that socket is gnome-keyring standing in for ssh-agent, which has a long history of refusing ED25519 keys with `agent refused operation`
-          prove it is the agent and not the seat:  SSH_AUTH_SOCK= ssh podbench-<namespace>-<pod>
-          to sign with the file instead, add to ~/.ssh/config (not the generated stanza, which is rewritten on every attach):
+          prove it is the agent and not the seat:  SSH_AUTH_SOCK= ssh podbench-demo-<pod>
+          if it refuses, sign with the file instead — put this in ~/.ssh/config below the Include line, where it cannot shadow the generated stanza:
               Host podbench-*
                   IdentityAgent none
           never for a FIDO/sk-* key or a smartcard, though: those can only sign through an agent
@@ -203,7 +203,7 @@ What it checks:
 | `kubeconfig` | there is no current context | — |
 | `ssh client` | `ssh` is not on `PATH` | — |
 | `ssh identity` | either half of the key is missing | — |
-| `ssh agent` | — | an agent is running **and holds the identity**, its socket is set but dead, or the comparison could not be made |
+| `ssh agent` | — | an agent is running **and holds the identity** (unless your config already sets `IdentityAgent none`), its socket is set but dead, or the comparison could not be made |
 | `config dir` | — | `~/.podbench/config.d` does not exist yet |
 | `ssh include` | `~/.ssh/config` does not include the generated stanzas | it includes them **below** a `Host`/`Match` block |
 | RBAC `attach` | any of its verbs is denied | kubectl could not answer |
@@ -239,7 +239,17 @@ Notes:
   it limits which keys are *offered*, not who signs for them. doctor compares
   `ssh-keygen -lf <identity>.pub` against `ssh-add -l` and says which of the two
   it will be. It does not ask for a signature, so it reports what would be asked,
-  never what it would answer — hence a warning and never a blocker.
+  never what it would answer — hence a warning and never a blocker. Any part of
+  that comparison it cannot make — a listing that failed, a `.pub` it cannot
+  read, `ssh-add` off `PATH` — is reported as *not measured*, with what the
+  command said, rather than folded into either answer.
+* **The warning goes away when you act on it.** Once the agent holds the
+  identity, doctor asks `ssh -G` what `IdentityAgent` resolves to for the alias
+  `attach` would generate in this namespace, and reports `ok` when the answer is
+  `none` — so the check can see its own advice taken. It asks about
+  `podbench-<namespace>-pod`, which is what a `Host podbench-*` block matches; if
+  you attach with `--host-alias NAME`, that block has to name `NAME` instead, and
+  doctor cannot see it.
 * A refusing agent is the one failure that looks like podbench's fault and is
   not: ssh reports `agent refused operation` and then `Permission denied
   (publickey,keyboard-interactive)`, which reads as the seat rejecting the key.
@@ -252,7 +262,9 @@ Notes:
   can *only* sign through an agent, so the fix that rescues an ED25519 key
   disables those outright. doctor also does not write it — the generated stanza
   is rewritten on every attach, so the keyword belongs in a `Host podbench-*`
-  block in your own `~/.ssh/config`.
+  block in your own `~/.ssh/config`, **below** the `Include` line: a `Host` block
+  above it shadows the generated stanza, which is the next warning down this
+  list.
 * An `Include` below a `Host *` block is a warning rather than a blocker: the
   stanza is still read, but ssh takes the **first** value it sees for each
   keyword, so anything that block also sets — a `ControlPath`, a `ProxyCommand` —

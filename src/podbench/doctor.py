@@ -42,10 +42,11 @@ from .launcher import (
     DEFAULT_IDENTITY,
     client_dir,
     current_namespace,
+    default_host_alias,
     identity_paths,
     ssh_include_line,
 )
-from .model import DEFAULT_IMAGE, IMAGE_ENV, as_dict
+from .model import DEFAULT_IMAGE, IMAGE_ENV, PodRef, as_dict
 
 __all__ = [
     "FEATURES",
@@ -589,7 +590,37 @@ def agent_fingerprints(text: str) -> frozenset[str]:
     return frozenset(entry[0] for entry in found if entry is not None)
 
 
-def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
+_IDENTITY_AGENT = re.compile(r"^identityagent\s+(\S.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def effective_identity_agent(alias: str, *, runner: Runner, which: Which) -> str | None:
+    """What ssh itself says will hold the identity for ``alias``.
+
+    ``ssh -G`` resolves the whole config the way a connection would — includes,
+    ``Host`` patterns, first-match-wins — which is the only way this module can
+    observe the one keyword it recommends. Without it the warning would survive
+    being acted on, and a diagnostic that cannot see its own advice taken teaches
+    people to stop reading it.
+
+    ``None`` when ssh could not be asked or said nothing: ``-G`` prints
+    ``identityagent`` only when the keyword is set, so its absence means the
+    default, which is the agent.
+    """
+    if which("ssh") is None:
+        return None
+    # -o on the command line outranks the file, and CanonicalizeHostname would
+    # otherwise send -G to DNS: doctor must not block on the network to answer a
+    # question about a local file.
+    result = runner(["ssh", "-G", "-o", "CanonicalizeHostname=no", alias])
+    if result.returncode != 0:
+        return None
+    found = _IDENTITY_AGENT.search(result.stdout)
+    return None if found is None else found.group(1).strip()
+
+
+def check_ssh_agent(
+    identity: str, *, namespace: str | None, runner: Runner, which: Which
+) -> Check:
     """Which thing will sign with the identity — the agent, or the file.
 
     The failure this precedes is entirely client-side and reads as the opposite:
@@ -671,12 +702,20 @@ def check_ssh_agent(identity: str, *, runner: Runner, which: Which) -> Check:
             f"agent on {socket} does not hold {fingerprint}: ssh signs with "
             f"{private} itself",
         )
+    alias = default_host_alias(PodRef(namespace, "pod")) if namespace else None
+    if alias is not None and _agent_is_off(alias, runner=runner, which=which):
+        return Check(
+            "ssh agent",
+            Status.OK,
+            f"agent on {socket} holds {fingerprint}, but your ssh config sets "
+            f"IdentityAgent none for {alias}: ssh signs with {private} itself",
+        )
     return Check(
         "ssh agent",
         Status.WARN,
         f"agent on {socket} holds {fingerprint}: ssh will sign with the AGENT, "
         f"not with {private}",
-        _agent_hint(socket, algorithm),
+        _agent_hint(socket, algorithm, namespace),
     )
 
 
@@ -691,7 +730,13 @@ def _said(result: CommandResult) -> str:
     return f": {spoke.splitlines()[0]}" if spoke else ""
 
 
-def _agent_hint(socket: str, algorithm: str) -> str:
+def _agent_is_off(alias: str, *, runner: Runner, which: Which) -> bool:
+    """Whether the user's own config has already taken the agent out of play."""
+    keyword = effective_identity_agent(alias, runner=runner, which=which)
+    return keyword is not None and keyword.lower() == "none"
+
+
+def _agent_hint(socket: str, algorithm: str, namespace: str | None) -> str:
     """What to type when it is the agent, and not podbench, that refuses.
 
     Both escapes, in the order a reader needs them: one settles who is at fault,
@@ -701,6 +746,11 @@ def _agent_hint(socket: str, algorithm: str) -> str:
     in one deliberately. Applying it is not this verb's job either: doctor
     diagnoses, and the generated stanza is rewritten on every attach, so the
     keyword is named where a user's own config can hold it.
+
+    The keyword's placement is stated because the obvious one is wrong: pasted
+    above the ``Include``, a ``Host`` block leaves doctor's own include check
+    reporting ``shadowed`` on the next run, which is a foot-gun this hint would
+    have handed out itself.
     """
     lines: list[str] = []
     if GNOME_KEYRING_SOCKET.match(socket):
@@ -709,9 +759,9 @@ def _agent_hint(socket: str, algorithm: str) -> str:
             "a long history of refusing ED25519 keys with `agent refused "
             "operation`"
         )
+    spelled = default_host_alias(PodRef(namespace or "<namespace>", "<pod>"))
     lines.append(
-        "prove it is the agent and not the seat:  "
-        "SSH_AUTH_SOCK= ssh podbench-<namespace>-<pod>"
+        f"prove it is the agent and not the seat:  SSH_AUTH_SOCK= ssh {spelled}"
     )
     # "-SK" rather than a suffix test: a certificate over an sk-* key prints
     # ED25519-SK-CERT, and the key underneath is just as unable to sign without
@@ -723,8 +773,8 @@ def _agent_hint(socket: str, algorithm: str) -> str:
         )
         return "\n".join(lines)
     lines.append(
-        "to sign with the file instead, add to ~/.ssh/config (not the generated "
-        "stanza, which is rewritten on every attach):"
+        "if it refuses, sign with the file instead — put this in ~/.ssh/config "
+        "below the Include line, where it cannot shadow the generated stanza:"
     )
     lines.append("    Host podbench-*")
     lines.append("        IdentityAgent none")
@@ -864,7 +914,11 @@ def diagnose(
 
     checks.append(check_ssh_client(which=which))
     checks.append(check_identity(identity))
-    checks.append(check_ssh_agent(identity, runner=runner, which=which))
+    checks.append(
+        check_ssh_agent(
+            identity, namespace=resolved_namespace, runner=runner, which=which
+        )
+    )
     directory = client_dir(config_dir)
     checks.append(check_config_dir(directory, fix=fix))
     checks.append(check_include(Path(SSH_CONFIG).expanduser(), directory, fix=fix))
