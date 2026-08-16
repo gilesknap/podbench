@@ -43,6 +43,8 @@ __all__ = [
     "AGENT_COMMAND",
     "CONTROLLER_LABELS",
     "DEVPOD_LABEL",
+    "GITOPS_ANNOTATIONS",
+    "GITOPS_LABELS",
     "ORIGIN_ANNOTATION",
     "SERVER_OWNED_METADATA",
     "WORKSPACE_MOUNT_PATH",
@@ -84,6 +86,48 @@ endpointslice without making it a ReplicaSet member. Keeping ``pod-template-hash
 instead would give a ``replicas: 1`` ReplicaSet two matching pods, and one of
 them would be reaped (report 3.5).
 """
+
+GITOPS_LABELS: tuple[str, ...] = ("argocd.argoproj.io/instance",)
+GITOPS_ANNOTATIONS: tuple[str, ...] = ("argocd.argoproj.io/tracking-id",)
+"""Marks that say a GitOps controller owns an object and will reconcile it.
+
+Only the unambiguous ones. Argo CD's tracking key is configurable
+(``application.instanceLabelKey``) and its *default* is
+``app.kubernetes.io/instance`` — which is also Helm's common label and appears
+on pods nobody is reconciling (measured: 53 of 82 pods on a live cluster carried
+it, none of them tracked by it). Treating that as a signal would refuse Iterate
+mode on ordinary Helm deployments, and since the refusal is absolute there would
+be no way past it. Missing a detection leaves the user where they are today;
+a false one takes away a mode that works. So this errs toward missing.
+
+The corollary, which belongs in the docs rather than in a comment: a cluster
+that leaves ``instanceLabelKey`` at its default is not detected.
+"""
+
+
+def gitops_owner(obj: Mapping[str, Any]) -> str | None:
+    """The GitOps mark on an object, as ``key=value``, or ``None``.
+
+    Takes any object, not just a pod, because the mark is on the *workload*:
+    Argo stamps what it applied from git, and the pod template is not that.
+    A Deployment carries it; the pods it makes do not (measured — 0 of 82).
+
+    >>> gitops_owner({"metadata": {"labels": {"argocd.argoproj.io/instance": "i22"}}})
+    'argocd.argoproj.io/instance=i22'
+    >>> gitops_owner({"metadata": {"labels": {"app": "demo"}}}) is None
+    True
+    """
+    metadata = as_dict(obj.get("metadata"))
+    labels = as_dict(metadata.get("labels"))
+    annotations = as_dict(metadata.get("annotations"))
+    for key in GITOPS_LABELS:
+        if (value := labels.get(key)) is not None:
+            return f"{key}={value}"
+    for key in GITOPS_ANNOTATIONS:
+        if (value := annotations.get(key)) is not None:
+            return f"{key}={value}"
+    return None
+
 
 SERVER_OWNED_METADATA: tuple[str, ...] = (
     "uid",

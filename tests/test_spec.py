@@ -28,6 +28,7 @@ from podbench.spec import (
     dev_pod_spec,
     dev_seat_identity,
     ephemeral_container_spec,
+    gitops_owner,
     runs_as_non_root,
     seat_identity_volume_mounts,
     service_selector_patch,
@@ -788,3 +789,43 @@ def test_run_as_non_root_is_read_for_the_pre_flight() -> None:
 
 def test_a_missing_container_id_is_none() -> None:
     assert container_id(origin_pod(), "nope") is None
+
+
+# -- GitOps marks ----------------------------------------------------------
+
+
+def test_the_argo_tracking_label_is_a_mark() -> None:
+    obj = {"metadata": {"labels": {"argocd.argoproj.io/instance": "beamline-i22"}}}
+    assert gitops_owner(obj) == "argocd.argoproj.io/instance=beamline-i22"
+
+
+def test_the_argo_tracking_annotation_is_a_mark_too() -> None:
+    """Annotation tracking is a supported method and leaves a different mark."""
+    obj = {
+        "metadata": {
+            "annotations": {
+                "argocd.argoproj.io/tracking-id": "home:apps/Deployment:home/home"
+            }
+        }
+    }
+    assert gitops_owner(obj) == (
+        "argocd.argoproj.io/tracking-id=home:apps/Deployment:home/home"
+    )
+
+
+def test_helms_instance_label_is_not_a_mark() -> None:
+    """The load-bearing negative.
+
+    ``app.kubernetes.io/instance`` is Argo's *default* tracking key and also
+    Helm's common label: 53 of 82 pods on a live cluster carried it with
+    nothing reconciling them. Treating it as a mark would refuse Iterate mode
+    on ordinary Helm deployments, and the refusal has no override.
+    """
+    obj = {
+        "metadata": {"labels": {"app.kubernetes.io/instance": "demo", "app": "demo"}}
+    }
+    assert gitops_owner(obj) is None
+
+
+def test_an_object_with_no_metadata_is_not_a_mark() -> None:
+    assert gitops_owner({}) is None
