@@ -1,0 +1,1726 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.1.0b4 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=bcec09ca"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=30646c52"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/spikes/phase0-report';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.1.0b4';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand" href="s1.html" />
+    <link rel="prev" title="Spikes" href="../spikes.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0b4" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../ways-in.html">Ways in</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../design-brief.html">Podbench</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../security.html">Security model</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../spikes.html">Spikes</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s6.html">S6 — Suspending an Argo-managed workload: server-side apply field ownership</a></li>
+</ul>
+</details></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../explanations.html" class="nav-link">Explanations</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../spikes.html" class="nav-link">Spikes</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Podbench — Phase 0 gate report</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="podbench-phase-0-gate-report">
+<h1>Podbench — Phase 0 gate report<a class="headerlink" href="#podbench-phase-0-gate-report" title="Link to this heading">#</a></h1>
+<p><strong>Date:</strong> 2026-08-15
+<strong>Cluster under test:</strong> k3s v1.34.6+k3s1, kubectl v1.36.3, 6 nodes, mixed amd64 (nuc2, ws03) /
+arm64 (node01 raspi, node02–04 rockchip RK3588).
+<strong>Sources:</strong> <code class="docutils literal notranslate"><span class="pre">spikes/s1.md</span></code> … <code class="docutils literal notranslate"><span class="pre">spikes/s5.md</span></code> (all read in full), plus <code class="docutils literal notranslate"><span class="pre">spikes/capreport.sh</span></code>.</p>
+<hr class="docutils" />
+<section id="verdict-table">
+<h2>1. Verdict table<a class="headerlink" href="#verdict-table" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Spike</p></th>
+<th class="head"><p>Subject</p></th>
+<th class="head"><p>Verdict</p></th>
+<th class="head"><p>One-line reason</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>S1</strong></p></td>
+<td><p>ssh transport: <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> as ProxyCommand</p></td>
+<td><p><strong>PASS</strong></p></td>
+<td><p>Every transport property held — remote exec, PTY, scp/sftp, 8-way concurrency, <code class="docutils literal notranslate"><span class="pre">-L</span></code>/<code class="docutils literal notranslate"><span class="pre">-R</span></code>/<code class="docutils literal notranslate"><span class="pre">-D</span></code>, agent forwarding, ControlMaster — and a real vscode-server 1.133.0 completed an HTTP 200 + WebSocket <code class="docutils literal notranslate"><span class="pre">101</span> <span class="pre">Switching</span> <span class="pre">Protocols</span></code> handshake through <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code>, with no port-forward and no pod IP.</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>S2</strong></p></td>
+<td><p>vscode-server inside an ephemeral container</p></td>
+<td><p><strong>PASS</strong></p></td>
+<td><p>Server downloads, extracts, starts, installs extensions and survives client disconnect on <strong>both</strong> amd64 and arm64; cold path 5.76 s / ~10 s. Passes on function, but three brief assumptions (version lock, ~1 GB budget, OOM recoverability) are falsified.</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>S3</strong></p></td>
+<td><p>gdb attach with sysroot against a distroless target</p></td>
+<td><p><strong>PASS</strong></p></td>
+<td><p>Against <code class="docutils literal notranslate"><span class="pre">gcr.io/distroless/cc-debian12</span></code> (no <code class="docutils literal notranslate"><span class="pre">/bin/sh</span></code>, proven), an ephemeral container with <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> attached to a non-descendant PID under Yama <code class="docutils literal notranslate"><span class="pre">ptrace_scope=1</span></code>, resolved libraries via <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, and hit a breakpoint with function names, args, locals and source lines.</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>S4</strong></p></td>
+<td><p>Python takeover: dev pod, uv editable install, relaunch on the pod IP</p></td>
+<td><p><strong>PASS</strong></p></td>
+<td><p>Full Iterate loop works: authored dev-pod spec → uv + CPython 3.12 + <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> in a real sidecar → relaunch on the shared-netns pod IP:8080 → edited string served <strong>through the Service</strong> in <strong>1.18 s</strong> per edit→relaunch→verify cycle. Vanilla <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> alone cannot do it (see §3).</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>S5</strong></p></td>
+<td><p>No-cap fallback, Yama diagnosis, capability ladder</p></td>
+<td><p><strong>PASS</strong></p></td>
+<td><p>The degraded rung is admitted under PSA <code class="docutils literal notranslate"><span class="pre">restricted:latest</span></code> and is genuinely useful (6/6 <code class="docutils literal notranslate"><span class="pre">/proc</span></code> reads at target UID, full source-level debugging via gdb-<strong>launch</strong> with <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>), and <code class="docutils literal notranslate"><span class="pre">capreport</span></code> names the blocker correctly in all five configurations tested.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>5 PASS / 0 PARTIAL / 0 FAIL.</strong></p>
+</section>
+<hr class="docutils" />
+<section id="gate-decision">
+<h2>2. Gate decision<a class="headerlink" href="#gate-decision" title="Link to this heading">#</a></h2>
+<p><strong>Phase 1 may begin.</strong> The brief’s condition — <em>“Do not start Phase 1 until all five pass or the
+brief is amended with what was learned”</em> — is satisfied on the first clause: all five spikes
+returned PASS on their stated success criteria.</p>
+<p>Nothing is a PARTIAL or FAIL, so no amendment is <em>required</em> to unblock the gate. <strong>However</strong>, five
+of the brief’s load-bearing assumptions were empirically falsified, and three of them silently
+break the product’s headline demos if implemented as written. These are not “nice to know” — they
+change what Phase 1–6 must build:</p>
+<p><strong>Blocking amendments — must be folded into the brief before the phase that consumes them:</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Amendment</p></th>
+<th class="head"><p>Blocks</p></th>
+<th class="head"><p>Found by</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>A1</p></td>
+<td><p>The “download debuginfod sources” story for Observe mode does not exist on Debian/Ubuntu. A source-provisioning design is needed.</p></td>
+<td><p>Phase 2/3 (Observe mode)</p></td>
+<td><p>S3</p></td>
+</tr>
+<tr class="row-odd"><td><p>A2</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code> strips <strong>all labels</strong>, so the Iterate demo (“edit code, curl the Service, see your change”) cannot work. The launcher must author the pod spec.</p></td>
+<td><p>Phase 4 (Iterate mode)</p></td>
+<td><p>S4</p></td>
+</tr>
+<tr class="row-even"><td><p>A3</p></td>
+<td><p>The VS Code server version lock is a hard handshake rejection, not a soft fallback. A baked server is correct for ≤ ~4 weeks.</p></td>
+<td><p>Phase 1/2 (image + bootstrap)</p></td>
+<td><p>S2</p></td>
+</tr>
+<tr class="row-odd"><td><p>A4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code> on a non-root container is a <strong>silent no-op</strong> (<code class="docutils literal notranslate"><span class="pre">CapEff</span> <span class="pre">=</span> <span class="pre">0</span></code>). Any ladder rung naming both a non-zero <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> is invalid by construction.</p></td>
+<td><p>Phase 1 (launcher) + Phase 5 (fallback)</p></td>
+<td><p>S5</p></td>
+</tr>
+<tr class="row-even"><td><p>A5</p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">~1</span> <span class="pre">GB</span></code> Observe-mode disk budget is already exceeded by the stock server alone (680.8 MiB) before any extension. Restate as ~1.5 GB, or trim.</p></td>
+<td><p>Phase 1 (image sizing)</p></td>
+<td><p>S2</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>One unresolved contradiction between spikes</strong> must be settled before Phase 1 pins the
+ProxyCommand — see §5, R1. It is not a gate blocker because a configuration exists that satisfies
+both spikes’ constraints simultaneously (<code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span> <span class="pre">-e</span> <span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span></code>), but the brief must state
+<em>why</em> rather than leaving it to a future “cleanup”.</p>
+</section>
+<hr class="docutils" />
+<section id="amendments-to-the-design-brief">
+<h2>3. Amendments to the design brief<a class="headerlink" href="#amendments-to-the-design-brief" title="Link to this heading">#</a></h2>
+<section id="e-on-sshd-i-is-about-keeping-fd-2-open-not-about-log-tidiness-s1">
+<h3>3.1 — <code class="docutils literal notranslate"><span class="pre">-e</span></code> on <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> is about keeping fd 2 <strong>open</strong>, not about log tidiness (S1)<a class="headerlink" href="#e-on-sshd-i-is-about-keeping-fd-2-open-not-about-log-tidiness-s1" title="Link to this heading">#</a></h3>
+<p>The brief frames <code class="docutils literal notranslate"><span class="pre">-e</span></code> as “log to stderr so stderr noise does not pollute the SSH stream”. That is
+the wrong mechanism, and the wrong mechanism leads to the wrong “cleanup”. S1 isolated the real
+cause with a sshd-free experiment: <strong>closing or replacing fd 2 in a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>’d process tears
+down the whole CRI exec stream</strong>, silently truncating stdin/stdout with <code class="docutils literal notranslate"><span class="pre">rc=0</span></code>.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># control — stderr left alone</span>
+<span class="p">(</span> <span class="n">echo</span> <span class="n">one</span><span class="p">;</span> <span class="n">sleep</span> <span class="mi">4</span><span class="p">;</span> <span class="n">echo</span> <span class="n">two</span> <span class="p">)</span> <span class="o">|</span> <span class="n">kubectl</span> <span class="n">exec</span> <span class="o">-</span><span class="n">i</span> <span class="n">pod</span> <span class="o">-</span><span class="n">c</span> <span class="n">c</span> <span class="o">--</span> <span class="n">sh</span> <span class="o">-</span><span class="n">c</span> <span class="s1">&#39;exec cat&#39;</span>
+<span class="n">one</span>
+<span class="n">two</span>                     <span class="c1"># both arrive</span>
+
+<span class="c1"># stderr → /dev/null, which is exactly what sshd&#39;s inetd path does without -e/-E</span>
+<span class="p">(</span> <span class="n">echo</span> <span class="n">one</span><span class="p">;</span> <span class="n">sleep</span> <span class="mi">4</span><span class="p">;</span> <span class="n">echo</span> <span class="n">two</span> <span class="p">)</span> <span class="o">|</span> <span class="n">kubectl</span> <span class="n">exec</span> <span class="o">-</span><span class="n">i</span> <span class="n">pod</span> <span class="o">-</span><span class="n">c</span> <span class="n">c</span> <span class="o">--</span> <span class="n">sh</span> <span class="o">-</span><span class="n">c</span> <span class="s1">&#39;exec 2&gt;/dev/null; exec cat&#39;</span>
+<span class="n">one</span>                     <span class="c1"># &quot;two&quot; SILENTLY LOST, rc=0</span>
+</pre></div>
+</div>
+<p>The failure, when it hits sshd, is a misleading network error:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">command</span> <span class="n">terminated</span> <span class="k">with</span> <span class="n">exit</span> <span class="n">code</span> <span class="mi">255</span>
+<span class="n">ssh_dispatch_run_fatal</span><span class="p">:</span> <span class="n">Connection</span> <span class="n">to</span> <span class="n">UNKNOWN</span> <span class="n">port</span> <span class="mi">65535</span><span class="p">:</span> <span class="n">Broken</span> <span class="n">pipe</span>
+</pre></div>
+</div>
+<p>with <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-vv</span></code> dying at <code class="docutils literal notranslate"><span class="pre">debug1:</span> <span class="pre">expecting</span> <span class="pre">SSH2_MSG_KEX_ECDH_REPLY</span></code>. The full matrix:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>ProxyCommand</p></th>
+<th class="head"><p>result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span> <span class="pre">-e</span></code></p></td>
+<td><p>works</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span> <span class="pre">-E</span> <span class="pre">/tmp/sshd.log</span></code></p></td>
+<td><p>works (<code class="docutils literal notranslate"><span class="pre">-E</span></code> implies <code class="docutils literal notranslate"><span class="pre">log_stderr=1</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> (syslog)</p></td>
+<td><p><strong>FAILS, reproducibly</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'/usr/sbin/sshd</span> <span class="pre">-i'</span></code> (shell does <strong>not</strong> exec, holds fd 2)</p></td>
+<td><p>works — <strong>masks the bug</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i'</span></code></p></td>
+<td><p>FAILS</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-e</span> <span class="pre">2&gt;&amp;1'</span></code> (stderr merged to stdout)</p></td>
+<td><p>FAILS</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'echo</span> <span class="pre">hello;</span> <span class="pre">exec</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-e'</span></code> (pre-banner noise)</p></td>
+<td><p>works</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Consequence:</strong> any wrapper that redirects or closes sshd’s stderr breaks the transport with a
+network-looking error, and a non-<code class="docutils literal notranslate"><span class="pre">exec</span></code> wrapper hides the requirement in testing until someone adds
+<code class="docutils literal notranslate"><span class="pre">exec</span></code> for tidiness. Pin the invocation and add a regression test that asserts the transport
+<strong>dies</strong> without <code class="docutils literal notranslate"><span class="pre">-e</span></code>.</p>
+</section>
+<section id="debuginfod-gives-symbols-but-not-sources-on-debian-s3">
+<h3>3.2 — debuginfod gives symbols but <strong>not sources</strong> on Debian (S3)<a class="headerlink" href="#debuginfod-gives-symbols-but-not-sources-on-debian-s3" title="Link to this heading">#</a></h3>
+<p>The brief leans on debuginfod for Observe mode’s disk budget. Symbols do arrive — S3 got a fully
+symbolised, source-line-annotated backtrace across coreutils <em>and</em> glibc for a stripped binary, for
+<strong>4.7 MB</strong> of <code class="docutils literal notranslate"><span class="pre">~/.cache/debuginfod_client</span></code> (glibc alone 4.0 MB), and it works <em>through</em> the sysroot
+including for distroless libs. But <strong>every source fetch failed</strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Download</span> <span class="n">failed</span><span class="p">:</span> <span class="n">Invalid</span> <span class="n">argument</span><span class="o">.</span>  <span class="n">Continuing</span> <span class="n">without</span> <span class="n">source</span> <span class="n">file</span> <span class="o">./</span><span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span><span class="o">.</span>
+<span class="mi">142</span>	<span class="n">src</span><span class="o">/</span><span class="n">sleep</span><span class="o">.</span><span class="n">c</span><span class="p">:</span> <span class="n">Inappropriate</span> <span class="n">ioctl</span> <span class="k">for</span> <span class="n">device</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>Two independent, both-fatal causes, each proven:</p>
+<ol class="arabic simple">
+<li><p>Debian’s <code class="docutils literal notranslate"><span class="pre">-dbgsym</span></code> packages carry <code class="docutils literal notranslate"><span class="pre">DW_AT_comp_dir</span> <span class="pre">:</span> <span class="pre">.</span></code> (reproducible-builds normalisation),
+confirmed by <code class="docutils literal notranslate"><span class="pre">readelf</span> <span class="pre">--debug-dump=info</span></code> on the downloaded debuginfo. The debuginfod protocol
+requires an <strong>absolute</strong> <code class="docutils literal notranslate"><span class="pre">/FILENAME</span></code>, so gdb’s <code class="docutils literal notranslate"><span class="pre">./src/sleep.c</span></code> is rejected client-side with
+<code class="docutils literal notranslate"><span class="pre">EINVAL</span></code>.</p></li>
+<li><p>The server has no sources anyway:
+<code class="docutils literal notranslate"><span class="pre">https://debuginfod.debian.net/buildid/&lt;bid&gt;/debuginfo</span></code> → <strong>200</strong>, but
+<code class="docutils literal notranslate"><span class="pre">.../source/src/sleep.c</span></code> → <strong>404</strong>. Same on the federated <code class="docutils literal notranslate"><span class="pre">debuginfod.elfutils.org</span></code>, and for
+glibc under every plausible path form (<code class="docutils literal notranslate"><span class="pre">/usr/src/glibc/…</span></code>, <code class="docutils literal notranslate"><span class="pre">/build/glibc-…</span></code>, <code class="docutils literal notranslate"><span class="pre">/sysdeps/…</span></code>) →
+<code class="docutils literal notranslate"><span class="pre">Server</span> <span class="pre">query</span> <span class="pre">failed:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code>.</p></li>
+</ol>
+<p><strong>Amendment:</strong> keep debuginfod wired up (symbols are cheap and valuable) but Podbench needs a real
+source-provisioning story: source in the target image, a source sidecar volume, or client-side
+source mapping to the developer’s checkout. Fedora/RHEL debuginfod is known to serve sources;
+Debian/Ubuntu targets will not.</p>
+<p>Also, and not in the brief: <strong><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> is mandatory in the image</strong>. <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code>
+ships none and <code class="docutils literal notranslate"><span class="pre">libdebuginfod</span></code> then fails the TLS handshake <strong>silently</strong> — no <code class="docutils literal notranslate"><span class="pre">Downloading…</span></code> lines,
+every library shows <code class="docutils literal notranslate"><span class="pre">(*)</span> <span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code>. Users will read that as “debuginfod
+doesn’t work in podbench”.</p>
+</section>
+<section id="set-sysroot-is-not-the-whole-fix-four-more-things-are-mandatory-s3">
+<h3>3.3 — <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> is not the whole fix; four more things are mandatory (S3)<a class="headerlink" href="#set-sysroot-is-not-the-whole-fix-four-more-things-are-mandatory-s3" title="Link to this heading">#</a></h3>
+<p>The brief treats sysroot as <em>the</em> fix. It is one of five required elements.</p>
+<ul>
+<li><p><strong>Sysroot does not cover source lookup.</strong> With a correct sysroot and the source physically
+present in the target rootfs, gdb still reports <code class="docutils literal notranslate"><span class="pre">19</span>&#160; <span class="pre">victim.c:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory.</span></code>
+Function names, args and locals are all correct; only the source text is missing.
+Fix: <code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> — generic, needs no <code class="docutils literal notranslate"><span class="pre">DW_AT_comp_dir</span></code> knowledge, and yields a
+clean <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code> fullname (<code class="docutils literal notranslate"><span class="pre">/proc/1/root/app/src/victim.c</span></code>).
+<strong>Do not</strong> use the generic <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">substitute-path</span> <span class="pre">/</span> <span class="pre">/proc/&lt;pid&gt;/root/</span></code> — it functions, but gdb
+re-applies the substitution on display and emits
+<code class="docutils literal notranslate"><span class="pre">/proc/1/root/proc/1/root/proc/1/root/proc/1/root/app/src/victim.c</span></code>, which is exactly the string a
+DAP client hands to the editor.</p></li>
+<li><p><strong>Sysroot breaks <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code>.</strong> Once set, gdb refuses to auto-load the target’s
+<code class="docutils literal notranslate"><span class="pre">libthread_db.so.1</span></code>: <code class="docutils literal notranslate"><span class="pre">auto-loading</span> <span class="pre">has</span> <span class="pre">been</span> <span class="pre">declined</span> <span class="pre">by</span> <span class="pre">your</span> <span class="pre">'auto-load</span> <span class="pre">safe-path'</span> <span class="pre">…</span> <span class="pre">thread</span> <span class="pre">debugging</span> <span class="pre">will</span> <span class="pre">not</span> <span class="pre">be</span> <span class="pre">available.</span></code> No <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code>, no per-thread backtraces. Fix, narrowly:
+<code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> (not <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">auto-load</span> <span class="pre">safe-path</span> <span class="pre">/</span></code>).</p></li>
+<li><p><strong>Ordering is load-bearing, and getting it wrong fails plausibly.</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>order</p></th>
+<th class="head"><p>libs</p></th>
+<th class="head"><p>main executable / user frames</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> → <code class="docutils literal notranslate"><span class="pre">file</span></code> → <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>correct</p></td>
+<td><p>correct</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code> → <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code></p></td>
+<td><p>fixed up on the fly</p></td>
+<td><p><strong>broken</strong> — <code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">reading</span> <span class="pre">attached</span> <span class="pre">process's</span> <span class="pre">symbol</span> <span class="pre">file.</span></code>, frames <code class="docutils literal notranslate"><span class="pre">#3</span> <span class="pre">0x…</span> <span class="pre">in</span> <span class="pre">??</span> <span class="pre">()</span></code>, <code class="docutils literal notranslate"><span class="pre">#5</span> <span class="pre">0x405d400000000000</span> <span class="pre">in</span> <span class="pre">??</span> <span class="pre">()</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">attach</span></code> → <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> → <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">&lt;root&gt;&lt;exe&gt;</span></code> → <code class="docutils literal notranslate"><span class="pre">sharedlibrary</span></code></p></td>
+<td><p>correct</p></td>
+<td><p>recovers</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A plausible-looking libc backtrace with garbage above it is the most dangerous failure found in
+S3. An explicit <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root$(readlink</span> <span class="pre">/proc/&lt;pid&gt;/exe)</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code> is required.</p>
+</li>
+</ul>
+</section>
+<section id="the-no-sysroot-failure-mode-is-not-what-the-brief-describes-s3">
+<h3>3.4 — The “no sysroot” failure mode is not what the brief describes (S3)<a class="headerlink" href="#the-no-sysroot-failure-mode-is-not-what-the-brief-describes-s3" title="Link to this heading">#</a></h3>
+<p>gdb 13’s default sysroot is <code class="docutils literal notranslate"><span class="pre">target:</span></code>, not <code class="docutils literal notranslate"><span class="pre">/</span></code>. With only <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> the no-sysroot case
+fails <strong>loudly</strong>, not silently:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>warning: &quot;target:/app/victim&quot;: could not open as an executable file: Operation not permitted.
+Could not open `target:/lib/x86_64-linux-gnu/libc.so.6&#39; as an executable file: Operation not permitted
+#0  0x000076694f49b503 in ?? ()
+</pre></div>
+</div>
+<p>Root cause proven: gdb’s <code class="docutils literal notranslate"><span class="pre">target:</span></code> access uses <code class="docutils literal notranslate"><span class="pre">linux_mntns_access_fs()</span></code> → <code class="docutils literal notranslate"><span class="pre">setns(CLONE_NEWNS)</span></code>,
+which needs <strong><code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code></strong>, not <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>.</p>
+<p>The <em>wrong-symbols</em> mode the brief describes requires <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/</span></code> <strong>and</strong> a version-skewed
+debug image. Against Debian-12-distroless the bug is <strong>invisible</strong> (both glibcs share build-id
+<code class="docutils literal notranslate"><span class="pre">93ac61ec…</span></code> and the backtrace is correct). Against <code class="docutils literal notranslate"><span class="pre">ubuntu:24.04</span></code> (glibc 2.39) it is loud:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1">### WRONG: set sysroot /</span>
+<span class="mh">0x000077f6377dcb7a</span> <span class="ow">in</span> <span class="n">wcsxfrm_l</span> <span class="p">()</span> <span class="kn">from</span><span class="w"> </span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="c1">#2  0x00005c459789e35f in outer_loop () at victim.c:29        &lt;- wrong line, too</span>
+<span class="c1">#5  0x00005c45978a0d80 in __frame_dummy_init_array_entry ()</span>
+
+<span class="c1">### RIGHT: set sysroot /proc/1/root</span>
+<span class="mh">0x000077f6377dcb7a</span> <span class="ow">in</span> <span class="n">clock_nanosleep</span> <span class="p">()</span> <span class="kn">from</span><span class="w"> </span><span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">x86_64</span><span class="o">-</span><span class="n">linux</span><span class="o">-</span><span class="n">gnu</span><span class="o">/</span><span class="n">libc</span><span class="o">.</span><span class="n">so</span><span class="mf">.6</span>
+<span class="c1">#3  0x00005c459789e35c in outer_loop () at victim.c:35</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">clock_nanosleep</span></code> reported as <code class="docutils literal notranslate"><span class="pre">wcsxfrm_l</span></code>, duplicated/interleaved frames, and even the user-code
+line number wrong. <strong>Ship this transcript verbatim as the canonical docs example</strong>, and note that a
+matched-distro debug image hides the bug entirely.</p>
+<p><strong>Anti-pattern to document, not adopt:</strong> <code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code> makes gdb’s default <code class="docutils literal notranslate"><span class="pre">target:</span></code> sysroot work
+with <strong>zero configuration</strong>. It also breaks <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> (<code class="docutils literal notranslate"><span class="pre">Expected</span> <span class="pre">absolute</span> <span class="pre">pathname</span> <span class="pre">for</span> <span class="pre">libpthread</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">inferior,</span> <span class="pre">but</span> <span class="pre">got</span> <span class="pre">target:/lib/…</span></code>) and is container-escape-adjacent, rejected by
+any restricted PSA. Document it so nobody rediscovers it as a shortcut.</p>
+</section>
+<section id="copy-to-strips-all-labels-and-annotations-so-the-clone-gets-no-service-traffic-s4">
+<h3>3.5 — <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> strips <strong>all labels and annotations</strong>, so the clone gets no Service traffic (S4)<a class="headerlink" href="#copy-to-strips-all-labels-and-annotations-so-the-clone-gets-no-service-traffic-s4" title="Link to this heading">#</a></h3>
+<p>The brief claims <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> strips probes. It does — and much more. Measured, twice:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>field</p></th>
+<th class="head"><p>after <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">metadata.labels</span></code></p></td>
+<td><p><strong>removed (nil)</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">metadata.annotations</span></code></p></td>
+<td><p><strong>removed</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">metadata.ownerReferences</span></code></p></td>
+<td><p><strong>removed</strong> (orphan; no RS adoption, no GC)</p></td>
+</tr>
+<tr class="row-odd"><td><p>readiness / liveness / startup probes</p></td>
+<td><p><strong>removed on every container</strong>, even in <code class="docutils literal notranslate"><span class="pre">--image</span></code> mode</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nodeName</span></code></p></td>
+<td><p>cleared; pod reschedules normally</p></td>
+</tr>
+<tr class="row-odd"><td><p>ports / resources / volumeMounts / volumes</p></td>
+<td><p>preserved</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shareProcessNamespace</span></code></p></td>
+<td><p>set <code class="docutils literal notranslate"><span class="pre">true</span></code> <strong>only</strong> when <code class="docutils literal notranslate"><span class="pre">--image</span></code> adds a container</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>The headline Iterate demo cannot work with vanilla <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> at all</strong> — the clone is invisible
+to the Service, the endpointslice keeps only the original pod, and the user sees the <em>old</em> response
+forever with no diagnostic. <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code> also prints <strong>nothing</strong> on success, and has
+<strong>no <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code></strong> (<code class="docutils literal notranslate"><span class="pre">error:</span> <span class="pre">unknown</span> <span class="pre">flag:</span> <span class="pre">--dry-run</span></code>), so the output cannot even be previewed.</p>
+<p>Two further <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> limits that justify the authored-spec approach:
+<code class="docutils literal notranslate"><span class="pre">--copy-to</span> <span class="pre">--image</span> <span class="pre">--container</span> <span class="pre">podbench</span></code> does create a real sidecar and does set
+<code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code>, but that container comes out with <code class="docutils literal notranslate"><span class="pre">resources:</span> <span class="pre">{}</span></code> and <strong>no workspace
+volume</strong>, and there is no flag to set either.</p>
+<p>Label policy is the crux: keeping the Service-selector labels while <strong>dropping <code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code></strong>
+put the dev pod in the endpointslice without making it a ReplicaSet member (verified: RS stayed
+<code class="docutils literal notranslate"><span class="pre">DESIRED</span> <span class="pre">1</span> <span class="pre">/</span> <span class="pre">CURRENT</span> <span class="pre">1</span></code>, neither pod reaped). Keeping the hash would have made two pods match a
+<code class="docutils literal notranslate"><span class="pre">replicas:</span> <span class="pre">1</span></code> RS and one would be reaped.</p>
+</section>
+<section id="taking-service-traffic-is-not-binary-there-is-a-50-broken-window-s4">
+<h3>3.6 — Taking Service traffic is not binary; there is a ~50 % broken window (S4)<a class="headerlink" href="#taking-service-traffic-is-not-binary-there-is-a-50-broken-window-s4" title="Link to this heading">#</a></h3>
+<p>A probe-less dev pod is <code class="docutils literal notranslate"><span class="pre">Ready</span></code> the instant its containers start, so it joins the endpointslice
+while nothing is listening on <code class="docutils literal notranslate"><span class="pre">:8080</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">000</span> <span class="n">ERR</span> <span class="mi">000</span> <span class="n">ERR</span> <span class="mi">200</span> <span class="mi">000</span> <span class="n">ERR</span> <span class="mi">200</span> <span class="mi">200</span> <span class="mi">000</span> <span class="n">ERR</span> <span class="mi">000</span> <span class="n">ERR</span>
+</pre></div>
+</div>
+<p>Fix, verified in both directions: a <code class="docutils literal notranslate"><span class="pre">tcpSocket:</span> <span class="pre">{port:</span> <span class="pre">8080}</span></code> readinessProbe <strong>on the podbench
+sidecar</strong>. The dev pod then joins the Service exactly when the relaunched process binds and <strong>drops
+out again within ~6 s</strong> when the process is killed — Service membership tracks the inner loop
+automatically. This belongs in the authored spec, not as an option.</p>
+</section>
+<section id="the-vs-code-version-lock-is-a-hard-handshake-rejection-s2">
+<h3>3.7 — The VS Code version lock is a hard handshake rejection (S2)<a class="headerlink" href="#the-vs-code-version-lock-is-a-hard-handshake-rejection-s2" title="Link to this heading">#</a></h3>
+<p>Probed at the raw remote-protocol level (WS upgrade, 13-byte framed control messages):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1">### A: WRONG commit (deadbeef…)</span>
+<span class="n">after</span> <span class="n">connectionType</span><span class="p">:</span>  <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span><span class="s2">&quot;error&quot;</span><span class="p">,</span><span class="s2">&quot;reason&quot;</span><span class="p">:</span><span class="s2">&quot;Client refused: version mismatch&quot;</span><span class="p">}</span>   <span class="o">&lt;&lt;</span><span class="n">CLOSED</span><span class="o">&gt;&gt;</span>
+<span class="c1">### B: CORRECT commit (a5b5009…)</span>
+<span class="n">after</span> <span class="n">connectionType</span><span class="p">:</span>  <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span><span class="s2">&quot;error&quot;</span><span class="p">,</span><span class="s2">&quot;reason&quot;</span><span class="p">:</span><span class="s2">&quot;Unauthorized client refused&quot;</span><span class="p">}</span>        <span class="o">&lt;&lt;</span><span class="n">CLOSED</span><span class="o">&gt;&gt;</span>
+</pre></div>
+</div>
+<p>(B fails only on the <em>next</em> check, the signed-data challenge the probe fakes — the commit check
+passed.) Confirmed in <code class="docutils literal notranslate"><span class="pre">out/server-main.js</span></code>:</p>
+<div class="highlight-js notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="nx">S</span><span class="o">=</span><span class="nx">v</span><span class="p">.</span><span class="nx">commit</span><span class="p">,</span><span class="w"> </span><span class="nx">T</span><span class="o">=</span><span class="k">this</span><span class="p">.</span><span class="nx">_productService</span><span class="p">.</span><span class="nx">commit</span><span class="p">;</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">S</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nx">T</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nx">S</span><span class="w"> </span><span class="o">!==</span><span class="w"> </span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="nx">m</span><span class="p">(</span><span class="s2">&quot;Client refused: version mismatch&quot;</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>No negotiation, no minor-version tolerance, no server-side override. <strong>A baked server is correct
+for at most ~4 weeks</strong> (VS Code’s monthly cadence) and breaks Insiders/stale clients immediately.
+Since the download costs only 2.17 s and the whole cold path 5.76 s, while
+<code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">openssh-server</span></code> costs <strong>14–24 s</strong>, the correct trade is: <strong>bake the base, download
+the server on first connect.</strong></p>
+</section>
+<section id="the-1-gb-observe-mode-budget-is-already-blown-s2">
+<h3>3.8 — The ~1 GB Observe-mode budget is already blown (S2)<a class="headerlink" href="#the-1-gb-observe-mode-budget-is-already-blown-s2" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>amd64 (nuc2)</p></th>
+<th class="head"><p>arm64 (node02, RK3588)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Server tarball</p></td>
+<td><p>224,027,728 B (213.6 MiB)</p></td>
+<td><p>215,331,901 B (205.4 MiB)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Download time</p></td>
+<td><p>2.17 s</p></td>
+<td><p>2.26 s</p></td>
+</tr>
+<tr class="row-even"><td><p>Extract time</p></td>
+<td><p>5.62 s</p></td>
+<td><p>5.56 s</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Extracted server on disk</strong></p></td>
+<td><p><strong>713,893,077 B (680.8 MiB)</strong></p></td>
+<td><p><strong>669,263,321 B (638.3 MiB)</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>Idle server RSS</p></td>
+<td><p>~97 MiB</p></td>
+<td><p>~92 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> on disk</p></td>
+<td><p><strong>330 M</strong> (x64)</p></td>
+<td><p><strong>261 M</strong> (arm64)</p></td>
+</tr>
+<tr class="row-even"><td><p>cpptools install</p></td>
+<td><p>8.35 s</p></td>
+<td><p>8.07 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cold bootstrap over ssh</p></td>
+<td><p><strong>5.76 s</strong></p></td>
+<td><p>~10 s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> reached <strong>995 MiB on arm64 with exactly one extension</strong>, and <strong>2.2 GB</strong> with two
+server versions and six extensions. <code class="docutils literal notranslate"><span class="pre">data/data/CachedExtensionVSIXs</span></code> is another <strong>190 M</strong> after six
+extensions (safe to delete post-install). Realistic Observe container: <strong>1.1–1.3 GB of node disk</strong>.</p>
+<p>Disk, not memory, is the constraint (idle RSS is only ~97 MiB). Trimming works: deleting
+<code class="docutils literal notranslate"><span class="pre">extensions/copilot</span></code> (160 M), <code class="docutils literal notranslate"><span class="pre">extensions/copilot-chat</span></code> and <code class="docutils literal notranslate"><span class="pre">extensions/mermaid-markdown-features</span></code>
+(59 M) takes the server from 646 M to <strong>428 M (−34 %)</strong> and it still starts and serves
+<code class="docutils literal notranslate"><span class="pre">/version</span></code>.</p>
+<p><strong>Amendment: restate the budget as ~1.5 GB, or make trimming mandatory.</strong></p>
+</section>
+<section id="an-oom-inside-the-debug-container-is-unrecoverable-s2">
+<h3>3.9 — An OOM inside the debug container is unrecoverable (S2)<a class="headerlink" href="#an-oom-inside-the-debug-container-is-unrecoverable-s2" title="Link to this heading">#</a></h3>
+<p>The ephemeral container has <strong>no cgroup limits of its own</strong> (<code class="docutils literal notranslate"><span class="pre">memory.max</span> <span class="pre">=</span> <span class="pre">max</span></code>,
+<code class="docutils literal notranslate"><span class="pre">cpu.max</span> <span class="pre">=</span> <span class="pre">max</span> <span class="pre">100000</span></code>; an ephemeral container spec cannot carry <code class="docutils literal notranslate"><span class="pre">resources</span></code>) but is still confined
+by the <strong>pod</strong> cgroup. Allocating 3.6 GiB in a pod whose app container is limited to 3Gi
+OOM-killed <strong>the ephemeral container itself</strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl get pod target-amd64 -o jsonpath=&#39;{.status.ephemeralContainerStatuses[0].state}&#39;
+{&quot;terminated&quot;:{&quot;exitCode&quot;:137,&quot;reason&quot;:&quot;OOMKilled&quot;,...}}
+$ kubectl get pod target-amd64 -o jsonpath=&#39;{.status.containerStatuses[0].restartCount}&#39;
+0                                     # app container untouched
+</pre></div>
+</div>
+<p>Ephemeral containers cannot restart, and a replacement comes up with a <strong>completely fresh rootfs</strong>
+(<code class="docutils literal notranslate"><span class="pre">ls:</span> <span class="pre">cannot</span> <span class="pre">access</span> <span class="pre">'/root/.vscode-server'</span></code>) — the 690 MiB server, all extensions and the sshd host
+keys are gone.</p>
+<p><strong>New lever the brief does not mention:</strong> <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">pod</span> <span class="pre">--subresource</span> <span class="pre">resize</span></code> works on this
+cluster and is <strong>non-disruptive to a running ephemeral container</strong>. 3Gi→6Gi→7Gi, <code class="docutils literal notranslate"><span class="pre">ResizeCompleted</span></code>
+event, zero restarts, ephemeral container stayed <code class="docutils literal notranslate"><span class="pre">{&quot;running&quot;:{…}}</span></code> throughout, and could then
+allocate 4.2 GiB. <strong>Podbench can make room for itself before attaching.</strong></p>
+</section>
+<section id="capabilities-add-sys-ptrace-on-a-non-root-container-is-a-silent-no-op-s5">
+<h3>3.10 — <code class="docutils literal notranslate"><span class="pre">capabilities.add:[SYS_PTRACE]</span></code> on a non-root container is a silent no-op (S5)<a class="headerlink" href="#capabilities-add-sys-ptrace-on-a-non-root-container-is-a-silent-no-op-s5" title="Link to this heading">#</a></h3>
+<p>This is the mystery-EPERM the brief names as the worst field failure — and it is <strong>self-inflicted
+by the launcher’s own manifest</strong>, not caused by the cluster. With <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">1000</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Uid</span><span class="p">:</span>	<span class="mi">1000</span>	<span class="mi">1000</span>	<span class="mi">1000</span>	<span class="mi">1000</span>
+<span class="n">CapPrm</span><span class="p">:</span>	<span class="mi">0000000000000000</span>
+<span class="n">CapEff</span><span class="p">:</span>	<span class="mi">0000000000000000</span>
+<span class="n">CapBnd</span><span class="p">:</span>	<span class="mi">00000000</span><span class="n">a80c25fb</span>      <span class="o">&lt;--</span> <span class="n">SYS_PTRACE</span> <span class="p">(</span><span class="n">bit</span> <span class="mi">19</span><span class="p">)</span> <span class="ow">in</span> <span class="n">BOUNDING</span> <span class="n">only</span>
+<span class="n">CapAmb</span><span class="p">:</span>	<span class="mi">0000000000000000</span>
+</pre></div>
+</div>
+<p>The kernel grants capabilities to non-root UIDs only via the ambient set, which the CRI does not
+populate. The pod is admitted, the container runs, everything looks right, and ptrace fails with a
+bare <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>. <strong><code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> requires <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>, full stop.</strong> The brief treats “grant
+SYS_PTRACE” and “run as UID 1000” as independent ladder knobs; they are mutually exclusive.</p>
+<p>(<code class="docutils literal notranslate"><span class="pre">kubectl</span></code> does warn on stderr in passing: <em>“Non-root user is configured for the entire target Pod,
+and some capabilities granted by debug profile may not work…”</em> — easy to miss.)</p>
+</section>
+<section id="root-without-the-cap-is-strictly-worse-than-non-root-at-the-target-s-uid-s5">
+<h3>3.11 — Root without the cap is strictly <strong>worse</strong> than non-root at the target’s UID (S5)<a class="headerlink" href="#root-without-the-cap-is-strictly-worse-than-non-root-at-the-target-s-uid-s5" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>path</p></th>
+<th class="head"><p>uid 1000, CapEff 0</p></th>
+<th class="head"><p>uid 0, CapEff 0</p></th>
+<th class="head"><p>uid 0 + SYS_PTRACE</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">readlink</span> <span class="pre">/proc/T/root</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>FAIL</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ls</span> <span class="pre">/proc/T/root/etc</span></code> (<strong>sysroot</strong>)</p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/maps</span></code>, <code class="docutils literal notranslate"><span class="pre">/proc/T/smaps</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/environ</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">/fd</span></code>, <code class="docutils literal notranslate"><span class="pre">/status</span></code>, <code class="docutils literal notranslate"><span class="pre">/wchan</span></code></p></td>
+<td><p>OK</p></td>
+<td><p>OK</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">readlink</span> <span class="pre">/proc/T/exe</span></code>, <code class="docutils literal notranslate"><span class="pre">/cwd</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>FAIL</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/stack</span></code></p></td>
+<td><p>denied</p></td>
+<td><p>denied</p></td>
+<td><p>denied <em>(needs CAP_SYS_ADMIN)</em></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/syscall</span></code></p></td>
+<td><p><strong>Operation not permitted</strong></p></td>
+<td><p>Operation not permitted</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">/proc/T/mem</span></code></p></td>
+<td><p><strong>Permission denied</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>SUCCESS</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">dbg-c</span></code> (uid 0, no cap) reads 3/6 probe paths; <code class="docutils literal notranslate"><span class="pre">dbg-b</span></code> (uid 1000, zero caps) reads 6/6. Proof the
+sysroot really crossed the container boundary at zero caps — an Ubuntu 24.04 debug container
+reading the Debian target’s rootfs:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">PODBENCH_SECRET_MARKER</span><span class="o">=</span><span class="n">s5</span><span class="o">-</span><span class="n">environ</span><span class="o">-</span><span class="n">canary</span>
+<span class="mi">6549010</span><span class="n">cd000</span><span class="o">-</span><span class="mi">6549010</span><span class="n">ce000</span> <span class="n">r</span><span class="o">--</span><span class="n">p</span> <span class="mi">00000000</span> <span class="mi">00</span><span class="p">:</span><span class="mi">4</span><span class="n">f5</span> <span class="mi">2378534</span>   <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">local</span><span class="o">/</span><span class="nb">bin</span><span class="o">/</span><span class="n">python3</span><span class="mf">.12</span>
+<span class="n">PRETTY_NAME</span><span class="o">=</span><span class="s2">&quot;Debian GNU/Linux 13 (trixie)&quot;</span>
+</pre></div>
+</div>
+<p><strong>Amendment:</strong> the degraded fallback must match the <strong>target’s UID</strong>, never default to root.
+And <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/mem</span></code> and <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/syscall</span></code> are <strong>not</strong> in the read-exempt set — they use
+<code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_ATTACH</span></code>. Any “read-only memory inspection” feature planned on <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/mem</span></code> will
+not work in the degraded rung.</p>
+</section>
+<section id="start-it-yourself-and-attach-does-not-satisfy-yama-s5">
+<h3>3.12 — “Start it yourself and attach” does <strong>not</strong> satisfy Yama (S5)<a class="headerlink" href="#start-it-yourself-and-attach-does-not-satisfy-yama-s5" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>relationship</p></th>
+<th class="head"><p>ptrace attach at uid 1000, CapEff 0, yama=1</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>target is a <strong>fork of the tracer process itself</strong></p></td>
+<td><p><strong>rc=0, OK</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>target started by the <strong>same shell</strong> (sibling of gdb)</p></td>
+<td><p><strong>rc=-1 EPERM</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>sibling that called <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code></p></td>
+<td><p><strong>rc=0, full backtrace</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">./binary</span></code> (<code class="docutils literal notranslate"><span class="pre">PTRACE_TRACEME</span></code> via fork/exec)</p></td>
+<td><p><strong>works</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The natural workflow <code class="docutils literal notranslate"><span class="pre">myprog</span> <span class="pre">&amp;</span> <span class="pre">;</span> <span class="pre">gdb</span> <span class="pre">-p</span> <span class="pre">$!</span></code> makes gdb a <strong>sibling</strong>, and it is denied. But
+<code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">./binary</span></code> gives full source-level debugging — breakpoints, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">continue</span></code>, backtrace,
+argument and global inspection — at uid 1000 with <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>, under PSA
+<code class="docutils literal notranslate"><span class="pre">restricted</span></code> with <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp.</p>
+<p><strong>Amendment: document and design the inner loop as gdb-LAUNCH, not gdb-attach.</strong> Attach is the
+privileged special case. Where attach to an already-running process is genuinely required, offer
+<code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code> as a documented one-line change to the target program —
+the only fix needing no capability and no node change.</p>
+</section>
+<section id="yama-is-not-uniform-and-the-difference-is-kernel-flavour-not-arch-s5">
+<h3>3.13 — Yama is not uniform, and the difference is kernel flavour, not arch (S5)<a class="headerlink" href="#yama-is-not-uniform-and-the-difference-is-kernel-flavour-not-arch-s5" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>node</p></th>
+<th class="head"><p>arch</p></th>
+<th class="head"><p>kernel</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>node01</p></td>
+<td><p>aarch64</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6.8.0-1051-raspi</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>node02</p></td>
+<td><p>aarch64</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6.1.0-1025-rockchip</span></code></p></td>
+<td><p><strong>file does not exist</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>node03</p></td>
+<td><p>aarch64</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6.1.0-1025-rockchip</span></code></p></td>
+<td><p><strong>file does not exist</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>node04</p></td>
+<td><p>aarch64</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6.1.0-1025-rockchip</span></code></p></td>
+<td><p><strong>file does not exist</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>nuc2</p></td>
+<td><p>x86_64</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6.17.0-20-generic</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>ws03</p></td>
+<td><p>x86_64</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7.0.0-28-generic</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Confirmed empirically, not inferred: the <strong>byte-identical</strong> no-cap same-UID ephemeral container
+reports <code class="docutils literal notranslate"><span class="pre">DENIED</span> <span class="pre">BY</span> <span class="pre">YAMA</span></code> on nuc2 and <code class="docutils literal notranslate"><span class="pre">LIVE</span> <span class="pre">ATTACH</span> <span class="pre">AVAILABLE</span></code> (<code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH(1)</span> <span class="pre">rc=0</span></code>) on node02.
+Two arm64 nodes disagree with each other, so an arch-based heuristic would be wrong.
+<strong>Podbench must probe per-node and can never cache a cluster-wide answer.</strong>
+<code class="docutils literal notranslate"><span class="pre">/proc/sys</span></code> is mounted <code class="docutils literal notranslate"><span class="pre">ro</span></code> in every container, so <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code> is genuinely a node-level knob.</p>
+</section>
+<section id="kubectl-debug-flag-semantics-differ-from-the-brief-s1-s3-s5">
+<h3>3.14 — <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code> flag semantics differ from the brief (S1, S3, S5)<a class="headerlink" href="#kubectl-debug-flag-semantics-differ-from-the-brief-s1-s3-s5" title="Link to this heading">#</a></h3>
+<ul>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--custom</span></code> takes a FILE PATH, not inline JSON</strong> (S1):
+<code class="docutils literal notranslate"><span class="pre">error:</span> <span class="pre">must</span> <span class="pre">pass</span> <span class="pre">a</span> <span class="pre">container</span> <span class="pre">spec</span> <span class="pre">json</span> <span class="pre">file</span> <span class="pre">for</span> <span class="pre">custom</span> <span class="pre">profile:</span> <span class="pre">open</span> <span class="pre">{&quot;securityContext&quot;:…}:</span> <span class="pre">no</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code>.
+The CLI must write a temp file.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--custom</span></code> MERGES with a profile applied AFTER your JSON</strong> (S5). <code class="docutils literal notranslate"><span class="pre">--custom</span> <span class="pre">'{&quot;securityContext&quot;:{&quot;runAsUser&quot;:1000}}'</span></code> produced
+<code class="docutils literal notranslate"><span class="pre">{&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]},&quot;runAsUser&quot;:1000}</span></code> — i.e. the invalid rung from §3.10,
+built for you:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">--profile</span></code></p></th>
+<th class="head"><p>resulting securityContext with <code class="docutils literal notranslate"><span class="pre">--custom</span> <span class="pre">'{&quot;runAsUser&quot;:1000}'</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><em>(default, legacy)</em></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]},&quot;runAsUser&quot;:1000}</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">general</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]},&quot;runAsUser&quot;:1000}</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">baseline</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{&quot;runAsUser&quot;:1000}</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restricted</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{&quot;allowPrivilegeEscalation&quot;:false,&quot;capabilities&quot;:{&quot;drop&quot;:[&quot;ALL&quot;]},&quot;runAsNonRoot&quot;:true,&quot;runAsUser&quot;:1000,&quot;seccompProfile&quot;:{&quot;type&quot;:&quot;RuntimeDefault&quot;}}</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Podbench must POST to the <code class="docutils literal notranslate"><span class="pre">ephemeralcontainers</span></code> subresource directly</strong>, not build its ladder on
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--custom</span></code>. (Silver lining: <code class="docutils literal notranslate"><span class="pre">--profile=restricted</span></code> emits exactly the correct rung-2
+shape, so it is a valid manual fallback to document for users.)</p>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--profile=general</span></code> already adds <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></strong> (S3) — the <code class="docutils literal notranslate"><span class="pre">--custom</span></code> file for that purpose is
+redundant. Verified: a container created with <code class="docutils literal notranslate"><span class="pre">--profile=general</span></code> and <strong>no</strong> <code class="docutils literal notranslate"><span class="pre">--custom</span></code> still came
+out with <code class="docutils literal notranslate"><span class="pre">{&quot;capabilities&quot;:{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}}</span></code>.</p></li>
+</ul>
+</section>
+<section id="target-pid-discovery-must-key-off-the-container-runtime-id-s3">
+<h3>3.15 — Target-PID discovery must key off the container runtime ID (S3)<a class="headerlink" href="#target-pid-discovery-must-key-off-the-container-runtime-id-s3" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>rule</p></th>
+<th class="head"><p>verdict</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>“target is PID 1”</p></td>
+<td><p>works only in the simple case; <strong>wrong</strong> under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code>, where PID 1 is <code class="docutils literal notranslate"><span class="pre">/pause</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span> <span class="pre">!=</span> <span class="pre">&quot;0::/&quot;</span></code></p></td>
+<td><p>excludes my own processes but <strong>includes every other ephemeral debug container’s</strong> — 3 spurious hits observed on a pod with 4 debug containers</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/ns/mnt</span> <span class="pre">==</span> <span class="pre">/proc/1/ns/mnt</span></code></p></td>
+<td><p>exact on a normal pod; <strong>fails completely</strong> under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span></code> contains the target container’s runtime ID</strong></p></td>
+<td><p><strong>correct in all cases</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>1    0::/../cri-containerd-d5daaa53…scope   /pause
+597  0::/../cri-containerd-87d20e23…scope   /app/victim      &lt;- target containerID
+603  0::/../cri-containerd-7206c89b…scope   /bin/sleep 100000
+609  0::/                                   sleep infinity   &lt;- my own
+</pre></div>
+</div>
+<p>Note the in-container cgroup path is <strong>relative</strong> (<code class="docutils literal notranslate"><span class="pre">0::/../cri-containerd-&lt;id&gt;.scope</span></code>) because the
+ephemeral container gets its own cgroup namespace — <strong>substring</strong> match on the ID, never path
+equality. This means Podbench must inject the target container ID as an env var at <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code>
+time (<code class="docutils literal notranslate"><span class="pre">--env=PODBENCH_TARGET_CID=${CID#*://}</span></code>), which the brief does not anticipate.</p>
+</section>
+<section id="port-conflicts-have-a-silent-dangerous-mode-s4">
+<h3>3.16 — Port conflicts have a silent, dangerous mode (S4)<a class="headerlink" href="#port-conflicts-have-a-silent-dangerous-mode-s4" title="Link to this heading">#</a></h3>
+<p>Three distinct behaviours, only one of them loud:</p>
+<ul class="simple">
+<li><p><strong>Plain conflict:</strong> <code class="docutils literal notranslate"><span class="pre">OSError:</span> <span class="pre">[Errno</span> <span class="pre">98]</span> <span class="pre">Address</span> <span class="pre">already</span> <span class="pre">in</span> <span class="pre">use</span></code> — fine.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> silent split:</strong> if the existing listener set <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> (uvicorn
+multi-worker, gunicorn <code class="docutils literal notranslate"><span class="pre">reuse_port</span></code>, many Go/Rust servers), a second <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> bind
+<strong>succeeds with no error</strong> and the kernel splits traffic. Measured through the Service:
+5 × new code / 3 × old code / 2 × new code. Nothing in any log says so.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">TIME_WAIT</span></code> lockout:</strong> after a <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> listener has served connections, a plain
+<code class="docutils literal notranslate"><span class="pre">SO_REUSEADDR</span></code> rebind fails for the full ~60 s TIME_WAIT window <strong>while <code class="docutils literal notranslate"><span class="pre">ss</span> <span class="pre">-lntp</span></code> shows no
+listener at all</strong>. Recovery verified at ~70 s.</p></li>
+</ul>
+<p>And a false PASS: a naive “poll the port” relaunch wrapper printed <code class="docutils literal notranslate"><span class="pre">LISTENING</span> <span class="pre">after</span> <span class="pre">1</span> <span class="pre">polls</span></code>,
+exit 0, while the relaunch had actually died with <code class="docutils literal notranslate"><span class="pre">EADDRINUSE</span></code> and the Service kept serving stale
+code. <strong>Pre-flight the port; verify your own child owns the socket.</strong></p>
+</section>
+<section id="the-mount-namespace-rule-is-confirmed-but-harsher-than-stated-s4">
+<h3>3.17 — The mount-namespace rule is confirmed but harsher than stated (S4)<a class="headerlink" href="#the-mount-namespace-rule-is-confirmed-but-harsher-than-stated-s4" title="Link to this heading">#</a></h3>
+<p>From inside the target container, a <code class="docutils literal notranslate"><span class="pre">.pth</span></code> pointing at a debug-container-only path:</p>
+<ul class="simple">
+<li><p><strong>Path-style <code class="docutils literal notranslate"><span class="pre">.pth</span></code> — silently ignored, no warning at all.</strong> <code class="docutils literal notranslate"><span class="pre">site.py</span></code> only appends directories
+that exist. <code class="docutils literal notranslate"><span class="pre">on</span> <span class="pre">sys.path?</span> <span class="pre">False</span></code>, then <code class="docutils literal notranslate"><span class="pre">ModuleNotFoundError:</span> <span class="pre">No</span> <span class="pre">module</span> <span class="pre">named</span> <span class="pre">'podbench_demo'</span></code>
+surfaces much later as an unrelated-looking import error.</p></li>
+<li><p><strong>Exec-style <code class="docutils literal notranslate"><span class="pre">.pth</span></code></strong> (what modern PEP-660 editable installs emit) — prints a traceback
+(<code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">processing</span> <span class="pre">line</span> <span class="pre">1</span> <span class="pre">of</span> <span class="pre">…/podbench_exec.pth</span> <span class="pre">…</span> <span class="pre">Remainder</span> <span class="pre">of</span> <span class="pre">file</span> <span class="pre">ignored</span></code>) but is
+<strong>non-fatal</strong>; the interpreter still exits 0.</p></li>
+</ul>
+<p>Also, the <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is <strong>one-directional by capability</strong>: sidecar → app works, app →
+sidecar finds nothing (<code class="docutils literal notranslate"><span class="pre">CapEff</span></code> delta is exactly bit 19). This is a <em>good</em> security property — a
+compromised app container cannot reach the debug toolchain — but it also means “just symlink from
+the target into the workspace” is not available as a workaround. The design rule stands.</p>
+</section>
+<section id="two-rejection-channels-not-one-s5">
+<h3>3.18 — Two rejection channels, not one (S5)<a class="headerlink" href="#two-rejection-channels-not-one-s5" title="Link to this heading">#</a></h3>
+<p><strong>Synchronous</strong> (API server, PSA). Stable substring across every level and phrasing:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">must</span> <span class="ow">not</span> <span class="n">include</span> <span class="s2">&quot;SYS_PTRACE&quot;</span> <span class="ow">in</span> <span class="n">securityContext</span><span class="o">.</span><span class="n">capabilities</span><span class="o">.</span><span class="n">add</span>
+</pre></div>
+</div>
+<p>The surrounding phrase differs: <code class="docutils literal notranslate"><span class="pre">unrestricted</span> <span class="pre">capabilities</span></code> under <code class="docutils literal notranslate"><span class="pre">restricted:latest</span></code>,
+<code class="docutils literal notranslate"><span class="pre">non-default</span> <span class="pre">capabilities</span></code> under <code class="docutils literal notranslate"><span class="pre">baseline:latest</span></code>.</p>
+<p><strong>Asynchronous</strong> (kubelet). On a target pod with <code class="docutils literal notranslate"><span class="pre">runAsNonRoot:</span> <span class="pre">true</span></code>, a root debug container is
+accepted by the API server (<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code> exits <strong>0</strong>) and then fails:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">dbg</span><span class="o">-</span><span class="n">root</span>  <span class="p">{</span><span class="s2">&quot;waiting&quot;</span><span class="p">:{</span><span class="s2">&quot;message&quot;</span><span class="p">:</span><span class="s2">&quot;container&#39;s runAsUser breaks non-root policy</span>
+<span class="p">(</span><span class="n">pod</span><span class="p">:</span> \<span class="s2">&quot;victim_podbench-s5(b89a16a0-…)</span><span class="se">\&quot;</span><span class="s2">, container: dbg-root)&quot;</span><span class="p">,</span>
+<span class="s2">&quot;reason&quot;</span><span class="p">:</span><span class="s2">&quot;CreateContainerConfigError&quot;</span><span class="p">}}</span>
+</pre></div>
+</div>
+<p>The launcher must poll <code class="docutils literal notranslate"><span class="pre">.status.ephemeralContainerStatuses[?(&#64;.name==…)].state.waiting</span></code> for this.
+A pre-flight read of the target pod’s <code class="docutils literal notranslate"><span class="pre">securityContext.runAsNonRoot</span></code> lets it skip rung 1 instead.</p>
+</section>
+<section id="assorted-brief-corrections">
+<h3>3.19 — Assorted brief corrections<a class="headerlink" href="#assorted-brief-corrections" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Root is not needed for the transport</strong> (S1). <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> runs fine as uid 1000 (verified via
+<code class="docutils literal notranslate"><span class="pre">setpriv</span></code>: remote command <code class="docutils literal notranslate"><span class="pre">uid=1000(dev)</span></code>, <code class="docutils literal notranslate"><span class="pre">scp</span></code> rc=0, PTY <code class="docutils literal notranslate"><span class="pre">/dev/pts/0</span></code>) — and then needs <strong>no
+<code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> at all</strong>. As root, <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> is mandatory: without it every connection dies with
+<code class="docutils literal notranslate"><span class="pre">Missing</span> <span class="pre">privilege</span> <span class="pre">separation</span> <span class="pre">directory:</span> <span class="pre">/run/sshd</span></code>. So config and host keys should be
+user-relative (<code class="docutils literal notranslate"><span class="pre">$HOME/.podbench/</span></code>) and PSA-restricted deployments stay viable; gate only
+ptrace/<code class="docutils literal notranslate"><span class="pre">/proc</span></code> features on root.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">-t</span></code> is a latent footgun</strong> (S1). From a script kubectl silently degrades to
+non-tty (<code class="docutils literal notranslate"><span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">use</span> <span class="pre">a</span> <span class="pre">TTY</span> <span class="pre">-</span> <span class="pre">input</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">a</span> <span class="pre">terminal…</span></code>) and it appears to work; with a <strong>real</strong>
+TTY forced onto the ProxyCommand (<code class="docutils literal notranslate"><span class="pre">script</span> <span class="pre">-q</span> <span class="pre">-c</span> <span class="pre">&quot;kubectl</span> <span class="pre">exec</span> <span class="pre">-it</span> <span class="pre">…&quot;</span></code>) the ssh client <strong>hung
+indefinitely</strong>. Podbench should refuse <code class="docutils literal notranslate"><span class="pre">-t</span></code>.</p></li>
+<li><p><strong>Pre-banner stdout noise is tolerated to exactly 1023 lines</strong> (S1); 1024 →
+<code class="docutils literal notranslate"><span class="pre">banner</span> <span class="pre">exchange:</span> <span class="pre">Connection</span> <span class="pre">to</span> <span class="pre">UNKNOWN</span> <span class="pre">port</span> <span class="pre">65535:</span> <span class="pre">invalid</span> <span class="pre">format</span></code>. Any stdout write <em>after</em>
+sshd starts is fatal. Relevant for MOTD-printing entrypoints.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ControlPath</span></code> hits the 108-byte <code class="docutils literal notranslate"><span class="pre">sun_path</span></code> limit</strong> (S1): <code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span> <span class="pre">('…'</span> <span class="pre">&gt;=</span> <span class="pre">108</span> <span class="pre">bytes)</span></code>. Control sockets must live somewhere short (<code class="docutils literal notranslate"><span class="pre">/tmp/podbench-cm/%C</span></code>), never next to a
+kubeconfig or in a workspace directory.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span></code> is mandatory</strong> (S1). A <em>stalled</em> transport (SIGSTOP on the ProxyCommand —
+what an apiserver/konnectivity hiccup looks like) hangs ssh <strong>forever</strong> with no keepalive; with
+<code class="docutils literal notranslate"><span class="pre">ServerAliveInterval=5</span> <span class="pre">ServerAliveCountMax=3</span></code> it fails in <strong>19 s</strong>
+(<code class="docutils literal notranslate"><span class="pre">Timeout,</span> <span class="pre">server</span> <span class="pre">podbench-target</span> <span class="pre">not</span> <span class="pre">responding.</span></code>). A <em>hard</em> kill or pod deletion is detected
+instantly and cleanly (<code class="docutils literal notranslate"><span class="pre">command</span> <span class="pre">terminated</span> <span class="pre">with</span> <span class="pre">exit</span> <span class="pre">code</span> <span class="pre">137</span></code> → <code class="docutils literal notranslate"><span class="pre">client_loop:</span> <span class="pre">send</span> <span class="pre">disconnect:</span> <span class="pre">Broken</span> <span class="pre">pipe</span></code>, rc=255).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">-0</span> <span class="pre">$pid</span></code> is not a valid liveness check</strong> (S2). Under <code class="docutils literal notranslate"><span class="pre">--target</span></code>, PID 1 in the shared
+namespace is the target app, which does not reap; orphans become permanent zombies. S2’s v1
+bootstrap reported “already running, port 38327” for a server that had exited — a client would
+have connected to a dead port. <strong>Liveness must be an HTTP probe of <code class="docutils literal notranslate"><span class="pre">/version</span></code> matched against the
+expected commit.</strong></p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">bin/code-server</span></code> exits 0 when the interpreter is missing</strong> (S2). On Alpine it printed
+<code class="docutils literal notranslate"><span class="pre">/srv/node:</span> <span class="pre">not</span> <span class="pre">found</span></code> and returned <strong>exit 0</strong>. Never trust its exit code.</p></li>
+<li><p><strong>The Alpine/musl claim holds, for a more basic reason than the brief gives</strong> (S2): the failure is
+a missing ELF interpreter (<code class="docutils literal notranslate"><span class="pre">/lib64/ld-linux-x86-64.so.2</span></code>), not symbol versions. Independent symbol
+analysis pins the requirement at exactly <code class="docutils literal notranslate"><span class="pre">GLIBC_2.28</span></code> + <code class="docutils literal notranslate"><span class="pre">GLIBCXX_3.4.21</span></code>, i.e. Debian ≥ 10,
+Ubuntu ≥ 18.04, RHEL/UBI ≥ 8. <code class="docutils literal notranslate"><span class="pre">gcompat</span></code> untested.</p></li>
+<li><p><strong>Remote-SSH’s <code class="docutils literal notranslate"><span class="pre">--enable-remote-auto-shutdown</span></code> kills the server after exactly 5 min idle</strong> (S2):
+started 10:44:32, <code class="docutils literal notranslate"><span class="pre">ServerLifetime:</span> <span class="pre">all</span> <span class="pre">consumers</span> <span class="pre">inactive,</span> <span class="pre">shutting</span> <span class="pre">down</span></code> at 10:49:32. Omit it.</p></li>
+<li><p><strong>Air-gap needs FOUR host groups, not two</strong> (S2), the fourth observed by strace:
+tarball origin (<code class="docutils literal notranslate"><span class="pre">update.code.visualstudio.com</span></code> → <code class="docutils literal notranslate"><span class="pre">vscode.download.prss.microsoft.com</span></code>), gallery
+(<code class="docutils literal notranslate"><span class="pre">marketplace.visualstudio.com</span></code>), asset CDN (<code class="docutils literal notranslate"><span class="pre">*.vscode-unpkg.net</span></code>, <code class="docutils literal notranslate"><span class="pre">main.vscode-cdn.net</span></code>), and
+<strong><code class="docutils literal notranslate"><span class="pre">crl.microsoft.com</span></code> / <code class="docutils literal notranslate"><span class="pre">www.microsoft.com</span></code> for VSIX signature verification</strong>.</p></li>
+<li><p><strong>“arm64 is slow” does not apply here</strong> (S2). The RK3588 extracted 646 MiB in <strong>5.56 s</strong> and
+downloaded 205 MiB in <strong>2.26 s</strong> — statistically identical to the x86 NUC. That claim was about
+image pulls.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp does not block <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code></strong> but <strong>does</strong> block
+<code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code> (S5): gdb warns <code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">disabling</span> <span class="pre">address</span> <span class="pre">space</span> <span class="pre">randomization:</span> <span class="pre">Operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> and leaves ASLR on, so addresses are non-reproducible run to run.</p></li>
+<li><p><strong>A gdb built with Python hard-fails if its Python stdlib is missing</strong> (S5) — it does not degrade
+(<code class="docutils literal notranslate"><span class="pre">Python</span> <span class="pre">path</span> <span class="pre">configuration:</span> <span class="pre">…</span> <span class="pre">Python</span> <span class="pre">not</span> <span class="pre">initialized</span></code>). Ship <code class="docutils literal notranslate"><span class="pre">/usr/lib/pythonX.Y</span></code> (~19 MB) with
+<code class="docutils literal notranslate"><span class="pre">PYTHONHOME</span></code>/<code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code>, or select a gdb without Python support.</p></li>
+<li><p><strong>Ephemeral containers CAN mount the pod’s existing volumes</strong> (S5) — the only practical way to get
+a toolchain into a non-root debug container that cannot <code class="docutils literal notranslate"><span class="pre">apt-get</span></code>.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="implementation-constraints-checklist-for-phase-16">
+<h2>4. Implementation constraints — checklist for Phase 1–6<a class="headerlink" href="#implementation-constraints-checklist-for-phase-16" title="Link to this heading">#</a></h2>
+<section id="ssh-transport-phase-1">
+<h3>4.1 ssh transport (Phase 1)<a class="headerlink" href="#ssh-transport-phase-1" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>[ ] <strong>Exact ProxyCommand shape.</strong> <code class="docutils literal notranslate"><span class="pre">-i</span></code> and <code class="docutils literal notranslate"><span class="pre">-e</span></code> are both mandatory; <code class="docutils literal notranslate"><span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span></code> gives zero
+stderr bytes <em>and</em> keeps fd 2 alive:
+<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">ProxyCommand</span> <span class="pre">kubectl</span> <span class="pre">-n</span> <span class="pre">&lt;ns&gt;</span> <span class="pre">exec</span> <span class="pre">-i</span> <span class="pre">&lt;pod&gt;</span> <span class="pre">-c</span> <span class="pre">podbench</span> <span class="pre">--</span> <span class="pre">\</span>&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span> <span class="pre">-e</span> <span class="pre">-f</span> <span class="pre">/etc/podbench/sshd_config</span> <span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span>&#160;&#160;&#160; </code></p></li>
+<li><p>[ ] <strong>Never</strong> <code class="docutils literal notranslate"><span class="pre">-t</span></code>. <strong>Never</strong> redirect, merge (<code class="docutils literal notranslate"><span class="pre">2&gt;&amp;1</span></code>) or close sshd’s stderr. <strong>Never</strong> wrap in a
+shell that <code class="docutils literal notranslate"><span class="pre">exec</span></code>s without <code class="docutils literal notranslate"><span class="pre">-e</span></code>.</p></li>
+<li><p>[ ] Ship a regression test that asserts the transport <strong>dies</strong> without <code class="docutils literal notranslate"><span class="pre">-e</span></code>, so the fd-2 reason is
+documented in code (a non-<code class="docutils literal notranslate"><span class="pre">exec</span></code> wrapper masks it).</p></li>
+<li><p>[ ] <strong>Exact minimal sshd_config</strong> (5 lines, <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-t</span></code> → <code class="docutils literal notranslate"><span class="pre">CONFIG_OK</span></code>; no <code class="docutils literal notranslate"><span class="pre">PidFile</span></code> — <code class="docutils literal notranslate"><span class="pre">-i</span></code> never
+writes one):
+<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">HostKey</span> <span class="pre">/etc/ssh/ssh_host_ed25519_key</span>&#160;&#160;&#160;&#160; <span class="pre">PermitRootLogin</span> <span class="pre">prohibit-password</span>&#160;&#160;&#160;&#160; <span class="pre">AuthorizedKeysFile</span> <span class="pre">/root/.ssh/authorized_keys</span>&#160;&#160;&#160;&#160; <span class="pre">UsePAM</span> <span class="pre">no</span>&#160;&#160;&#160;&#160; <span class="pre">Subsystem</span> <span class="pre">sftp</span> <span class="pre">/usr/lib/openssh/sftp-server</span>&#160;&#160;&#160; </code>
+Non-root variant (uid 1000, no <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> needed) — user-relative paths + <code class="docutils literal notranslate"><span class="pre">StrictModes</span> <span class="pre">no</span></code>.</p></li>
+<li><p>[ ] <strong>Generated client config defaults:</strong>
+<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">ServerAliveInterval</span> <span class="pre">15</span>&#160;&#160;&#160;&#160; <span class="pre">ServerAliveCountMax</span> <span class="pre">3</span>&#160;&#160;&#160;&#160; <span class="pre">ControlMaster</span> <span class="pre">auto</span>&#160;&#160;&#160;&#160; <span class="pre">ControlPath</span> <span class="pre">/tmp/podbench-cm/%C</span>&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">#</span> <span class="pre">mode</span> <span class="pre">0700,</span> <span class="pre">created</span> <span class="pre">at</span> <span class="pre">config-gen</span> <span class="pre">time;</span> <span class="pre">MUST</span> <span class="pre">be</span> <span class="pre">short</span>&#160;&#160;&#160;&#160; <span class="pre">ControlPersist</span> <span class="pre">10m</span>&#160;&#160;&#160;&#160; <span class="pre">IdentitiesOnly</span> <span class="pre">yes</span>&#160;&#160;&#160; </code></p></li>
+<li><p>[ ] Create <code class="docutils literal notranslate"><span class="pre">/run/sshd</span></code> <strong>at container start</strong> (it is often a tmpfs) when running as root; run
+<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span> <span class="pre">-A</span></code> or mount host keys.</p></li>
+<li><p>[ ] <strong>Startup self-check</strong> for the fd-2 tripwire before declaring the pod ready: run
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">-i</span> <span class="pre">…</span> <span class="pre">--</span> <span class="pre">sh</span> <span class="pre">-c</span> <span class="pre">'exec</span> <span class="pre">cat'</span></code> with a delayed second line and confirm <strong>both</strong> lines
+return.</p></li>
+<li><p>[ ] RBAC required: <code class="docutils literal notranslate"><span class="pre">create</span> <span class="pre">pods/exec</span></code> + <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> in the namespace. Nothing else — no Services,
+no NetworkPolicy holes, no pod IP reachability.</p></li>
+<li><p>[ ] Budget: cold connect <strong>0.345 s</strong> median (0.058–0.062 s over ControlMaster, ~6×);
+<strong>26 MB/s</strong> pod→client, <strong>13 MB/s</strong> client→pod; ~10–11 MB RSS per live session;
+<strong>0/30</strong> churn failures.</p></li>
+</ul>
+</section>
+<section id="vscode-server-bootstrap-phase-2">
+<h3>4.2 vscode-server bootstrap (Phase 2)<a class="headerlink" href="#vscode-server-bootstrap-phase-2" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>[ ] <strong>Download on first connect; do not bake the server.</strong> Take <code class="docutils literal notranslate"><span class="pre">$COMMIT</span></code> from the client
+(Remote-SSH supplies it; a native client reads the local <code class="docutils literal notranslate"><span class="pre">product.json</span></code>).</p></li>
+<li><p>[ ] Ship S2’s <strong>v2 bootstrap script verbatim</strong>. Three load-bearing properties:
+HTTP <code class="docutils literal notranslate"><span class="pre">/version</span></code> liveness matched against <code class="docutils literal notranslate"><span class="pre">$COMMIT</span></code> (<strong>never <code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">-0</span></code></strong>), <strong>stage-then-move</strong>
+extraction, and <code class="docutils literal notranslate"><span class="pre">setsid</span> <span class="pre">nohup</span> <span class="pre">…</span> <span class="pre">&lt;/dev/null</span> <span class="pre">&amp;</span></code>.</p></li>
+<li><p>[ ] Parse the port from <code class="docutils literal notranslate"><span class="pre">Extension</span> <span class="pre">host</span> <span class="pre">agent</span> <span class="pre">listening</span> <span class="pre">on</span> <span class="pre">&lt;port&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">--port=0</span></code>). Never trust
+<code class="docutils literal notranslate"><span class="pre">code-server</span></code>’s exit code.</p></li>
+<li><p>[ ] <strong>Omit <code class="docutils literal notranslate"><span class="pre">--enable-remote-auto-shutdown</span></code>.</strong></p></li>
+<li><p>[ ] Base image must be <strong>glibc ≥ 2.28</strong>; <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> (2.36) is the tested default.
+Document Alpine as unsupported.</p></li>
+<li><p>[ ] <strong>Trim post-extract:</strong> <code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">$SRV/extensions/{copilot,copilot-chat,mermaid-markdown-features}</span></code>
+(−218 MiB, −34 %, verified still serving <code class="docutils literal notranslate"><span class="pre">/version</span></code>) and
+<code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">$DATA/data/CachedExtensionVSIXs</span></code> (−190 MiB after 6 extensions).</p></li>
+<li><p>[ ] <strong>Size the pod before attaching:</strong> <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">pod</span> <span class="pre">--subresource</span> <span class="pre">resize</span></code> to raise the target
+container’s memory limit, restore on detach. Fall back to a loud pre-flight warning when the
+subresource is unavailable. Say, on success too, that the raised limit is on the pod and not
+on whatever owns it, so a rollout reverts it (R13).</p></li>
+<li><p>[ ] Treat the ephemeral container as <strong>strictly disposable</strong> — nothing may live only in its
+writable layer. Name containers <code class="docutils literal notranslate"><span class="pre">podbench-&lt;n&gt;</span></code> with an incrementing suffix: a dead ephemeral
+container name is <strong>burnt for the pod’s lifetime</strong>, and <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">…</span> <span class="pre">--</span> <span class="pre">true</span></code> leaves a
+permanently unusable <code class="docutils literal notranslate"><span class="pre">Completed</span></code> container. Always pass a long-running command; gate readiness
+on <code class="docutils literal notranslate"><span class="pre">wait</span> <span class="pre">--for=jsonpath='…ephemeralContainerStatuses[?(&#64;.name==&quot;X&quot;)].state.running.startedAt'</span></code>.</p></li>
+<li><p>[ ] <strong>Size budgets to plan against (measured):</strong> server 680.8 MiB (amd64) / 638.3 MiB (arm64);
+cpptools 330 M / 261 M; one-extension <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> 995 MiB; two servers + six extensions
+2.2 GB; idle RSS ~97 MiB / ~92 MiB; realistic Observe container <strong>1.1–1.3 GB node disk</strong>.</p></li>
+</ul>
+</section>
+<section id="gdb-phase-3">
+<h3>4.3 gdb (Phase 3)<a class="headerlink" href="#gdb-phase-3" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>[ ] <strong>Exact incantation</strong> (S3’s <code class="docutils literal notranslate"><span class="pre">dbg</span></code> helper, tested end to end). Order matters:
+<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">set</span> <span class="pre">pagination</span> <span class="pre">off</span>&#160;&#160;&#160;&#160; <span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/proc/&lt;PID&gt;/root</span>&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">#</span> <span class="pre">BEFORE</span> <span class="pre">attach</span>&#160;&#160;&#160;&#160; <span class="pre">directory</span> <span class="pre">/proc/&lt;PID&gt;/root</span>&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">#</span> <span class="pre">sources;</span> <span class="pre">NOT</span> <span class="pre">substitute-path</span>&#160;&#160;&#160;&#160; <span class="pre">add-auto-load-safe-path</span> <span class="pre">/proc/&lt;PID&gt;/root</span>&#160;&#160;&#160;&#160; <span class="pre">#</span> <span class="pre">or</span> <span class="pre">you</span> <span class="pre">lose</span> <span class="pre">libthread_db</span>&#160;&#160;&#160;&#160; <span class="pre">set</span> <span class="pre">debuginfod</span> <span class="pre">enabled</span> <span class="pre">on</span>&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">#</span> <span class="pre">symbols</span> <span class="pre">only;</span> <span class="pre">needs</span> <span class="pre">ca-certificates</span>&#160;&#160;&#160;&#160; <span class="pre">file</span> <span class="pre">/proc/&lt;PID&gt;/root$(readlink</span> <span class="pre">/proc/&lt;PID&gt;/exe)</span>&#160;&#160; <span class="pre">#</span> <span class="pre">strip</span> <span class="pre">a</span> <span class="pre">trailing</span> <span class="pre">&quot;</span> <span class="pre">(deleted)&quot;</span>&#160;&#160;&#160;&#160; <span class="pre">attach</span> <span class="pre">&lt;PID&gt;</span>&#160;&#160;&#160; </code></p></li>
+<li><p>[ ] <strong>PID discovery:</strong> substring-match the target’s <code class="docutils literal notranslate"><span class="pre">containerID</span></code> (scheme stripped) against
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span></code>. Inject it at debug time as <code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code>. Fallback
+(<code class="docutils literal notranslate"><span class="pre">cgroup</span> <span class="pre">!=</span> <span class="pre">&quot;0::/&quot;</span></code>) is wrong when a second podbench session is attached — warn when used.</p></li>
+<li><p>[ ] Stay on <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> + explicit sysroot. <strong>Never</strong> <code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code>.</p></li>
+<li><p>[ ] Image contents: <code class="docutils literal notranslate"><span class="pre">gdb</span></code> (13.x Debian 12; pulls <code class="docutils literal notranslate"><span class="pre">libpython3.11</span></code>, budget for it),
+<strong><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> (mandatory)</strong>, <code class="docutils literal notranslate"><span class="pre">binutils</span></code> for <code class="docutils literal notranslate"><span class="pre">readelf</span></code>, optionally <code class="docutils literal notranslate"><span class="pre">debuginfod-find</span></code>.
+Match the debug image’s distro/release to the common target base, but never rely on it.</p></li>
+<li><p>[ ] Docs must ship the §3.4 <code class="docutils literal notranslate"><span class="pre">wcsxfrm_l</span></code> transcript verbatim, state that sysroot fixes libraries
+not sources, and warn that <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> <strong>after</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code> produces a plausible-looking wrong
+backtrace.</p></li>
+</ul>
+</section>
+<section id="iterate-mode-dev-pod-phase-4">
+<h3>4.4 Iterate mode / dev pod (Phase 4)<a class="headerlink" href="#iterate-mode-dev-pod-phase-4" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>[ ] <strong>Author the pod spec in the launcher.</strong> Do not shell out to <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code>
+(no <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code>, no <code class="docutils literal notranslate"><span class="pre">resources</span></code>, no workspace volume, silent on success).</p></li>
+<li><p>[ ] <strong>Label policy:</strong> copy the origin pod’s labels, then delete <code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code>,
+<code class="docutils literal notranslate"><span class="pre">controller-revision-hash</span></code>, <code class="docutils literal notranslate"><span class="pre">controller-uid</span></code>, <code class="docutils literal notranslate"><span class="pre">batch.kubernetes.io/controller-uid</span></code>,
+<code class="docutils literal notranslate"><span class="pre">batch.kubernetes.io/job-name</span></code>, <code class="docutils literal notranslate"><span class="pre">job-name</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulset.kubernetes.io/pod-name</span></code>. Add
+<code class="docutils literal notranslate"><span class="pre">podbench.dev/devpod:</span> <span class="pre">&quot;true&quot;</span></code> + an annotation recording the origin pod. Gate the whole thing
+behind an explicit <code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code>, <strong>default off</strong> — silently joining a production Service
+is a foot-cannon.</p></li>
+<li><p>[ ] <strong>Always</strong> put <code class="docutils literal notranslate"><span class="pre">readinessProbe:</span> <span class="pre">{tcpSocket:</span> <span class="pre">{port:</span> <span class="pre">&lt;target</span> <span class="pre">port&gt;},</span> <span class="pre">periodSeconds:</span> <span class="pre">2,</span>&#160;&#160;&#160;&#160; <span class="pre">failureThreshold:</span> <span class="pre">1}</span></code> on the <strong>podbench</strong> container.</p></li>
+<li><p>[ ] Idle the target container (<code class="docutils literal notranslate"><span class="pre">command:</span> <span class="pre">[&quot;sleep&quot;,&quot;infinity&quot;]</span></code>, drop <code class="docutils literal notranslate"><span class="pre">args</span></code>), strip
+<code class="docutils literal notranslate"><span class="pre">readinessProbe</span></code>/<code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code>/<code class="docutils literal notranslate"><span class="pre">startupProbe</span></code>/<code class="docutils literal notranslate"><span class="pre">lifecycle</span></code> from it, set <code class="docutils literal notranslate"><span class="pre">restartPolicy:</span> <span class="pre">Never</span></code>
+on the dev pod, clear <code class="docutils literal notranslate"><span class="pre">nodeName</span></code>, drop <code class="docutils literal notranslate"><span class="pre">uid</span></code>/<code class="docutils literal notranslate"><span class="pre">resourceVersion</span></code>/<code class="docutils literal notranslate"><span class="pre">ownerReferences</span></code>/<code class="docutils literal notranslate"><span class="pre">managedFields</span></code>
+/<code class="docutils literal notranslate"><span class="pre">generateName</span></code>/<code class="docutils literal notranslate"><span class="pre">status</span></code>.</p></li>
+<li><p>[ ] Sidecar gets: its own <code class="docutils literal notranslate"><span class="pre">resources</span></code>, an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> workspace (4 Gi was fine), <code class="docutils literal notranslate"><span class="pre">HOME=/workspace</span></code>,
+<code class="docutils literal notranslate"><span class="pre">securityContext.capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code>, and <code class="docutils literal notranslate"><span class="pre">spec.shareProcessNamespace:</span> <span class="pre">true</span></code>.</p></li>
+<li><p>[ ] <strong>Cutover mode:</strong> <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">svc</span> <span class="pre">--type=json</span> <span class="pre">-p</span> <span class="pre">'[{&quot;op&quot;:&quot;replace&quot;,&quot;path&quot;:&quot;/spec/selector&quot;,…}]'</span></code>.
+A <strong>merge</strong> patch silently unions the maps (observed: <code class="docutils literal notranslate"><span class="pre">{app:</span> <span class="pre">…,</span> <span class="pre">podbench.dev/devpod:</span> <span class="pre">&quot;true&quot;}</span></code>,
+which dropped the original pod out of the endpointslice). Record the original selector for an
+exact restore.</p></li>
+<li><p>[ ] <strong>Pre-flight the port before every relaunch</strong> — <code class="docutils literal notranslate"><span class="pre">ss</span> <span class="pre">-lntp</span></code> (sees all containers via shared
+netns + PID ns + <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>), identify the owning container via <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>,
+<strong>and count TIME_WAIT entries</strong> so the user is told to wait rather than staring at
+<code class="docutils literal notranslate"><span class="pre">EADDRINUSE</span></code>.</p></li>
+<li><p>[ ] The relaunch wrapper must track <strong>its own child PID</strong>, confirm it is alive, and confirm that
+PID owns the listening socket (match the socket inode against <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/fd</span></code>). A socket poll
+alone gives a false PASS.</p></li>
+<li><p>[ ] <strong>Never <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code></strong> in generated helpers — under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> it matches the
+invoking shell (<code class="docutils literal notranslate"><span class="pre">exit</span> <span class="pre">code</span> <span class="pre">143</span></code>) and every container’s processes. Kill by recorded PID.</p></li>
+<li><p>[ ] Bake the toolchain: <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code>, <code class="docutils literal notranslate"><span class="pre">git</span></code>, <code class="docutils literal notranslate"><span class="pre">xz-utils</span></code>, <code class="docutils literal notranslate"><span class="pre">procps</span></code>, <code class="docutils literal notranslate"><span class="pre">iproute2</span></code>, <code class="docutils literal notranslate"><span class="pre">uv</span></code>,
+pre-seeded CPython. <code class="docutils literal notranslate"><span class="pre">apt-get</span></code> was <strong>10.6 s of the 19 s</strong> loop (55 %).</p></li>
+<li><p>[ ] Budget: authored spec → Ready <strong>4.3 s</strong>; uv + <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">python</span> <span class="pre">install</span> <span class="pre">3.12</span></code> <strong>2.3 s</strong>;
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">venv</span></code> + <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> <strong>1.0 s</strong>; first relaunch <strong>0.85 s</strong>;
+<strong>edit → relaunch → verified through the Service: 1.18 s</strong>.</p></li>
+</ul>
+</section>
+<section id="capability-ladder-and-capreport-phase-5">
+<h3>4.5 Capability ladder and <code class="docutils literal notranslate"><span class="pre">capreport</span></code> (Phase 5)<a class="headerlink" href="#capability-ladder-and-capreport-phase-5" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>[ ] <strong>Two rungs only, valid by construction:</strong>
+- <strong>rung 1 (full):</strong> <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code> <strong>AND</strong> <code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code>.
+<strong>Reject the combination of <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> with a non-zero <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> in the launcher</strong>, with
+an explicit message — never ship a container that silently has <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0</span></code>.
+- <strong>rung 2 (degraded):</strong> <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">&lt;target's</span> <span class="pre">UID&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">&lt;target's</span> <span class="pre">GID&gt;</span></code>,
+<code class="docutils literal notranslate"><span class="pre">capabilities.drop:</span> <span class="pre">[ALL]</span></code>, <code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code>,
+<code class="docutils literal notranslate"><span class="pre">seccompProfile:</span> <span class="pre">RuntimeDefault</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsNonRoot:</span> <span class="pre">true</span></code>. Verified <strong>admitted</strong> under
+<code class="docutils literal notranslate"><span class="pre">restricted:latest</span></code>, with the full degraded loop working inside it.</p></li>
+<li><p>[ ] Discover the target UID first (<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/status</span></code>, or the target container’s
+<code class="docutils literal notranslate"><span class="pre">securityContext</span></code>) — <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>/<code class="docutils literal notranslate"><span class="pre">status</span></code>/<code class="docutils literal notranslate"><span class="pre">fd</span></code> are readable even from the wrong UID.
+<strong>Do not default the fallback to root.</strong></p></li>
+<li><p>[ ] Add ephemeral containers via <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/namespaces/{ns}/pods/{pod}/ephemeralcontainers</span></code>,
+not <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code>.</p></li>
+<li><p>[ ] Handle <strong>both</strong> rejection channels: synchronous PSA <code class="docutils literal notranslate"><span class="pre">Forbidden</span></code> (match the stable substring
+<code class="docutils literal notranslate"><span class="pre">must</span> <span class="pre">not</span> <span class="pre">include</span> <span class="pre">&quot;SYS_PTRACE&quot;</span> <span class="pre">in</span> <span class="pre">securityContext.capabilities.add</span></code>) → fall straight to rung 2;
+and asynchronous kubelet <code class="docutils literal notranslate"><span class="pre">CreateContainerConfigError</span></code> /
+<code class="docutils literal notranslate"><span class="pre">container's</span> <span class="pre">runAsUser</span> <span class="pre">breaks</span> <span class="pre">non-root</span> <span class="pre">policy</span></code> → pre-empt by reading the target pod’s
+<code class="docutils literal notranslate"><span class="pre">securityContext.runAsNonRoot</span></code>.</p></li>
+<li><p>[ ] <strong>Ship <code class="docutils literal notranslate"><span class="pre">capreport</span></code> and run it on every session start</strong>, printing the verdict before the user’s
+prompt. Exit codes drive mode selection: <strong>0</strong> = live attach, <strong>10</strong> = read-only debugging,
+<strong>20</strong> = nothing. Its logic: read <code class="docutils literal notranslate"><span class="pre">CapEff</span></code> bit 19, <code class="docutils literal notranslate"><span class="pre">CapBnd</span></code>, <code class="docutils literal notranslate"><span class="pre">CapAmb</span></code>, <code class="docutils literal notranslate"><span class="pre">Seccomp</span></code>, <code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>,
+AppArmor profile (self <strong>and</strong> target), <code class="docutils literal notranslate"><span class="pre">yama/ptrace_scope</span></code>, target uid/comm/TracerPid; then
+run a <strong>scratch <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on its own forked child</strong> (always permitted by Yama, so a
+failure there is structural → seccomp/AppArmor/yama=3) and a <strong>live attach on the target</strong>;
+then a 6-path <code class="docutils literal notranslate"><span class="pre">/proc</span></code> read matrix. Probe backends in order: bundled <code class="docutils literal notranslate"><span class="pre">ptprobe</span></code> binary →
+<code class="docutils literal notranslate"><span class="pre">python3</span></code> ctypes → compile with <code class="docutils literal notranslate"><span class="pre">cc</span></code>/<code class="docutils literal notranslate"><span class="pre">gcc</span></code>; report “skipped” if none.</p></li>
+<li><p>[ ] <strong>Probe per node, never cache cluster-wide.</strong> Surface node name + Yama state in the session
+banner so “attach works on one run, denied on the next” is explicable.</p></li>
+<li><p>[ ] Package gdb <strong>with</strong> its Python stdlib (<code class="docutils literal notranslate"><span class="pre">/usr/lib/pythonX.Y</span></code>, ~19 MB, <code class="docutils literal notranslate"><span class="pre">PYTHONHOME</span></code>/<code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code>
+set) or pick a non-Python gdb.</p></li>
+<li><p>[ ] Warn once that ASLR cannot be disabled under <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp.</p></li>
+<li><p>[ ] Document the inner loop as <strong>gdb-launch</strong>; document <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span>&#160;&#160;&#160;&#160; <span class="pre">PR_SET_PTRACER_ANY)</span></code> as the one-line target-side opt-in for genuine attach.</p></li>
+</ul>
+</section>
+<section id="arch-and-node-caveats">
+<h3>4.6 Arch and node caveats<a class="headerlink" href="#arch-and-node-caveats" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>[ ] Server tarballs exist for both arches at the same commit; extension installs auto-resolve the
+platform build (<code class="docutils literal notranslate"><span class="pre">-linux-x64</span></code> / <code class="docutils literal notranslate"><span class="pre">-linux-arm64</span></code>). Detect via <code class="docutils literal notranslate"><span class="pre">uname</span> <span class="pre">-m</span></code>.</p></li>
+<li><p>[ ] arm64 (RK3588) is <strong>not</strong> slower for this workload; only image pulls differ.</p></li>
+<li><p>[ ] <strong>Yama differs per node, by kernel flavour</strong> (§3.13) — rockchip 6.1 nodes have no Yama at all.</p></li>
+<li><p>[ ] S3 was tested <strong>amd64 only</strong>; the distroless/dbgsym/build-id path needs re-checking on arm64.</p></li>
+<li><p>[ ] Cold-start timings are unobtainable on this cluster: <code class="docutils literal notranslate"><span class="pre">ws03</span></code> carries a <code class="docutils literal notranslate"><span class="pre">workstation</span></code> taint and
+<code class="docutils literal notranslate"><span class="pre">node01</span></code> a control-plane taint, so <strong><code class="docutils literal notranslate"><span class="pre">nuc2</span></code> is the only schedulable amd64 node</strong>. All S2/S4
+numbers are warm-image-cache.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="open-questions-and-residual-risk">
+<h2>5. Open questions and residual risk<a class="headerlink" href="#open-questions-and-residual-risk" title="Link to this heading">#</a></h2>
+<p><strong>R1 — S1 and S2 contradict each other on <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-e</span></code>. Unresolved.</strong>
+S1 proved <code class="docutils literal notranslate"><span class="pre">-e</span></code> is mandatory (<code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> alone fails reproducibly at KEX with <code class="docutils literal notranslate"><span class="pre">Broken</span> <span class="pre">pipe</span></code>) and
+isolated the mechanism to fd-2 teardown of the CRI exec stream. S2 ran
+<code class="docutils literal notranslate"><span class="pre">ProxyCommand</span> <span class="pre">kubectl</span> <span class="pre">exec</span> <span class="pre">-i</span> <span class="pre">…</span> <span class="pre">--</span> <span class="pre">/usr/sbin/sshd</span> <span class="pre">-i</span></code> — <strong>no <code class="docutils literal notranslate"><span class="pre">-e</span></code></strong> — successfully for an entire
+spike, and its note explicitly recommends <em>“do not pass <code class="docutils literal notranslate"><span class="pre">-e</span></code> to sshd”</em> on stderr-pollution grounds.
+Both cannot be unconditionally true, so some environmental variable (syslog socket presence, image
+state, kubectl/CRI buffering, timing) determines whether the fd-2 teardown fires. <strong>Where it bites:</strong>
+if Phase 1 picks S2’s form, the transport works in dev and fails intermittently in the field with a
+network-looking error. <strong>Mitigation now:</strong> use <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">-o</span> <span class="pre">LogLevel=ERROR</span></code>, which S1 verified produces
+<strong>zero stderr bytes</strong> (answering S2’s objection) while keeping fd 2 open (answering S1’s). <strong>Action:</strong>
+Phase 1 must reproduce both configurations back to back on the same pod and record which variable
+flips it.</p>
+<p><strong>R2 — No real VS Code GUI client has ever connected. The single biggest open number.</strong>
+S2 explicitly flags this: no extension host and no language server was ever spawned, so every RSS
+figure (~97 MiB idle) is a <strong>lower bound</strong>. Pylance alone is a 117 MiB install and its runtime RSS
+is unmeasured; cpptools likewise. <strong>Where it bites:</strong> the memory budget, the pod-resize headroom
+calculation, and therefore whether Podbench OOM-kills itself (§3.9, unrecoverable) inside tightly
+limited production pods. Measure before Phase 2 ships.</p>
+<p><strong>R3 — Trimming the built-in extensions is unvalidated against a real client.</strong>
+The −218 MiB trim was verified only by “server starts and serves <code class="docutils literal notranslate"><span class="pre">/version</span></code>”. A GUI client may
+require what was deleted. Re-validate before making the trim default.</p>
+<p><strong>R4 — Source provisioning for Observe mode is an unsolved design problem</strong> (§3.2). debuginfod gives
+symbols but no sources on Debian/Ubuntu, and <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> does not cover sources at all. Three
+candidate designs exist (source in the target image, source sidecar volume, client-side mapping to
+the developer’s checkout); none has been spiked. Phase 3 cannot ship “step through your code”
+without picking one.</p>
+<p><strong>R5 — gdb’s DAP/MI mode is untested.</strong> S3 tested CLI gdb only. The VS Code C++ extension consumes
+<code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code>’s <strong>fullname</strong>, which is exactly the field the nested-<code class="docutils literal notranslate"><span class="pre">substitute-path</span></code> bug corrupts
+(§3.3). If DAP normalises paths differently, the <code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> recommendation may
+need revisiting. Untested and directly on the Phase 3 critical path.</p>
+<p><strong>R6 — Multithreaded and non-root targets are unproven for gdb.</strong> S3 exercised a single-threaded
+target only; <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> loaded and <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code> listed the one LWP after
+<code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span></code>, but a genuinely multithreaded target was never tried. Targets with
+<code class="docutils literal notranslate"><span class="pre">runAsUser</span> <span class="pre">!=</span> <span class="pre">0</span></code> or in a user namespace were also not tested.</p>
+<p><strong>R7 — The seccomp branch of <code class="docutils literal notranslate"><span class="pre">capreport</span></code> is untested code.</strong> S5 could not install a <code class="docutils literal notranslate"><span class="pre">localhost/</span></code>
+seccomp profile on a node (spike rules), so the “seccomp filter is rejecting ptrace” verdict path
+has never executed. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> was tested and <strong>allows</strong> ptrace. Treat that branch as
+unverified.</p>
+<p><strong>R8 — AppArmor uniformity is an assumption.</strong> Every container observed ran under
+<code class="docutils literal notranslate"><span class="pre">cri-containerd.apparmor.d</span> <span class="pre">(enforce)</span></code>, and ptrace worked only because that profile permits ptrace
+between peers <strong>in the same profile</strong>. A target with a <em>custom</em> AppArmor profile breaks this.
+<code class="docutils literal notranslate"><span class="pre">capreport</span></code> reports both profiles, but the failure has never been observed, so the diagnostic text
+for it is unvalidated.</p>
+<p><strong>R9 — Host key identity is unsolved and not in the brief</strong> (S1). <code class="docutils literal notranslate"><span class="pre">ssh-keygen</span> <span class="pre">-A</span></code> mints fresh keys
+per attach, so <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> either warns on every new pod or must be bypassed. The spike used
+<code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code>. Shipping that teaches users to disable host verification. Needs either a
+host key delivered from a Secret, or <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> keyed on pod UID with programmatic
+<code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> management.</p>
+<p><strong>R10 — Ephemeral-container state loss on pod restart.</strong> The apt-installed sshd, host keys,
+<code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code>, the 690 MiB server and all extensions live in the ephemeral container’s writable
+layer, and the ephemeral container spec is immutable and unrestartable. A pod restart or an OOM
+means a fresh rootfs and <strong>new host keys</strong> (compounding R9). The mitigation (re-bootstrap, ~6 s) is
+cheap but must be the documented reconnect path, not a surprise.</p>
+<p><strong>R11 — Untested transport topologies.</strong> All numbers come from a flat k3s exec path. Behaviour
+through konnectivity or an API gateway — particularly the 600 s idle survival and the 19 s stall
+detection — is unknown. Likewise Remote-SSH’s own reconnect behaviour when the pod is deleted or
+evicted mid-session was never exercised.</p>
+<p><strong>R12 — Air-gap is harder than two allowlists</strong> (§3.19). Four host groups, and extensions with
+<code class="docutils literal notranslate"><span class="pre">extensionDependencies</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">ms-python.debugpy</span></code>) still reach the marketplace even when installed
+from a local <code class="docutils literal notranslate"><span class="pre">.vsix</span></code>, so an offline bundle must ship the full dependency closure. Unspiked.</p>
+<p><strong>R13 — In-place pod resize works on a controller-managed pod, but it silently diverges that pod
+from its controller.</strong> The spike itself was thin evidence: 3Gi→6Gi→7Gi, <code class="docutils literal notranslate"><span class="pre">ResizeCompleted</span></code>, no
+restarts, non-disruptive to a running ephemeral container — but one standalone pod
+(<code class="docutils literal notranslate"><span class="pre">podbench-s2/target-amd64</span></code>), patched by hand, with no controller in the picture. It has since been
+measured on <strong>two further pods, both Deployment-managed, both resized by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--resize</span></code>
+rather than by raw kubectl</strong> — which settles the controller question and raises a different one
+nobody had written down. The Kubernetes version is <em>not</em> a second data point: everything below ran
+on the same k3s v1.34.6+k3s1 cluster as the spikes, so “one Kubernetes version” still stands.</p>
+<p><em>Measured 2026-08-15 on k3s v1.34.6+k3s1: <code class="docutils literal notranslate"><span class="pre">podbench-demo/demo-service</span></code>, a one-replica
+<code class="docutils literal notranslate"><span class="pre">python:3.12-slim</span></code> Deployment pinned to an amd64 node with <code class="docutils literal notranslate"><span class="pre">limits.memory:</span> <span class="pre">256Mi</span></code>, whose seat had
+just been OOM-killed. Raised by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span> <span class="pre">--resize</span> <span class="pre">4Gi</span></code>, then read back:</em></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>check</p></th>
+<th class="head"><p>result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>pod spec <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">256Mi</span></code> → <code class="docutils literal notranslate"><span class="pre">4Gi</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory.max</span></code> in the <strong>app</strong> container’s own cgroup</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4294967296</span></code> — the kernel applied it, not just the API server</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">app</span></code> container restarts</p></td>
+<td><p>0, <code class="docutils literal notranslate"><span class="pre">started=true</span></code> — genuinely in place</p></td>
+</tr>
+<tr class="row-odd"><td><p>pod conditions</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Ready=True</span></code>, <code class="docutils literal notranslate"><span class="pre">ContainersReady=True</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>the app through its Service</p></td>
+<td><p>uninterrupted throughout</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>A Deployment does not fight an in-place resize.</strong> The pod is owned by
+<code class="docutils literal notranslate"><span class="pre">ReplicaSet/demo-service-5cbbc6654f</span></code> and the ReplicaSet left the raised limit alone, which is what
+the controller’s contract predicts: a ReplicaSet reconciles pod <em>existence</em>, not pod <em>spec</em>. So the
+common case — resizing a pod under a Deployment — is fine, and “a controller that would fight the
+change” was the wrong thing to have been afraid of.</p>
+<p><strong>The right thing to be afraid of is drift.</strong> The resize writes to the pod; the Deployment’s
+template still says <code class="docutils literal notranslate"><span class="pre">256Mi</span></code>, and nothing reconciles the two. The divergence therefore holds
+indefinitely and then vanishes without warning: any rollout, scale, image bump or eviction
+regenerates the pod from the unchanged template at the original limit. Someone who resizes to make
+a seat viable and later triggers a rollout for an unrelated reason gets a pod that OOMs again with
+no visible connection to what they did. It is the same class of drift that <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span></code>
+exists to surface — a pod quietly unlike the thing that declares it — arriving in a place nothing
+was watching.</p>
+<p>That reversion is measured, not predicted. The same manifest in a scratch namespace, resized to
+<code class="docutils literal notranslate"><span class="pre">1Gi</span></code> (pod <code class="docutils literal notranslate"><span class="pre">1Gi</span></code> / template <code class="docutils literal notranslate"><span class="pre">256Mi</span></code>, <code class="docutils literal notranslate"><span class="pre">memory.max</span></code> <code class="docutils literal notranslate"><span class="pre">1073741824</span></code>, 0 restarts, <code class="docutils literal notranslate"><span class="pre">started=true</span></code>), then
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">rollout</span> <span class="pre">restart</span> <span class="pre">deployment/demo-service</span></code>: the replacement pod came back at <strong><code class="docutils literal notranslate"><span class="pre">256Mi</span></code></strong>,
+carrying no seat, with nothing in the rollout that mentioned either.</p>
+<p>The divergence outlives a <em>container</em> restart, which is the same fact from the other side: re-read
+8 h later, the resized <code class="docutils literal notranslate"><span class="pre">podbench-demo</span></code> pod still carried <code class="docutils literal notranslate"><span class="pre">4Gi</span></code> against a <code class="docutils literal notranslate"><span class="pre">256Mi</span></code> template and
+<code class="docutils literal notranslate"><span class="pre">memory.max</span></code> was still <code class="docutils literal notranslate"><span class="pre">4294967296</span></code> <strong>after</strong> the <code class="docutils literal notranslate"><span class="pre">app</span></code> container had restarted once (exit 137).
+The raised limit lives on the pod object, so only regenerating the pod reverts it.</p>
+<p><strong>Still unproven, and still in the warning:</strong> a namespace with a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> or a <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code>.
+Neither namespace measured had either, so nothing here says how the resize behaves when the raised
+limit has to be re-admitted against a quota. A second Kubernetes version is also still untested.
+Podbench is still being asked to depend on this to avoid the unrecoverable OOM of §3.9.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is memory-only.</strong> It takes a memory value and patches <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code>; a CPU limit is
+not raised with it. That did not bite in this measurement — <code class="docutils literal notranslate"><span class="pre">cpu.stat</span></code> showed <code class="docutils literal notranslate"><span class="pre">nr_throttled</span> <span class="pre">0</span></code> with
+a vscode-server plus extensions running — but a throttled seat under a tight <code class="docutils literal notranslate"><span class="pre">limits.cpu</span></code> has no
+mitigation in the flag.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../spikes.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Spikes</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="s1.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verdict-table">1. Verdict table</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gate-decision">2. Gate decision</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#amendments-to-the-design-brief">3. Amendments to the design brief</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#e-on-sshd-i-is-about-keeping-fd-2-open-not-about-log-tidiness-s1">3.1 — <code class="docutils literal notranslate"><span class="pre">-e</span></code> on <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> is about keeping fd 2 <strong>open</strong>, not about log tidiness (S1)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#debuginfod-gives-symbols-but-not-sources-on-debian-s3">3.2 — debuginfod gives symbols but <strong>not sources</strong> on Debian (S3)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#set-sysroot-is-not-the-whole-fix-four-more-things-are-mandatory-s3">3.3 — <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> is not the whole fix; four more things are mandatory (S3)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-no-sysroot-failure-mode-is-not-what-the-brief-describes-s3">3.4 — The “no sysroot” failure mode is not what the brief describes (S3)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#copy-to-strips-all-labels-and-annotations-so-the-clone-gets-no-service-traffic-s4">3.5 — <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> strips <strong>all labels and annotations</strong>, so the clone gets no Service traffic (S4)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#taking-service-traffic-is-not-binary-there-is-a-50-broken-window-s4">3.6 — Taking Service traffic is not binary; there is a ~50 % broken window (S4)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-vs-code-version-lock-is-a-hard-handshake-rejection-s2">3.7 — The VS Code version lock is a hard handshake rejection (S2)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-1-gb-observe-mode-budget-is-already-blown-s2">3.8 — The ~1 GB Observe-mode budget is already blown (S2)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#an-oom-inside-the-debug-container-is-unrecoverable-s2">3.9 — An OOM inside the debug container is unrecoverable (S2)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capabilities-add-sys-ptrace-on-a-non-root-container-is-a-silent-no-op-s5">3.10 — <code class="docutils literal notranslate"><span class="pre">capabilities.add:[SYS_PTRACE]</span></code> on a non-root container is a silent no-op (S5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#root-without-the-cap-is-strictly-worse-than-non-root-at-the-target-s-uid-s5">3.11 — Root without the cap is strictly <strong>worse</strong> than non-root at the target’s UID (S5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#start-it-yourself-and-attach-does-not-satisfy-yama-s5">3.12 — “Start it yourself and attach” does <strong>not</strong> satisfy Yama (S5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#yama-is-not-uniform-and-the-difference-is-kernel-flavour-not-arch-s5">3.13 — Yama is not uniform, and the difference is kernel flavour, not arch (S5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#kubectl-debug-flag-semantics-differ-from-the-brief-s1-s3-s5">3.14 — <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code> flag semantics differ from the brief (S1, S3, S5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#target-pid-discovery-must-key-off-the-container-runtime-id-s3">3.15 — Target-PID discovery must key off the container runtime ID (S3)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#port-conflicts-have-a-silent-dangerous-mode-s4">3.16 — Port conflicts have a silent, dangerous mode (S4)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-mount-namespace-rule-is-confirmed-but-harsher-than-stated-s4">3.17 — The mount-namespace rule is confirmed but harsher than stated (S4)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-rejection-channels-not-one-s5">3.18 — Two rejection channels, not one (S5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#assorted-brief-corrections">3.19 — Assorted brief corrections</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#implementation-constraints-checklist-for-phase-16">4. Implementation constraints — checklist for Phase 1–6</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-transport-phase-1">4.1 ssh transport (Phase 1)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vscode-server-bootstrap-phase-2">4.2 vscode-server bootstrap (Phase 2)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gdb-phase-3">4.3 gdb (Phase 3)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iterate-mode-dev-pod-phase-4">4.4 Iterate mode / dev pod (Phase 4)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capability-ladder-and-capreport-phase-5">4.5 Capability ladder and <code class="docutils literal notranslate"><span class="pre">capreport</span></code> (Phase 5)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#arch-and-node-caveats">4.6 Arch and node caveats</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#open-questions-and-residual-risk">5. Open questions and residual risk</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.1.0b4/docs/explanations/spikes/phase0-report.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../../_sources/explanations/spikes/phase0-report.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
