@@ -42,6 +42,8 @@ from .budget import (
     PROBE_FAILURE_REASON,
     ProbeBudget,
     format_probe_spend,
+    memory_budget,
+    memory_warning,
     probe_budgets,
     probe_qualifier,
     probe_spend,
@@ -959,7 +961,15 @@ def attach(
             poll_interval=poll_interval,
         )
 
-    warnings.append(OOM_WARNING)
+    # On the headroom this pod actually has, not on the fact that seats share
+    # one. podbench holds the limit and the requests here, so a pod with room
+    # is told nothing and a pod without it is told how much it is short and
+    # what to type - where the unconditional version printed seven lines about
+    # tightly limited pods immediately after `--resize 4Gi` had raised the
+    # limit, and so said the opposite of what podbench knew (issue #54).
+    memory_note = memory_warning(memory_budget(pod_json))
+    if memory_note is not None:
+        warnings.append(memory_note)
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
     # a caution about probed pods. It is stated before anyone sets a

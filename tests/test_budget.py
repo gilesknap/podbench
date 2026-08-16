@@ -17,10 +17,13 @@ import pytest
 import yaml
 
 from podbench.budget import (
+    MIB,
     ProbeBudget,
     ProbeKind,
     ProbeSpend,
     format_probe_spend,
+    memory_budget,
+    memory_warning,
     probe_budgets,
     probe_qualifier,
     probe_spend,
@@ -601,3 +604,74 @@ def test_an_unreadable_timestamp_drops_the_event_rather_than_the_report() -> Non
 def test_the_window_says_so_when_there_is_no_landing_to_measure_from() -> None:
     report = spend_report(THE_PAUSE, since=None)
     assert "over every event the cluster still holds" in report
+
+
+# -- the memory budget ------------------------------------------------------
+
+
+def memory_pod(*containers: dict[str, Any]) -> dict[str, Any]:
+    """A pod whose containers state only what this half reads."""
+    return {"spec": {"containers": list(containers)}}
+
+
+def sized(
+    name: str, limit: str | None = None, request: str | None = None
+) -> dict[str, Any]:
+    resources: dict[str, Any] = {}
+    if limit is not None:
+        resources["limits"] = {"memory": limit}
+    if request is not None:
+        resources["requests"] = {"memory": request}
+    return {"name": name, "resources": resources}
+
+
+def test_the_ceiling_is_the_sum_of_the_containers_limits() -> None:
+    """The pod's cgroup gets that sum, and the seat is inside it: an ephemeral
+    container is added afterwards and never widens it."""
+    budget = memory_budget(
+        memory_pod(sized("app", "512Mi", "256Mi"), sized("sidecar", "256Mi", "128Mi"))
+    )
+    assert budget.limit == 768 * MIB
+    assert budget.reserved == 384 * MIB
+    assert budget.free == 384 * MIB
+
+
+def test_one_unlimited_container_leaves_the_pod_unlimited() -> None:
+    budget = memory_budget(memory_pod(sized("app", "512Mi"), sized("sidecar")))
+    assert budget.limit is None
+    assert budget.free is None
+    assert budget.fits, "there is no ceiling here for a seat to hit"
+    assert memory_warning(budget) is None
+
+
+def test_a_limit_with_no_request_is_reserved_in_full() -> None:
+    """The API server's own defaulting: a container that states a limit and no
+    request has the limit as its request, so nothing here is spare."""
+    budget = memory_budget(memory_pod(sized("app", "512Mi")))
+    assert budget.reserved == 512 * MIB
+    assert budget.free == 0
+
+
+def test_a_pod_too_small_for_a_seat_is_told_how_short_and_what_to_type() -> None:
+    warning = memory_warning(memory_budget(memory_pod(sized("app", "512Mi", "256Mi"))))
+    assert warning is not None
+    assert "256Mi free of a 512Mi pod limit" in warning
+    assert "--resize 2Gi" in warning
+    assert "\n" not in warning, "one line, so it can be scanned beside the others"
+
+
+def test_a_pod_with_room_says_nothing_at_all() -> None:
+    """The whole point of measuring it. This is the bench pod after
+    `--resize 4Gi`, which used to be told that tightly limited pods OOM."""
+    assert (
+        memory_warning(memory_budget(memory_pod(sized("app", "4Gi", "256Mi")))) is None
+    )
+
+
+def test_an_unreadable_quantity_is_unmeasured_rather_than_unlimited() -> None:
+    """Nothing the API server would accept looks like this, so reaching it means
+    the field was not what podbench thinks it is - and a warning computed from a
+    guess is the thing this change exists to remove."""
+    budget = memory_budget(memory_pod(sized("app", "512 megabytes")))
+    assert budget.limit is None
+    assert memory_warning(budget) is None

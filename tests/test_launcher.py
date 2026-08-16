@@ -101,6 +101,8 @@ def pod_document(
     probes: Mapping[str, Any] | None = None,
     restarts: int = 0,
     target_started: str | None = None,
+    memory_limit: str | None = None,
+    memory_request: str | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -108,6 +110,13 @@ def pod_document(
     if non_root:
         security["runAsNonRoot"] = True
     workload: dict[str, Any] = {"name": container, "securityContext": security}
+    if memory_limit is not None or memory_request is not None:
+        resources: dict[str, Any] = {}
+        if memory_limit is not None:
+            resources["limits"] = {"memory": memory_limit}
+        if memory_request is not None:
+            resources["requests"] = {"memory": memory_request}
+        workload["resources"] = resources
     if volume_mounts:
         workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
     workload.update(probes or {})
@@ -1100,7 +1109,6 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     text = format_session(session)
     assert "ptrace_scope" in text
     assert "node02" in text
-    assert "OOM-kill" in text, "the shared-limits warning is not optional"
 
 
 DIAMOND_READS = {
@@ -2393,6 +2401,40 @@ def test_a_resize_that_happened_carries_its_own_caveat(
     out = capsys.readouterr().out
     assert "4Gi" in out
     assert "reverts" in out
+
+
+def test_a_pod_with_no_room_for_a_seat_is_told_so_in_its_own_numbers() -> None:
+    cluster = FakeCluster(
+        pod_document(uid=1000, memory_limit="512Mi", memory_request="256Mi")
+    )
+    session = attach(talking_to(cluster), "target")
+
+    (memory,) = [note for note in session.warnings if note.startswith("memory:")]
+    assert "256Mi free of a 512Mi pod limit" in memory
+    assert "--resize 2Gi" in memory
+
+
+def test_a_pod_that_has_the_headroom_is_not_warned_about_headroom() -> None:
+    """The bench run of 2026-08-16: `--resize 4Gi` succeeded, and the report
+    then printed seven lines about tightly limited pods OOM-killing the
+    workload. podbench had the limit in hand and said the opposite (issue #54).
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000, memory_limit="4Gi", memory_request="256Mi")
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert not [note for note in session.warnings if note.startswith("memory:")]
+    assert "OOM" not in format_session(session)
+
+
+def test_a_pod_with_no_memory_limit_at_all_is_not_warned_either() -> None:
+    """There is no cgroup ceiling here for the seat to hit, and a warning about
+    one would be the report asserting something it has not measured."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target")
+
+    assert not [note for note in session.warnings if note.startswith("memory:")]
 
 
 def test_current_namespace_falls_back_to_default() -> None:

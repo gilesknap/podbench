@@ -1,4 +1,19 @@
-"""How long a paused workload has before the kubelet acts on it.
+"""What a seat spends that nothing in the cluster will bill it for.
+
+Two budgets, and the pairing is not an accident: a seat can reserve neither of
+them, and both are spent quietly. The first is *time* — how long a paused
+workload has before the kubelet acts on it — and the second is *memory*, which
+podbench shares with the pod it lands in because an ephemeral container may not
+carry ``resources`` at all (report 3.9).
+
+The memory half is at the bottom of this module and is the shorter one: the
+pod's own spec states the ceiling, and :func:`memory_budget` subtracts what the
+workload has reserved of it. Having that number is what makes the warning
+conditional, and that is the point of computing it — the caution about tightly
+limited pods used to be printed at every attach, including one that had just
+raised the limit to 4Gi with ``--resize`` (issue #54).
+
+The time half, which is the rest of the module:
 
 A breakpoint in ``attach`` mode stops the target answering its probes, and the
 kubelet cannot tell a process stopped in a debugger from one that has hung. Two
@@ -41,6 +56,7 @@ in the direction that panics the reader.
 from __future__ import annotations
 
 import enum
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -53,11 +69,15 @@ __all__ = [
     "DEFAULT_PERIOD_SECONDS",
     "DEFAULT_TIMEOUT_SECONDS",
     "PROBE_FAILURE_REASON",
+    "SEAT_WORKING_SET",
+    "MemoryBudget",
     "ProbeBudget",
     "ProbeKind",
     "ProbeSpend",
     "TargetStatus",
     "format_probe_spend",
+    "memory_budget",
+    "memory_warning",
     "probe_budgets",
     "probe_qualifier",
     "probe_spend",
@@ -974,3 +994,200 @@ def _as_entries(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [as_dict(entry) for entry in value]  # pyright: ignore[reportUnknownVariableType]
+
+
+# -- the memory budget ------------------------------------------------------
+
+
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+SEAT_WORKING_SET = 1300 * MIB
+"""What a seat costs when VS Code is the client, in bytes.
+
+Measured rather than budgeted for: vscode-server alone is 700-800 MB RSS, and
+1.1-1.3 GB once the extensions are in (the ``vscode-in-a-seat`` skill). The top
+of that range is the number used, because the failure this decides whether to
+warn about is unrecoverable - an OOM-killed ephemeral container cannot be
+restarted, and its name is burnt for the pod's lifetime.
+"""
+
+
+@dataclass(frozen=True)
+class MemoryBudget:
+    """The pod's memory ceiling, and how much of it a seat can hope for."""
+
+    limit: int | None
+    """The pod's ceiling in bytes, or ``None`` when it has none.
+
+    The sum of the containers' memory limits, because that is what the pod's
+    own cgroup is given - and ``None`` as soon as one container declares no
+    limit, since a single unlimited container leaves the pod unlimited too. An
+    ephemeral container is added after that sum is computed and never changes
+    it, which is the whole reason the seat's allocations come out of the
+    workload's ceiling.
+    """
+
+    reserved: int
+    """What the workload has reserved of it, in bytes.
+
+    Requests, not usage: usage needs metrics-server, and podbench shells out to
+    ``kubectl`` alone. A container that states a limit and no request has the
+    limit as its request, which is the API server's own defaulting, so a pod
+    that pins limits without requests correctly comes out with nothing spare.
+    """
+
+    @property
+    def free(self) -> int | None:
+        """Bytes inside the ceiling that nothing has reserved.
+
+        An upper bound on what a seat can take without pushing the workload out
+        of its guaranteed share, and ``None`` when there is no ceiling to be
+        inside.
+
+        >>> MemoryBudget(512 * MIB, 256 * MIB).free == 256 * MIB
+        True
+        >>> MemoryBudget(None, 0).free is None
+        True
+        """
+        if self.limit is None:
+            return None
+        return max(0, self.limit - self.reserved)
+
+    @property
+    def fits(self) -> bool:
+        """Whether a seat has room here, and so whether to say anything at all.
+
+        An unlimited pod fits by construction: there is no cgroup ceiling for
+        the seat to hit, and warning about one would be the report asserting
+        something it has not measured.
+
+        >>> MemoryBudget(4 * GIB, 256 * MIB).fits
+        True
+        >>> MemoryBudget(512 * MIB, 256 * MIB).fits
+        False
+        """
+        free = self.free
+        return free is None or free >= SEAT_WORKING_SET
+
+    @property
+    def suggestion(self) -> str:
+        """A ``--resize`` value that would make this pod fit, in whole GiB.
+
+        Whole GiB because the reader is going to type it, and a limit stated to
+        the megabyte would be a false precision on a working set that is a
+        range.
+
+        >>> MemoryBudget(512 * MIB, 256 * MIB).suggestion
+        '2Gi'
+        >>> MemoryBudget(4 * GIB, 4 * GIB).suggestion
+        '6Gi'
+        """
+        needed = self.reserved + SEAT_WORKING_SET
+        return _human(-(-needed // GIB) * GIB)
+
+
+def memory_budget(pod_json: Mapping[str, Any]) -> MemoryBudget:
+    """The ceiling this pod puts on a seat, read from the spec it already has.
+
+    >>> pod = {"spec": {"containers": [{"name": "app", "resources": {
+    ...     "limits": {"memory": "512Mi"}, "requests": {"memory": "256Mi"}}}]}}
+    >>> budget = memory_budget(pod)
+    >>> _human(budget.limit or 0), _human(budget.free or 0)
+    ('512Mi', '256Mi')
+    >>> memory_budget({"spec": {"containers": [{"name": "app"}]}}).limit is None
+    True
+    """
+    limit = 0
+    reserved = 0
+    unbounded = False
+    for container in _as_entries(as_dict(pod_json.get("spec")).get("containers")):
+        resources = as_dict(container.get("resources"))
+        stated = _quantity(as_dict(resources.get("limits")).get("memory"))
+        request = _quantity(as_dict(resources.get("requests")).get("memory"))
+        if stated is None:
+            unbounded = True
+        else:
+            limit += stated
+        reserved += request if request is not None else (stated or 0)
+    return MemoryBudget(limit=None if unbounded else limit, reserved=reserved)
+
+
+def memory_warning(budget: MemoryBudget) -> str | None:
+    """The one line an attach owes a pod too small for a seat, or ``None``.
+
+    Silence when it fits is the whole change: the caution this replaces was
+    unconditional, so an attach that had just raised the limit to 4Gi with
+    ``--resize`` was told in ten lines that tightly limited pods OOM (issue
+    #54). The reasoning - that the seat may not carry ``resources`` of its own,
+    and that an OOM'd ephemeral container is unrecoverable - is one command
+    away in ``podbench status --explain``.
+
+    >>> memory_warning(MemoryBudget(4 * GIB, 256 * MIB)) is None
+    True
+    >>> memory_warning(MemoryBudget(512 * MIB, 256 * MIB))
+    'memory: 256Mi free of a 512Mi pod limit, and a VS Code seat needs 1.1-1.3Gi - re-attach with --resize 2Gi'
+    """  # noqa: E501
+    free = budget.free
+    if budget.fits or free is None or budget.limit is None:
+        return None
+    return (
+        f"memory: {_human(free)} free of a {_human(budget.limit)} pod limit, "
+        "and a VS Code seat needs 1.1-1.3Gi - re-attach with "
+        f"--resize {budget.suggestion}"
+    )
+
+
+_SUFFIXES = {
+    "": 1,
+    "k": 10**3,
+    "M": 10**6,
+    "G": 10**9,
+    "T": 10**12,
+    "P": 10**15,
+    "E": 10**18,
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+    "Pi": 1024**5,
+    "Ei": 1024**6,
+}
+
+_QUANTITY = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(?:[eE]([+-]?[0-9]+))?([EPTGMk]i?)?$")
+
+
+def _quantity(value: Any) -> int | None:
+    """A Kubernetes quantity as bytes, or ``None`` if it is not one.
+
+    Unreadable is not zero and not unlimited: it means unmeasured, and every
+    caller here treats that as nothing to say. A quantity the API server would
+    have rejected cannot reach a live pod's JSON anyway.
+
+    >>> [_quantity(text) for text in ("512Mi", "1.5Gi", "128974848", "129e6")]
+    [536870912, 1610612736, 128974848, 129000000]
+    >>> _quantity("a lot") is None
+    True
+    """
+    if not isinstance(value, str):
+        return None
+    match = _QUANTITY.match(value.strip())
+    if match is None:
+        return None
+    mantissa, exponent, suffix = match.groups()
+    scale = _SUFFIXES[suffix or ""] * 10 ** int(exponent or 0)
+    return int(float(mantissa) * scale)
+
+
+def _human(size: int) -> str:
+    """Bytes back in the units the pod spec would have stated them in.
+
+    >>> [_human(n) for n in (536870912, 4 * GIB, 1610612736, 0)]
+    ['512Mi', '4Gi', '1.5Gi', '0']
+    """
+    for unit, name in ((GIB, "Gi"), (MIB, "Mi"), (1024, "Ki")):
+        if size >= unit:
+            if size % unit == 0:
+                return f"{size // unit}{name}"
+            return f"{size / unit:.1f}{name}"
+    return str(size)
