@@ -837,7 +837,7 @@ template still says `256Mi`, and nothing reconciles the two. The divergence ther
 indefinitely and then vanishes without warning: any rollout, scale, image bump or eviction
 regenerates the pod from the unchanged template at the original limit. Someone who resizes to make
 a seat viable and later triggers a rollout for an unrelated reason gets a pod that OOMs again with
-no visible connection to what they did. It is the same class of drift that `podbench patch status`
+no visible connection to what they did. It is the same class of drift that `podbench hotfix status`
 exists to surface — a pod quietly unlike the thing that declares it — arriving in a place nothing
 was watching.
 

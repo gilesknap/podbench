@@ -18,7 +18,7 @@ plugin therefore could not deliver the ergonomics it existed for.
 It also gave the cluster-side verbs two spellings that were not equivalent.
 `kubectl podbench` routed `attach`, `ssh-config`, `status` and `list` only,
 because the plugin entry point handed argv straight to the launcher's parser,
-which has no `dev` or `patch` subparser. Every document that named a verb had to
+which has no `dev` or `hotfix` subparser. Every document that named a verb had to
 say which of the two spellings it took, and a reader who guessed wrong got an
 argparse `invalid choice` and exit 2.
 
