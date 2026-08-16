@@ -1503,6 +1503,45 @@ def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
     assert cluster.seat_files == {}
 
 
+def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The report carrying the numbers is several blocks up by the time the
+    window opens, and the reader is about to stop reading the terminal. The
+    readiness half is the one with no trace afterwards."""
+    cluster = FakeCluster(pod_document(uid=1000, probes=PROBES))
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "before the first breakpoint" in out
+    assert out.index("over Remote-SSH") < out.index("before the first breakpoint")
+    # A pointer, not a second copy: the deadlines stay in the one report that
+    # computes them, or there are two things to keep true.
+    assert out.count("readiness at 11-16s") == 1
+
+
+def test_an_unprobed_target_gets_no_reminder_it_cannot_act_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Empty means "no probes", not "not looked at" — so a pause here costs
+    nothing and a deadline would be an invented one."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            attach_argv(tmp_path, "--open"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    assert "before the first breakpoint" not in capsys.readouterr().out
+
+
 def test_a_missing_public_key_is_a_message_not_a_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

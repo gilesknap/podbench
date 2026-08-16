@@ -91,6 +91,7 @@ __all__ = [
     "CONFIG_D",
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
+    "EDITOR_PROBE_REMINDER",
     "HOST_KEY_ARGV",
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
@@ -215,6 +216,21 @@ OOM_WARNING = (
     "ephemeral-storage - and an OOM inside an ephemeral container is "
     "unrecoverable, because it cannot be restarted."
 )
+
+EDITOR_PROBE_REMINDER = (
+    "before the first breakpoint: this pod is probed, and the deadline printed "
+    "with the report above is what a pause spends. The liveness half restarts "
+    "the container and takes the seat with it; the readiness half is the quiet "
+    "one - the pod stops taking Service traffic and there is no trace of it "
+    "once the process continues."
+)
+"""The last thing ``attach --open`` says, and the only thing it repeats.
+
+The numbers are :func:`podbench.budget.probe_warning`'s and stay there — a
+second copy is a second thing to keep true. What this adds is the timing: the
+report is several blocks up by the time the window opens, and the reader's
+attention is about to leave the terminal for a GUI.
+"""
 
 RESIZE_WARNING = (
     "--resize raises the target container's memory limit in place (kubectl "
@@ -2729,6 +2745,16 @@ def _build_app(
         if editor is not None:
             print()
             _open_editor(kube, session, wiring, editor=editor, runner=runner)
+            if session.probes:
+                # Last, because it is the thing they need at the instant their
+                # attention moves to the GUI, and the report that carries the
+                # numbers is now several blocks up. A pointer rather than a
+                # second copy: two sets of deadlines would be two things to keep
+                # true, and the readiness half is the one with no trace
+                # afterwards.
+                print()
+                for line in _paragraph(EDITOR_PROBE_REMINDER, first="", indent="  "):
+                    print(line)
         raise typer.Exit(0)
 
     @app.command(
