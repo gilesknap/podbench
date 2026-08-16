@@ -202,7 +202,7 @@ See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
 
 ## Assumptions this image makes of the rest of podbench
 
-* `podbench capreport --json` exits 0/10/20 per `Verdict`, and `podbench pids`
+* `podbench capreport --json` exits 0/10/15/20 per `Verdict`, and `podbench pids`
   accepts `--help`. CI checks both through `/usr/local/bin/podbench` by
   overriding the entrypoint. `podbench --version` must exit 0 — the build runs
   it as its own final step, so a broken CLI fails the build rather than the

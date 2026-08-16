@@ -510,11 +510,12 @@ mechanism and points at the alternative:
 ```
 podbench dbg: cannot attach to pid 1: yama-scope
   Yama's ptrace_scope forbids attaching to a non-descendant...
-  verdict: read-only debugging available
+  verdict: read-only inspection of the target; no live attach
   the target's rootfs, maps and environ are still readable, so `podbench pids`
   and read-only inspection work.
   ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. gdb forks the
-  inferior itself, which needs no capability and is not subject to Yama.
+  inferior itself, which needs no capability and is not subject to Yama below
+  ptrace_scope=2.
   to keep attaching to this process, the target can opt in with one line:
   prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY).
 ```
@@ -524,6 +525,37 @@ makes gdb a **sibling**, which Yama denies at `ptrace_scope=1`. A sibling that
 called `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` is attachable with zero
 capabilities. It is a one-line, capability-free, node-change-free opt-in for a
 program you control.
+
+On a pod where the ptrace-gated reads went with the attach — the **launch-only**
+verdict — the consolation line says *that* instead, because offering a sysroot
+that will not open costs a second afternoon:
+
+```
+  verdict: launch-only: `podbench dbg --launch` works; no read-only inspection
+  the reads that take PTRACE_MODE_READ went with it (cmdline, status and fd
+  only; root, maps and environ denied), so a sysroot, `environ` or `maps` is not
+  the fallback here.
+```
+
+The matrix is in the line because it is the honest form of the answer: `cmdline`,
+`status` and `fd` are still readable — they always are — so `podbench pids` works
+and "the target is closed" would be the same overclaim as issue #51, pointing
+the other way.
+
+`--launch` survives all of that: gdb forks the inferior and traces its own
+descendant, which needs no capability and no Yama exemption. It is still
+*measured* rather than assumed, and the tick beside **debug launched processes**
+is the measurement — `podbench capreport` attaches to a child it forked itself
+before it claims the rung. Three things take it away with everything else, none
+of which cares whose descendant the inferior is: a seccomp filter that rejects
+`ptrace(2)` outright, `ptrace_scope` **2 or 3** — scope 2 is the one Yama setting
+with no descendant exemption, and it demands `CAP_SYS_PTRACE` of
+`PTRACE_TRACEME` too — and an AppArmor profile that denies `ptrace`.
+`podbench capreport` names whichever of the three it finds.
+
+The offer is conditional for that reason: where the scratch attach was measured
+and failed, `podbench dbg` says so instead of pointing at `--launch`, because a
+second identical denial is what costs the afternoon.
 
 ## Gotchas
 

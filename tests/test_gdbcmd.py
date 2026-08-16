@@ -66,6 +66,29 @@ class OkAttacher:
         return AttachOutcome(ok=True)
 
 
+_EPERM = AttachOutcome(ok=False, errno=1, message="Operation not permitted")
+
+
+class DeniedTargetAttacher:
+    """The Diamond shape: our own child traces, the workload does not."""
+
+    def attach_child(self) -> AttachOutcome:
+        return AttachOutcome(ok=True)
+
+    def attach(self, pid: int) -> AttachOutcome:
+        return _EPERM
+
+
+class NoPtraceAttacher:
+    """ptrace(2) refused even on our own fork, so nothing traces here."""
+
+    def attach_child(self) -> AttachOutcome:
+        return _EPERM
+
+    def attach(self, pid: int) -> AttachOutcome:
+        return _EPERM
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -407,6 +430,110 @@ def test_dbg_names_the_blocker_and_offers_launch(
     assert Blocker.YAMA_SCOPE.value in err
     assert "--launch" in err
     assert "PR_SET_PTRACER" in err
+
+
+def _deny_gated_reads(proc: Path, *, keep_root: bool = False) -> None:
+    """Take away the ptrace-gated reads, leaving the world-readable ones."""
+    for name in ("maps", "environ"):
+        (proc / str(TARGET_PID) / name).unlink()
+    if not keep_root:
+        (proc / str(TARGET_PID) / "root").rmdir()
+
+
+def test_dbg_does_not_offer_a_sysroot_it_cannot_open(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no measurement at all the read-only consolation is still wrong.
+
+    Printing "the rootfs, maps and environ are still readable" here sends the
+    reader to a second denial, which is the failure issue #51 describes. The
+    verdict is `none` rather than launch-only because a skipped scratch attach
+    measured nothing; the launch-only rung proper is the next test.
+    """
+    proc = make_proc(tmp_path)
+    _deny_gated_reads(proc)
+
+    code = main(
+        ["dbg", str(TARGET_PID)],
+        proc=proc,
+        attacher=SkippedAttacher("no ptrace here"),
+        runner=RecordingRunner(),
+    )
+    assert code == Verdict.NONE.value, (
+        "nothing was measured, so launch-only cannot be claimed either"
+    )
+    err = capsys.readouterr().err
+    assert "still readable" not in err
+    assert "cmdline, status and fd only" in err
+    # Unmeasured is offered, and said to be unmeasured.
+    assert "--launch" in err
+    assert "the scratch attach was skipped here" in err
+
+
+def test_dbg_on_the_launch_only_rung_offers_the_rung_it_measured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Diamond shape as `dbg` meets it: scratch attach OK, target denied,
+    gated reads gone. This is the report the launch-only message was written
+    for, and nothing exercised it before."""
+    proc = make_proc(tmp_path)
+    _deny_gated_reads(proc)
+
+    code = main(
+        ["dbg", str(TARGET_PID)],
+        proc=proc,
+        attacher=DeniedTargetAttacher(),
+        runner=RecordingRunner(),
+    )
+    assert code == Verdict.LAUNCH_ONLY.value
+    err = capsys.readouterr().err
+    assert "launch-only" in err
+    assert "ptrace-free alternative" in err
+    assert "not the fallback here" in err
+
+
+def test_dbg_keeps_the_sysroot_when_only_some_gated_reads_went(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`root` alone still fails the all-or-nothing tick, and `set sysroot
+    /proc/<pid>/root` is the mandatory fix from report 3.4 — so the message
+    must not tell the reader a sysroot is not the fallback."""
+    proc = make_proc(tmp_path)
+    _deny_gated_reads(proc, keep_root=True)
+
+    code = main(
+        ["dbg", str(TARGET_PID)],
+        proc=proc,
+        attacher=DeniedTargetAttacher(),
+        runner=RecordingRunner(),
+    )
+    assert code == Verdict.LAUNCH_ONLY.value
+    err = capsys.readouterr().err
+    assert "a sysroot on root still will" in err
+    assert "a sysroot, `environ` or `maps` is not the fallback" not in err
+
+
+def test_dbg_does_not_offer_launch_when_the_scratch_attach_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gdb traces an inferior it forked, which is the attach that just failed.
+
+    The offer used to be unconditional, and it is the last line a denied user
+    reads — so it sent them straight to a second identical denial.
+    """
+    proc = make_proc(tmp_path)
+    _deny_gated_reads(proc)
+
+    code = main(
+        ["dbg", str(TARGET_PID)],
+        proc=proc,
+        attacher=NoPtraceAttacher(),
+        runner=RecordingRunner(),
+    )
+    assert code == Verdict.NONE.value
+    err = capsys.readouterr().err
+    assert "ptrace-free alternative" not in err
+    assert "is not the way out either" in err
 
 
 def test_dbg_launch_never_probes_or_attaches(tmp_path: Path) -> None:

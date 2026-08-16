@@ -208,7 +208,17 @@ def test_the_probe_names_the_blocker_rather_than_the_errno(
         assert report.target_attach_ok
     else:
         assert report.blocker.explanation.strip()
-        assert report.verdict in (Verdict.READ_ONLY, Verdict.NONE)
+        assert report.verdict in (
+            Verdict.READ_ONLY,
+            # The rung this cluster may well land on: the ptrace-gated reads
+            # denied, and the seat still able to debug what it starts (#51).
+            Verdict.LAUNCH_ONLY,
+            Verdict.NONE,
+        )
+        # Whichever it is, the verdict has to agree with the matrix it was
+        # derived from — the drift that made a Diamond seat claim three reads
+        # it did not have.
+        assert (report.verdict is Verdict.READ_ONLY) == report.reads_ok
 
 
 def test_the_cli_reports_a_degraded_seat_as_success(

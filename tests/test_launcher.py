@@ -156,7 +156,10 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "node_name": "node02",
         "child_attach_ok": True,
         "target_attach_ok": True,
-        "proc_reads": {"root": True, "maps": True},
+        # All three, because the launcher recomputes the read-only tick from
+        # exactly these and a subset is no longer a yes: the healthy default
+        # has to be a healthy matrix.
+        "proc_reads": {"root": True, "maps": True, "environ": True},
         "notes": [],
     }
     payload.update(overrides)
@@ -1067,10 +1070,11 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert report.verdict is Verdict.READ_ONLY
     assert report.blocker is Blocker.YAMA_SCOPE
 
-    live, read_only, iterate, ssh_seat, exec_seat = features(session)
+    live, read_only, launch, iterate, ssh_seat, exec_seat = features(session)
     assert not live.available
     assert "Yama" in live.reason
     assert read_only.available
+    assert launch.available
     assert not iterate.available
     assert ssh_seat.available
     assert exec_seat.available
@@ -1079,6 +1083,131 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert "ptrace_scope" in text
     assert "node02" in text
     assert "OOM-kill" in text, "the shared-limits warning is not optional"
+
+
+DIAMOND_READS = {
+    "root": False,
+    "maps": False,
+    "environ": False,
+    "cmdline": True,
+    "status": True,
+    "fd": True,
+}
+"""The matrix measured on b01-1-beamline/b01-1-blueapi-0, 2026-08-16 (issue #51).
+
+Pinned here as well as in ``tests/test_probe.py`` because the two halves fail
+this differently: the probe used to *derive* the wrong verdict from it, and the
+launcher used to *ignore* it and tick a box naming the three reads it says are
+gone.
+"""
+
+
+def test_the_read_only_tick_comes_from_the_reads_it_names() -> None:
+    """A seat that can read none of `root`, `maps` and `environ` must not be
+    told it can inspect them — even by an image whose verdict says read_only.
+
+    The launcher recomputes rather than trusting the verdict, so it corrects an
+    older image instead of repeating its overclaim.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="read_only",
+            exit_code=10,
+            blocker="yama-scope",
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            child_attach_ok=True,
+            target_attach_ok=False,
+            proc_reads=DIAMOND_READS,
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    _live, read_only, launch, *_rest = features(session)
+    assert not read_only.available
+    assert launch.available
+
+    text = format_session(session)
+    assert "[ ] read-only inspect" in text
+    assert "[x] debug launched processes" in text
+    # The evidence travels with the tick, so the two cannot drift apart again.
+    assert "cmdline, status and fd only; root, maps and environ denied" in text
+
+
+def test_a_launch_only_verdict_survives_the_json_round_trip() -> None:
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="launch_only",
+            exit_code=15,
+            blocker="yama-scope",
+            summary=Verdict.LAUNCH_ONLY.summary,
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            child_attach_ok=True,
+            target_attach_ok=False,
+            proc_reads=DIAMOND_READS,
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+    report = session.report
+
+    assert report is not None
+    assert report.verdict is Verdict.LAUNCH_ONLY
+    assert "podbench dbg --launch" in format_session(session)
+
+
+def test_an_unmeasured_matrix_is_not_reported_as_a_refusal() -> None:
+    """An empty box is not a denied one, and the report must not say it is.
+
+    `capreport` with no target pid resolves no matrix and still verdicts
+    live_attach — no `PODBENCH_TARGET_CID`, or nothing in a cgroup matching the
+    target's container id. Deriving the tick from the reads made that shape
+    print an unticked box blaming "the mechanism that refused attach", three
+    lines above `blocker  none`.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        capreport=capreport_payload(target_pid=None, target_uid=None, proc_reads={}),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    _live, read_only, *_rest = features(session)
+    assert not read_only.available
+    assert "this is not a refusal" in read_only.reason
+    assert "refused attach" not in read_only.reason
+
+    text = format_session(session)
+    assert "no /proc reads were measured" in text
+    assert "blocker     none" in text
+
+
+def test_a_seat_that_cannot_ptrace_at_all_does_not_claim_gdb_launch() -> None:
+    """`dbg --launch` used to ride along on the exec-seat tick, which is always
+    true. gdb traces an inferior it forked, and here that forked attach failed."""
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        psa_denies_ptrace=True,
+        capreport=capreport_payload(
+            verdict="none",
+            exit_code=20,
+            blocker="seccomp",
+            cap_sys_ptrace=False,
+            self_uid=1000,
+            child_attach_ok=False,
+            target_attach_ok=False,
+            proc_reads=dict.fromkeys(DIAMOND_READS, False),
+        ),
+    )
+    session = attach(talking_to(cluster), "target")
+
+    _live, read_only, launch, *_rest = features(session)
+    assert not read_only.available
+    assert not launch.available
+    assert "forked itself" in launch.reason
 
 
 PROBES: dict[str, Any] = {
@@ -1134,6 +1263,23 @@ def test_capability_report_from_json_survives_an_unknown_blocker() -> None:
     )
     assert report.blocker is Blocker.UNKNOWN
     assert any("cgroup-devices" in note for note in report.notes)
+
+
+def test_an_unknown_verdict_is_said_rather_than_flattened() -> None:
+    """The sibling of the unknown-blocker note. This PR added a rung, so a
+    launcher one release behind an image is a shape that now exists: reading
+    `no access to the target process` off a verdict it has never heard of hides
+    exactly what the newer image was trying to report."""
+    report = capability_report_from_json(
+        capreport_payload(
+            verdict="single_step_only",
+            exit_code=17,
+            summary="single-step only",
+        )
+    )
+    assert report.verdict is Verdict.NONE
+    assert any("single_step_only" in note for note in report.notes)
+    assert any("single-step only" in note for note in report.notes)
 
 
 def test_capability_report_from_json_keeps_an_unreadable_target_uid_none() -> None:
@@ -2001,9 +2147,10 @@ def test_features_without_a_report_claim_nothing() -> None:
         rung=Rung.SEAT,
         reused=False,
     )
-    live, read_only, _iterate, ssh_seat, exec_seat = features(session)
+    live, read_only, launch, _iterate, ssh_seat, exec_seat = features(session)
     assert not live.available
     assert not read_only.available
+    assert not launch.available
     # The ssh half is not claimed either: nothing asked the seat whether sshd
     # can resolve a login name for the uid it ended up running as.
     assert not ssh_seat.available

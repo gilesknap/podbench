@@ -1137,8 +1137,8 @@ def run_capreport(
     """Run ``capreport --json`` inside the seat and parse it.
 
     ``check=False`` is not laziness: capreport's exit code *is* its verdict — 0
-    live attach, 10 read-only, 20 nothing — so a non-zero exit is the normal
-    case on a restricted namespace.
+    live attach, 10 read-only, 15 launch-only, 20 nothing — so a non-zero exit
+    is the normal case on a restricted namespace.
     """
     result = kubectl.exec_(
         seat.pod.name, CAPREPORT_ARGV, container=seat.container, check=False
@@ -1174,6 +1174,20 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         )
         blocker = Blocker.UNKNOWN
     verdict = _verdict_from(payload.get("verdict"))
+    if verdict is None:
+        # The sibling of the unknown-blocker note above, and newly load-bearing:
+        # this PR added a rung, so a launcher one release behind an image is now
+        # a real shape rather than a hypothetical one. The read-only and
+        # gdb-launch ticks self-correct because they are recomputed from
+        # `proc_reads` and `child_attach_ok`, but the verdict line cannot be
+        # recomputed, so it says what it does not know instead of reading
+        # `no access to the target process` off a rung it has never heard of.
+        notes.append(
+            f"this launcher does not know the verdict {payload.get('verdict')!r} "
+            f"the image reported ({payload.get('summary')}); shown as no access, "
+            "which may understate what the seat can do"
+        )
+        verdict = Verdict.NONE
     reads = {
         str(key): bool(value)
         for key, value in as_dict(payload.get("proc_reads")).items()
@@ -1198,12 +1212,17 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
     )
 
 
-def _verdict_from(value: object) -> Verdict:
+def _verdict_from(value: object) -> Verdict | None:
+    """The named verdict, or ``None`` for one this launcher has never heard of.
+
+    ``None`` rather than a silent :attr:`Verdict.NONE`, so the caller has to
+    decide what to say about the gap.
+    """
     name = str(value).upper()
     for verdict in Verdict:
         if verdict.name == name:
             return verdict
-    return Verdict.NONE
+    return None
 
 
 # -- the capability report the user reads -----------------------------------
@@ -1225,6 +1244,18 @@ class Feature:
     seat itself."""
 
 
+READS_FEATURE = "read-only inspect (/proc/<pid>/root, maps, environ)"
+"""Named once, because the label is a promise about three specific paths and
+the tick beside it is now decided by reading exactly those three."""
+
+LAUNCH_FEATURE = "debug launched processes (podbench dbg --launch ./prog)"
+"""The rung a denied pod actually keeps, given a line of its own.
+
+It used to be a clause inside the exec-seat line, which claimed it
+unconditionally — and it is not unconditional: it needs ptrace(2) to work at
+all, which is what the scratch attach measures (report 3.12)."""
+
+
 def features(session: Session) -> tuple[Feature, ...]:
     """What the landed seat supports, naming the blocker for what it does not.
 
@@ -1242,9 +1273,8 @@ def features(session: Session) -> tuple[Feature, ...]:
         unknown = "capreport did not run, so this was not measured"
         return (
             Feature("live attach (gdb -p <pid>)", False, unknown, note=deadline),
-            Feature(
-                "read-only inspect (/proc/<pid>/root, maps, environ)", False, unknown
-            ),
+            Feature(READS_FEATURE, False, unknown),
+            Feature(LAUNCH_FEATURE, False, unknown),
             _iterate_feature(),
             *_seat_features(session),
         )
@@ -1256,12 +1286,58 @@ def features(session: Session) -> tuple[Feature, ...]:
             note=deadline,
         ),
         Feature(
-            "read-only inspect (/proc/<pid>/root, maps, environ)",
-            report.verdict in (Verdict.LIVE_ATTACH, Verdict.READ_ONLY),
-            report.blocker.explanation,
+            READS_FEATURE,
+            # From the reads themselves, never from the verdict: this label
+            # names three specific paths, and deciding it from a predicate that
+            # consults none of them is how a seat that could read none of them
+            # came to tick it (issue #51).
+            report.reads_ok,
+            _reads_reason(report),
+            # Printed whether or not the box is ticked, so the label and the
+            # evidence cannot drift apart again.
+            note=report.reads_summary,
+        ),
+        Feature(
+            LAUNCH_FEATURE,
+            report.can_debug_launched,
+            "the seat could not ptrace even a child it forked itself, so "
+            "ptrace(2) is unusable here and gdb cannot trace an inferior it "
+            "starts either"
+            if report.child_attach_ok is False
+            else "the scratch attach was not measured, so this is not claimed",
         ),
         _iterate_feature(),
         *_seat_features(session),
+    )
+
+
+def _reads_reason(report: CapabilityReport) -> str:
+    """Why the read-only box is empty — which is not always a refusal.
+
+    The reads are no longer taken from the verdict, so an empty box no longer
+    implies a denied one, and a single unconditional reason made the report
+    contradict itself: ``capreport`` with no target pid measures no matrix at
+    all and still verdicts ``LIVE_ATTACH`` (no ``PODBENCH_TARGET_CID`` in the
+    spec, or no process in a cgroup matching the target's container id), which
+    printed an unticked box blaming "the mechanism that refused attach" three
+    lines above ``blocker  none``.
+    """
+    if not report.proc_reads:
+        return (
+            "podbench capreport resolved no target pid, so these three were "
+            "never read - this is not a refusal. `podbench pids` in the seat "
+            "names the target, and `podbench capreport <pid>` measures it."
+        )
+    # Not the blocker's explanation: that paragraph is already printed against
+    # live attach, and a report that repeats itself is one people stop reading.
+    if report.blocker is Blocker.NONE:
+        return (
+            "the three paths this line names take PTRACE_MODE_READ, and at "
+            "least one of them was refused - the matrix is above"
+        )
+    return (
+        "the three paths this line names take PTRACE_MODE_READ, which the "
+        "mechanism that refused attach gates too - see the blocker below"
     )
 
 
@@ -1288,10 +1364,9 @@ def _seat_features(session: Session) -> tuple[Feature, Feature]:
     )
     return (
         ssh_seat,
-        Feature(
-            "exec seat (kubectl exec -- podbench capreport, pids, dbg --launch)",
-            True,
-        ),
+        # `dbg --launch` used to be listed here, under a tick that is always
+        # true. Whether it works is measured, and it has its own line now.
+        Feature("exec seat (kubectl exec -- podbench capreport, pids, dbg)", True),
     )
 
 

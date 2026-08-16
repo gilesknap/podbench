@@ -8,14 +8,15 @@ by reporting a stale ``ENOTTY`` as ``ptrace: Inappropriate ioctl for device``
 reads the kernel's own accounting, then measures ptrace twice.
 
 The two measurements are the whole trick. The first attaches to a child the
-probe **forked itself** — Yama always permits descendants and the credential
-check always passes against your own child, so a failure there cannot be a
-policy decision about the target and must be structural: a seccomp filter
-rejecting the syscall, ``ptrace_scope=3``, or AppArmor. Only if that succeeds
-is a failure on the target informative about the target.
+probe **forked itself** — the credential check always passes against your own
+child and Yama exempts descendants below ``ptrace_scope=2``, so a failure there
+cannot be a policy decision about the target and must be structural: a seccomp
+filter rejecting the syscall, ``ptrace_scope`` 2 or 3, or AppArmor. Only if
+that succeeds is a failure on the target informative about the target.
 
 Exit codes are :class:`~podbench.model.Verdict`'s values — 0 live attach,
-10 read-only, 20 nothing — so a shell can branch without parsing anything.
+10 read-only, 15 launch-only, 20 nothing — so a shell can branch without
+parsing anything.
 """
 
 from __future__ import annotations
@@ -33,7 +34,15 @@ import typer
 
 from .cli import new_app, run
 from .flavour import Debugger, format_inventory, inventory
-from .model import TARGET_CID_ENV, Blocker, CapabilityReport, Verdict
+from .model import (
+    TARGET_CID_ENV,
+    Blocker,
+    CapabilityReport,
+    Verdict,
+    describe_gated_fallback,
+    describe_reads,
+    ptrace_reads_ok,
+)
 from .proc import (
     DEFAULT_PROC,
     apparmor_profile,
@@ -404,13 +413,24 @@ def derive_verdict(
 ) -> tuple[Verdict, Blocker, list[str]]:
     """Turn the measurements into a verdict and a named blocker."""
     notes: list[str] = []
-    reads_ok = any(proc_reads.values())
+    # Only the ptrace-gated reads may carry this. `any` over the whole matrix
+    # made the verdict very nearly unfalsifiable — `cmdline` and `status` need
+    # no permission at all, so they are true on a pod where nothing works, and
+    # a Diamond seat with root, maps and environ all denied was reported as
+    # read-only (issue #51).
+    reads_ok = ptrace_reads_ok(proc_reads)
 
     if not child.ok and not child.skipped:
         # Yama and the credential check both always permit our own child, so
-        # this cannot be a policy decision about the target.
+        # this cannot be a policy decision about the target. There is no
+        # launch-only fallback from here either: gdb traces an inferior it
+        # forked, which is the very attach that just failed.
         blocker, structural_notes = _classify_structural(
-            seccomp=seccomp, yama=yama, apparmor_self=apparmor_self, child=child
+            seccomp=seccomp,
+            yama=yama,
+            apparmor_self=apparmor_self,
+            cap_sys_ptrace=cap_sys_ptrace,
+            child=child,
         )
         notes.extend(structural_notes)
         verdict = Verdict.READ_ONLY if reads_ok else Verdict.NONE
@@ -449,11 +469,35 @@ def derive_verdict(
         notes.extend(denial_notes)
 
     if reads_ok:
+        # gdb-launch is named only when the scratch attach measured it. It
+        # needs no *capability*, which is not the same as working: a skipped
+        # probe measured nothing, and this branch is reachable with one.
+        launch = (
+            ", and gdb-launch needs no capability"
+            if child.measured_ok
+            else "; the scratch attach was skipped, so gdb-launch is unmeasured"
+        )
         notes.append(
-            "read-only debugging is still available: sysroot, maps, environ "
-            "and fd are readable, and gdb-launch needs no capability"
+            f"read-only debugging is still available: {describe_reads(proc_reads)}"
+            f"{launch}"
         )
         return Verdict.READ_ONLY, blocker, notes
+    if child.measured_ok:
+        # The rung the brief never named. Attach and the target's own /proc are
+        # both gone, but tracing a descendant is always permitted (report
+        # 3.12), so the inner loop the report tells us to design for is intact
+        # — and saying "nothing works" here would hide it. What is *not* said
+        # is that a sysroot is out: the rule is all-or-nothing, so a matrix
+        # that kept `root` lands here too, and report 3.4 makes that sysroot
+        # the mandatory fix rather than a consolation.
+        notes.append(
+            "the reads that take PTRACE_MODE_READ went with it "
+            f"({describe_reads(proc_reads)}), "
+            f"{describe_gated_fallback(proc_reads)}; what still works is "
+            "debugging a process the seat starts itself - `podbench dbg "
+            "--launch ./prog` - which needs no capability"
+        )
+        return Verdict.LAUNCH_ONLY, blocker, notes
     return Verdict.NONE, blocker, notes
 
 
@@ -462,6 +506,7 @@ def _classify_structural(
     seccomp: int,
     yama: int | None,
     apparmor_self: str | None,
+    cap_sys_ptrace: bool,
     child: AttachOutcome,
 ) -> tuple[Blocker, list[str]]:
     notes = [
@@ -473,6 +518,20 @@ def _classify_structural(
         # and RuntimeDefault demonstrably allows it (report R7).
         return Blocker.SECCOMP, notes
     if yama == 3:
+        return Blocker.YAMA_SCOPE, notes
+    if yama == 2 and not cap_sys_ptrace:
+        # `ptrace_scope=2` is the one Yama setting with no descendant
+        # exemption: yama_ptrace_access_check takes the CAP_SYS_PTRACE branch
+        # without ever asking whether the tracee is our child, and
+        # yama_ptrace_traceme demands the same of the parent, so gdb-launch
+        # goes too. Naming it matters more here than anywhere: without this
+        # the scratch failure falls through to "none of the known mechanisms
+        # accounts for it", with `Yama ptrace_scope 2` printed six lines above.
+        notes.append(
+            "ptrace_scope=2 permits attach only to a tracer holding "
+            "CAP_SYS_PTRACE, and unlike scope 1 it makes no exception for a "
+            "descendant, so `gdb ./prog` is refused as well"
+        )
         return Blocker.YAMA_SCOPE, notes
     if _confined(apparmor_self):
         return Blocker.APPARMOR, notes
@@ -588,6 +647,12 @@ def _json_payload(
         "child_attach_ok": report.child_attach_ok,
         "target_attach_ok": report.target_attach_ok,
         "proc_reads": report.proc_reads,
+        # Derived, and emitted anyway, so a shell branching on `--json` gets the
+        # same answer as the verdict without re-deriving which of the six reads
+        # ptrace actually gates. The launcher deliberately does *not* read it:
+        # it recomputes from `proc_reads`, which is what lets a new launcher
+        # correct an older image's verdict.
+        "reads_ok": report.reads_ok,
         "notes": report.notes,
     }
 
@@ -625,6 +690,13 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
             for name, value in report.proc_reads.items()
         )
         kv("/proc reads", f"{ok}/{len(report.proc_reads)} ok - {detail}")
+        # The count alone reads as a score, and "3/6 ok" looks like half a loaf
+        # when it is the whole loaf missing: the three that survive a denial
+        # need no permission in the first place (issue #51).
+        kv(
+            "read-only inspect",
+            f"{_yn(report.reads_ok)} - {report.reads_summary}",
+        )
 
     lines.append("PROBES")
     kv("scratch attach (own child)", _attach_text(report.child_attach_ok))
