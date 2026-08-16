@@ -1309,12 +1309,25 @@ def test_cli_delete_accepts_pod_slash_name_too(
 
 
 def test_cli_refuses_a_reference_that_is_not_a_pod(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    # `--identity` is not incidental: the key is read before the reference is
+    # resolved, matching `attach` (`launcher.attach_command`), so a machine with
+    # no ~/.ssh/id_ed25519 reaches the key's refusal and never the reference's.
     kube = FakeKubectl()
     monkeypatch.setattr(dev, "kubectl_for", always(kube))
 
-    assert dev.main(["dev", "deployment/api", "-n", "podbench-test"]) == 1
+    argv = [
+        "dev",
+        "deployment/api",
+        "-n",
+        "podbench-test",
+        "--identity",
+        identity_file(tmp_path),
+    ]
+    assert dev.main(argv) == 1
     assert "works on pods" in capsys.readouterr().err
     assert not kube.commands
 
