@@ -8,11 +8,11 @@ by reporting a stale ``ENOTTY`` as ``ptrace: Inappropriate ioctl for device``
 reads the kernel's own accounting, then measures ptrace twice.
 
 The two measurements are the whole trick. The first attaches to a child the
-probe **forked itself** — Yama always permits descendants and the credential
-check always passes against your own child, so a failure there cannot be a
-policy decision about the target and must be structural: a seccomp filter
-rejecting the syscall, ``ptrace_scope=3``, or AppArmor. Only if that succeeds
-is a failure on the target informative about the target.
+probe **forked itself** — the credential check always passes against your own
+child and Yama exempts descendants below ``ptrace_scope=2``, so a failure there
+cannot be a policy decision about the target and must be structural: a seccomp
+filter rejecting the syscall, ``ptrace_scope`` 2 or 3, or AppArmor. Only if
+that succeeds is a failure on the target informative about the target.
 
 Exit codes are :class:`~podbench.model.Verdict`'s values — 0 live attach,
 10 read-only, 15 launch-only, 20 nothing — so a shell can branch without
@@ -425,7 +425,11 @@ def derive_verdict(
         # launch-only fallback from here either: gdb traces an inferior it
         # forked, which is the very attach that just failed.
         blocker, structural_notes = _classify_structural(
-            seccomp=seccomp, yama=yama, apparmor_self=apparmor_self, child=child
+            seccomp=seccomp,
+            yama=yama,
+            apparmor_self=apparmor_self,
+            cap_sys_ptrace=cap_sys_ptrace,
+            child=child,
         )
         notes.extend(structural_notes)
         verdict = Verdict.READ_ONLY if reads_ok else Verdict.NONE
@@ -490,6 +494,7 @@ def _classify_structural(
     seccomp: int,
     yama: int | None,
     apparmor_self: str | None,
+    cap_sys_ptrace: bool,
     child: AttachOutcome,
 ) -> tuple[Blocker, list[str]]:
     notes = [
@@ -501,6 +506,20 @@ def _classify_structural(
         # and RuntimeDefault demonstrably allows it (report R7).
         return Blocker.SECCOMP, notes
     if yama == 3:
+        return Blocker.YAMA_SCOPE, notes
+    if yama == 2 and not cap_sys_ptrace:
+        # `ptrace_scope=2` is the one Yama setting with no descendant
+        # exemption: yama_ptrace_access_check takes the CAP_SYS_PTRACE branch
+        # without ever asking whether the tracee is our child, and
+        # yama_ptrace_traceme demands the same of the parent, so gdb-launch
+        # goes too. Naming it matters more here than anywhere: without this
+        # the scratch failure falls through to "none of the known mechanisms
+        # accounts for it", with `Yama ptrace_scope 2` printed six lines above.
+        notes.append(
+            "ptrace_scope=2 permits attach only to a tracer holding "
+            "CAP_SYS_PTRACE, and unlike scope 1 it makes no exception for a "
+            "descendant, so `gdb ./prog` is refused as well"
+        )
         return Blocker.YAMA_SCOPE, notes
     if _confined(apparmor_self):
         return Blocker.APPARMOR, notes

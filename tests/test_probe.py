@@ -581,6 +581,11 @@ def test_skipped_probe_with_capability_names_no_blocker(tmp_path: Path) -> None:
     [
         (2, 1, "unconfined", Blocker.SECCOMP),
         (0, 3, "unconfined", Blocker.YAMA_SCOPE),
+        # Scope 2 is the one Yama setting with no descendant exemption, so a
+        # scratch attach can fail on it — and it used to fall past this table
+        # to "none of the known mechanisms accounts for it", with the scope
+        # printed six lines above in the same report.
+        (0, 2, "unconfined", Blocker.YAMA_SCOPE),
         (0, 1, "custom", Blocker.APPARMOR),
         (0, None, "unconfined", Blocker.UNKNOWN),
     ],
@@ -602,6 +607,29 @@ def test_structural_classification(
         proc_reads={"maps": True},
     )
     assert blocker is expected
+
+
+def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
+    """The scope-2 branch is conditioned on the capability being absent.
+
+    With CAP_SYS_PTRACE the scratch attach should have succeeded, so a failure
+    here is something else and naming Yama would send the user to a node
+    sysctl that is not what refused them.
+    """
+    _, blocker, _ = derive_verdict(
+        cap_sys_ptrace=True,
+        yama=2,
+        seccomp=0,
+        apparmor_self="unconfined",
+        apparmor_target="unconfined",
+        self_uid=1000,
+        target_uid=1000,
+        target_pid=1,
+        child=EPERM,
+        target_attach=EPERM,
+        proc_reads={"maps": True},
+    )
+    assert blocker is Blocker.UNKNOWN
 
 
 def test_no_reads_but_our_own_child_attaches_is_launch_only() -> None:
