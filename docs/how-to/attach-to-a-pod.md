@@ -125,11 +125,23 @@ This raises the **target container's** memory limit in place
 headroom has to exist before vscode-server starts allocating into a limit
 podbench cannot reserve.
 
-It is opt-in and it prints a warning either way, because it is only lightly
-proven: one Kubernetes version, one pod, never against a `LimitRange`, a
-`ResourceQuota`, or a controller that would fight the change. Failure is
-reported, not fatal — a seat that lands with a loud warning beats one that does
-not land.
+It is opt-in and it prints a warning either way, for two reasons.
+
+It is only **partly proven**: three pods, two of them managed by a Deployment —
+a ReplicaSet reconciles pod *existence*, not pod *spec*, so it does not fight
+the resize — but all on one Kubernetes version, and never against a `LimitRange`
+or a `ResourceQuota` (report R13).
+
+And the raised limit **lives on the pod, not on its controller**. The Deployment
+template still asks for the original limit, nothing reconciles the difference,
+and so any rollout, scale, image bump or eviction regenerates the pod from that
+template and silently reverts the resize. If you resize to make a seat viable,
+raise the template too, or expect the next unrelated rollout to take it away.
+
+Failure is reported, not fatal — a seat that lands with a loud warning beats one
+that does not land.
+
+`--resize` takes a memory value only; it does not raise a CPU limit.
 
 It also needs `pods/resize` `patch`, which the chart grants separately from the
 rest.

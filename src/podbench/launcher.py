@@ -210,9 +210,15 @@ OOM_WARNING = (
 
 RESIZE_WARNING = (
     "--resize raises the target container's memory limit in place (kubectl "
-    "patch pod --subresource resize). It is opt-in because it is only lightly "
-    "proven (report R13): one k3s version, one pod, never against a "
-    "LimitRange, a ResourceQuota, or a controller that would fight the change."
+    "patch pod --subresource resize). It is opt-in for two reasons (report "
+    "R13). It is only partly proven: three pods, two of them "
+    "Deployment-managed - a ReplicaSet reconciles pod existence, not pod "
+    "spec, so it does not fight the resize - but one Kubernetes version, and "
+    "never against a LimitRange or a ResourceQuota. And the raised limit "
+    "lives on the pod, not on its controller: the template still asks for "
+    "the old limit and nothing "
+    "reconciles the difference, so a rollout, a scale, an image bump or an "
+    "eviction regenerates the pod from it and silently reverts the resize."
 )
 
 _UNPINNED_UID = 65534
@@ -1781,9 +1787,14 @@ def try_resize(kubectl: Kubectl, pod: str, container: str, memory: str) -> str:
     container's *index*, which is positional and would silently resize the wrong
     container if the pod spec changed under us.
 
-    Failure is reported rather than raised — the mitigation is only lightly
+    Failure is reported rather than raised — the mitigation is only partly
     proven (report R13) and a seat that lands with a loud warning beats one that
     does not land at all.
+
+    Success is reported just as loudly, because it leaves the pod diverged from
+    the controller that owns it (report R13): the raised limit is on the pod
+    object alone, so the next thing to regenerate the pod from an unchanged
+    template takes it away again with no other symptom than a seat that OOMs.
     """
     body = {
         "spec": {
@@ -1799,7 +1810,12 @@ def try_resize(kubectl: Kubectl, pod: str, container: str, memory: str) -> str:
             f"in-place resize to {memory} was refused, so podbench is sharing "
             f"the pod's existing limits: {error.stderr.strip() or error}"
         )
-    return f"resized {container} to a {memory} memory limit; restore it on detach"
+    return (
+        f"resized {container} to a {memory} memory limit; restore it on detach. "
+        "The raised limit lives on this pod, not on any controller that owns "
+        "it: a rollout, a scale, an image bump or an eviction regenerates the "
+        "pod from an unchanged template and silently reverts the resize."
+    )
 
 
 # -- namespace / listing ----------------------------------------------------
