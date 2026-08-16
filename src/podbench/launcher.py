@@ -1549,24 +1549,36 @@ def seat_layout(session: Session) -> SshdLayout:
     """The sshd layout the agent will have chosen inside ``session``'s container.
 
     It has to be derived, not guessed: the ProxyCommand names sshd's config file
-    by absolute path, and the two layouts put it in different places. The
-    non-root layout's paths depend only on ``$HOME``, which the launcher pins in
-    the container spec and :class:`Session` carries back from it — so an unknown
-    uid is still safe here, since every non-full rung carries
-    ``runAsNonRoot: true`` and therefore cannot be uid 0.
+    by absolute path, and the two layouts put it in different places. The agent
+    settles it inside the container with
+    ``SshdLayout.for_uid(os.geteuid())``, so the *uid* is what decides and the
+    rung is only a proxy for it — one a reconnect cannot lean on.
+    :func:`rung_of_spec` reads the rung back off the container, and a mutating
+    admission webhook that strips ``capabilities.add`` leaves a root seat
+    looking exactly like the degraded rung: ``runAsUser: 0``, nothing added.
+    Landing such a seat works, because the ladder remembers the rung it asked
+    for; reconnecting to it named
+    ``/tmp/podbench-home/.podbench/sshd_config`` in the ProxyCommand of a
+    container whose agent had written ``/etc/podbench/sshd_config``, and the
+    whole symptom was ``No such file or directory`` in an editor's ssh log
+    (DLS, 2026-08-16).
 
     The home is read from the seat rather than assumed to be
     :data:`NON_ROOT_HOME`, because a pod that declares
     :data:`podbench.model.SEAT_HOME_VOLUME` moves it, and a ProxyCommand naming
     the config file in the wrong home is a transport that fails at the first
-    connection with nothing to say why.
+    connection with nothing to say why. It decides nothing for a root seat,
+    whose layout ignores ``$HOME`` at both ends.
     """
-    if session.rung is Rung.FULL:
+    # Compared against 0 rather than tested for truth: `session.uid or ...`
+    # reads a seat pinned to uid 0 — the root seat — as one that pinned nothing.
+    if session.rung is Rung.FULL or session.uid == 0:
         return SshdLayout.for_uid(0, home=session.home)
     # Any non-zero uid selects the same non-root layout, so an unpinned seat can
     # be given a placeholder: the paths that follow come from `home` alone.
     return SshdLayout.for_uid(
-        session.uid or _UNPINNED_UID, home=session.home or NON_ROOT_HOME
+        _UNPINNED_UID if session.uid is None else session.uid,
+        home=session.home or NON_ROOT_HOME,
     )
 
 
@@ -1849,10 +1861,11 @@ def emit_ssh_config(
     entry, the ProxyCommand and the ``Include`` advice were written once and a
     second copy of them would be a second thing to keep true.
 
-    ``user`` overrides the login name. It is measured for a dev sidecar, whose
-    identity comes from a projected passwd record naming whatever the chart
-    chose; the default is the one ``attach`` has always used, where the seat's
-    rung decides.
+    ``user`` overrides the login name, which is otherwise whatever the seat
+    itself answered to ``--print-login-user`` — a projected passwd record on a
+    dev pod, ``root`` or ``podbench`` on an ephemeral one. The rung decides only
+    when the seat was never asked, or answered with an image too old to know the
+    flag.
     """
     if session.ssh is not None and session.ssh.refused:
         # Nothing below can help: sshd resolves the login name before it looks
@@ -1885,7 +1898,17 @@ def emit_ssh_config(
         write_known_hosts(binding, known_hosts)
 
     alias = host_alias or default_host_alias(session.pod)
-    login = user or ("root" if session.rung is Rung.FULL else DEFAULT_SEAT_USER)
+    # The seat's own answer beats the rung's prediction of it, and they come
+    # apart on the shape that made this a measurement in the first place: a root
+    # seat whose `capabilities.add` a mutating webhook stripped reads back as
+    # the degraded rung, whose login name is `podbench` — a name that resolves
+    # to nothing here, because the agent registers it only for a uid NSS cannot
+    # already resolve, and uid 0 is always `root`. sshd refuses an unresolvable
+    # login before it looks at a key, so the prediction costs the whole seat.
+    measured = session.ssh.login if session.ssh is not None else None
+    login = (
+        user or measured or ("root" if session.rung is Rung.FULL else DEFAULT_SEAT_USER)
+    )
     stanza = ssh_stanza(
         session,
         identity_file=identity,
