@@ -28,6 +28,7 @@ from podbench.budget import (
     probe_explanation,
     probe_qualifier,
     probe_spend,
+    probe_warning,
     storage_warning,
     target_status,
 )
@@ -214,6 +215,41 @@ def test_the_qualifier_quotes_the_soonest_deadline() -> None:
 
 def test_a_container_the_pod_does_not_have_has_no_budget() -> None:
     assert probe_budgets(pod_document(DEMO_PROBES), "sidecar") == ()
+
+
+def test_the_compact_timer_line_quotes_the_deadlines_in_force() -> None:
+    """What `attach` prints in place of the 22 lines of arithmetic: the windows
+    and their stakes, and nothing that is true of probed pods in general."""
+    warning = probe_warning(probe_budgets(pod_document(DEMO_PROBES), APP))
+    assert warning is not None
+    assert "readiness 11-16s (out of the Service)" in warning
+    assert "liveness 21-31s (kills the seat)" in warning
+    # The startup probe here is satisfied: it is done with this instance of the
+    # container and nothing short of a restart brings it back.
+    assert "startup" not in warning
+    assert "\n" not in warning, "one line, so it can be scanned beside the others"
+
+
+def test_an_unprobed_target_gets_no_timer_line_at_all() -> None:
+    """The other half of the gate. The good news goes on a `pause` line, which
+    prints either way, so a `!` here would be a warning that nothing is wrong."""
+    assert probe_warning(probe_budgets(pod_document(), APP)) is None
+
+
+def test_a_held_off_deadline_is_named_even_though_it_cannot_fire_yet() -> None:
+    """Debugging a slow start is a plausible reason to attach, and the startup
+    probe then succeeds seconds later. Dropping the two it was holding off would
+    let a seat be killed by a deadline the report never quoted."""
+    warning = probe_warning(
+        probe_budgets(pod_document(DEMO_PROBES, started=False), APP)
+    )
+    assert warning is not None
+    assert "startup" in warning, "the only one in force while it is still running"
+    assert "readiness and liveness come into force" in warning
+    # Named, but without windows: quoting a deadline that is not in effect is
+    # what `_budget_line` refuses to do for the same probe on the same pod.
+    assert "11-16s" not in warning
+    assert "21-31s" not in warning
 
 
 def test_initial_delay_is_named_only_when_the_spec_states_one() -> None:

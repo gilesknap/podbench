@@ -990,7 +990,7 @@ def attach(
     # and it is the windows and the stakes only, because the arithmetic they
     # came from is what `podbench status --explain` is for.
     budgets = probe_budgets(pod_json, session.workload)
-    probe_note = probe_warning(session.workload, budgets)
+    probe_note = probe_warning(budgets)
     if probe_note is not None:
         warnings.append(probe_note)
     # Not also a warning: `features` reports it under "supports", which is where

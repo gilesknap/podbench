@@ -351,12 +351,21 @@ def probe_explanation(container: str, budgets: Sequence[ProbeBudget]) -> str | N
     return "\n".join(lines)
 
 
-def probe_warning(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
+def probe_warning(budgets: Sequence[ProbeBudget]) -> str | None:
     """The one line a probed target owes an attach, or ``None`` if nothing is.
 
     Conditional on a probe that can actually fire: a startup probe still
     running holds the other two off, so quoting their deadlines there would be
     quoting deadlines that are not in effect.
+
+    The ones it holds off are still *named*, without their windows. Dropping
+    them silently is the trap this gate walks into otherwise: attaching to a
+    container the kubelet reports ``started: false`` is a plausible reason to
+    attach, the startup probe then succeeds seconds later, and a seat killed by
+    a liveness deadline the report never mentioned was killed by a deadline the
+    user was never told existed. A satisfied startup probe is the other case
+    and is dropped outright - it is done with this container instance and
+    nothing brings it back short of a restart.
 
     The consequence rides on each window rather than being left to the
     explanation, because these two are not the same kind of bad news and the
@@ -364,12 +373,15 @@ def probe_warning(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
     the pod leaving its Service recovers on continue and leaves nothing behind
     to point at the debugger.
 
+    The container is not named: it is on the ``target`` line of the same report,
+    one of the four lines above this one.
+
     >>> pod = {"spec": {"containers": [{"name": "app",
     ...     "readinessProbe": {"periodSeconds": 5},
     ...     "livenessProbe": {"periodSeconds": 10}}]}}
-    >>> probe_warning("app", probe_budgets(pod, "app"))
+    >>> probe_warning(probe_budgets(pod, "app"))
     'breakpoints are on a timer: readiness 11-16s (out of the Service), liveness 21-31s (kills the seat)'
-    >>> probe_warning("app", ()) is None
+    >>> probe_warning(()) is None
     True
     """  # noqa: E501
     live = [budget for budget in budgets if budget.in_force]
@@ -378,7 +390,20 @@ def probe_warning(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
     windows = ", ".join(
         f"{budget.kind.value} {budget.window} ({budget.kind.stake})" for budget in live
     )
-    return f"breakpoints are on a timer: {windows}"
+    held = [
+        budget.kind.value
+        for budget in budgets
+        if not budget.in_force and budget.kind is not ProbeKind.STARTUP
+    ]
+    coming = (
+        ""
+        if not held
+        else (
+            f"; {' and '.join(held)} {'comes' if len(held) == 1 else 'come'} "
+            "into force the moment the startup probe succeeds"
+        )
+    )
+    return f"breakpoints are on a timer: {windows}{coming}"
 
 
 def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
