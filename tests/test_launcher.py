@@ -200,6 +200,13 @@ class FakeCluster:
         self.patch_error = patch_error
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
+        # What `--open` reads and writes: the configurations `debug-config`
+        # would emit in the seat, and the files it leaves behind there.
+        self.configurations: list[dict[str, Any]] = [
+            {"name": "podbench: attach to app.py (debugpy)", "type": "debugpy"}
+        ]
+        self.seat_files: dict[str, str] = {}
+        self.unwritable: set[str] = set()
 
     # -- Runner protocol ---------------------------------------------------
 
@@ -211,6 +218,10 @@ class FakeCluster:
         capture: bool = True,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
+        if argv[0].endswith("code"):
+            # `--open` drives the VS Code CLI through the same runner, so a unit
+            # test never starts an editor.
+            return CommandResult(tuple(argv), 0, "", "")
         rest = self._strip_global_flags(list(argv))
         result = self._dispatch(rest, stdin, argv)
         return CommandResult(
@@ -263,7 +274,7 @@ class FakeCluster:
         if rest[:2] == ["replace", "--raw"]:
             return self._add_ephemeral(stdin)
         if rest[:1] == ["exec"]:
-            return self._exec(rest)
+            return self._exec(rest, stdin)
         if rest[:1] == ["patch"]:
             if self.patch_error is not None:
                 return _fail(self.patch_error)
@@ -337,11 +348,27 @@ class FakeCluster:
             )
         return _ok("")
 
-    def _exec(self, rest: list[str]) -> CommandResult:
+    def _exec(self, rest: list[str], stdin: str | None = None) -> CommandResult:
         command = rest[rest.index("--") + 1 :]
-        # Matched as the two-token verb, not as a bare `capreport`: the image
-        # has no per-subcommand aliases on PATH, so a launcher that sent one
-        # would exec nothing in a real seat and must miss here too.
+        # Matched as the two-token verb, not as a bare `debug-config`: the
+        # image has no per-subcommand aliases on PATH, so a launcher that sent
+        # one would exec nothing in a real seat and must miss here too.
+        if command[:2] == ["podbench", "debug-config"]:
+            return _ok(
+                json.dumps({"version": "0.2.0", "configurations": self.configurations})
+            )
+        if command[:2] == ["sh", "-c"] and command[2].startswith("mkdir -p"):
+            path = command[2].rsplit("> ", 1)[1].strip("'")
+            if path in self.unwritable:
+                return _fail(f"sh: cannot create {path}: Permission denied")
+            self.seat_files[path] = stdin or ""
+            return _ok("")
+        if command[:2] == ["sh", "-c"]:
+            text = self.seat_files.get(command[2].rsplit("cat ", 1)[1].strip("'"))
+            # 3 is the read script's own "no such file"; anything else means it
+            # found one and could not read it, which `--open` refuses to guess.
+            return _ok(text) if text is not None else _fail("", returncode=3)
+        # Same two-token rule as `debug-config` above, for the same reason.
         if command[:2] == ["podbench", "capreport"]:
             if self.capreport_output is not None:
                 return _ok(self.capreport_output, returncode=127)
@@ -1543,6 +1570,197 @@ def test_ssh_config_without_a_session_says_so(
     )
     assert code == 2
     assert "attach" in capsys.readouterr().err
+
+
+# -- --open -----------------------------------------------------------------
+
+
+def attach_argv(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "attach",
+        "pod/target",
+        "-n",
+        "demo",
+        "--identity",
+        identity(tmp_path),
+        "--config-dir",
+        str(tmp_path / "cfg"),
+        *extra,
+    ]
+
+
+def test_open_configures_the_seats_home_and_opens_that(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The folder is the seat's own home, never ``/``: a walk from there goes
+    through ``/proc/<pid>/root`` into every other container in the pod and OOMs
+    a seat that cannot be restarted."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    settings = json.loads(cluster.seat_files["/root/.vscode/settings.json"])
+    assert settings["files.watcherExclude"]["**/proc/**"] is True
+    assert "/root/.vscode/launch.json" in cluster.seat_files
+    editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert editor[-1] == (
+        "/usr/bin/code",
+        "--remote",
+        "ssh-remote+podbench-demo-target",
+        "/root",
+    )
+    # The flavour's extensions, installed in the remote window and nowhere else.
+    assert [call[-1] for call in editor if "--install-extension" in call] == [
+        "ms-python.python",
+        "ms-python.debugpy",
+    ]
+    assert "open /root over Remote-SSH" in capsys.readouterr().out
+
+
+def test_open_without_the_vs_code_cli_never_burns_a_container_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An ephemeral container's name is permanent, so a run that was always
+    going to end at "no `code`" must not spend one on the way."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    code = main(attach_argv(tmp_path, "--open"), runner=cluster, which=lambda _: None)
+
+    assert code == 2
+    assert cluster.added == []
+    assert "Shell Command" in capsys.readouterr().err
+
+
+def test_open_refuses_print_config_rather_than_opening_a_host_ssh_cannot_find(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    code = main(
+        attach_argv(tmp_path, "--open", "--print-config"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    assert cluster.added == []
+    assert "--print-config" in capsys.readouterr().err
+
+
+def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert main(attach_argv(tmp_path), runner=cluster, which=lambda _: None) == 0
+    assert cluster.seat_files == {}
+
+
+def test_open_follows_the_home_volume_rather_than_assuming_root(
+    tmp_path: Path,
+) -> None:
+    """A pod carrying `podbench-home` moves the seat's home, and the folder has
+    to move with it: it comes from the same `SshdLayout` the ProxyCommand does,
+    so the two cannot disagree about where the seat lives."""
+    cluster = FakeCluster(identity_pod())
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    assert set(cluster.seat_files) == {
+        "/home/podbench/.vscode/settings.json",
+        "/home/podbench/.vscode/launch.json",
+        "/home/podbench/.vscode/extensions.json",
+    }
+    opened = [
+        call
+        for call in cluster.calls
+        if call[0] == "/usr/bin/code" and "--install-extension" not in call
+    ]
+    assert opened[-1][-1] == "/home/podbench"
+
+
+def test_open_on_a_seat_with_no_stanza_says_so_rather_than_opening_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Remote-SSH needs a host, and a degraded seat got no stanza to name one.
+    The block above has already named the mechanism, so this only has to say
+    that `--open` is the part that cannot go on - the exec helpers still work."""
+    cluster = FakeCluster(
+        pod_document(uid=1000), psa_denies_ptrace=True, login_user=None
+    )
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
+    captured = capsys.readouterr()
+    assert "no ssh alias" in captured.err
+    # The seat itself landed and was reported: only --open is refused.
+    assert "no ssh config was written" in captured.out
+
+
+def test_open_stops_at_a_seat_file_it_cannot_write(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A refused write is the layer's own sentence, not `kubectl exec`'s argv -
+    and it ends the run, because a window opened without the exclude list is the
+    walk that OOMs a seat which cannot be restarted."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    cluster.unwritable.add("/root/.vscode/settings.json")
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
+    assert "cannot write /root/.vscode/settings.json" in capsys.readouterr().err
+
+
+def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The report carrying the numbers is several blocks up by the time the
+    window opens, and the reader is about to stop reading the terminal. The
+    readiness half is the one with no trace afterwards."""
+    cluster = FakeCluster(pod_document(uid=1000, probes=PROBES))
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "before the first breakpoint" in out
+    assert out.index("over Remote-SSH") < out.index("before the first breakpoint")
+    # A pointer, not a second copy: the deadlines stay in the one report that
+    # computes them, or there are two things to keep true.
+    assert out.count("readiness at 11-16s") == 1
+
+
+def test_an_unprobed_target_gets_no_reminder_it_cannot_act_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Empty means "no probes", not "not looked at" — so a pause here costs
+    nothing and a deadline would be an invented one."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            attach_argv(tmp_path, "--open"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    assert "before the first breakpoint" not in capsys.readouterr().out
 
 
 def test_a_missing_public_key_is_a_message_not_a_traceback(

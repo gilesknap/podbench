@@ -18,6 +18,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from podbench.editor import DEBUG_CONFIG_ARGV
 from podbench.launcher import CAPREPORT_ARGV
 from podbench.spec import AGENT_COMMAND
 from podbench.vscode import GDB_WRAPPER
@@ -93,10 +94,15 @@ def test_every_name_the_launcher_execs_is_a_file_the_image_installs() -> None:
     ``CAPREPORT_ARGV`` was ``("capreport", "--json")`` and resolved only through
     a per-subcommand alias, so deleting the aliases broke the capability report
     silently — a 127 that surfaces as "capreport produced no parsable JSON".
-    Both argv are checked here so the next such argv has to name a shipped file.
+    Every argv is checked here so the next such argv has to name a shipped
+    file. ``DEBUG_CONFIG_ARGV`` is the one that proved the point: ``--open``
+    was written against an image that still had the aliases, and a bare
+    ``debug-config`` over ``kubectl exec`` reaches the seat as
+    ``executable file not found`` and is reported as "printed no JSON".
     """
     installed = {path.name for path in BIN.iterdir()}
 
     assert CAPREPORT_ARGV[0] in installed
     assert AGENT_COMMAND[0] in installed
+    assert DEBUG_CONFIG_ARGV[0] in installed
     assert GDB_WRAPPER == f"{INSTALL_DIR}/gdb-podbench"
