@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iterate on Python &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
+    <title>Iterate on Python &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=828493f6"></script>
+    <script src="../_static/documentation_options.js?v=756803e1"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -616,21 +616,21 @@ not declare the volume at all.</p>
 <section id="get-in-and-populate-the-workspace">
 <h2>2. Get in and populate the workspace<a class="headerlink" href="#get-in-and-populate-the-workspace" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-demo-api-5f6c9b7d8-qz4tn-podbench
-root@api-...-podbench:~# dev-bootstrap --repo https://github.com/you/api --ref my-branch
+root@api-...-podbench:~# podbench dev-bootstrap --repo https://github.com/you/api --ref my-branch
 </pre></div>
 </div>
 <p>or, when ssh is not what you want:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl -n demo exec -it api-5f6c9b7d8-qz4tn-podbench -c podbench -- bash
-root@api-...-podbench:/workspace# dev-bootstrap --repo https://github.com/you/api --ref my-branch
+root@api-...-podbench:/workspace# podbench dev-bootstrap --repo https://github.com/you/api --ref my-branch
 </pre></div>
 </div>
 <p>The two land in different directories, which is a fact about sshd rather than
 about podbench: an ssh session gets the home the <em>passwd record</em> names (<code class="docutils literal notranslate"><span class="pre">/root</span></code>,
 or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> with the identity volume), while <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> inherits the
-container’s environment, where <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> is <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>. <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code> takes
-absolute paths and defaults to <code class="docutils literal notranslate"><span class="pre">/workspace/src</span></code>, so it does not care either way
-— but <code class="docutils literal notranslate"><span class="pre">~</span></code> means different things in the two shells.</p>
-<p><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code> does three things, in order: <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span></code> into
+container’s environment, where <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> is <code class="docutils literal notranslate"><span class="pre">/workspace</span></code>. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>
+takes absolute paths and defaults to <code class="docutils literal notranslate"><span class="pre">/workspace/src</span></code>, so it does not care
+either way — but <code class="docutils literal notranslate"><span class="pre">~</span></code> means different things in the two shells.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code> does three things, in order: <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span></code> into
 <code class="docutils literal notranslate"><span class="pre">/workspace/src</span></code>, <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span> <span class="pre">--frozen</span></code> from the project’s own lockfile, and
 <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code>. Flags: <code class="docutils literal notranslate"><span class="pre">--dir</span></code> for a different checkout path, <code class="docutils literal notranslate"><span class="pre">--python</span></code>
 for an interpreter version, <code class="docutils literal notranslate"><span class="pre">--no-sync</span></code> and <code class="docutils literal notranslate"><span class="pre">--no-editable</span></code> to skip a step.</p>
@@ -646,7 +646,7 @@ ignored</strong> — <code class="docutils literal notranslate"><span class="pre
 later as an unrelated-looking <code class="docutils literal notranslate"><span class="pre">ModuleNotFoundError</span></code>. An exec-style <code class="docutils literal notranslate"><span class="pre">.pth</span></code> (what
 modern PEP-660 editable installs emit) prints a traceback and is non-fatal.</p>
 <p>podbench standardises on: everything in the debug container. That is why
-<code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code> refuses a <code class="docutils literal notranslate"><span class="pre">--dir</span></code> on the wrong side of the boundary.</p>
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code> refuses a <code class="docutils literal notranslate"><span class="pre">--dir</span></code> on the wrong side of the boundary.</p>
 </div>
 <p>Once you are connected with VS Code Remote-SSH, <code class="docutils literal notranslate"><span class="pre">/workspace/src</span></code> is just a
 folder in the editor. There is no file sync — the checkout was never on your
@@ -654,15 +654,14 @@ laptop.</p>
 </section>
 <section id="the-relaunch-loop">
 <h2>3. The relaunch loop<a class="headerlink" href="#the-relaunch-loop" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># podbench-run --port 8080 -- python -m api</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># podbench run --port 8080 -- python -m api</span>
 <span class="n">pid</span> <span class="mi">214</span> <span class="n">owns</span> <span class="n">the</span> <span class="n">listening</span> <span class="n">socket</span> <span class="n">on</span> <span class="n">port</span> <span class="mi">8080</span>
 </pre></div>
 </div>
 <p>Then edit, and run it again. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> stops the previous process (by
-recorded pid), starts yours, and <strong>verifies</strong> the result. Inside the container
-the helper is <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code> rather than <code class="docutils literal notranslate"><span class="pre">run</span></code>, because <code class="docutils literal notranslate"><span class="pre">/usr/local/bin</span></code>
-precedes <code class="docutils literal notranslate"><span class="pre">/usr/bin</span></code> and a helper called <code class="docutils literal notranslate"><span class="pre">run</span></code> would shadow far too much of your
-own tooling. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> works from anywhere.</p>
+recorded pid), starts yours, and <strong>verifies</strong> the result. It is spelled
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> everywhere — in the seat as well as on your machine, with no
+shorter alias on the seat’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.</p>
 <p>The verification is not decoration. Three separate silent failures make a naive
 “poll the port” wrapper lie to you:</p>
 <ul class="simple">
@@ -680,7 +679,7 @@ for a relaunch that had already died with <code class="docutils literal notransl
 serving stale code. So <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> tracks its own child pid, confirms it is
 alive, and matches the listening socket’s inode against <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/fd</span></code>.</p></li>
 </ul>
-<p>Stop it explicitly with <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code> (<code class="docutils literal notranslate"><span class="pre">--grace</span></code> seconds before <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code>).
+<p>Stop it explicitly with <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code> (<code class="docutils literal notranslate"><span class="pre">--grace</span></code> seconds before <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code>).
 Nothing here ever uses <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code>: under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> that
 matches the invoking shell and every other container’s processes.</p>
 </section>
@@ -730,7 +729,7 @@ lives.) The origin pod was never modified.</p>
 <p>The editable install is the tidy route, but it needs the project to be
 installable. When it is not — or when you want to override one module inside a
 dependency you do not own — put your checkout ahead of everything on the path:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># PYTHONPATH=/workspace/src podbench-run --port 8080 -- python -m api</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># PYTHONPATH=/workspace/src podbench run --port 8080 -- python -m api</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code> entries are inserted before site-packages, so <code class="docutils literal notranslate"><span class="pre">/workspace/src/api/</span></code>
@@ -750,7 +749,7 @@ still be in tomorrow.</p>
 <h2>Optional: auto-reload with <code class="docutils literal notranslate"><span class="pre">watchfiles</span></code><a class="headerlink" href="#optional-auto-reload-with-watchfiles" title="Link to this heading">#</a></h2>
 <p>If you would rather not type <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> after every save, wrap the command:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># uv pip install watchfiles</span>
-<span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># podbench-run --port 8080 -- \</span>
+<span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># podbench run --port 8080 -- \</span>
     <span class="n">watchfiles</span> <span class="o">--</span><span class="nb">filter</span> <span class="n">python</span> <span class="s1">&#39;python -m api&#39;</span> <span class="o">/</span><span class="n">workspace</span><span class="o">/</span><span class="n">src</span>
 </pre></div>
 </div>
@@ -762,7 +761,7 @@ sits squarely in the <code class="docutils literal notranslate"><span class="pre
 restart-storm can leave you serving stale code with nothing in the logs; and an
 editor saving through ssh can produce write patterns that fire the watcher more
 than once. If a change does not appear, fall back to an explicit
-<code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code> — that path verifies.</p>
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> — that path verifies.</p>
 </section>
 <section id="the-ptrace-free-live-attach-for-python-debugpy">
 <h2>The ptrace-free live attach for Python: debugpy<a class="headerlink" href="#the-ptrace-free-live-attach-for-python-debugpy" title="Link to this heading">#</a></h2>
@@ -787,7 +786,7 @@ environment variable so it is inert in production:</p>
 the debug container, so loopback is exactly the reach you want and nothing more.
 A debug port on the pod IP is an unauthenticated code-execution endpoint.</p>
 <p>Run the app with the variable set:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># DEBUGPY_LISTEN=1 podbench-run --port 8080 -- python -m api</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># DEBUGPY_LISTEN=1 podbench run --port 8080 -- python -m api</span>
 </pre></div>
 </div>
 <p>Then attach from the remote VS Code window:</p>

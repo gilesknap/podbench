@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
+    <title>Your first session &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=828493f6"></script>
+    <script src="../_static/documentation_options.js?v=756803e1"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -578,7 +578,8 @@ whether the pod insists on <code class="docutils literal notranslate"><span clas
 UID with no capabilities if admission refuses that — posting each attempt to
 the <code class="docutils literal notranslate"><span class="pre">ephemeralcontainers</span></code> subresource;</p></li>
 <li><p>waits for the container to be genuinely <em>running</em>, not merely accepted;</p></li>
-<li><p>runs <code class="docutils literal notranslate"><span class="pre">capreport</span></code> <strong>inside</strong> the container it just landed, on that node;</p></li>
+<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> <strong>inside</strong> the container it just landed, on that
+node;</p></li>
 <li><p>writes an ssh stanza to <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/</span></code> and tells you the host alias.</p></li>
 </ol>
 </section>
@@ -640,7 +641,7 @@ podbench never caches a cluster-wide answer.</p></li>
 now — it adds the line above any <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block, which is where it has to be
 (see <a class="reference internal" href="installation.html"><span class="std std-doc">Installation</span></a>). Then:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
-root@web-6c9d7f4b8b-hq2vn:~# pids
+root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 1    0    yes     87d20e23a1b4   python  python -m http.server 8080
 42   0    no      7206c89bf0e1   sleep   sleep infinity

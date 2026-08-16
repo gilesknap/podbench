@@ -45,10 +45,11 @@ For an unlimited pause use [`podbench dev`](iterate-on-python.md), which strips
 all three probes by construction.
 :::
 
-Everything here is driven by `dbg`, the helper on the debug container's `PATH`.
-`dbg` is not `gdb -p`: it fixes seven commands in one order, and the order is a
-correctness property rather than a preference. Setting the sysroot *after*
-attaching gives you a backtrace that looks entirely believable and is wrong.
+Everything here is driven by `podbench dbg`, run from a terminal in the seat.
+`podbench dbg` is not `gdb -p`: it fixes seven commands in one order, and the
+order is a correctness property rather than a preference. Setting the sysroot
+*after* attaching gives you a backtrace that looks entirely believable and is
+wrong.
 
 ## 1. A distroless target
 
@@ -158,34 +159,34 @@ Then ssh in with the alias it printed.
 
 ```
 $ ssh podbench-podbench-gdb-victim
-root@victim:~# pids
+root@victim:~# podbench pids
 PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 1    0    yes     87d20e23a1b4   victim  /app/victim
 38   0    no      7206c89bf0e1   sleep   sleep infinity
 ```
 
-`pids` is not `ps`. Under a shared PID namespace every process in the pod is
-visible — including other podbench sessions' — so attribution keys off the
-target's container runtime ID, which the launcher injected as
+`podbench pids` is not `ps`. Under a shared PID namespace every process in the
+pod is visible — including other podbench sessions' — so attribution keys
+off the target's container runtime ID, which the launcher injected as
 `PODBENCH_TARGET_CID`. The rules that look obvious are all wrong: "the target is
 PID 1" breaks under `shareProcessNamespace: true` (PID 1 is `/pause`), and
 matching mount namespaces breaks there too.
 
-If the `TARGET` column is a guess rather than a fact, `pids` says so.
+If the `TARGET` column is a guess rather than a fact, `podbench pids` says so.
 
 ## 4. Attach gdb
 
 ```
-root@victim:~# dbg 1
+root@victim:~# podbench dbg 1
 ```
 
-With no argument at all, `dbg` discovers the pid from the target container ID.
-Before starting gdb it runs the capability probe, so if attach is going to be
-denied you are told *which mechanism* denies it rather than being handed an
-`EPERM`.
+With no argument at all, `podbench dbg` discovers the pid from the target
+container ID. Before starting gdb it runs the capability probe, so if attach is
+going to be denied you are told *which mechanism* denies it rather than being
+handed an `EPERM`.
 
 What it feeds gdb, in this order — see it without starting gdb using
-`dbg --dry-run 1`:
+`podbench dbg --dry-run 1`:
 
 ```
 set pagination off
@@ -278,11 +279,11 @@ one deliberately:
    /proc/<pid>/root` finds it with no path mapping at all. Simplest, and the
    only option that needs nothing on the client.
 2. **A checkout in the debug container.** Clone the source into the seat and
-   point `dbg` at it:
+   point `podbench dbg` at it:
 
    ```
    root@victim:~# git clone https://github.com/you/app /workspace/src
-   root@victim:~# dbg --source-dir /workspace/src 1
+   root@victim:~# podbench dbg --source-dir /workspace/src 1
    ```
 
    `--source-dir` is repeatable and is wired with gdb's `directory`. gdb searches
@@ -306,7 +307,7 @@ that container.
 Do not hand-copy the templates below unless you have to. In the seat:
 
 ```
-root@victim:~# debug-config
+root@victim:~# podbench debug-config
 debug-config: native target, observe mode, x86_64
 debug-config: emitting gdb: native target, observe mode
 debug-config: emitting lldb: native target; CodeLLDB brings its own lldb to the seat
@@ -390,10 +391,10 @@ debugging is not possible.  GDB will now terminate.
 
 No signal name, no backtrace — it crashes before it can format either — and
 VS Code surfaces only `ERROR: Unable to start debugging. GDB exited
-unexpectedly`, which points at the attach rather than at startup. `dbg` never
-hits this because it never enables pretty-printing, so the CLI works perfectly
-on a seat where the VS Code debugger cannot start at all. Reproduce it in any
-seat with:
+unexpectedly`, which points at the attach rather than at startup. `podbench dbg`
+never hits this because it never enables pretty-printing, so the CLI works
+perfectly on a seat where the VS Code debugger cannot start at all. Reproduce it
+in any seat with:
 
 ```
 mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
@@ -472,8 +473,8 @@ the debug image's (here Ubuntu 24.04's 2.39 against the image's 2.36):
 `clock_nanosleep` reported as `wcsxfrm_l`, interleaved frames, and even the
 *user-code line number* wrong. Against a Debian-12 distroless target the bug is
 **invisible**, because both glibcs share a build ID and the backtrace comes out
-correct — a matched debug image hides this rather than fixing it. `dbg` is what
-makes it impossible.
+correct — a matched debug image hides this rather than fixing it.
+`podbench dbg` is what makes it impossible.
 
 ## Three anti-patterns
 
@@ -497,22 +498,22 @@ process. Full source-level debugging survives, because gdb starting the program
 itself needs no capability and is exempt from Yama:
 
 ```
-root@victim:/workspace# dbg --launch ./myprog --some-flag
+root@victim:/workspace# podbench dbg --launch ./myprog --some-flag
 ```
 
-`--launch` consumes the rest of the command line, so put any other `dbg` flags
-before it. Add `--run` to start the program immediately.
+`--launch` consumes the rest of the command line, so put any other
+`podbench dbg` flags before it. Add `--run` to start the program immediately.
 
-`dbg` will tell you this itself when attach is denied — it names the mechanism
-and points at the alternative:
+`podbench dbg` will tell you this itself when attach is denied — it names the
+mechanism and points at the alternative:
 
 ```
-dbg: cannot attach to pid 1: yama-scope
+podbench dbg: cannot attach to pid 1: yama-scope
   Yama's ptrace_scope forbids attaching to a non-descendant...
   verdict: read-only debugging available
-  the target's rootfs, maps and environ are still readable, so `pids` and
-  read-only inspection work.
-  ptrace-free alternative: `dbg --launch ./yourprog [args]`. gdb forks the
+  the target's rootfs, maps and environ are still readable, so `podbench pids`
+  and read-only inspection work.
+  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. gdb forks the
   inferior itself, which needs no capability and is not subject to Yama.
   to keep attaching to this process, the target can opt in with one line:
   prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY).
@@ -534,7 +535,7 @@ program you control.
   arm64 nodes in the same cluster disagreed in testing. podbench probes per
   node and prints the node name for this reason.
 * **A target already being traced** refuses with the same `EPERM` as a policy
-  denial, because a tracee has exactly one tracer. `capreport` reports
+  denial, because a tracee has exactly one tracer. `podbench capreport` reports
   `already-traced` when it can tell.
 * **Multithreaded targets are unproven.** `libthread_db` loaded and `info
   threads` listed the single LWP in testing; a genuinely multithreaded target

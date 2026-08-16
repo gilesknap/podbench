@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Architecture &#8212; podbench 0.1.0b5.dev19+ge0e098b56 documentation</title>
+    <title>Architecture &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=828493f6"></script>
+    <script src="../_static/documentation_options.js?v=756803e1"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -709,9 +709,11 @@ the same answer on both sides. Two implementations would be two answers.</p>
 — uv fetches the launcher for that one run and leaves nothing installed. There
 is no kubectl plugin: a plugin has to be an executable on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, which is
 exactly the thing that outlives the command.</p></li>
-<li><p>In the pod: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code> is PID 1, and <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>,
-<code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench-run</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-stop</span></code> are one-line wrappers on
-<code class="docutils literal notranslate"><span class="pre">PATH</span></code>.</p></li>
+<li><p>In the pod: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code> is PID 1, and the same spelling reaches every
+other in-pod verb — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>,
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>. One file,
+<code class="docutils literal notranslate"><span class="pre">/usr/local/bin/podbench</span></code>, is what puts them within reach of an ssh session
+that sources no profile.</p></li>
 </ul>
 <p>There is <strong>one runtime dependency, and it is the CLI</strong> — typer, which brings
 click and rich. The help a developer reads at 3 a.m. is part of the product, and

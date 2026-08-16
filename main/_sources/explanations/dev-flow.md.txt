@@ -20,13 +20,28 @@ podbench dev POD -n NS [--container NAME] [--port 8080]
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ LOCAL                                                            │
-│   namespace : -n, DEFAULTING TO LITERAL "default"                │
-│              (unlike attach, dev does not read the kubeconfig's) │
-│   POD       : required, exact. No substring match, no prompt     │
+│   namespace : -n, else the kubeconfig context's own              │
+│              config view --minify -o jsonpath={..namespace}      │
+│   ssh key   : ~/.ssh/id_ed25519.pub — read before the namespace  │
+│              is listed, exactly as attach reads it: a missing    │
+│              key refuses this run whichever pod is chosen, so    │
+│              asking which one would spend the answer on nothing  │
+│   POD       : pod/NAME, a bare NAME, a substring, or nothing —   │
+│              resolved by attach's own helper, so an ambiguous    │
+│              one lists the namespace and asks (--no-prompt, or   │
+│              a stdin that is not a tty, refuses instead)         │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
+                                  ├─ no .pub file ───────────────▶ exit 1
+                                  ▼      an ordinary container's env is immutable
+                                         once the pod exists, so there is no
+                                         second chance: a dev pod made without a
+                                         key can only be deleted and remade
 ┌──────────────────────────────────────────────────────────────────┐
 │ READ THE ORIGIN         get pod POD -o json                      │
+│                                                                  │
+│   A pod carrying podbench.dev/devpod is refused: it is somebody  │
+│   else's dev pod, and cloning it would copy its sidecar in as an │
+│   ordinary container. Clone the workload it was made from.       │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -57,15 +72,6 @@ podbench dev POD -n NS [--container NAME] [--port 8080]
 │   seat identity    = uid/gid, if the origin declares the         │
 │                      podbench-identity volume and pins both      │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ READ YOUR SSH KEY   ~/.ssh/id_ed25519.pub                        │
-│                                                                  │
-│   Before anything is created, and there is no second chance: an  │
-│   ordinary container's env is immutable once the pod exists, so  │
-│   a dev pod made without a key can only be deleted and remade.   │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  ├─ no .pub file ───────────────▶ exit 1
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ AUTHOR THE CLONE   (pure JSON in, JSON out; see next section)    │
@@ -300,7 +306,18 @@ So `dev-bootstrap` and `run` refuse the layout rather than let it be discovered.
 ## Teardown
 
 ```text
-podbench dev --delete POD-podbench -n NS
+podbench dev --delete [POD] -n NS
+    │
+    ▼
+   the dev pod's name, or the origin's: one derives from the other, and
+   `get pod NAME -o name` confirms it without listing anything. Only a
+   reference that names no such pod is searched for — and only among the
+   pods carrying podbench.dev/devpod, which is the difference from the
+   create path. A dev pod given its own name with --name is found that
+   way; an ordinary workload that merely shares the prefix is not, so a
+   second teardown run stays "nothing to delete" rather than becoming an
+   ambiguity refusal. With no POD at all, that same list is what you are
+   offered to choose from, and an empty one is again nothing to delete
     │
     ▼
    get pod NAME -o json
@@ -326,23 +343,36 @@ podbench dev --delete POD-podbench -n NS
 
 ```text
   create:
-   1  kubectl -n NS get pod POD -o json
-   2  kubectl -n NS get replicaset NAME -o json     ┐ GitOps ownership walk,
-   3  kubectl -n NS get deployment NAME -o json     ┘ up to 3 hops, errors ignored
-   4  kubectl -n NS get service SVC -o json         # --cutover only
-   5  kubectl -n NS create -f - -o json             # the authored manifest, on stdin
-   6  kubectl -n NS wait pod/NAME \
+   1  kubectl config view --minify -o jsonpath={..namespace}
+                                                    # only when -n was not given
+   2  kubectl -n NS get pod POD -o name             # an exact reference stops here;
+                                                    # a substring or no POD at all
+                                                    # adds get pods -o json to list
+   3  kubectl -n NS get pod NAME -o json
+   4  kubectl -n NS get replicaset NAME -o json     ┐ GitOps ownership walk,
+   5  kubectl -n NS get deployment NAME -o json     ┘ up to 3 hops, errors ignored
+   6  kubectl -n NS get service SVC -o json         # --cutover only
+   7  kubectl -n NS create -f - -o json             # the authored manifest, on stdin
+   8  kubectl -n NS wait pod/NAME \
           --for=jsonpath={.status.phase}=Running --timeout=120s
-   7  kubectl -n NS patch service SVC --type=json -p '[{"op":"replace",…}]'
+   9  kubectl -n NS patch service SVC --type=json -p '[{"op":"replace",…}]'
                                                     # --cutover only
-   8  kubectl -n NS exec -c podbench NAME -- podbench agent --print-login-user
-   9  kubectl -n NS get pod NAME -o json            # metadata.uid
-  10  kubectl -n NS exec -c podbench NAME -- podbench agent --print-host-key …
+  10  kubectl -n NS exec -c podbench NAME -- podbench agent --print-login-user
+  11  kubectl -n NS get pod NAME -o json            # metadata.uid
+  12  kubectl -n NS exec -c podbench NAME -- podbench agent --print-host-key …
 
   delete:
-   1  kubectl -n NS get pod NAME -o json
-   2  kubectl -n NS patch service SVC --type=json -p '[…original selector…]'
-   3  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
+   1  kubectl config view --minify -o jsonpath={..namespace}
+   2  kubectl -n NS get pod NAME -o name            # the derived dev pod name;
+                                                    # a hit stops the search here
+   3  kubectl -n NS get pods -o json                # only on a miss, and only the
+                                                    # podbench.dev/devpod pods of
+                                                    # it are candidates
+   4  kubectl -n NS get pod NAME -o json            # a 404 here is the teardown
+                                                    # that already happened:
+                                                    # "nothing to delete", exit 0
+   5  kubectl -n NS patch service SVC --type=json -p '[…original selector…]'
+   6  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
 
   the inner loop:  no API calls at all
 ```
