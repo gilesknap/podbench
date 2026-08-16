@@ -1,0 +1,60 @@
+# Ways in
+
+Podbench has three modes. They are not three interfaces to the same thing — each one
+makes a different trade against the pod it is aimed at, and the trade decides which is
+available to you before taste does.
+
+| | `attach` | `dev` | `patch` |
+|---|---|---|---|
+| **What it does** | puts a seat in the running pod | runs a sacrificial clone of it | makes an edit outlive the session |
+| **Touches the workload** | no — adds a container to the pod | no — the origin is left alone | yes — needs a claim in the chart |
+| **Singleton-safe** | **yes** | **no** — the clone is a second copy | **yes** |
+| **GitOps-safe** | **yes** | not yet ([#31](https://github.com/gilesknap/podbench/issues/31)) | mostly ([#32](https://github.com/gilesknap/podbench/issues/32)) |
+| **Languages** | any | any, but only Python is set up for you | Python only ([#34](https://github.com/gilesknap/podbench/issues/34)) |
+| **Survives a restart** | no | no | **yes** |
+| **Inner loop** | no | **yes**, ~1 s | yes, one rollout per edit |
+
+## Singleton-safe
+
+A workload is a singleton when a second copy of it is not merely wasteful but wrong: it
+holds a device that accepts one connection, claims a name on the network, or takes a lock.
+An EPICS IOC is usually all three at once.
+
+`attach` and `patch` never make a second copy — one works inside the running pod, the
+other restarts it in place. `dev` is built on a clone, so for a singleton it produces two
+processes competing for the same device and the same names. There is no flag for this;
+the clone *is* the mode. Use `patch` for a singleton that needs an inner loop.
+
+## GitOps-safe
+
+Under a controller like Argo CD with self-heal on, anything podbench writes to a
+git-managed object is drift and gets reverted, usually within seconds and always without
+telling you.
+
+`attach` is clear because its mutations are pod-level — an ephemeral container and an
+in-place resize — and pods made by a controller are not compared against git. `dev` is
+currently at risk from the other direction: the clone can look like a tracked resource
+that has gone missing from git, and be pruned mid-session. `patch` works, but records its
+provenance on the pod template, which self-heal strips — so the fix keeps running while
+`patch status` stops being able to see it. Both are fixable; both are open.
+
+## Languages
+
+`attach` is language-agnostic: it is a seat with a debugger, gdb for native code and
+debugpy for Python, and it needs nothing from the target but a process.
+
+`dev` splits. Building the dev pod, idling the app container, the relaunch and the
+listening-socket check are all language-agnostic — `podbench run -- <command>` will start
+anything. What is Python-specific is `dev-bootstrap`, which clones, runs `uv sync` and
+does an editable install. For another language, prepare the workspace yourself and use
+`podbench run`.
+
+`patch` is Python throughout: it reads `pyvenv.cfg`, mounts a claim over the application's
+venv, and re-runs an editable install. Generalising it is [#34](https://github.com/gilesknap/podbench/issues/34).
+
+## If you only remember one thing
+
+Start with `attach`. It is safe against anything, needs nothing from the chart, and
+answers most questions. Reach for `dev` when you need a fast edit-and-rerun loop and the
+workload tolerates a second copy; reach for `patch` when the fix has to survive a restart,
+or when it needs a loop and a second copy is out of the question.
