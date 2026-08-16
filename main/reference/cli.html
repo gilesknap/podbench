@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=756803e1"></script>
+    <script src="../_static/documentation_options.js?v=df4132fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1269,20 +1269,49 @@ automatically after every attach; run it yourself when something changes.</p>
 <td><p>live attach available</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">10</span></code></p></td>
-<td><p>read-only debugging available (target rootfs, <code class="docutils literal notranslate"><span class="pre">maps</span></code>, <code class="docutils literal notranslate"><span class="pre">environ</span></code>; gdb-launch works)</p></td>
+<td><p>read-only inspection of the target (rootfs, <code class="docutils literal notranslate"><span class="pre">maps</span></code>, <code class="docutils literal notranslate"><span class="pre">environ</span></code>); no live attach</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">15</span></code></p></td>
+<td><p>launch-only: no read-only inspection of the target, but <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span></code> works</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
 <td><p>neither; the seat itself still works</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">10</span></code> says nothing about gdb-launch: the two are measured separately, and a seat
+whose own forked child refuses to be traced can still read all three gated paths
+at the target’s uid. <code class="docutils literal notranslate"><span class="pre">child_attach_ok</span></code> in the JSON is the only thing that claims
+that rung.</p>
 <p>It reads <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>/<code class="docutils literal notranslate"><span class="pre">CapBnd</span></code>/<code class="docutils literal notranslate"><span class="pre">CapAmb</span></code>, <code class="docutils literal notranslate"><span class="pre">Seccomp</span></code>, <code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>, the AppArmor
 profile of both itself and the target, and <code class="docutils literal notranslate"><span class="pre">yama/ptrace_scope</span></code>; then runs a
 scratch <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on its own forked child (always permitted by Yama, so a
 failure there is structural) and a live attach on the target; then a six-path
 <code class="docutils literal notranslate"><span class="pre">/proc</span></code> read matrix. Yama is a <strong>node-level</strong> knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.</p>
+<p>Only three of those six paths decide the <code class="docutils literal notranslate"><span class="pre">10</span></code>. <code class="docutils literal notranslate"><span class="pre">root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> and <code class="docutils literal notranslate"><span class="pre">environ</span></code> take
+<code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_READ</span></code>; <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">fd</span></code> need no permission at all and are
+therefore readable on a pod where nothing else is, so they are reported and never
+counted as evidence. The JSON form carries both — the full matrix as <code class="docutils literal notranslate"><span class="pre">proc_reads</span></code>,
+and the decision as <code class="docutils literal notranslate"><span class="pre">reads_ok</span></code>. The matrix comes back alphabetical rather than
+grouped — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span> <span class="pre">--json</span></code> emits with <code class="docutils literal notranslate"><span class="pre">sort_keys</span></code>, so the two halves
+cannot disagree about ordering:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench capreport --json | jq &#39;{verdict, reads_ok, proc_reads}&#39;
+{
+  &quot;verdict&quot;: &quot;launch_only&quot;,
+  &quot;reads_ok&quot;: false,
+  &quot;proc_reads&quot;: {
+    &quot;cmdline&quot;: true,
+    &quot;environ&quot;: false,
+    &quot;fd&quot;: true,
+    &quot;maps&quot;: false,
+    &quot;root&quot;: false,
+    &quot;status&quot;: true
+  }
+}
+</pre></div>
+</div>
 <p>A <strong>DEBUGGERS</strong> block sits beside the verdict, listing what the image actually
 ships — so what <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> emits and what the seat can run cannot drift
 apart:</p>
@@ -1651,7 +1680,7 @@ stream.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
 <td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), a <code class="docutils literal notranslate"><span class="pre">doctor</span></code> usage error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">15</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> only: the capability verdict</p></td>
 </tr>
 </tbody>

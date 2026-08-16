@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
+    <title>Your first session &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=756803e1"></script>
+    <script src="../_static/documentation_options.js?v=df4132fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -605,8 +605,11 @@ the spec podbench asked for:</p>
 <span class="n">supports</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspect</span> <span class="p">(</span><span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span><span class="p">,</span> <span class="n">maps</span><span class="p">,</span> <span class="n">environ</span><span class="p">)</span>
+      <span class="n">root</span><span class="p">,</span> <span class="n">maps</span> <span class="ow">and</span> <span class="n">environ</span> <span class="n">readable</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">debug</span> <span class="n">launched</span> <span class="n">processes</span> <span class="p">(</span><span class="n">podbench</span> <span class="n">dbg</span> <span class="o">--</span><span class="n">launch</span> <span class="o">./</span><span class="n">prog</span><span class="p">)</span>
   <span class="p">[</span> <span class="p">]</span> <span class="n">iterate</span> <span class="p">(</span><span class="n">edit</span><span class="p">,</span> <span class="n">relaunch</span><span class="p">,</span> <span class="n">verify</span> <span class="n">through</span> <span class="n">the</span> <span class="n">Service</span><span class="p">)</span>
-  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">seat</span> <span class="p">(</span><span class="n">editor</span><span class="p">,</span> <span class="n">shell</span><span class="p">,</span> <span class="n">git</span><span class="p">)</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">ssh</span> <span class="n">seat</span> <span class="p">(</span><span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span><span class="p">:</span> <span class="n">editor</span><span class="p">,</span> <span class="n">shell</span><span class="p">,</span> <span class="n">git</span><span class="p">,</span> <span class="n">sftp</span><span class="p">)</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">exec</span> <span class="n">seat</span> <span class="p">(</span><span class="n">kubectl</span> <span class="n">exec</span> <span class="o">--</span> <span class="n">podbench</span> <span class="n">capreport</span><span class="p">,</span> <span class="n">pids</span><span class="p">,</span> <span class="n">dbg</span><span class="p">)</span>
 <span class="n">measured</span>
   <span class="n">verdict</span>     <span class="n">live</span> <span class="n">attach</span> <span class="n">available</span>
   <span class="n">blocker</span>     <span class="n">none</span>
@@ -627,6 +630,10 @@ subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
 denied on the next, in the same cluster, is expected: kernel flavours differ.
 podbench never caches a cluster-wide answer.</p></li>
 </ul>
+<p>The indented line under a tick is the measurement the tick was taken from — here,
+which of the target’s <code class="docutils literal notranslate"><span class="pre">/proc</span></code> paths actually opened. Read it rather than the box:
+<code class="docutils literal notranslate"><span class="pre">cmdline,</span> <span class="pre">status</span> <span class="pre">and</span> <span class="pre">fd</span> <span class="pre">only</span></code> under an empty box means the seat is
+<a class="reference internal" href="../reference/glossary.html#term-launch-only"><span class="xref std std-term">launch-only</span></a>, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span></code> is where to go next.</p>
 </section>
 <section id="connect-with-ssh">
 <h2>5. Connect with ssh<a class="headerlink" href="#connect-with-ssh" title="Link to this heading">#</a></h2>

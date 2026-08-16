@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
+    <title>Glossary &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=756803e1"></script>
+    <script src="../_static/documentation_options.js?v=df4132fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -520,8 +520,8 @@ error.</p>
 <dt id="term-capreport">capreport<a class="headerlink" href="#term-capreport" title="Link to this term">#</a></dt><dd><p>The probe that runs <em>inside</em> the landed seat, on that node, and reports what
 debugging is actually possible — and, when it is not, which of the four
 <a class="reference internal" href="#term-ptrace"><span class="xref std std-term">ptrace</span></a> <a class="reference internal" href="#term-blocker"><span class="xref std std-term">blocker</span></a>s said no. Its exit code is its verdict: 0 live
-attach, 10 read-only, 20 nothing. Everything <code class="docutils literal notranslate"><span class="pre">attach</span></code> prints about capability comes
-from here, never from the spec that was submitted.</p>
+attach, 10 read-only, 15 <a class="reference internal" href="#term-launch-only"><span class="xref std std-term">launch-only</span></a>, 20 nothing. Everything <code class="docutils literal notranslate"><span class="pre">attach</span></code> prints
+about capability comes from here, never from the spec that was submitted.</p>
 </dd>
 <dt id="term-dev-pod">dev pod<a class="headerlink" href="#term-dev-pod" title="Link to this term">#</a></dt><dd><p>Iterate mode’s sacrificial clone of a running pod: same image, same volumes, same
 labels if you asked for them, but with the application container idled and a
@@ -533,6 +533,18 @@ at the root of the hotfix <a class="reference internal" href="#term-claim"><span
 the repo, the base commit, the base image and its digest, the <a class="reference internal" href="#term-venv"><span class="xref std std-term">venv</span></a>’s
 interpreter version, and the commits since. A copy travels in a pod annotation so
 that <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> needs one <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> and no <code class="docutils literal notranslate"><span class="pre">exec</span></code>.</p>
+</dd>
+<dt id="term-launch-only">launch-only<a class="headerlink" href="#term-launch-only" title="Link to this term">#</a></dt><dd><p>The <a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a> verdict for a seat that can debug processes <em>it</em> starts, but
+cannot inspect the target: <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> and <code class="docutils literal notranslate"><span class="pre">environ</span></code> are denied, and
+so is attach. It is a rung of its own because the two halves of it are
+independent — tracing your own descendant needs no permission at all, so
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code> still gives breakpoints, <code class="docutils literal notranslate"><span class="pre">run</span></code> and backtraces on a
+pod whose own memory is shut. Reported as exit code 15. The name matters: called
+read-only, it sends you to a sysroot that will not open; called nothing, it hides
+the one inner loop that works. It is the ptrace-gated paths that are gone, not the
+whole of <code class="docutils literal notranslate"><span class="pre">/proc</span></code> — <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">fd</span></code> need no permission and answer here
+as they do anywhere, which is why <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> still lists the target’s
+processes.</p>
 </dd>
 <dt id="term-launcher">launcher<a class="headerlink" href="#term-launcher" title="Link to this term">#</a></dt><dd><p>The half of podbench that runs on your machine — the <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code>,
 <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> and <code class="docutils literal notranslate"><span class="pre">doctor</span></code> verbs. It shells out to <a class="reference internal" href="#term-kubectl"><span class="xref std std-term">kubectl</span></a> rather than

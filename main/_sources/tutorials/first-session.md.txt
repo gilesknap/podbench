@@ -131,8 +131,11 @@ ladder
 supports
   [x] live attach (gdb -p <pid>)
   [x] read-only inspect (/proc/<pid>/root, maps, environ)
+      root, maps and environ readable
+  [x] debug launched processes (podbench dbg --launch ./prog)
   [ ] iterate (edit, relaunch, verify through the Service)
-  [x] seat (editor, shell, git)
+  [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
+  [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
 measured
   verdict     live attach available
   blocker     none
@@ -152,6 +155,11 @@ Three lines are worth learning to read:
 * **`yama` and `node`** — both are per-node. Attach working on one pod and being
   denied on the next, in the same cluster, is expected: kernel flavours differ.
   podbench never caches a cluster-wide answer.
+
+The indented line under a tick is the measurement the tick was taken from — here,
+which of the target's `/proc` paths actually opened. Read it rather than the box:
+`cmdline, status and fd only` under an empty box means the seat is
+{term}`launch-only`, and `podbench dbg --launch` is where to go next.
 
 ## 5. Connect with ssh
 

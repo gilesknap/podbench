@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=756803e1"></script>
+    <script src="../_static/documentation_options.js?v=df4132fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -985,11 +985,12 @@ itself needs no capability and is exempt from Yama:</p>
 mechanism and points at the alternative:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>podbench dbg: cannot attach to pid 1: yama-scope
   Yama&#39;s ptrace_scope forbids attaching to a non-descendant...
-  verdict: read-only debugging available
+  verdict: read-only inspection of the target; no live attach
   the target&#39;s rootfs, maps and environ are still readable, so `podbench pids`
   and read-only inspection work.
   ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. gdb forks the
-  inferior itself, which needs no capability and is not subject to Yama.
+  inferior itself, which needs no capability and is not subject to Yama below
+  ptrace_scope=2.
   to keep attaching to this process, the target can opt in with one line:
   prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY).
 </pre></div>
@@ -999,6 +1000,32 @@ makes gdb a <strong>sibling</strong>, which Yama denies at <code class="docutils
 called <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code> is attachable with zero
 capabilities. It is a one-line, capability-free, node-change-free opt-in for a
 program you control.</p>
+<p>On a pod where the ptrace-gated reads went with the attach — the <strong>launch-only</strong>
+verdict — the consolation line says <em>that</em> instead, because offering a sysroot
+that will not open costs a second afternoon:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  verdict: launch-only: `podbench dbg --launch` works; no read-only inspection
+  the reads that take PTRACE_MODE_READ went with it (cmdline, status and fd
+  only; root, maps and environ denied), so a sysroot, `environ` or `maps` is not
+  the fallback here.
+</pre></div>
+</div>
+<p>The matrix is in the line because it is the honest form of the answer: <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>,
+<code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">fd</span></code> are still readable — they always are — so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> works
+and “the target is closed” would be the same overclaim as issue #51, pointing
+the other way.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> survives all of that: gdb forks the inferior and traces its own
+descendant, which needs no capability and no Yama exemption. It is still
+<em>measured</em> rather than assumed, and the tick beside <strong>debug launched processes</strong>
+is the measurement — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> attaches to a child it forked itself
+before it claims the rung. Three things take it away with everything else, none
+of which cares whose descendant the inferior is: a seccomp filter that rejects
+<code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code> outright, <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code> <strong>2 or 3</strong> — scope 2 is the one Yama setting
+with no descendant exemption, and it demands <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> of
+<code class="docutils literal notranslate"><span class="pre">PTRACE_TRACEME</span></code> too — and an AppArmor profile that denies <code class="docutils literal notranslate"><span class="pre">ptrace</span></code>.
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> names whichever of the three it finds.</p>
+<p>The offer is conditional for that reason: where the scratch attach was measured
+and failed, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> says so instead of pointing at <code class="docutils literal notranslate"><span class="pre">--launch</span></code>, because a
+second identical denial is what costs the afternoon.</p>
 </section>
 <section id="gotchas">
 <h2>Gotchas<a class="headerlink" href="#gotchas" title="Link to this heading">#</a></h2>

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
+    <title>What attach does &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=756803e1"></script>
+    <script src="../_static/documentation_options.js?v=df4132fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -826,12 +826,21 @@ host rather than as a man-in-the-middle warning.</p>
 </section>
 <section id="what-you-get-back">
 <h2>What you get back<a class="headerlink" href="#what-you-get-back" title="Link to this heading">#</a></h2>
-<p>The report is four to six lines of <em>measured</em> capability, not of requested capability:</p>
+<p>The report is six lines of <em>measured</em> capability, not of requested capability:</p>
 <ul class="simple">
 <li><p><strong>live attach</strong> — <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span> <span class="pre">&lt;pid&gt;</span></code>, qualified by the probe deadline this pod puts on a
 breakpoint (a stopped process stops answering probes, and the kubelet cannot tell
 that from a hang);</p></li>
-<li><p><strong>read-only inspect</strong> — <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, maps, environ, exe;</p></li>
+<li><p><strong>read-only inspect</strong> — <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, maps, environ; ticked from those three
+reads themselves and never from the verdict, with the matrix printed under it, and
+all three have to land. The other three reads capreport takes — <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>,
+<code class="docutils literal notranslate"><span class="pre">fd</span></code> — need no permission and so are reported but never counted (issue #51). <code class="docutils literal notranslate"><span class="pre">exe</span></code>
+takes the same permission as the first three but is not in the matrix, so it does
+not decide anything either;</p></li>
+<li><p><strong>debug launched processes</strong> — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code>, from the scratch
+attach on the probe’s own forked child. It is the rung that survives when the reads
+do not, and it is measured rather than assumed: a seccomp filter that rejects
+<code class="docutils literal notranslate"><span class="pre">ptrace</span></code> takes it away along with everything else;</p></li>
 <li><p><strong>iterate</strong> — always unavailable here, naming <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> as the way to it;</p></li>
 <li><p><strong>ssh seat</strong> and <strong>exec seat</strong>, reported separately, because the ssh half needs an
 NSS identity the exec half does not.</p></li>

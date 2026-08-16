@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.1.0b5.dev33+ge87b08e06 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.1.0b5.dev45+g9d409e90c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=756803e1"></script>
+    <script src="../_static/documentation_options.js?v=df4132fe"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -621,7 +621,10 @@ to the next rung automatically, and still exits <code class="docutils literal no
   <span class="p">[</span> <span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
       <span class="n">CAP_SYS_PTRACE</span> <span class="ow">is</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">this</span> <span class="n">container</span><span class="s1">&#39;s effective set...</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspect</span> <span class="p">(</span><span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span><span class="p">,</span> <span class="n">maps</span><span class="p">,</span> <span class="n">environ</span><span class="p">)</span>
-  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">seat</span> <span class="p">(</span><span class="n">editor</span><span class="p">,</span> <span class="n">shell</span><span class="p">,</span> <span class="n">git</span><span class="p">)</span>
+      <span class="n">root</span><span class="p">,</span> <span class="n">maps</span> <span class="ow">and</span> <span class="n">environ</span> <span class="n">readable</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">debug</span> <span class="n">launched</span> <span class="n">processes</span> <span class="p">(</span><span class="n">podbench</span> <span class="n">dbg</span> <span class="o">--</span><span class="n">launch</span> <span class="o">./</span><span class="n">prog</span><span class="p">)</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">ssh</span> <span class="n">seat</span> <span class="p">(</span><span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span><span class="p">:</span> <span class="n">editor</span><span class="p">,</span> <span class="n">shell</span><span class="p">,</span> <span class="n">git</span><span class="p">,</span> <span class="n">sftp</span><span class="p">)</span>
+  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">exec</span> <span class="n">seat</span> <span class="p">(</span><span class="n">kubectl</span> <span class="n">exec</span> <span class="o">--</span> <span class="n">podbench</span> <span class="n">capreport</span><span class="p">,</span> <span class="n">pids</span><span class="p">,</span> <span class="n">dbg</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>The degraded rung is genuinely useful. It reads the target’s rootfs, <code class="docutils literal notranslate"><span class="pre">maps</span></code>,
@@ -631,6 +634,31 @@ locals — with <code class="docutils literal notranslate"><span class="pre">Cap
 already-running process. See <a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
 <p>Two things it cannot do, so do not plan on them: <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/mem</span></code> and
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/syscall</span></code> use <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_ATTACH</span></code> and are denied.</p>
+</section>
+<section id="when-the-reads-are-denied-too">
+<h2>When the reads are denied too<a class="headerlink" href="#when-the-reads-are-denied-too" title="Link to this heading">#</a></h2>
+<p>The line under each tick is the measurement it was taken from, so the case above
+is distinguishable from this one at a glance:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>supports
+  [ ] live attach (gdb -p &lt;pid&gt;)
+      denied by Yama: /proc/sys/kernel/yama/ptrace_scope forbids attaching...
+  [ ] read-only inspect (/proc/&lt;pid&gt;/root, maps, environ)
+      cmdline, status and fd only; root, maps and environ denied
+      the three paths this line names take PTRACE_MODE_READ, which the
+      mechanism that refused attach gates too - see the blocker below
+  [x] debug launched processes (podbench dbg --launch ./prog)
+measured
+  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
+</pre></div>
+</div>
+<p>This is the <strong>launch-only</strong> rung, and it is a real one — a Diamond production pod
+lands on it. None of the three opens: no sysroot, no <code class="docutils literal notranslate"><span class="pre">environ</span></code>, no <code class="docutils literal notranslate"><span class="pre">maps</span></code>.
+What still works is a program the seat starts <em>itself</em>, because tracing your own
+descendant needs no capability and no Yama exemption. So go straight to
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code> and do not spend the afternoon on a sysroot.</p>
+<p><code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">fd</span></code> staying readable is not a partial win: they need no
+permission at all, and are readable on any pod whatsoever. That is why the tick
+is decided by the three paths it names and nothing else.</p>
 </section>
 <section id="making-memory-headroom-first">
 <h2>Making memory headroom first<a class="headerlink" href="#making-memory-headroom-first" title="Link to this heading">#</a></h2>
@@ -824,6 +852,7 @@ would make an honest report look like a failure.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-and-re-attach">Attach, and re-attach</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-target-container">Choosing the target container</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-refuses-sys-ptrace">When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-reads-are-denied-too">When the reads are denied too</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-headroom-first">Making memory headroom first</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-the-ssh-stanza-again">Getting the ssh stanza again</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#host-keys-and-known-hosts">Host keys and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code></a></li>

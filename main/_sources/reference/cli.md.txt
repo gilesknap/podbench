@@ -709,8 +709,14 @@ automatically after every attach; run it yourself when something changes.
 | Code | Verdict |
 |---|---|
 | `0` | live attach available |
-| `10` | read-only debugging available (target rootfs, `maps`, `environ`; gdb-launch works) |
+| `10` | read-only inspection of the target (rootfs, `maps`, `environ`); no live attach |
+| `15` | launch-only: no read-only inspection of the target, but `podbench dbg --launch` works |
 | `20` | neither; the seat itself still works |
+
+`10` says nothing about gdb-launch: the two are measured separately, and a seat
+whose own forked child refuses to be traced can still read all three gated paths
+at the target's uid. `child_attach_ok` in the JSON is the only thing that claims
+that rung.
 
 It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
 profile of both itself and the target, and `yama/ptrace_scope`; then runs a
@@ -718,6 +724,30 @@ scratch `PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a
 failure there is structural) and a live attach on the target; then a six-path
 `/proc` read matrix. Yama is a **node-level** knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.
+
+Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
+`PTRACE_MODE_READ`; `cmdline`, `status` and `fd` need no permission at all and are
+therefore readable on a pod where nothing else is, so they are reported and never
+counted as evidence. The JSON form carries both — the full matrix as `proc_reads`,
+and the decision as `reads_ok`. The matrix comes back alphabetical rather than
+grouped — `podbench capreport --json` emits with `sort_keys`, so the two halves
+cannot disagree about ordering:
+
+```
+$ podbench capreport --json | jq '{verdict, reads_ok, proc_reads}'
+{
+  "verdict": "launch_only",
+  "reads_ok": false,
+  "proc_reads": {
+    "cmdline": true,
+    "environ": false,
+    "fd": true,
+    "maps": false,
+    "root": false,
+    "status": true
+  }
+}
+```
 
 A **DEBUGGERS** block sits beside the verdict, listing what the image actually
 ships — so what `debug-config` emits and what the seat can run cannot drift
@@ -1048,4 +1078,4 @@ stream.
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
 | `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `patch status` found a pod needing attention; or `doctor` found something blocking an attach |
 | `2` | a launcher error, a `patch` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
-| `0` / `10` / `20` | `capreport` only: the capability verdict |
+| `0` / `10` / `15` / `20` | `capreport` only: the capability verdict |
