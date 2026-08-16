@@ -19,18 +19,21 @@ from pathlib import Path
 import pytest
 
 from podbench.gdbcmd import (
+    GdbRunner,
     attach_commands,
     command_file_text,
+    exec_gdb,
     format_process_table,
     gdb_argv,
     launch_commands,
-    main,
     read_exe,
     resolve_target_pid,
     strip_deleted,
 )
-from podbench.model import Blocker, Verdict
-from podbench.probe import AttachOutcome, SkippedAttacher
+from podbench.gdbcmd import main as _main
+from podbench.model import Blocker, Lsm, Verdict
+from podbench.probe import Attacher, AttachOutcome, SkippedAttacher
+from podbench.proc import DEFAULT_SYSFS, detect_lsm
 
 TARGET_CID = "87d20e2380a1c0ffee0b1e5deadbeef00d15ea5e0000111122223333444455556"
 OTHER_CID = "7206c89b11111111222222223333333344444444555555556666666677777777"
@@ -132,7 +135,15 @@ def _add_process(
 
 def make_proc(tmp_path: Path, *, capeff: str = CAP_WITHOUT_PTRACE) -> Path:
     """A shared PID namespace with a pause process, the target, another
-    podbench session and us — the layout observed in report 3.15."""
+    podbench session and us — the layout observed in report 3.15.
+
+    A synthetic ``/sys`` goes beside it, because ``dbg`` runs the capability
+    probe and the probe now reads which LSM is loaded from there: a test that
+    let the real one through would classify against the *runner's* kernel, and
+    the review box, CI's kind nodes and a RHEL node answer differently.
+    """
+    sysfs = sysfs_for(tmp_path / "proc")
+    _write(sysfs / "module" / "apparmor" / "parameters" / "enabled", "Y\n")
     proc = tmp_path / "proc"
     _write(proc / "sys" / "kernel" / "yama" / "ptrace_scope", "1\n")
     _write(proc / "self" / "status", _status(1000, capeff=capeff))
@@ -164,6 +175,34 @@ def make_proc(tmp_path: Path, *, capeff: str = CAP_WITHOUT_PTRACE) -> Path:
         proc, SELF_PID, comm="python3", cmdline="podbench agent", cgroup="0::/"
     )
     return proc
+
+
+def sysfs_for(proc: Path) -> Path:
+    """The /sys tree :func:`make_proc` built beside this /proc."""
+    return proc.parent / "sys"
+
+
+def main(
+    args: Sequence[str] | None = None,
+    *,
+    proc: Path,
+    sysfs: Path | None = None,
+    attacher: Attacher | None = None,
+    runner: GdbRunner = exec_gdb,
+) -> int:
+    """``podbench pids`` / ``podbench dbg``, pointed at the synthetic /sys too.
+
+    ``proc`` is required here precisely so that no call can fall back to the
+    defaults and ask the host what it is confined by; the module docstring
+    forbids it, and only a seam makes it unforgettable.
+    """
+    return _main(
+        args,
+        proc=proc,
+        sysfs=sysfs if sysfs is not None else sysfs_for(proc),
+        attacher=attacher,
+        runner=runner,
+    )
 
 
 # --- the command sequence ---------------------------------------------------
@@ -349,10 +388,12 @@ def test_pids_json_records_the_fallback_warning(
     assert payload["warning"] is not None
 
 
-def test_pids_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+def test_pids_help_exits_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     # CI smoke-tests `podbench pids --help` against the built image, so a broken
     # parser fails there rather than in a pod.
-    assert main(["pids", "--help"]) == 0
+    assert main(["pids", "--help"], proc=make_proc(tmp_path)) == 0
     assert "pids" in capsys.readouterr().out
 
 
@@ -375,6 +416,21 @@ def test_format_process_table_is_a_pure_function(tmp_path: Path) -> None:
 
 
 # --- dbg --------------------------------------------------------------------
+
+
+def test_the_dbg_seam_never_reaches_the_runners_own_sys(tmp_path: Path) -> None:
+    """Asserted rather than trusted, because the failure is silent.
+
+    ``dbg`` runs the capability probe, and the probe reads the active LSM from
+    ``/sys``. Every ``dbg`` assertion below names a blocker; let the default
+    through and they are classified against whatever module the *runner* loads,
+    which differs between this box, CI's kind nodes and a RHEL node. Today they
+    survive because Yama and the capability branch are consulted first, which is
+    luck rather than a seam.
+    """
+    proc = make_proc(tmp_path)
+    assert sysfs_for(proc) != DEFAULT_SYSFS
+    assert detect_lsm(proc=proc, sysfs=sysfs_for(proc)).kind is Lsm.APPARMOR
 
 
 def test_dbg_dry_run_prints_the_command_file_without_gdb(
@@ -558,12 +614,13 @@ def test_dbg_launch_never_probes_or_attaches(tmp_path: Path) -> None:
 
 
 def test_dbg_launch_without_a_program_is_a_usage_error(
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # The parser's own refusal, not a hand-written one: --launch is declared as
     # taking a PROGRAM, and only the program's *arguments* are lifted out of
     # argv before parsing.
-    assert main(["dbg", "--launch"], runner=RecordingRunner()) == 2
+    proc = make_proc(tmp_path)
+    assert main(["dbg", "--launch"], proc=proc, runner=RecordingRunner()) == 2
     assert "--launch" in capsys.readouterr().err
 
 
@@ -609,7 +666,7 @@ def test_main_dispatches_both_subcommands(
     assert "set sysroot" in capsys.readouterr().out
 
 
-def test_main_requires_a_subcommand() -> None:
+def test_main_requires_a_subcommand(tmp_path: Path) -> None:
     # A usage error, not a success: `podbench` alone must not look like a
     # command that ran.
-    assert main([]) == 2
+    assert main([], proc=make_proc(tmp_path)) == 2
