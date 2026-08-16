@@ -179,7 +179,11 @@ $ podbench status web -n demo  # every seat in one pod
 $ podbench list -n demo        # every pod in the namespace carrying one
 ```
 
-`status` shows dead containers too, because their names remain burnt.
+`status` shows dead containers too, because their names remain burnt. Both
+print the ssh alias for each pod, read from the stanza on disk — so a seat
+someone else landed, or one you landed from another machine, is reported as
+having no config here rather than under an alias that would not resolve. Run
+`podbench ssh-config` to mint the missing one.
 
 ## Removing a seat
 

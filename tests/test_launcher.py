@@ -31,6 +31,7 @@ from podbench.launcher import (
     forget_known_hosts,
     forget_ssh_config,
     format_session,
+    host_alias_in,
     main,
     match_pod_names,
     parse_mount,
@@ -1664,7 +1665,7 @@ def test_an_unreadable_creation_stamp_costs_a_column_not_the_listing() -> None:
 
 
 def test_status_lists_every_container_live_or_burnt(
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     cluster = FakeCluster(
         pod_document(
@@ -1676,7 +1677,13 @@ def test_status_lists_every_container_live_or_burnt(
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    assert main(["status", "target", "-n", "demo"], runner=cluster) == 0
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "podbench-1" in out
     assert "degraded" in out
@@ -1684,7 +1691,9 @@ def test_status_lists_every_container_live_or_burnt(
     assert "other-sidecar" not in out
 
 
-def test_list_finds_pods_carrying_a_seat(capsys: pytest.CaptureFixture[str]) -> None:
+def test_list_finds_pods_carrying_a_seat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     cluster = FakeCluster(
         pod_document(
             uid=1000,
@@ -1692,8 +1701,143 @@ def test_list_finds_pods_carrying_a_seat(capsys: pytest.CaptureFixture[str]) -> 
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    assert main(["list", "-n", "demo"], runner=cluster) == 0
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
     assert "demo/target" in capsys.readouterr().out
+
+
+def seated_cluster() -> FakeCluster:
+    """One pod in ``demo`` carrying a running seat."""
+    return FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+
+def written_stanza(directory: Path, alias: str) -> Path:
+    """The stanza ``attach`` would have left for ``demo/target``, under ``alias``."""
+    path = ssh_config_path(directory, PodRef("demo", "target"))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(f"Host {alias}\n    HostName target\n    User root\n")
+    return path
+
+
+def test_list_reports_the_alias_the_stanza_carries_not_the_computed_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The failure this exists to catch: `attach --host-alias mine` is recorded
+    # nowhere in the cluster, so a recomputed default would name a Host that
+    # does not resolve for the one user who chose otherwise.
+    written_stanza(tmp_path / "cfg", "mine")
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=seated_cluster(),
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "ssh mine" in out
+    assert "podbench-demo-target" not in out
+
+
+def test_status_reports_the_alias_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    written_stanza(tmp_path / "cfg", "podbench-demo-target")
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=seated_cluster(),
+        )
+        == 0
+    )
+    assert "ssh podbench-demo-target" in capsys.readouterr().out
+
+
+def test_a_seat_landed_elsewhere_is_named_as_such_not_guessed_at(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=seated_cluster(),
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "no ssh config here" in out
+    assert "podbench ssh-config -n demo target" in out
+    assert "ssh podbench-demo-target" not in out
+
+
+def test_an_unreadable_config_dir_costs_the_alias_not_the_listing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --config-dir pointed at a file, which is what a typo looks like: the read
+    # fails with NotADirectoryError rather than "missing", and a listing that
+    # died on it would lose the seats as well as the alias.
+    not_a_dir = tmp_path / "cfg"
+    not_a_dir.write_text("")
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(not_a_dir)],
+            runner=seated_cluster(),
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "demo/target" in out
+    assert "cannot read" in out and "Not a directory" in out
+
+
+def test_a_stanza_with_no_host_line_is_reported_as_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"))
+    path.parent.mkdir(parents=True)
+    path.write_text("    User root\n")
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=seated_cluster(),
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "no Host line" in out
+    assert str(path) in out
+
+
+def test_list_still_writes_no_ssh_config(tmp_path: Path) -> None:
+    # Reading the config dir is a change of contract for this verb; writing to
+    # it would be another one, and `list` is a verb people run in a loop.
+    directory = tmp_path / "cfg"
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(directory)],
+            runner=seated_cluster(),
+        )
+        == 0
+    )
+    assert not directory.exists()
+
+
+def test_the_host_line_is_read_however_it_was_spelled() -> None:
+    # ssh_config keywords are case-insensitive and a leading indent is legal, so
+    # a stanza someone tidied by hand still names the alias they connect with.
+    assert host_alias_in("\thost  tidied\n\tuser root\n") == "tidied"
+    # A commented-out Host is not one ssh would match, so neither is it one to
+    # tell the user to type.
+    assert host_alias_in("# Host old\nHost real\n") == "real"
 
 
 def test_resize_failure_is_a_warning_not_a_dead_end() -> None:
