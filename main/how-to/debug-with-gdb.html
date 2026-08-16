@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.1.0b4.dev21+g80565f8df documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.1.0b4.dev33+g122f2edbc documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=eb918b62"></script>
+    <script src="../_static/documentation_options.js?v=5b83d658"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -800,16 +800,29 @@ that container.</p>
 <h3>Let podbench write it<a class="headerlink" href="#let-podbench-write-it" title="Link to this heading">#</a></h3>
 <p>Do not hand-copy the templates below unless you have to. In the seat:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="nd">@victim</span><span class="p">:</span><span class="o">~</span><span class="c1"># debug-config</span>
+<span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">,</span> <span class="n">observe</span> <span class="n">mode</span><span class="p">,</span> <span class="n">x86_64</span>
+<span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">emitting</span> <span class="n">gdb</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">,</span> <span class="n">observe</span> <span class="n">mode</span>
+<span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">emitting</span> <span class="n">lldb</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">;</span> <span class="n">CodeLLDB</span> <span class="n">brings</span> <span class="n">its</span> <span class="n">own</span> <span class="n">lldb</span> <span class="n">to</span> <span class="n">the</span> <span class="n">seat</span>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">/</span><span class="n">root</span><span class="o">/.</span><span class="n">vscode</span><span class="o">/</span><span class="n">launch</span><span class="o">.</span><span class="n">json</span>
-<span class="n">then</span><span class="p">:</span> <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim&quot;</span>
+  <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim (gdb)&quot;</span>
+  <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim (lldb)&quot;</span>
 </pre></div>
 </div>
 <p>It fills in the pid, the sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code>, the setup ordering, the
-architecture and <code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> from what it can already see, which is the
-whole point: every one of those fails <em>silently</em> when wrong. <code class="docutils literal notranslate"><span class="pre">--print-config</span></code>
-emits it instead of writing it, <code class="docutils literal notranslate"><span class="pre">--output</span></code> puts it beside the folder you
-actually opened, and <code class="docutils literal notranslate"><span class="pre">--lldb</span></code> emits the CodeLLDB form. Re-running it replaces
-its own entry and leaves any hand-written configuration alone.</p>
+architecture, <code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> and the mode’s path mappings from what it can
+already see, which is the whole point: every one of those fails <em>silently</em> when
+wrong.</p>
+<p><strong>Every flavour that applies is emitted</strong>, named for its debugger, because
+<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> holds a list and VS Code’s dropdown is a better chooser than a
+guess. A flavour that cannot be emitted gets a sentence naming the mechanism
+instead — <code class="docutils literal notranslate"><span class="pre">--flavour</span> <span class="pre">gdb|lldb|delve|debugpy</span></code> asks for one by name and makes it
+say why if it cannot. <code class="docutils literal notranslate"><span class="pre">--print-config</span></code> emits instead of writing, <code class="docutils literal notranslate"><span class="pre">--output</span></code> puts
+it beside the folder you actually opened, and re-running replaces its own
+entries and leaves any hand-written configuration alone.</p>
+<p>For a <strong>Python</strong> target the answer is debugpy rather than gdb, and it depends on
+the architecture as well as the language — the
+<a class="reference internal" href="../reference/cli.html"><span class="std std-doc">CLI reference</span></a> has the three axes and what each one
+changes.</p>
 <p>VS Code reads <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> from the folder that is <strong>open</strong>, not from
 <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>. A config written to <code class="docutils literal notranslate"><span class="pre">~</span></code> when you opened <code class="docutils literal notranslate"><span class="pre">/</span></code> never appears in the Run
 and Debug list, and nothing reports an error.</p>

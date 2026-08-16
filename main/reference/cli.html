@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b4.dev21+g80565f8df documentation</title>
+    <title>Command-line reference &#8212; podbench 0.1.0b4.dev33+g122f2edbc documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=eb918b62"></script>
+    <script src="../_static/documentation_options.js?v=5b83d658"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1216,6 +1216,21 @@ scratch <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTA
 failure there is structural) and a live attach on the target; then a six-path
 <code class="docutils literal notranslate"><span class="pre">/proc</span></code> read matrix. Yama is a <strong>node-level</strong> knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.</p>
+<p>A <strong>DEBUGGERS</strong> block sits beside the verdict, listing what the image actually
+ships — so what <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> emits and what the seat can run cannot drift
+apart:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>DEBUGGERS (what this image ships)
+  yes  gdb: /usr/local/bin/gdb
+  no   lldb: absent (CodeLLDB brings its own to the remote, so this is optional)
+  no   dlv: absent (delve, for Go targets)
+  yes  gdb-podbench: /usr/local/bin/gdb-podbench (`gdb` on PATH is the shim)
+  yes  debugpy: /opt/podbench/debugpy (attach helpers: attach_linux_amd64.so)
+</pre></div>
+</div>
+<p>Two lines say more than yes/no on purpose. <code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code> reports whether a bare
+<code class="docutils literal notranslate"><span class="pre">gdb</span></code> <em>resolves</em> to the wrapper, because that is what a tool shelling out to
+<code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span></code> will run; and debugpy lists its attach helpers by name, because on
+arm64 the package is present and the mechanism is not.</p>
 </section>
 <section id="pids">
 <h3><code class="docutils literal notranslate"><span class="pre">pids</span></code><a class="headerlink" href="#pids" title="Link to this heading">#</a></h3>
@@ -1277,45 +1292,114 @@ come first. See <a class="reference internal" href="../how-to/debug-with-gdb.htm
 <section id="debug-config">
 <h3><code class="docutils literal notranslate"><span class="pre">debug-config</span></code><a class="headerlink" href="#debug-config" title="Link to this heading">#</a></h3>
 <p>The VS Code debug configuration for this seat, written the way <code class="docutils literal notranslate"><span class="pre">attach</span></code> writes
-the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code> or a
-setup ordering, each of which fails <em>silently</em> when wrong.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
- Usage: debug-config [OPTIONS] [PID]                                                                
-                                                                                                    
- Write the VS Code debug configuration for this seat, with the pid, the sysroot-prefixed program    
- path and the gdb setup order already filled in.                                                    
-                                                                                                    
+the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code>, a
+setup ordering or a path mapping, each of which fails <em>silently</em> when wrong.</p>
+<p>Which debugger is not one choice but three: <strong>language x mode x architecture</strong>.
+Every configuration that applies is emitted at once, each named for its flavour,
+so <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>’s list and VS Code’s own dropdown become the choice. Every
+flavour that does <em>not</em> apply gets a sentence naming the mechanism.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: debug-config [OPTIONS] [PID]
+
+ Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
+ with the pid, the sysroot-prefixed program path and the mode&#39;s path mappings already filled in.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   [PID]      &lt;int&gt;  pid to attach to; discovered from the container id if omitted                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --container-id         ID       target container id used to discover the pid (default:           │
-│                                 $PODBENCH_TARGET_CID)                                            │
-│ --program              PATH     the target&#39;s binary as its own rootfs spells it, when            │
-│                                 /proc/&lt;pid&gt;/exe cannot be read. It is prefixed with the sysroot  │
-│                                 here, so do not prefix it yourself                               │
-│ --source-dir           DIR      extra source directory in *this* container, wired with gdb&#39;s     │
-│                                 `directory`. Repeatable                                          │
-│ --source-map           FROM=TO  map a DWARF compilation directory (`info source` prints it) onto │
-│                                 a readable path. Repeatable                                      │
-│ --no-debuginfod                 do not enable debuginfod (it needs ca-certificates and network)  │
-│ --lldb                          emit a CodeLLDB configuration instead of cpptools&#39; cppdbg        │
-│ --print-config                  print the configuration instead of writing it                    │
-│ --output               PATH     where to write it (default: ./.vscode/launch.json)               │
-│ --help                          Show this message and exit.                                      │
+│ --container-id         ID                        target container id used to discover the pid    │
+│                                                  (default: $PODBENCH_TARGET_CID)                 │
+│ --flavour              &lt;gdb|lldb|delve|debugpy&gt;  emit only this debugger flavour, and say why if │
+│                                                  it cannot be emitted. Repeatable; the default   │
+│                                                  is every flavour that applies                   │
+│ --mode                 &lt;observe|dev&gt;             override the detected mode. Observe attaches to │
+│                                                  another container and needs path mappings; dev  │
+│                                                  launches in this one and must not have any      │
+│ --port                 PORT                      the debugpy port to connect to (shared network  │
+│                                                  namespace, so always 127.0.0.1)                 │
+│                                                  [default: 5678]                                 │
+│ --program              PATH                      the target&#39;s binary as its own rootfs spells    │
+│                                                  it, when /proc/&lt;pid&gt;/exe cannot be read. It is  │
+│                                                  prefixed with the sysroot here, so do not       │
+│                                                  prefix it yourself                              │
+│ --source-dir           DIR                       extra source directory in *this* container,     │
+│                                                  wired with gdb&#39;s `directory`. Repeatable        │
+│ --source-map           FROM=TO                   map a DWARF compilation directory (`info        │
+│                                                  source` prints it) onto a readable path.        │
+│                                                  Repeatable                                      │
+│ --no-debuginfod                                  do not enable debuginfod (it needs              │
+│                                                  ca-certificates and network)                    │
+│ --lldb                                           shorthand for --flavour lldb                    │
+│ --print-config                                   print the configuration instead of writing it   │
+│ --output               PATH                      where to write it (default:                     │
+│                                                  ./.vscode/launch.json)                          │
+│ --help                                           Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
+<section id="the-three-axes">
+<h4>The three axes<a class="headerlink" href="#the-three-axes" title="Link to this heading">#</a></h4>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>axis</p></th>
+<th class="head"><p>how it is decided</p></th>
+<th class="head"><p>what it changes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>language</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/exe</span></code> and <code class="docutils literal notranslate"><span class="pre">argv[0]</span></code> for an interpreter; the target’s ELF sections for Go (<code class="docutils literal notranslate"><span class="pre">.gopclntab</span></code>)</p></td>
+<td><p>which adapter: <code class="docutils literal notranslate"><span class="pre">cppdbg</span></code>, CodeLLDB, the Go extension, debugpy</p></td>
+</tr>
+<tr class="row-odd"><td><p>mode</p></td>
+<td><p>whether the target shares this container’s <strong>mount namespace</strong> — a <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> pod relaunches the app from the seat, so its process is on this side</p></td>
+<td><p>attach vs launch, and whether <code class="docutils literal notranslate"><span class="pre">pathMappings</span></code> is populated <strong>or empty</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>architecture</p></td>
+<td><p>the target <em>binary</em>’s <code class="docutils literal notranslate"><span class="pre">e_machine</span></code>, not the node label</p></td>
+<td><p>whether debugpy’s attach-to-pid exists at all</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">pathMappings</span></code> is the field with no error message: get it wrong and breakpoints
+simply never bind. In Observe mode the editor sees the source through
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> and the debuggee reports its own path, so a mapping is
+required; in dev mode both are the same inodes and the mapping must be empty.
+<code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code> is right in both, because the seat and the app share the pod’s
+network namespace — no port-forward, no tunnel.</p>
+</section>
+<section id="when-a-flavour-cannot-be-emitted">
+<h4>When a flavour cannot be emitted<a class="headerlink" href="#when-a-flavour-cannot-be-emitted" title="Link to this heading">#</a></h4>
+<p>The refusal names the mechanism, in <code class="docutils literal notranslate"><span class="pre">capreport</span></code>’s house style, and lists <em>every</em>
+unmet prerequisite rather than only the first — fixing one to meet the next wall
+is the experience this replaces:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>debug-config: debugpy unavailable: no debugpy in this seat to drive the injection
+debug-config:   also: debugpy is not importable by the target: the bootstrap runs
+                inside the target&#39;s interpreter, and debugpy injects a dlopen of the
+                path the *driver* sees, which the target&#39;s mount namespace does not have
+debug-config:   also: no sysroot-aware gdb on PATH: debugpy shells out to a bare
+                `gdb --nx --pid`, which reads this seat&#39;s libraries for the target&#39;s process
+</pre></div>
+</div>
+<p>On arm64 the architecture prerequisite is promoted to the headline, because it
+is the only one with no remedy anywhere: debugpy ships <code class="docutils literal notranslate"><span class="pre">attach_linux_amd64.so</span></code>
+alone and publishes no aarch64 Linux wheel, so there is nothing to install.
+<code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> baked into the app is pure Python and works on any
+architecture — as does <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> names <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/gdb-podbench</span></code>, never <code class="docutils literal notranslate"><span class="pre">/usr/bin/gdb</span></code>:
 cpptools launches gdb inheriting its own extension directory as a working
 directory, which VS Code deletes on extension update, and gdb’s libpython then
 dies in <code class="docutils literal notranslate"><span class="pre">getcwd()</span></code> during startup with no signal name. <code class="docutils literal notranslate"><span class="pre">--source-map</span> <span class="pre">/</span></code> is
 refused rather than emitted — gdb re-applies a root substitution on display and
 the editor is handed <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/proc/&lt;pid&gt;/root/...</span></code>.</p>
-<p>Re-running replaces its own entry by name and leaves a hand-written
-configuration beside it untouched. A <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> it cannot parse — VS Code
-permits comments, <code class="docutils literal notranslate"><span class="pre">json</span></code> does not — is refused rather than rewritten. See
+<p>Re-running replaces its own entries by name and leaves a hand-written
+configuration beside them untouched — which is why every generated name carries
+its flavour. A <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> it cannot parse — VS Code permits comments, <code class="docutils literal notranslate"><span class="pre">json</span></code>
+does not — is refused rather than rewritten. See
 <a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
+</section>
 </section>
 <section id="dev-bootstrap">
 <h3><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code><a class="headerlink" href="#dev-bootstrap" title="Link to this heading">#</a></h3>
@@ -1574,7 +1658,11 @@ stream.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capreport"><code class="docutils literal notranslate"><span class="pre">capreport</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pids"><code class="docutils literal notranslate"><span class="pre">pids</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dbg"><code class="docutils literal notranslate"><span class="pre">dbg</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#debug-config"><code class="docutils literal notranslate"><span class="pre">debug-config</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#debug-config"><code class="docutils literal notranslate"><span class="pre">debug-config</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-three-axes">The three axes</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-flavour-cannot-be-emitted">When a flavour cannot be emitted</a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev-bootstrap"><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run"><code class="docutils literal notranslate"><span class="pre">run</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stop"><code class="docutils literal notranslate"><span class="pre">stop</span></code></a></li>
