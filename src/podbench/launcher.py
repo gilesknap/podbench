@@ -1137,8 +1137,8 @@ def run_capreport(
     """Run ``capreport --json`` inside the seat and parse it.
 
     ``check=False`` is not laziness: capreport's exit code *is* its verdict — 0
-    live attach, 10 read-only, 20 nothing — so a non-zero exit is the normal
-    case on a restricted namespace.
+    live attach, 10 read-only, 15 launch-only, 20 nothing — so a non-zero exit
+    is the normal case on a restricted namespace.
     """
     result = kubectl.exec_(
         seat.pod.name, CAPREPORT_ARGV, container=seat.container, check=False

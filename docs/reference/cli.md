@@ -709,7 +709,7 @@ automatically after every attach; run it yourself when something changes.
 | Code | Verdict |
 |---|---|
 | `0` | live attach available |
-| `10` | read-only debugging available (target rootfs, `maps`, `environ`; gdb-launch works) |
+| `10` | read-only inspection of the target (rootfs, `maps`, `environ`); no live attach; gdb-launch works |
 | `15` | launch-only: no read-only inspection of the target, but `podbench dbg --launch` works |
 | `20` | neither; the seat itself still works |
 
@@ -1067,4 +1067,4 @@ stream.
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
 | `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `patch status` found a pod needing attention; or `doctor` found something blocking an attach |
 | `2` | a launcher error, a `patch` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
-| `0` / `10` / `20` | `capreport` only: the capability verdict |
+| `0` / `10` / `15` / `20` | `capreport` only: the capability verdict |
