@@ -17,18 +17,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from podbench.gdbcmd import attach_commands
 from podbench.vscode import (
     GDB_WRAPPER,
+    MACHINE_SETTINGS_PATH,
     SEAT_CWD,
+    SEAT_MACHINE_SETTINGS,
     cppdbg_configuration,
     launch_json_text,
     lldb_configuration,
     main,
     merge_launch_json,
+    merge_machine_settings,
     setup_commands,
     target_architecture,
 )
@@ -259,3 +263,111 @@ def test_no_pid_and_no_container_id_refuses_to_guess(
     monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
     assert main(["--print-config"], proc=tmp_path) != 0
     assert "PID 1" in capsys.readouterr().err
+
+
+# --- machine settings -------------------------------------------------------
+#
+# The failure these guard is unrecoverable rather than annoying: a folder opened
+# at / walks /proc/<pid>/root into every other container in the pod, the seat
+# cannot reserve memory of its own, and an OOM-killed ephemeral container cannot
+# be restarted.
+
+_WALKERS = ("files.watcherExclude", "search.exclude", "C_Cpp.files.exclude")
+"""Every shipped setting that decides where a recursive walk may go."""
+
+
+@pytest.mark.parametrize("setting", _WALKERS)
+@pytest.mark.parametrize("pattern", ["**/proc/**", "**/sys/**", "**/dev/**"])
+def test_every_walker_is_kept_out_of_the_pseudo_filesystems(
+    setting: str, pattern: str
+) -> None:
+    assert SEAT_MACHINE_SETTINGS[setting][pattern] is True
+
+
+def test_pylance_gets_the_same_paths_in_its_own_spelling() -> None:
+    """``python.analysis.exclude`` is a list of absolute globs, not an object."""
+    excludes = cast("list[str]", SEAT_MACHINE_SETTINGS["python.analysis.exclude"])
+    assert {"/proc/**", "/sys/**", "/dev/**"} <= set(excludes)
+
+
+def test_search_does_not_follow_the_way_into_another_container() -> None:
+    """ripgrep is handed ``--follow`` by default, and ``/proc/<pid>/root`` is a
+    symlink into another container's rootfs — ``/proc/self/root`` back into this
+    one. Excludes alone do not cover a symlink that leaves the excluded tree."""
+    assert SEAT_MACHINE_SETTINGS["search.followSymlinks"] is False
+
+
+def test_the_explorer_is_left_alone() -> None:
+    """``files.exclude`` would *hide* /proc, and reading the workload's files
+    through ``/proc/<pid>/root`` is what Observe mode is for. Opening a file
+    there is safe; only the recursive walk a folder starts is not."""
+    assert "files.exclude" not in SEAT_MACHINE_SETTINGS
+
+
+def test_the_settings_file_is_machine_scope() -> None:
+    """User or workspace scope would apply to one folder, and the folder that
+    kills the seat is the first one opened."""
+    assert MACHINE_SETTINGS_PATH == ".vscode-server/data/Machine/settings.json"
+
+
+def test_an_absent_file_gets_the_whole_document() -> None:
+    document = json.loads(merge_machine_settings(None) or "")
+    assert document == SEAT_MACHINE_SETTINGS
+
+
+def test_merging_what_we_wrote_changes_nothing() -> None:
+    """``None`` rather than an identical rewrite: a second attach reports what it
+    did, and "changed nothing" is what tells the user the first session is
+    untouched."""
+    assert merge_machine_settings(merge_machine_settings(None)) is None
+
+
+def test_a_users_own_value_wins_over_ours() -> None:
+    """Including a deliberate ``false``: somebody who turned an exclude off
+    means it, and podbench turning it back on every reconnect would be a fight
+    they cannot win."""
+    merged = merge_machine_settings(
+        json.dumps(
+            {
+                "editor.fontSize": 15,
+                "search.followSymlinks": True,
+                "search.exclude": {"**/proc/**": False, "**/vendor/**": True},
+            }
+        )
+    )
+    document = json.loads(merged or "")
+    assert document["editor.fontSize"] == 15
+    assert document["search.followSymlinks"] is True
+    assert document["search.exclude"]["**/proc/**"] is False
+    # …and the patterns they had no opinion about are still added.
+    assert document["search.exclude"]["**/vendor/**"] is True
+    assert document["search.exclude"]["**/sys/**"] is True
+    assert document["files.watcherExclude"]["**/proc/**"] is True
+
+
+def test_a_setting_of_an_unexpected_shape_is_not_rewritten() -> None:
+    """A string where we ship an object is the user's, whatever they meant by
+    it. Replacing it would be the clobber this whole merge exists to avoid."""
+    merged = merge_machine_settings(json.dumps({"search.exclude": "everything"}))
+    assert json.loads(merged or "")["search.exclude"] == "everything"
+
+
+def test_pylance_excludes_are_appended_rather_than_replaced() -> None:
+    merged = merge_machine_settings(
+        json.dumps({"python.analysis.exclude": ["/opt/vendor/**"]})
+    )
+    excludes = json.loads(merged or "")["python.analysis.exclude"]
+    assert excludes[0] == "/opt/vendor/**"
+    assert "/proc/**" in excludes
+
+
+def test_merge_refuses_a_settings_file_it_cannot_parse() -> None:
+    """VS Code allows comments in settings.json and :mod:`json` does not, so a
+    rewrite would drop whatever this parser could not see."""
+    with pytest.raises(ValueError, match="cannot parse"):
+        merge_machine_settings("{ // mine\n}")
+
+
+def test_merge_refuses_a_document_that_is_not_an_object() -> None:
+    with pytest.raises(ValueError, match="not a JSON object"):
+        merge_machine_settings("[]")
