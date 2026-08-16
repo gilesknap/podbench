@@ -1828,14 +1828,15 @@ def _build_app() -> typer.Typer:
             ):
                 print(action)
             raise typer.Exit(0)
-        # Which pod first, in `attach`'s own words and by the same rules: a
-        # mistyped reference is refused before a missing key is complained
-        # about, so the two verbs fail identically on identical input.
-        origin = resolve_pod(kube, pod, prompt=not no_prompt)
-        # Before anything is created: the key is authored into the sidecar's
-        # env, which cannot be changed afterwards, so a missing key must refuse
-        # here rather than after a pod exists that can never be ssh'd into.
+        # The key before the pod, exactly as `attach` orders it: a missing key
+        # refuses this run whichever pod is chosen, and asking someone which pod
+        # they meant first would spend their answer on it. It is also the last
+        # moment it can be refused at all — the key is authored into the
+        # sidecar's env, and an ordinary container's env is immutable once the
+        # pod exists, so a dev pod created without one can only be deleted and
+        # made again.
         key_path, public_key = _identity_argument(identity)
+        origin = resolve_pod(kube, pod, prompt=not no_prompt)
         created, manifest = create_dev_pod(
             kube,
             origin,

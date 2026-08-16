@@ -22,12 +22,20 @@ podbench dev POD -n NS [--container NAME] [--port 8080]
 │ LOCAL                                                            │
 │   namespace : -n, else the kubeconfig context's own              │
 │              config view --minify -o jsonpath={..namespace}      │
+│   ssh key   : ~/.ssh/id_ed25519.pub — read before the namespace  │
+│              is listed, exactly as attach reads it: a missing    │
+│              key refuses this run whichever pod is chosen, so    │
+│              asking which one would spend the answer on nothing  │
 │   POD       : pod/NAME, a bare NAME, a substring, or nothing —   │
 │              resolved by attach's own helper, so an ambiguous    │
 │              one lists the namespace and asks (--no-prompt, or   │
 │              a stdin that is not a tty, refuses instead)         │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
+                                  ├─ no .pub file ───────────────▶ exit 1
+                                  ▼      an ordinary container's env is immutable
+                                         once the pod exists, so there is no
+                                         second chance: a dev pod made without a
+                                         key can only be deleted and remade
 ┌──────────────────────────────────────────────────────────────────┐
 │ READ THE ORIGIN         get pod POD -o json                      │
 └─────────────────────────────────┬────────────────────────────────┘
@@ -60,15 +68,6 @@ podbench dev POD -n NS [--container NAME] [--port 8080]
 │   seat identity    = uid/gid, if the origin declares the         │
 │                      podbench-identity volume and pins both      │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ READ YOUR SSH KEY   ~/.ssh/id_ed25519.pub                        │
-│                                                                  │
-│   Before anything is created, and there is no second chance: an  │
-│   ordinary container's env is immutable once the pod exists, so  │
-│   a dev pod made without a key can only be deleted and remade.   │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  ├─ no .pub file ───────────────▶ exit 1
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ AUTHOR THE CLONE   (pure JSON in, JSON out; see next section)    │

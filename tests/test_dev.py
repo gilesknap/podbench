@@ -1597,6 +1597,32 @@ def test_cli_delete_will_not_guess_between_two_dev_pods(
     assert not any("delete" in argv for argv in kube.commands)
 
 
+def test_cli_reads_the_key_before_it_asks_which_pod(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """`attach`'s order, for `attach`'s reason.
+
+    A missing key refuses this run whichever pod is chosen, so the namespace is
+    not listed and the question is not asked: an answer spent on a run that
+    cannot proceed is an answer wasted.
+    """
+    kube = FakeKubectl(
+        **{
+            "pod/demo-7f9": named_pod("demo-7f9"),
+            "pod/demo-canary": named_pod("demo-canary"),
+        }
+    )
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        ["dev", "demo", "-n", "podbench-test", "--identity", str(tmp_path / "absent")]
+    )
+
+    assert code == 1
+    assert "ssh-keygen" in capsys.readouterr().err
+    assert not any(argv[3:5] == ("get", "pods") for argv in kube.commands)
+
+
 def test_cli_run_will_not_relaunch_without_being_told_the_port():
     # The port is what the pre-flight and the ownership check are about, so
     # there is no default for it.
