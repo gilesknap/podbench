@@ -68,6 +68,7 @@ class FakeMachine:
         can_i_answers: bool = True,
         identity_fingerprint: str = MINE,
         identity_algorithm: str = "ED25519",
+        identity_listing: str | None = None,
         keygen_error: str = "",
         agent_keys: Sequence[str] | None = (),
         agent_error: tuple[int, str] | None = None,
@@ -80,6 +81,10 @@ class FakeMachine:
         self.can_i_answers = can_i_answers
         self.identity_fingerprint = identity_fingerprint
         self.identity_algorithm = identity_algorithm
+        self.identity_listing = identity_listing
+        """The whole of ``ssh-keygen -lf``'s stdout, for a ``.pub`` holding more
+        than one key. ``None`` builds the single line the other two describe."""
+
         self.keygen_error = keygen_error
         self.agent_keys = agent_keys
         """What ``ssh-add -l`` lists, or ``None`` for an agent that never answers."""
@@ -108,9 +113,11 @@ class FakeMachine:
         if argv[0] == "ssh-keygen":
             if self.keygen_error:
                 return 255, "", self.keygen_error
+            assert argv[1] == "-lf", f"unexpected ssh-keygen call: {argv}"
             return (
                 0,
-                f"256 {self.identity_fingerprint} dev@laptop "
+                self.identity_listing
+                or f"256 {self.identity_fingerprint} dev@laptop "
                 f"({self.identity_algorithm})\n",
                 "",
             )
@@ -381,12 +388,32 @@ def test_a_gnome_keyring_socket_is_named_with_the_ed25519_caveat(
     assert "agent refused operation" in rendered
 
 
+@pytest.mark.parametrize("algorithm", ["ED25519-SK", "ECDSA-SK", "ED25519-SK-CERT"])
 @pytest.mark.usefixtures("agent")
-def test_a_fido_key_is_never_told_to_bypass_its_agent(home: Path) -> None:
+def test_a_fido_key_is_never_told_to_bypass_its_agent(
+    home: Path, algorithm: str
+) -> None:
     # An sk-* key has no private half on disk: `IdentityAgent none` does not
-    # make it sign with the file, it stops it signing at all.
+    # make it sign with the file, it stops it signing at all. A certificate over
+    # one is the same key underneath, and ssh-keygen spells it -SK-CERT.
     wired(home)
-    machine = FakeMachine(agent_keys=(MINE,), identity_algorithm="ED25519-SK")
+    machine = FakeMachine(agent_keys=(MINE,), identity_algorithm=algorithm)
+    rendered = format_report(diagnose(runner=machine, which=machine.which))
+    assert "do not set IdentityAgent none" in rendered
+    assert "Host podbench-*" not in rendered
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_second_key_in_the_pub_file_cannot_mislabel_the_first(home: Path) -> None:
+    # `ssh-keygen -lf` prints one line per key in the file. Read as a whole, the
+    # fingerprint comes from the first line and the algorithm — anchored to the
+    # end of its line — from the last, which is how an sk key gets told to set
+    # `IdentityAgent none` and stop signing altogether.
+    wired(home)
+    machine = FakeMachine(
+        agent_keys=(MINE,),
+        identity_listing=f"256 {MINE} dev (ED25519-SK)\n3072 {SOMEONE_ELSES} d (RSA)\n",
+    )
     rendered = format_report(diagnose(runner=machine, which=machine.which))
     assert "do not set IdentityAgent none" in rendered
     assert "Host podbench-*" not in rendered

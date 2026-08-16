@@ -553,21 +553,31 @@ _ALGORITHM = re.compile(r"\(([A-Za-z0-9-]+)\)\s*$")
 
 
 def key_fingerprint(line: str) -> tuple[str, str] | None:
-    """``(fingerprint, algorithm)`` from one ``ssh-keygen -l``/``ssh-add -l`` line.
+    r"""``(fingerprint, algorithm)`` from one ``ssh-keygen -l``/``ssh-add -l`` line.
 
     The two commands print the same shape, which is the whole reason a file on
     disk can be compared against the contents of an agent without asking either
     of them to sign anything.
 
+    Only the first line is read, and that is load-bearing rather than tidy: a
+    ``.pub`` may legally hold more than one key, ``ssh-keygen -lf`` then prints
+    one line per key, and the algorithm is anchored to the end of its line. Given
+    the lot, the fingerprint would come from the first key and the algorithm from
+    the last — and an ``sk-*`` key reported as ``RSA`` is told to set
+    ``IdentityAgent none``, which stops it signing at all.
+
     >>> key_fingerprint("256 SHA256:Ql+7 dev@laptop (ED25519)")
     ('SHA256:Ql+7', 'ED25519')
+    >>> key_fingerprint("256 SHA256:a d (ED25519-SK)\n3072 SHA256:b d (RSA)")
+    ('SHA256:a', 'ED25519-SK')
     >>> key_fingerprint("The agent has no identities.") is None
     True
     """
-    found = _FINGERPRINT.search(line)
+    first = line.partition("\n")[0]
+    found = _FINGERPRINT.search(first)
     if found is None:
         return None
-    algorithm = _ALGORITHM.search(line.strip())
+    algorithm = _ALGORITHM.search(first.strip())
     return found.group(1), algorithm.group(1) if algorithm else ""
 
 
@@ -705,7 +715,10 @@ def _agent_hint(socket: str, algorithm: str) -> str:
         "prove it is the agent and not the seat:  "
         "SSH_AUTH_SOCK= ssh podbench-<namespace>-<pod>"
     )
-    if algorithm.upper().endswith("-SK"):
+    # "-SK" rather than a suffix test: a certificate over an sk-* key prints
+    # ED25519-SK-CERT, and the key underneath is just as unable to sign without
+    # its token.
+    if "-SK" in algorithm.upper():
         lines.append(
             f"do not set IdentityAgent none for this key: a {algorithm} key has "
             "no private half on disk and can only sign through an agent"
