@@ -39,6 +39,34 @@ uv run --no-sync pytest tests/e2e -v
 | `PODBENCH_E2E_CONTEXT` | kubeconfig context. Deliberately *not* `current-context`: a developer's default is usually a real cluster, and these tests create containers with `CAP_SYS_PTRACE` |
 | `PODBENCH_E2E_KUBECTL` | kubectl binary, if it is not on `PATH` as `kubectl` |
 
+### Testing an image built from your branch
+
+Half of podbench ships *inside* the image — `image/bin/*`, and `podbench agent`
+itself — and none of it can be exercised from a checkout: the devcontainer has
+no docker, and the image the e2e job side-loads into kind never leaves the
+runner. So a change to the image is only reviewable once a registry has it.
+
+Pushing the branch is what publishes it. Every branch push runs the same build,
+smoke tests and multi-arch merge as `main`, and tags the result after the
+branch — the next release's SemVer with the branch appended as a further
+prerelease identifier:
+
+```bash
+git push -u origin my-branch          # CI builds and publishes
+just e2e ghcr.io/gilesknap/podbench:0.1.0-beta.4-my-branch
+```
+
+Two properties are deliberate. The tag sorts *after* the release it descends
+from and can never collide with it, so a branch image is unmistakably not a
+release; and `latest` and `main` are asserted unreachable from a branch build,
+because `main` is `podbench.model.FLOATING_TAG` — the tag every launcher run
+from a checkout pulls.
+
+The branch tag **moves with every push**. A run that pulls it twice can get two
+different images, and losing that race inside an ephemeral container is not
+recoverable. Every branch build therefore also publishes `sha-<full-sha>`; pin
+that when a run must be reproducible.
+
 ## What it touches
 
 Every namespace is created by the suite, named `podbench-e2e-<random>`, and
