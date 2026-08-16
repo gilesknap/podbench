@@ -947,7 +947,10 @@ the flag it probes the destination for writability first and names what refuses:
 not readable from the seat: the mount flag lives in the target's mount
 namespace, so it arrives as `EROFS` on the write. Uid 0 in the seat carries
 `CAP_DAC_OVERRIDE`, so the target's own uid and file modes are never the
-explanation. Where the rootfs is read-only there is usually still a writable
+explanation — a `permission denied` here is the `/proc/<pid>/root` traversal,
+which takes `PTRACE_MODE_READ` and is refused to a root seat with no
+`CAP_SYS_PTRACE` (report 3.11), or an LSM denying the cross-container write.
+Where the rootfs is read-only there is usually still a writable
 `emptyDir` or tmpfs in the pod — `--provision-dest` puts the copy there instead,
 and is also the extra path `debug-config` searches on a later run.
 

@@ -175,16 +175,33 @@ def blocker_sentence(error: OSError, destination: Path) -> str:
             "emptyDir or a tmpfs the pod already declares is the usual one"
         )
     if error.errno == errno.ENOSPC:
+        # Deliberately *not* the pod's ephemeral-storage limit: that one is
+        # enforced by the kubelet's periodic disk poll and arrives as an
+        # eviction with no errno at all, so an errno here is the filesystem
+        # itself, and naming the wrong of the two sends the reader to the wrong
+        # `describe`.
         return (
-            f"no space left at {destination}: the ~15 MB comes out of an "
-            "ephemeral-storage budget this seat shares with the workload and "
-            "cannot reserve, and exceeding it evicts the pod"
+            f"no space left at {destination}: this is the filesystem backing it "
+            "- the node's disk, or the `sizeLimit` on the emptyDir or tmpfs "
+            "--provision-dest points at. The pod's own ephemeral-storage limit "
+            "is a different mechanism, polled by the kubelet and reported as an "
+            "eviction rather than as an errno"
         )
     if error.errno in (errno.EACCES, errno.EPERM):
+        # Three distinct causes, and CAP_DAC_OVERRIDE covers only the first.
+        # Report 3.11 measured the second: at uid 0 with an empty effective set
+        # even `ls /proc/<pid>/root` is denied, because the traversal takes
+        # PTRACE_MODE_READ. The third is R8's unvalidated case, and the one seen
+        # on the Diamond cluster - and an LSM is not a capability check.
         return (
             f"permission denied at {destination}: uid 0 in this seat carries "
-            "CAP_DAC_OVERRIDE, so this is not the target's file modes - check "
-            "which rung `capreport` says this seat landed on"
+            "CAP_DAC_OVERRIDE, so the target's own file modes are not it. What "
+            "is left is the /proc/<pid>/root traversal, which takes "
+            "PTRACE_MODE_READ and so is refused to a root seat with no "
+            "CAP_SYS_PTRACE (report 3.11), or an LSM denying the cross-container "
+            "write - SELinux or a custom AppArmor profile, neither of which "
+            "CAP_DAC_OVERRIDE touches. `capreport` names the rung and prints "
+            "both profiles"
         )
     return f"cannot write {destination}: {error.strerror or error}"
 

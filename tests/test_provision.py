@@ -113,10 +113,30 @@ def test_a_read_only_rootfs_is_named_rather_than_guessed_at() -> None:
     assert "--provision-dest" in sentence
 
 
-def test_a_full_ephemeral_budget_says_whose_budget_it_is() -> None:
-    """An ephemeral container cannot reserve storage, so it is the workload's."""
+def test_a_full_filesystem_is_not_blamed_on_the_pods_storage_limit() -> None:
+    """Two disjoint mechanisms, and only one of them produces an errno.
+
+    ``ENOSPC`` is the filesystem under the destination. The pod's
+    ephemeral-storage limit is polled by the kubelet and arrives as an eviction
+    with no errno at all, so naming it here would send the reader to the wrong
+    `describe` for a full node disk.
+    """
     sentence = blocker_sentence(OSError(errno.ENOSPC, "full"), Path("/proc/1/root"))
-    assert "cannot reserve" in sentence
+    assert "the node's disk" in sentence
+    assert "eviction rather than as an errno" in sentence
+
+
+def test_a_denied_write_names_the_causes_dac_override_does_not_cover() -> None:
+    """Uid 0 rules out the target's modes, and nothing else.
+
+    Report 3.11 measured a root seat with no CAP_SYS_PTRACE being refused even
+    `ls /proc/<pid>/root`, and R8 leaves a custom AppArmor profile as the
+    unvalidated case - both survive CAP_DAC_OVERRIDE, and the old sentence
+    steered the reader away from them.
+    """
+    sentence = blocker_sentence(OSError(errno.EACCES, "denied"), Path("/proc/1/root"))
+    assert "PTRACE_MODE_READ" in sentence
+    assert "AppArmor" in sentence
 
 
 def test_the_probe_writes_rather_than_asking_the_kernel_about_modes(
