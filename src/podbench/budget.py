@@ -136,6 +136,21 @@ class ProbeKind(enum.Enum):
             ),
         }[self]
 
+    @property
+    def stake(self) -> str:
+        """What is lost at the end of the budget, in three words.
+
+        :attr:`consequence` for a report with one line to spend on all three.
+
+        >>> ProbeKind.READINESS.stake
+        'out of the Service'
+        """
+        return {
+            ProbeKind.READINESS: "out of the Service",
+            ProbeKind.LIVENESS: "kills the seat",
+            ProbeKind.STARTUP: "kills the container",
+        }[self]
+
     def streak_cost(self, threshold: int) -> str:
         """What the ``threshold``-th *failure in a row* costs, in one clause.
 
@@ -333,6 +348,36 @@ def probe_explanation(container: str, budgets: Sequence[ProbeBudget]) -> str | N
     return "\n".join(lines)
 
 
+def probe_warning(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
+    """The one line a probed target owes an attach, or ``None`` if nothing is.
+
+    Conditional on a probe that can actually fire: a startup probe still
+    running holds the other two off, so quoting their deadlines there would be
+    quoting deadlines that are not in effect.
+
+    The consequence rides on each window rather than being left to the
+    explanation, because these two are not the same kind of bad news and the
+    quiet one is the worse: a liveness kill is loud and takes the seat, while
+    the pod leaving its Service recovers on continue and leaves nothing behind
+    to point at the debugger.
+
+    >>> pod = {"spec": {"containers": [{"name": "app",
+    ...     "readinessProbe": {"periodSeconds": 5},
+    ...     "livenessProbe": {"periodSeconds": 10}}]}}
+    >>> probe_warning("app", probe_budgets(pod, "app"))
+    'breakpoints are on a timer: readiness 11-16s (out of the Service), liveness 21-31s (kills the seat)'
+    >>> probe_warning("app", ()) is None
+    True
+    """  # noqa: E501
+    live = [budget for budget in budgets if budget.in_force]
+    if not live:
+        return None
+    windows = ", ".join(
+        f"{budget.kind.value} {budget.window} ({budget.kind.stake})" for budget in live
+    )
+    return f"breakpoints are on a timer: {windows}"
+
+
 def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
     """One line qualifying what live attach means on this pod.
 
@@ -359,7 +404,7 @@ def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
     return (
         f"TIME-LIMITED: {container!r} answers probes, so a pause has a "
         f"deadline - the first is {soonest.kind.value} at {soonest.window}. "
-        "The WARNING below has the arithmetic and the way out"
+        "The arithmetic and the way out are below"
     )
 
 

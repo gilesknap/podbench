@@ -44,26 +44,20 @@ attach` computes both deadlines from the target's own spec and prints them,
 so the numbers below are for the pod you name rather than for pods in general:
 
 ```
-supports
-  [x] live attach (gdb -p <pid>)
-      TIME-LIMITED: 'app' answers probes, so a pause has a deadline - the
-      first is readiness at 11-16s. The WARNING below has the arithmetic and
-      the way out
-...
-WARNING
-  a breakpoint on 'app' is on a timer: it answers probes, and a process
-  stopped in a debugger does not - which the kubelet cannot tell from a
-  hang.
-    readiness, 11-16s into a pause: the pod goes not-ready and stops
-      taking Service traffic - ...
-    liveness, 21-31s into a pause: the container is killed and restarted -
-      and the seat, which shares its namespaces, is killed with it. ...
+! breakpoints are on a timer: readiness 11-16s (out of the Service),
+  liveness 21-31s (kills the seat)
 ```
 
-A target with no probes gets the opposite statement — `no deadline: 'victim'
-declares no readiness, liveness or startup probe` — because "explore freely"
-and "you have twenty seconds" are different facts and you need to know which
-one you are in. For an unlimited pause on a probed workload use
+The arithmetic those two windows came from — what each probe does at the end of
+its budget, why neither can be turned off on a running pod, and what to do
+instead — is a `podbench status --explain` away, which is where you want it
+anyway: that is the command you run *before* setting a breakpoint, and it
+mutates nothing.
+
+A target with no probes gets the opposite statement — `pause  no deadline:
+'victim' declares no readiness, liveness or startup probe` — because "explore
+freely" and "you have twenty seconds" are different facts and you need to know
+which one you are in. For an unlimited pause on a probed workload use
 [`podbench dev`](iterate-on-python.md), which strips all three probes by
 construction; [Debug with gdb](debug-with-gdb.md) has the measurements.
 
@@ -144,20 +138,17 @@ Nothing to do — that is the normal path. podbench catches the refusal and fall
 to the next rung automatically, and still exits `0`:
 
 ```
-rung        degraded - target UID, no capabilities (read-only inspection)
-ladder
-  full      refused  Pod Security Admission: must not include "SYS_PTRACE" in
-                     securityContext.capabilities.add
-  degraded  landed   admitted by the API server and the kubelet
-supports
-  [ ] live attach (gdb -p <pid>)
-      CAP_SYS_PTRACE is not in this container's effective set...
-  [x] read-only inspect (/proc/<pid>/root, maps, environ)
-      root, maps and environ readable
-  [x] debug launched processes (podbench dbg --launch ./prog)
-  [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
-  [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
+target      app        rung  degraded - target UID, no capabilities
+refused     full: Pod Security Admission refused it synchronously: must not
+            include "SYS_PTRACE" in securityContext.capabilities.add
+supports    inspect, launch, ssh seat, exec seat   (not: live attach, iterate)
+measured    read-only inspection of the target; no live attach - blocker
+            no-cap-sys-ptrace; node nuc2, yama 1, uids 1000/1000
 ```
+
+Only the rung that was **refused** is listed. A ladder step that landed is on
+the `rung` line already, and four lines saying nothing happened is how a report
+stops being read.
 
 The degraded rung is genuinely useful. It reads the target's rootfs, `maps`,
 `environ`, `exe` and `cwd`, and it gives you **full source-level debugging of
@@ -170,20 +161,14 @@ Two things it cannot do, so do not plan on them: `/proc/<pid>/mem` and
 
 ## When the reads are denied too
 
-The line under each tick is the measurement it was taken from, so the case above
-is distinguishable from this one at a glance:
+A missing feature gets one line, and it is the measurement rather than the
+mechanism — so the case above is distinguishable from this one at a glance:
 
 ```
-supports
-  [ ] live attach (gdb -p <pid>)
-      denied by Yama: /proc/sys/kernel/yama/ptrace_scope forbids attaching...
-  [ ] read-only inspect (/proc/<pid>/root, maps, environ)
-      cmdline, status and fd only; root, maps and environ denied
-      the three paths this line names take PTRACE_MODE_READ, which the
-      mechanism that refused attach gates too - see the blocker below
-  [x] debug launched processes (podbench dbg --launch ./prog)
-measured
-  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
+supports    launch, ssh seat, exec seat   (not: live attach, inspect, iterate)
+  no inspect: cmdline, status and fd only; root, maps and environ denied
+measured    launch-only: `podbench dbg --launch` works; no read-only inspection -
+            blocker yama-scope; node b01-1-worker3, yama 1, uids 1000/1000
 ```
 
 This is the **launch-only** rung, and it is a real one — a Diamond production pod
@@ -196,14 +181,13 @@ descendant needs no capability and no Yama exemption. So go straight to
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.
 
-The empty box beside **iterate** is not a verdict on the other two modes, and on
-this rung the report says so:
+`iterate` in that `not:` list is not a verdict on the other two modes, and on
+this rung — and only on this rung, where a reader has just watched everything
+be denied — the report says so:
 
 ```
-  [ ] iterate (edit, relaunch, verify through the Service)
-      what closed this pod does not close the other two modes: `podbench dev`
-      and `podbench hotfix` debug the sidecar's own child, the attach this seat
-      just measured as permitted, so on a pod like this one they are the way in
+  no iterate: `podbench dev` and `podbench hotfix` debug the sidecar's own
+    child - the attach this seat just measured as permitted
 ```
 
 Whatever refused attach here refuses *someone else's* process. In Iterate and
@@ -221,9 +205,8 @@ on a different node is probed again rather than assumed.
 ### When the blocker is `selinux`
 
 ```
-measured
-  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
-  blocker     selinux
+measured    launch-only: `podbench dbg --launch` works; no read-only inspection -
+            blocker selinux; node b01-1-worker3, yama 1, uids 1000/1000
 ```
 
 Nothing you can put in a pod spec changes this: SELinux policy is node
@@ -262,7 +245,16 @@ This raises the **target container's** memory limit in place
 headroom has to exist before vscode-server starts allocating into a limit
 podbench cannot reserve.
 
-It is opt-in and it prints a warning either way, for two reasons.
+A resize that happened says so in one line, and one that did not happen says
+nothing at all:
+
+```
+! resized app to 4Gi - restore it on detach; a rollout, a scale or an eviction
+  reverts it silently
+```
+
+Both halves of that caveat are in `podbench status --explain`, and they are the
+reason `--resize` is opt-in.
 
 It is only **partly proven**: three pods, two of them managed by a Deployment —
 a ReplicaSet reconciles pod *existence*, not pod *spec*, so it does not fight
@@ -274,6 +266,19 @@ template still asks for the original limit, nothing reconciles the difference,
 and so any rollout, scale, image bump or eviction regenerates the pod from that
 template and silently reverts the resize. If you resize to make a seat viable,
 raise the template too, or expect the next unrelated rollout to take it away.
+
+Whether you need it at all is measured rather than assumed. `attach` sums the
+pod's memory limits, subtracts what its containers have reserved, and warns
+only when what is left is short of the 1.1–1.3 GB a VS Code seat takes:
+
+```
+! memory: 256Mi free of a 512Mi pod limit, and a VS Code seat needs 1.1-1.3Gi -
+  re-attach with --resize 2Gi
+```
+
+A pod with the headroom — including one you have just resized — is told
+nothing, and neither is a pod with no memory limit at all, because there is no
+cgroup ceiling there for the seat to hit.
 
 Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.

@@ -56,6 +56,7 @@ from podbench.model import (
     PodRef,
     Rung,
     Verdict,
+    as_dict,
 )
 from podbench.sshcfg import SEAT_USER
 
@@ -294,6 +295,10 @@ class FakeCluster:
         if rest[:1] == ["patch"]:
             if self.patch_error is not None:
                 return _fail(self.patch_error)
+            # Applied to the document, because `attach` re-reads the pod after
+            # resizing it and the whole point of the resize is that the next
+            # read sees the raised limit.
+            self._apply_resize(rest[rest.index("-p") + 1])
             return _ok("pod/target patched")
         raise AssertionError(f"unexpected kubectl call: {list(argv)}")
 
@@ -304,6 +309,27 @@ class FakeCluster:
             if cast(dict[str, Any], pod["metadata"])["name"] == name:
                 return pod
         return None
+
+    def _apply_resize(self, payload: str) -> None:
+        """A strategic merge of the resize body into the pod document.
+
+        Merged rather than assigned: a strategic patch of `limits` leaves
+        `requests` where it was, and a fixture that dropped them would make a
+        pod look emptier after a resize than the API server leaves it.
+        """
+        body = cast(dict[str, Any], json.loads(payload))
+        patched = cast(
+            list[dict[str, Any]], as_dict(body.get("spec")).get("containers")
+        )
+        for entry in patched or []:
+            for container in cast(list[dict[str, Any]], self.pod["spec"]["containers"]):
+                if container["name"] != entry.get("name"):
+                    continue
+                resources = cast(dict[str, Any], container.setdefault("resources", {}))
+                for field, values in as_dict(entry.get("resources")).items():
+                    cast(dict[str, Any], resources.setdefault(field, {})).update(
+                        cast(dict[str, Any], values)
+                    )
 
     def _ephemeral_specs(
         self, pod: dict[str, Any] | None = None
@@ -947,13 +973,16 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     assert "subPath" in ssh_seat.note
     assert "--seat-gid-root" in ssh_seat.note
 
-    text = format_session(session)
-    assert SEAT_IDENTITY_VOLUME in text
-    assert "--seat-gid-root" in text
+    # The remedy is in the compact report, where a reader can act on it; why
+    # the volume cannot be projected is one command away.
+    assert "--seat-gid-root" in format_session(session)
+    explained = format_session(session, explain=True)
+    assert SEAT_IDENTITY_VOLUME in explained
+    assert "--seat-gid-root" in explained
 
     # …and a pod without the volume says nothing of the sort.
     plain = attach(talking_to(FakeCluster(pod_document(uid=1000))), "target")
-    assert SEAT_IDENTITY_VOLUME not in format_session(plain)
+    assert SEAT_IDENTITY_VOLUME not in format_session(plain, explain=True)
 
 
 def test_a_seat_that_already_has_a_login_is_not_told_to_re_attach() -> None:
@@ -1106,9 +1135,12 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     assert ssh_seat.available
     assert exec_seat.available
 
+    # The compact report names the blocker and the node it is a fact about;
+    # the paragraph on what ptrace_scope does is behind --explain.
     text = format_session(session)
-    assert "ptrace_scope" in text
-    assert "node02" in text
+    assert "yama-scope" in text
+    assert "node node02" in text
+    assert "ptrace_scope" in format_session(session, explain=True)
 
 
 DIAMOND_READS = {
@@ -1156,10 +1188,16 @@ def test_the_read_only_tick_comes_from_the_reads_it_names() -> None:
     assert launch.available
 
     text = format_session(session)
-    assert "[ ] read-only inspect" in text
-    assert "[x] debug launched processes" in text
-    # The evidence travels with the tick, so the two cannot drift apart again.
+    assert "(not: live attach, inspect, iterate)" in text
+    assert "launch" in text
+    # The evidence travels with the tick, so the two cannot drift apart again -
+    # in both shapes of the report, because it is the line that tells a
+    # launch-only pod from a read-only one.
     assert "cmdline, status and fd only; root, maps and environ denied" in text
+    explained = format_session(session, explain=True)
+    assert "[ ] read-only inspect" in explained
+    assert "[x] debug launched processes" in explained
+    assert "cmdline, status and fd only; root, maps and environ denied" in explained
 
 
 def test_a_launch_only_verdict_survives_the_json_round_trip() -> None:
@@ -1192,8 +1230,8 @@ def test_an_unmeasured_matrix_is_not_reported_as_a_refusal() -> None:
     `capreport` with no target pid resolves no matrix and still verdicts
     live_attach — no `PODBENCH_TARGET_CID`, or nothing in a cgroup matching the
     target's container id. Deriving the tick from the reads made that shape
-    print an unticked box blaming "the mechanism that refused attach", three
-    lines above `blocker  none`.
+    print an unticked box blaming "the mechanism that refused attach", on the
+    same report whose `measured` line says `blocker none`.
     """
     cluster = FakeCluster(
         pod_document(uid=1000),
@@ -1208,7 +1246,7 @@ def test_an_unmeasured_matrix_is_not_reported_as_a_refusal() -> None:
 
     text = format_session(session)
     assert "no /proc reads were measured" in text
-    assert "blocker     none" in text
+    assert "blocker none" in text
 
 
 def test_a_seat_that_cannot_ptrace_at_all_does_not_claim_gdb_launch() -> None:
@@ -1253,14 +1291,20 @@ def test_a_probed_target_is_given_its_deadline_before_it_costs_anything() -> Non
         "readiness",
         "liveness",
     ]
+    # One line, both windows, and what each of them costs - because these two
+    # are not the same kind of bad news and the quiet one is the worse.
     text = format_session(session)
-    assert "TIME-LIMITED" in text, "a bare [x] means two different things"
-    assert "readiness at 11-16s" in text
-    assert "`podbench dev`" in text
-    # One line per probe, indented under the warning: the wrap must not run
-    # them into a paragraph where the two numbers no longer compare.
-    assert "    readiness, 11-16s into a pause:" in text
-    assert "    liveness, 21-31s into a pause:" in text
+    assert "! breakpoints are on a timer:" in text
+    # The report wraps, so match the pieces rather than the whole line.
+    assert "readiness 11-16s (out of the Service)" in text
+    assert "liveness" in text and "21-31s (kills the seat)" in text
+    assert "podbench status -n demo target --explain" in text
+    assert len(text.splitlines()) < 12, "the whole report, not just this line"
+
+    # The arithmetic those windows came from, one command away.
+    explained = format_session(session, explain=True)
+    assert "TIME-LIMITED" in explained, "a bare [x] means two different things"
+    assert "readiness at 11-16s" in explained
 
 
 def test_an_unprobed_target_is_told_so_rather_than_left_to_infer_it() -> None:
@@ -1362,11 +1406,16 @@ def test_the_launch_only_rung_says_the_other_modes_are_untouched() -> None:
     )
     session = attach(talking_to(cluster), "target")
 
+    # Kept in the compact report, on the one rung where it is the difference
+    # between a dead end and the next command (issue #52).
     text = format_session(session)
-    assert "[ ] iterate" in text
+    assert "(not: live attach, inspect, iterate)" in text
     assert "`podbench hotfix` debug the sidecar's own child" in text
-    # And the blocker the launcher never had to understand to relay.
-    assert "ausearch -m avc -ts recent" in text
+    # And the blocker the launcher never had to understand to relay. The
+    # compact report names it; what to ask the node's administrator for is a
+    # paragraph, and paragraphs are what --explain is for.
+    assert "blocker" in text and "selinux" in text
+    assert "ausearch -m avc -ts recent" in format_session(session, explain=True)
 
 
 def test_a_live_attach_does_not_advertise_the_other_modes() -> None:
@@ -1551,8 +1600,11 @@ def test_the_capability_report_marks_the_ssh_seat_unavailable() -> None:
     assert "podbench capreport" in exec_seat.name
 
     text = format_session(session)
-    assert "[ ] ssh seat" in text
-    assert "[x] exec seat" in text
+    assert "(not: iterate, ssh seat)" in text
+    assert "exec seat" in text
+    # The compact line carries the way out rather than sshd's own words.
+    assert "--new --seat-gid-root" in text
+    assert "not writable" in format_session(session, explain=True)
 
 
 def test_an_image_that_cannot_answer_still_gets_its_stanza(
@@ -1584,8 +1636,9 @@ def test_an_image_that_cannot_answer_still_gets_its_stanza(
     out = capsys.readouterr().out
     assert "ProxyCommand" in out
     # …but it is not claimed as measured either.
-    assert "[ ] ssh seat" in out
-    assert "not measured" in out
+    assert "not: " in out and "ssh seat" in out
+    assert "did not answer whether sshd" in out
+    assert "the stanza is written anyway" in out
 
 
 def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
@@ -2410,8 +2463,11 @@ def test_a_successful_resize_says_the_controller_still_asks_for_the_old_limit() 
     cluster = FakeCluster(pod_document(uid=1000))
     note = try_resize(talking_to(cluster), "target", "app", "6Gi")
     assert "6Gi" in note
-    assert "template" in note
     assert "rollout" in note
+    assert "restore it on detach" in note
+    assert "\n" not in note, "one line beside the others; the rest is --explain"
+    # …and the half a rollout does not explain is still stated somewhere.
+    assert "template" in RESIZE_WARNING
 
 
 def test_the_resize_warning_keeps_the_quota_caveats_it_has_not_narrowed() -> None:
@@ -2472,6 +2528,29 @@ def test_a_resize_that_happened_carries_its_own_caveat(
     out = capsys.readouterr().out
     assert "4Gi" in out
     assert "reverts" in out
+
+
+def test_the_bench_run_fits_on_a_screen_and_contradicts_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`attach demo --new --resize 4Gi`, 2026-08-16: 66 lines, 37 of them in
+    WARNING blocks - one warning about a resize that had not happened and one
+    about a limit that had just been raised (issue #54).
+
+    Both preconditions are checked here rather than the wording, which is what
+    the rest of these assert: the resize note appears because a resize
+    happened, and the memory warning does not because the pod now has the room.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=0, probes=PROBES, memory_limit="512Mi", memory_request="256Mi")
+    )
+    assert main(attach_argv(tmp_path, "--resize", "4Gi"), runner=cluster) == 0
+
+    report = capsys.readouterr().out.split("\n\n")[0].splitlines()
+    assert len(report) <= 12, "\n".join(report)
+    assert not [line for line in report if line.startswith("! memory:")]
+    assert [line for line in report if line.startswith("! resized app to 4Gi")]
+    assert "explain     podbench status -n demo target --explain" in report
 
 
 def test_a_pod_with_no_room_for_a_seat_is_told_so_in_its_own_numbers() -> None:

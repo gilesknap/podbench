@@ -124,42 +124,41 @@ the spec podbench asked for:
 
 ```
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
-target      web
-rung        full - root + CAP_SYS_PTRACE (live attach)
-ladder
-  full      landed   admitted by the API server and the kubelet
-supports
-  [x] live attach (gdb -p <pid>)
-  [x] read-only inspect (/proc/<pid>/root, maps, environ)
-      root, maps and environ readable
-  [x] debug launched processes (podbench dbg --launch ./prog)
-  [ ] iterate (edit, relaunch, verify through the Service)
-  [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
-  [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
-measured
-  verdict     live attach available
-  blocker     none
-  node        kind-worker
-  yama        1
-  uids        seat 0, target 0
+target      web        rung  full - root + CAP_SYS_PTRACE (live attach)
+supports    live attach, inspect, launch, ssh seat, exec seat   (not: iterate)
+measured    live attach available - blocker none; node kind-worker, yama 1,
+            uids 0/0
+pause       no deadline: 'web' declares no readiness, liveness or startup
+            probe, so nothing removes it from a Service or restarts it while
+            it is stopped
+explain     podbench status -n podbench-demo web-6c9d7f4b8b-hq2vn --explain
 ```
 
-Three lines are worth learning to read:
+Every line is a conclusion, and a line beginning `!` is one that will cost you
+something — on a pod that carries probes there is one saying how long a
+breakpoint has before the kubelet acts, and this pod has none, so it says so
+instead. Three lines are worth learning to read:
 
 * **`rung`** — what the *cluster* admitted. `degraded` means `SYS_PTRACE` was
   refused by Pod Security Admission and podbench fell back to the target's own
   UID. That is a normal outcome, not a failure, and the command still exits `0`.
-* **`blocker`** — what actually stops ptrace, if anything. Five unrelated
-  subsystems (missing capability, Yama, seccomp, and the node's LSM — AppArmor or
-  SELinux) refuse with the same `EPERM`; this line names which.
+* **`blocker`**, on the `measured` line — what actually stops ptrace, if
+  anything. Five unrelated subsystems (missing capability, Yama, seccomp, and
+  the node's LSM — AppArmor or SELinux) refuse with the same `EPERM`; this
+  names which.
 * **`yama` and `node`** — both are per-node. Attach working on one pod and being
   denied on the next, in the same cluster, is expected: kernel flavours differ.
   podbench never caches a cluster-wide answer.
 
-The indented line under a tick is the measurement the tick was taken from — here,
-which of the target's `/proc` paths actually opened. Read it rather than the box:
-`cmdline, status and fd only` under an empty box means the seat is
-{term}`launch-only`, and `podbench dbg --launch` is where to go next.
+Anything in the `not:` list that was *measured* to be missing gets a line of
+its own underneath — `no inspect: cmdline, status and fd only; root, maps and
+environ denied` means the seat is {term}`launch-only`, and `podbench dbg --launch` is
+where to go next.
+
+And when you want the reasoning rather than the conclusion — what decided each
+of those, what a pause actually costs, how much memory the seat is sharing —
+that is the last line: `podbench status --explain` prints all of it, spelled
+for this pod, and changes nothing while it does.
 
 ## 5. Connect with ssh
 

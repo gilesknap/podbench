@@ -149,7 +149,8 @@ That is not incidental — see *Where source text actually comes from* below.
 $ podbench attach pod/victim -n podbench-gdb
 ```
 
-Check the report says `[x] live attach`. If it does not, skip to
+Check the report lists `live attach` under `supports`, rather than in its
+`(not: ...)` list. If it does not, skip to
 *Without SYS_PTRACE* below — you still get source-level
 debugging, just not of the already-running process.
 
@@ -211,7 +212,7 @@ Every line earns its place:
 ## 5. Breakpoint, source, step
 
 `victim` declares no probes, so this pause is unlimited and you can take as long
-over it as you like — `podbench attach` said as much under `supports`. On a pod
+over it as you like — `podbench attach` said as much on its `pause` line. On a pod
 that *does* carry probes, read the timer warning at the top of this page before
 you break anywhere.
 

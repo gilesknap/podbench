@@ -103,7 +103,6 @@ __all__ = [
     "CONFIG_D",
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
-    "EXPLAIN_HINT",
     "HOST_KEY_ARGV",
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
@@ -126,6 +125,7 @@ __all__ = [
     "declared_volumes",
     "default_host_alias",
     "emit_ssh_config",
+    "explain_hint",
     "explain_note",
     "features",
     "forget_known_hosts",
@@ -977,9 +977,11 @@ def attach(
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
     # a caution about probed pods. It is stated before anyone sets a
-    # breakpoint, because the readiness half of it is invisible afterwards.
+    # breakpoint, because the readiness half of it is invisible afterwards -
+    # and it is the windows and the stakes only, because the arithmetic they
+    # came from is what `podbench status --explain` is for.
     budgets = probe_budgets(pod_json, session.workload)
-    probe_note = probe_explanation(session.workload, budgets)
+    probe_note = probe_warning(session.workload, budgets)
     if probe_note is not None:
         warnings.append(probe_note)
     # Not also a warning: `features` reports it under "supports", which is where
@@ -1315,6 +1317,18 @@ class Feature:
     the two apart from the report, and the mechanism is not visible in the
     seat itself."""
 
+    short: str = ""
+    """The label for the compact report's one-line ``supports``, which lists
+    every feature and so has no room for the parenthesis in ``name``."""
+
+    brief: str = ""
+    """The single actionable line a *missing* feature earns in that report.
+
+    Empty where the compact report already carries the answer - the blocker is
+    on the ``measured`` line, and ``iterate`` is unavailable in attach mode by
+    construction rather than by measurement - because a line that repeats what
+    is two lines above it is how a report stops being read."""
+
 
 READS_FEATURE = "read-only inspect (/proc/<pid>/root, maps, environ)"
 """Named once, because the label is a promise about three specific paths and
@@ -1340,14 +1354,21 @@ def features(session: Session) -> tuple[Feature, ...]:
     # Qualifies the tick rather than repeating the warning: a bare [x] says the
     # same thing on a pod that will restart under you in twenty seconds as on
     # one that will wait all afternoon, and those are different products. The
-    # arithmetic and the way out stay in the WARNING block.
+    # arithmetic and the way out stay in `status --explain`.
     deadline = probe_qualifier(session.workload, session.probes)
     if report is None:
         unknown = "capreport did not run, so this was not measured"
         return (
-            Feature("live attach (gdb -p <pid>)", False, unknown, note=deadline),
-            Feature(READS_FEATURE, False, unknown),
-            Feature(LAUNCH_FEATURE, False, unknown),
+            Feature(
+                "live attach (gdb -p <pid>)",
+                False,
+                unknown,
+                note=deadline,
+                short="live attach",
+                brief=unknown,
+            ),
+            Feature(READS_FEATURE, False, unknown, short="inspect"),
+            Feature(LAUNCH_FEATURE, False, unknown, short="launch"),
             _iterate_feature(report),
             *_seat_features(session),
         )
@@ -1357,6 +1378,10 @@ def features(session: Session) -> tuple[Feature, ...]:
             report.verdict is Verdict.LIVE_ATTACH,
             report.blocker.explanation,
             note=deadline,
+            short="live attach",
+            # No brief: the compact report's `measured` line names the blocker
+            # two lines below this one, and the paragraph explaining it is what
+            # `status --explain` is for.
         ),
         Feature(
             READS_FEATURE,
@@ -1369,6 +1394,10 @@ def features(session: Session) -> tuple[Feature, ...]:
             # Printed whether or not the box is ticked, so the label and the
             # evidence cannot drift apart again.
             note=report.reads_summary,
+            short="inspect",
+            # The measurement itself is the brief: it is already one line, and
+            # it is the line that tells a launch-only pod from a read-only one.
+            brief=report.reads_summary,
         ),
         Feature(
             LAUNCH_FEATURE,
@@ -1376,6 +1405,11 @@ def features(session: Session) -> tuple[Feature, ...]:
             "the seat could not ptrace even a child it forked itself, so "
             "ptrace(2) is unusable here and gdb cannot trace an inferior it "
             "starts either"
+            if report.child_attach_ok is False
+            else "the scratch attach was not measured, so this is not claimed",
+            short="launch",
+            brief="the seat could not ptrace a child it forked itself, so "
+            "ptrace(2) is unusable here"
             if report.child_attach_ok is False
             else "the scratch attach was not measured, so this is not claimed",
         ),
@@ -1434,12 +1468,40 @@ def _seat_features(session: Session) -> tuple[Feature, Feature]:
         else "the seat was not asked whether sshd can resolve a login name for "
         "the uid it runs as",
         note=_identity_note(session, usable=usable),
+        short="ssh seat",
+        # The remedy rather than the mechanism: sshd's own words are three
+        # lines of NSS, and the reader of a compact report needs the command
+        # that fixes it. `status --explain` keeps the mechanism.
+        #
+        # Unknown is not no, here as everywhere: an image that could not answer
+        # gets the fact that nothing was measured, not an instruction to fix
+        # something that may not be broken.
+        brief=_ssh_brief(identity),
     )
     return (
         ssh_seat,
         # `dbg --launch` used to be listed here, under a tick that is always
         # true. Whether it works is measured, and it has its own line now.
-        Feature("exec seat (kubectl exec -- podbench capreport, pids, dbg)", True),
+        Feature(
+            "exec seat (kubectl exec -- podbench capreport, pids, dbg)",
+            True,
+            short="exec seat",
+        ),
+    )
+
+
+def _ssh_brief(identity: SeatIdentity | None) -> str:
+    """The compact report's line for a seat that cannot be ssh'd into."""
+    if identity is None:
+        return "the seat was not asked whether sshd can resolve a login name"
+    if not identity.measured:
+        return (
+            "the seat did not answer whether sshd can resolve a login name for "
+            "its uid, so this is not claimed - the stanza is written anyway"
+        )
+    return (
+        "sshd cannot resolve a login name for this seat's uid - re-attach with "
+        "--new --seat-gid-root, which lets the agent register one"
     )
 
 
@@ -1504,6 +1566,16 @@ def _iterate_feature(report: CapabilityReport | None) -> Feature:
         "and a liveness probe would kill a stopped one. The relaunch loop needs "
         "a sacrificial dev pod (`podbench dev`), never the live workload.",
         note=_other_modes_note(report),
+        short="iterate",
+        # Nothing on the common path: `iterate` is unavailable in attach mode
+        # by construction, and a line saying so at every attach is the kind
+        # nobody reads by the third one. The exception is the rung where the
+        # reader has just watched everything be denied and is about to
+        # conclude the pod is shut to podbench altogether (issue #52).
+        brief=""
+        if report is None or report.verdict is not Verdict.LAUNCH_ONLY
+        else "`podbench dev` and `podbench hotfix` debug the sidecar's own "
+        "child - the attach this seat just measured as permitted",
     )
 
 
@@ -1520,8 +1592,22 @@ def _other_modes_note(report: CapabilityReport | None) -> str:
     )
 
 
-def format_session(session: Session) -> str:
-    """The capability report, which is the product of an attach."""
+def format_session(session: Session, *, explain: bool = False) -> str:
+    """The capability report, which is the product of an attach.
+
+    Two shapes of the same facts. The default is what ``attach`` prints: every
+    conclusion, one line each, and nothing that is true of pods in general. It
+    ran to 66 lines on the bench and 85 on Diamond, of which 37 and 43 were
+    WARNING blocks, and a report nobody reads to the end is one whose last line
+    might as well not be there (issue #54).
+
+    ``explain`` is the long form, printed by ``podbench status --explain``:
+    the same features with the mechanism that decided each, the ladder, and
+    every warning in full. Nothing is dropped by the compact shape - it is one
+    command away, and that command mutates nothing.
+    """
+    if not explain:
+        return _compact_session(session)
     lines = [
         f"seat        {session.seat}"
         + ("  (reconnected)" if session.reused else "  (new)"),
@@ -1567,6 +1653,83 @@ def format_session(session: Session) -> str:
     for warning in session.warnings:
         lines.append("WARNING")
         lines.extend(f"  {line}" for line in _warning_lines(warning))
+    return "\n".join(lines)
+
+
+def _compact_session(session: Session) -> str:
+    """The report as ``attach`` prints it: conclusions, one line each."""
+    lines = [
+        f"seat        {session.seat}"
+        + ("  (reconnected)" if session.reused else "  (new)"),
+        f"target      {session.workload:<10} rung  {session.rung.value} - "
+        f"{session.rung.description}",
+    ]
+    # Only the rungs that were refused. A ladder that landed on its first step
+    # is four lines saying nothing happened, and the rung it landed on is on
+    # the line above; a refusal is the surprise, and keeps its wording.
+    for step in session.steps:
+        if not step.admitted:
+            lines.extend(
+                _paragraph(
+                    step.detail,
+                    first=f"refused     {step.rung.value}: ",
+                    indent=" " * 12,
+                )
+            )
+
+    present = features(session)
+    supported = [feature.short for feature in present if feature.available]
+    missing = [feature.short for feature in present if not feature.available]
+    summary = ", ".join(supported) or "nothing measurable"
+    if missing:
+        summary += "   (not: " + ", ".join(missing) + ")"
+    lines.extend(_paragraph(summary, first="supports    ", indent=" " * 12))
+    for feature in present:
+        if not feature.available and feature.brief:
+            lines.extend(
+                _paragraph(
+                    feature.brief,
+                    first=f"  no {feature.short}: ",
+                    indent=" " * 4,
+                )
+            )
+
+    report = session.report
+    if report is None:
+        lines.append("measured    nothing: capreport did not run")
+    else:
+        lines.extend(
+            _paragraph(
+                f"{report.verdict.summary} - blocker {report.blocker.value}; "
+                f"node {report.node_name or 'unknown'}, "
+                f"yama {_yama(report.yama_scope)}, "
+                f"uids {report.self_uid}/"
+                f"{report.target_uid if report.target_uid is not None else '?'}",
+                first="measured    ",
+                indent=" " * 12,
+            )
+        )
+        # Kept in full: a note is emitted only when the image found something
+        # the launcher has no line for - an unknown blocker, two identical LSM
+        # contexts - so it is rare, and it is the part that is not restatable.
+        for note in report.notes:
+            lines.extend(_paragraph(note, first="note        ", indent=" " * 12))
+
+    # The good news, and only the good news: the deadline itself arrives as a
+    # warning below, and both readings have to be stated because "explore
+    # freely" and "you have twenty seconds" are different products.
+    if not any(budget.in_force for budget in session.probes):
+        lines.extend(
+            _paragraph(
+                probe_qualifier(session.workload, session.probes),
+                first="pause       ",
+                indent=" " * 12,
+            )
+        )
+
+    for warning in session.warnings:
+        lines.extend(_paragraph(warning, first="! ", indent="  "))
+    lines.append(f"explain     {explain_hint(session.pod)}")
     return "\n".join(lines)
 
 
@@ -2020,6 +2183,10 @@ def try_resize(kubectl: Kubectl, pod: str, container: str, memory: str) -> str:
     the controller that owns it (report R13): the raised limit is on the pod
     object alone, so the next thing to regenerate the pod from an unchanged
     template takes it away again with no other symptom than a seat that OOMs.
+    One line of it, though - what was raised, that it is yours to put back, and
+    that it can vanish without anyone doing anything. Why a ReplicaSet does not
+    fight it and what a LimitRange might do are in ``RESIZE_WARNING``, which
+    ``podbench status --explain`` prints.
     """
     body = {
         "spec": {
@@ -2036,10 +2203,8 @@ def try_resize(kubectl: Kubectl, pod: str, container: str, memory: str) -> str:
             f"the pod's existing limits: {error.stderr.strip() or error}"
         )
     return (
-        f"resized {container} to a {memory} memory limit; restore it on detach. "
-        "The raised limit lives on this pod, not on any controller that owns "
-        "it: a rollout, a scale, an image bump or an eviction regenerates the "
-        "pod from an unchanged template and silently reverts the resize."
+        f"resized {container} to {memory} - restore it on detach; a rollout, a "
+        "scale or an eviction reverts it silently"
     )
 
 
@@ -2260,12 +2425,19 @@ def probe_spend_note(
     )
 
 
-EXPLAIN_HINT = "podbench status --explain"
-"""Where the reasoning went, named wherever something was compressed out.
+def explain_hint(pod: PodRef) -> str:
+    """The command that prints the reasoning, spelled for *this* pod.
 
-A command nobody has heard of is not "one command away", so the compact report
-carries this line rather than trusting the reader to find the flag.
-"""
+    A command nobody has heard of is not "one command away", so the compact
+    report ends with this rather than trusting the reader to find the flag -
+    and it carries the namespace and the pod name, because a bare
+    ``podbench status`` in a namespace of more than one pod asks a question
+    instead of answering one.
+
+    >>> explain_hint(PodRef("demo", "web-6c9d7f4b8b-hq2vn"))
+    'podbench status -n demo web-6c9d7f4b8b-hq2vn --explain'
+    """
+    return f"podbench status -n {pod.namespace} {pod.name} --explain"
 
 
 def explain_note(
@@ -2297,7 +2469,7 @@ def explain_note(
                 # Carried through as it is: the capability report aligns its
                 # own columns, and re-wrapping it here would take the columns
                 # out and leave the numbers no longer comparing down them.
-                format_session(session).split("\n"),
+                format_session(session, explain=True).split("\n"),
             )
         )
     else:

@@ -409,9 +409,19 @@ Notes:
     volume, the `ssh seat` line explains that it cannot be projected into an
     ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
     the identity, the same line credits it.
-* `--resize` is opt-in and only partly proven; it prints a warning either way —
-  including that the raised limit is on the pod and not on its controller, so a
-  rollout reverts it — and needs `pods/resize` `patch`.
+* `--resize` is opt-in and only partly proven, and needs `pods/resize` `patch`.
+  A resize that happened is reported in one line — what was raised, that it is
+  yours to put back, and that a rollout reverts it silently; a run without the
+  flag says nothing about resizing, because none of those caveats is about a
+  pod nobody resized. The rest of R13 is in
+  {ref}`status --explain <status-explain>`.
+* **The report is conclusions, one line each.** Every warning fires only when
+  its own precondition holds — the memory line only when this pod's limits
+  leave a seat short, the timer line only when a probe can actually fire, the
+  resize line only when a resize happened — and the reasoning behind all of
+  them is one command away, in {ref}`status --explain <status-explain>`. It
+  ran to 66 lines on a bench pod and 85 on a Diamond production pod before
+  that, of which 37 and 43 were WARNING blocks.
 * `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
   fallback from the identity volume: GID 0 lets the agent append its own
   `/etc/passwd` record (the image makes the file group-writable for it), at the
