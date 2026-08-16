@@ -27,30 +27,7 @@
                 "null"
             ]
         },
-        "image": {
-            "type": "object",
-            "properties": {
-                "pullPolicy": {
-                    "type": "string",
-                    "enum": [
-                        "Always",
-                        "IfNotPresent",
-                        "Never"
-                    ]
-                },
-                "repository": {
-                    "type": "string"
-                },
-                "tag": {
-                    "type": "string"
-                }
-            },
-            "additionalProperties": false
-        },
-        "nameOverride": {
-            "type": "string"
-        },
-        "patchVenv": {
+        "hotfixVenv": {
             "type": "object",
             "properties": {
                 "claims": {
@@ -80,19 +57,42 @@
             },
             "additionalProperties": false
         },
+        "image": {
+            "type": "object",
+            "properties": {
+                "pullPolicy": {
+                    "type": "string",
+                    "enum": [
+                        "Always",
+                        "IfNotPresent",
+                        "Never"
+                    ]
+                },
+                "repository": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": false
+        },
+        "nameOverride": {
+            "type": "string"
+        },
         "rbac": {
             "type": "object",
             "properties": {
                 "create": {
                     "type": "boolean"
                 },
+                "hotfix": {
+                    "type": "boolean"
+                },
                 "iterate": {
                     "type": "boolean"
                 },
                 "observe": {
-                    "type": "boolean"
-                },
-                "patch": {
                     "type": "boolean"
                 },
                 "resize": {

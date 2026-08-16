@@ -90,8 +90,8 @@ def _launcher(args: Sequence[str]) -> int:
     return run_verb(args)
 
 
-def _patch(args: Sequence[str]) -> int:
-    from .patch import main as run_verb
+def _hotfix(args: Sequence[str]) -> int:
+    from .hotfix import main as run_verb
 
     return run_verb(args)
 
@@ -136,10 +136,10 @@ ENTRY_POINTS: dict[str, Verb] = {
         LAPTOP,
     ),
     "dev": Verb(_dev, True, "create or delete the dev pod", LAPTOP),
-    # `patch status` is a *sub*-verb of that parser and does not collide with
+    # `hotfix status` is a *sub*-verb of that parser and does not collide with
     # the launcher's own `status`.
-    "patch": Verb(
-        _patch, True, "durable in-place fixes on a claim-backed venv", LAPTOP
+    "hotfix": Verb(
+        _hotfix, True, "durable in-place fixes on a claim-backed venv", LAPTOP
     ),
     # In-pod: PID 1 and the helpers on PATH.
     "agent": Verb(

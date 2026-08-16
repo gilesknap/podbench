@@ -1,6 +1,6 @@
-"""Patch mode: an emergency fix that outlives the session, and its provenance.
+"""Hotfix mode: an emergency fix that outlives the session, and its provenance.
 
-Patch mode is the one place podbench asks for deploy-time cooperation, and the
+Hotfix mode is the one place podbench asks for deploy-time cooperation, and the
 one place it deliberately *inverts* an earlier rule. Everywhere else the design
 refuses to fight the kubelet: Iterate mode runs on a sacrificial clone precisely
 because killing PID 1 gets you pristine image code back. Here the venv lives on
@@ -16,7 +16,7 @@ where it does).
 Three things the PVC does *not* fix, and which this module exists to make
 visible rather than leave to be discovered:
 
-1. **The PVC venv shadows the image's.** An image upgrade under a live patch
+1. **The PVC venv shadows the image's.** An image upgrade under a live hotfix
    mount keeps running the old venv, and an interpreter bump breaks it outright
    — the ``bin/python`` symlink on the volume points at an interpreter path in
    the *image*, which is not on the volume. So the manifest records the
@@ -24,20 +24,20 @@ visible rather than leave to be discovered:
    ``status`` measures the live one instead of assuming.
 2. **Single replica only.** The claim is ReadWriteOnce, so a second replica
    either cannot schedule or, with RWX, races on the same checkout. ``init``
-   and ``apply`` refuse a multi-replica target rather than half-patch a
+   and ``apply`` refuse a multi-replica target rather than partially hotfix a
    Deployment.
-3. **A stale PVC silently reverts provenance.** Once a patch is consolidated
+3. **A stale PVC silently reverts provenance.** Once a hotfix is consolidated
    and the new image rolls out, a PVC left mounted keeps the *old* code running
    under a version string that claims to contain the fix. ``status`` calls that
    out by name.
 
-Provenance is therefore not decoration: every patch is a git commit, a manifest
+Provenance is therefore not decoration: every hotfix is a git commit, a manifest
 on the volume records what it was made against, and the pod carries an
-annotation saying it is patched. ``status`` is the point of the whole mode —
+annotation saying it is hotfixed. ``status`` is the point of the whole mode —
 silently-diverged pods are the risk it must never create.
 
 Where the provenance is written is itself a design decision. Pod annotations do
-not survive the reschedule that Patch mode *relies on*, so the annotations go on
+not survive the reschedule that Hotfix mode *relies on*, so the annotations go on
 the workload's pod template when there is one: they then propagate to every pod
 the controller makes, and the template edit is also what rolls the workload —
 the same mechanism ``kubectl rollout restart`` uses.
@@ -76,22 +76,22 @@ __all__ = [
     "MANIFEST_VERSION",
     "MAX_RECORDED_COMMITS",
     "METADATA_FILES",
-    "PATCHED_ANNOTATION",
+    "HOTFIXED_ANNOTATION",
     "SEAT_HOME_SIZE",
     "InterpreterProbe",
     "LocalStore",
     "ManifestVersionError",
     "MultiReplicaError",
-    "PatchCommit",
-    "PatchError",
-    "PatchHealth",
-    "PatchManifest",
-    "PatchRow",
-    "PatchStore",
-    "PatchTarget",
+    "HotfixCommit",
+    "HotfixError",
+    "HotfixHealth",
+    "HotfixManifest",
+    "HotfixRow",
+    "HotfixStore",
+    "HotfixTarget",
     "PodStore",
     "annotate",
-    "apply_patch",
+    "apply_hotfix",
     "assess",
     "changed_paths",
     "checkout_path",
@@ -118,7 +118,7 @@ __all__ = [
     "values_snippet",
 ]
 
-MANIFEST_FILENAME = ".podbench-patch.json"
+MANIFEST_FILENAME = ".podbench-hotfix.json"
 """The manifest, at the root of the claim — which is to say inside the venv.
 
 The claim is mounted *over* the application's venv path, so the venv directory
@@ -136,17 +136,17 @@ podbench will meet volumes written by this one and by whatever came before it. A
 how a fix silently loses its provenance.
 """
 
-PATCHED_ANNOTATION = "podbench.dev/patched"
+HOTFIXED_ANNOTATION = "podbench.dev/hotfixed"
 """Cheap marker. ``kubectl get pods -l`` cannot select on annotations, but this
-keeps the "is this pod patched?" question answerable by eye and by grep."""
+keeps the "is this pod hotfixed?" question answerable by eye and by grep."""
 
-MANIFEST_ANNOTATION = "podbench.dev/patch-manifest"
+MANIFEST_ANNOTATION = "podbench.dev/hotfix-manifest"
 """The manifest itself, so ``status`` needs one ``get pods`` and no exec."""
 
-APPLIED_ANNOTATION = "podbench.dev/patch-applied-at"
+APPLIED_ANNOTATION = "podbench.dev/hotfix-applied-at"
 """A timestamp that changes on every apply.
 
-Patching a pod template with an unchanged body is a no-op and no rollout
+Annotating a pod template with an unchanged body is a no-op and no rollout
 happens, which would leave the fix on the volume and the old process running.
 This is the same trick ``kubectl rollout restart`` uses.
 """
@@ -155,7 +155,7 @@ MAX_RECORDED_COMMITS = 20
 """How many commits the manifest carries verbatim.
 
 Annotations share a 256 KB budget with everything else on the object, and a long
-beamtime can accumulate a lot of patches. The count of commits ahead is recorded
+beamtime can accumulate a lot of hotfixes. The count of commits ahead is recorded
 separately so the drift figure stays exact even when the list is truncated.
 """
 
@@ -203,15 +203,15 @@ _WORKLOAD_KINDS: dict[str, str] = {
 }
 
 
-class PatchError(RuntimeError):
-    """Patch mode refused to do something, and says why."""
+class HotfixError(RuntimeError):
+    """Hotfix mode refused to do something, and says why."""
 
 
-class MultiReplicaError(PatchError):
+class MultiReplicaError(HotfixError):
     """The target runs more than one replica, which v1 does not support."""
 
 
-class ManifestVersionError(PatchError):
+class ManifestVersionError(HotfixError):
     """A manifest written by a newer podbench than this one."""
 
 
@@ -219,7 +219,7 @@ class ManifestVersionError(PatchError):
 
 
 @dataclass(frozen=True)
-class PatchCommit:
+class HotfixCommit:
     """One commit on the PVC checkout that the released image does not have."""
 
     sha: str
@@ -229,15 +229,15 @@ class PatchCommit:
     def short(self) -> str:
         """The abbreviated sha, for tables.
 
-        >>> PatchCommit("0123456789abcdef", "fix the thing").short
+        >>> HotfixCommit("0123456789abcdef", "fix the thing").short
         '0123456'
         """
         return self.sha[:7]
 
 
 @dataclass(frozen=True)
-class PatchManifest:
-    """What a patch was made against, recorded on the volume that carries it.
+class HotfixManifest:
+    """What a hotfix was made against, recorded on the volume that carries it.
 
     Every field is defaulted so that a manifest written by an older schema
     version loads rather than raising: the missing fields become empty, and
@@ -250,7 +250,7 @@ class PatchManifest:
     repo: str = ""
     base_image: str = ""
     base_image_digest: str = ""
-    """The ``imageID`` of the container when the patch was made. Compared
+    """The ``imageID`` of the container when the hotfix was made. Compared
     against the live one to detect an image upgrade under the mount."""
 
     interpreter: str = ""
@@ -264,7 +264,7 @@ class PatchManifest:
     author: str = ""
     timestamp: str = ""
     ahead: int = 0
-    commits: tuple[PatchCommit, ...] = ()
+    commits: tuple[HotfixCommit, ...] = ()
     consolidated_branch: str | None = None
     schema_version: int = MANIFEST_VERSION
 
@@ -298,24 +298,24 @@ class PatchManifest:
         return json.dumps(self.to_mapping(), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_mapping(cls, payload: Mapping[str, Any]) -> PatchManifest:
+    def from_mapping(cls, payload: Mapping[str, Any]) -> HotfixManifest:
         """Load a manifest, tolerating anything this schema once lacked.
 
-        >>> PatchManifest.from_mapping({"commit": "abc"}).schema_version
+        >>> HotfixManifest.from_mapping({"commit": "abc"}).schema_version
         0
-        >>> PatchManifest.from_mapping({"version": 1, "ahead": 2}).ahead
+        >>> HotfixManifest.from_mapping({"version": 1, "ahead": 2}).ahead
         2
         """
         version = _as_int(payload.get("version")) or 0
         if version > MANIFEST_VERSION:
             raise ManifestVersionError(
-                f"this patch manifest is schema version {version}; this podbench "
+                f"this hotfix manifest is schema version {version}; this podbench "
                 f"understands up to {MANIFEST_VERSION}. Upgrade podbench rather "
                 "than overwriting it — the fields it does not know about are "
                 "somebody's provenance."
             )
         commits = tuple(
-            PatchCommit(
+            HotfixCommit(
                 sha=_as_str(as_dict(entry).get("sha")) or "",
                 subject=_as_str(as_dict(entry).get("subject")) or "",
             )
@@ -340,11 +340,11 @@ class PatchManifest:
         )
 
     @classmethod
-    def from_json(cls, text: str) -> PatchManifest:
+    def from_json(cls, text: str) -> HotfixManifest:
         """Load from the JSON written by :meth:`to_json`."""
         parsed: object = json.loads(text)
         if not isinstance(parsed, dict):
-            raise PatchError("patch manifest is not a JSON object")
+            raise HotfixError("hotfix manifest is not a JSON object")
         return cls.from_mapping(cast(dict[str, Any], parsed))
 
     @property
@@ -357,7 +357,7 @@ def manifest_path(venv: str) -> str:
     """Where the manifest lives for a claim mounted at ``venv``.
 
     >>> manifest_path("/opt/venv")
-    '/opt/venv/.podbench-patch.json'
+    '/opt/venv/.podbench-hotfix.json'
     """
     return f"{venv.rstrip('/')}/{MANIFEST_FILENAME}"
 
@@ -376,29 +376,29 @@ def checkout_path(venv: str) -> str:
     return f"{venv.rstrip('/')}/src"
 
 
-def manifest_annotations(manifest: PatchManifest) -> dict[str, str]:
-    """The annotations that mark a pod (or pod template) as patched."""
+def manifest_annotations(manifest: HotfixManifest) -> dict[str, str]:
+    """The annotations that mark a pod (or pod template) as hotfixed."""
     return {
-        PATCHED_ANNOTATION: "true",
+        HOTFIXED_ANNOTATION: "true",
         MANIFEST_ANNOTATION: manifest.to_json(),
         APPLIED_ANNOTATION: manifest.timestamp,
     }
 
 
-def manifest_from_pod(pod_json: Mapping[str, Any]) -> PatchManifest | None:
+def manifest_from_pod(pod_json: Mapping[str, Any]) -> HotfixManifest | None:
     """The manifest a pod's annotations carry, or ``None`` if it has none."""
     annotations = as_dict(as_dict(pod_json.get("metadata")).get("annotations"))
     raw = _as_str(annotations.get(MANIFEST_ANNOTATION))
     if raw is None:
         return None
-    return PatchManifest.from_json(raw)
+    return HotfixManifest.from_json(raw)
 
 
 # -- reaching the volume ---------------------------------------------------
 
 
-class PatchStore(Protocol):
-    """How patch mode reaches the claim's filesystem and a git on it.
+class HotfixStore(Protocol):
+    """How hotfix mode reaches the claim's filesystem and a git on it.
 
     The claim is only ever mounted in the cluster, so the default is
     :class:`PodStore` — every read, write and git invocation goes through the
@@ -438,7 +438,7 @@ class LocalStore:
     def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
         result = self.runner(argv)
         if check and result.returncode != 0:
-            raise PatchError(
+            raise HotfixError(
                 f"{' '.join(argv)} exited {result.returncode}: "
                 f"{result.stderr.strip() or result.stdout.strip()}"
             )
@@ -462,7 +462,7 @@ class PodStore:
     """A claim reached through ``kubectl exec`` into the seat container.
 
     The seat is podbench's own image, so a shell and a git are guaranteed there;
-    the application container is assumed to have neither, and in Patch mode it
+    the application container is assumed to have neither, and in Hotfix mode it
     is quite likely to be distroless.
     """
 
@@ -491,15 +491,15 @@ class PodStore:
         return self.run(["test", "-e", path], check=False).returncode == 0
 
 
-def read_manifest(store: PatchStore, venv: str) -> PatchManifest | None:
+def read_manifest(store: HotfixStore, venv: str) -> HotfixManifest | None:
     """The manifest on the claim, or ``None`` if the claim has never been used."""
     text = store.read_text(manifest_path(venv))
     if text is None:
         return None
-    return PatchManifest.from_json(text)
+    return HotfixManifest.from_json(text)
 
 
-def write_manifest(store: PatchStore, manifest: PatchManifest) -> None:
+def write_manifest(store: HotfixStore, manifest: HotfixManifest) -> None:
     """Record the manifest on the claim it describes."""
     store.write_text(manifest_path(manifest.venv), manifest.to_json() + "\n")
 
@@ -571,7 +571,7 @@ def interpreter_warning(recorded: str, observed: str) -> str | None:
         return None
     if _feature_version(recorded) != _feature_version(observed):
         return (
-            f"the patched venv was built for Python {_feature_version(recorded)} "
+            f"the hotfixed venv was built for Python {_feature_version(recorded)} "
             f"but the container now runs {_feature_version(observed)}: the venv's "
             "site-packages will not import, and the pod is running on whatever "
             "the interpreter finds instead. Retire the claim or rebuild the venv."
@@ -620,30 +620,30 @@ def probe_interpreter(
 # -- git on the claim ------------------------------------------------------
 
 
-def parse_log(text: str) -> tuple[PatchCommit, ...]:
+def parse_log(text: str) -> tuple[HotfixCommit, ...]:
     """Read ``git log`` in this module's own format.
 
     ``%x1f`` rather than a printable separator, because a commit subject may
-    contain any printable character and a patch commit's subject is written by
+    contain any printable character and a hotfix commit's subject is written by
     somebody in a hurry at 3am.
 
     >>> parse_log("abc\\x1ffix the thing\\ndef\\x1fand another")
-    (PatchCommit(sha='abc', subject='fix the thing'), PatchCommit(sha='def', subject='and another'))
+    (HotfixCommit(sha='abc', subject='fix the thing'), HotfixCommit(sha='def', subject='and another'))
     """  # noqa: E501
-    commits: list[PatchCommit] = []
+    commits: list[HotfixCommit] = []
     for line in text.splitlines():
         if not line.strip():
             continue
         sha, separator, subject = line.partition(LOG_SEPARATOR)
         if not separator:
             continue
-        commits.append(PatchCommit(sha=sha.strip(), subject=subject.strip()))
+        commits.append(HotfixCommit(sha=sha.strip(), subject=subject.strip()))
     return tuple(commits)
 
 
 def drift_commits(
-    store: PatchStore, checkout: str, base_commit: str
-) -> tuple[PatchCommit, ...]:
+    store: HotfixStore, checkout: str, base_commit: str
+) -> tuple[HotfixCommit, ...]:
     """Commits on the claim's checkout that the released image does not have.
 
     Newest first, which is the order ``git log`` gives and the order a reader
@@ -656,7 +656,7 @@ def drift_commits(
         check=False,
     )
     if result.returncode != 0:
-        raise PatchError(
+        raise HotfixError(
             f"cannot measure drift from {base_commit[:12]}: "
             f"{result.stderr.strip() or result.stdout.strip()}. The manifest's "
             "base commit is not in this checkout — was the claim seeded from a "
@@ -678,7 +678,7 @@ def metadata_changed(paths: Sequence[str]) -> bool:
 
 
 def changed_paths(
-    store: PatchStore, checkout: str, previous: str, head: str
+    store: HotfixStore, checkout: str, previous: str, head: str
 ) -> tuple[str, ...]:
     """The paths the checkout's history moved between two commits.
 
@@ -688,7 +688,7 @@ def changed_paths(
     do when the fix took three attempts — and then running ``apply`` leaves a
     clean tree behind a moved HEAD. Guarding the packaging check on dirtiness
     skipped it in exactly that case, and the workload then rolled with a
-    ``.dist-info`` older than the commit: a patch adding an entry point looked
+    ``.dist-info`` older than the commit: a hotfix adding an entry point looked
     applied and was not.
 
     The whole range is examined and not just ``HEAD``, because several hand
@@ -697,7 +697,7 @@ def changed_paths(
     no commit, or a history that no longer contains the one it carries — the
     fallback is ``HEAD``'s own paths, which over-installs rather than
     under-installs; a redundant editable install costs seconds, a skipped one
-    costs a silently-unapplied patch.
+    costs a silently-unapplied hotfix.
     """
     if previous == head:
         return ()
@@ -731,7 +731,7 @@ def install_argv(venv: str, checkout: str) -> list[str]:
     Not in the seat: the venv's ``bin/python`` is a symlink to an interpreter
     that lives in the application image and is therefore not resolvable from
     podbench's own image, even though the venv itself is on a volume both can
-    see. ``--no-deps`` because a patch is a code change; pulling new
+    see. ``--no-deps`` because a hotfix is a code change; pulling new
     dependencies mid-run is a release, and releases go through the pipeline.
     """
     return [
@@ -750,8 +750,8 @@ def install_argv(venv: str, checkout: str) -> list[str]:
 
 
 @dataclass(frozen=True)
-class PatchTarget:
-    """The single pod a patch applies to, and the workload behind it."""
+class HotfixTarget:
+    """The single pod a hotfix applies to, and the workload behind it."""
 
     pod: PodRef
     container: str
@@ -782,11 +782,11 @@ def replica_count(obj: Mapping[str, Any]) -> int | None:
 
 def _refuse_multi_replica(kind: str, name: str, replicas: int) -> None:
     raise MultiReplicaError(
-        f"{kind}/{name} runs {replicas} replicas and patch mode v1 supports "
+        f"{kind}/{name} runs {replicas} replicas and hotfix mode v1 supports "
         "exactly one. The claim is ReadWriteOnce, so a second replica either "
         "fails to schedule or — with ReadWriteMany — two pods share one "
         "checkout and one venv, and an apply on either is a race with no "
-        "winner. Scale to 1 for the duration of the patch, or patch a "
+        "winner. Scale to 1 for the duration of the hotfix, or hotfix a "
         "single-replica canary and let the release pipeline carry the fix to "
         "the rest."
     )
@@ -794,10 +794,10 @@ def _refuse_multi_replica(kind: str, name: str, replicas: int) -> None:
 
 def resolve_target(
     kube: Kubectl, reference: str, *, container: str | None = None
-) -> PatchTarget:
-    """Turn ``pod/foo``, ``deployment/foo`` or ``foo`` into one patchable pod.
+) -> HotfixTarget:
+    """Turn ``pod/foo``, ``deployment/foo`` or ``foo`` into one hotfixable pod.
 
-    A workload reference is the natural one to type — patching is an operation
+    A workload reference is the natural one to type — hotfixing is an operation
     on an application, not on a pod that will be replaced by the next
     reschedule — so both are accepted and both are checked for the single
     replica this mode requires.
@@ -806,20 +806,20 @@ def resolve_target(
     if not separator:
         return _target_from_pod(kube, reference, container)
     if not name:
-        raise PatchError(f"no name in {reference!r}")
+        raise HotfixError(f"no name in {reference!r}")
     if kind in ("pod", "pods", "po"):
         return _target_from_pod(kube, name, container)
     workload_kind = _WORKLOAD_KINDS.get(kind)
     if workload_kind is None:
-        raise PatchError(
-            f"patch mode works on pods, deployments and statefulsets, not {kind!r}"
+        raise HotfixError(
+            f"hotfix mode works on pods, deployments and statefulsets, not {kind!r}"
         )
     return _target_from_workload(kube, workload_kind, name, container)
 
 
 def _target_from_workload(
     kube: Kubectl, kind: str, name: str, container: str | None
-) -> PatchTarget:
+) -> HotfixTarget:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
     if replicas is not None and replicas != 1:
@@ -827,14 +827,14 @@ def _target_from_workload(
     selector = as_dict(as_dict(workload.get("spec")).get("selector"))
     labels = as_dict(selector.get("matchLabels"))
     if not labels:
-        raise PatchError(f"{kind}/{name} has no matchLabels to find its pod by")
+        raise HotfixError(f"{kind}/{name} has no matchLabels to find its pod by")
     query = ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
     result = kube.run("get", "pods", "-l", query, "-o", "json")
     pods = [as_dict(item) for item in _as_list(_load_json(result.stdout).get("items"))]
     live = [pod for pod in pods if _phase(pod) not in ("Succeeded", "Failed")]
     if len(live) != 1:
-        raise PatchError(
-            f"{kind}/{name} matches {len(live)} live pods; patch mode needs "
+        raise HotfixError(
+            f"{kind}/{name} matches {len(live)} live pods; hotfix mode needs "
             "exactly one. Name the pod directly if this is a rollout in flight."
         )
     # The workload is already known and already checked, so the ownership walk
@@ -846,7 +846,7 @@ def _target_from_workload(
     )
 
 
-def _target_from_pod(kube: Kubectl, name: str, container: str | None) -> PatchTarget:
+def _target_from_pod(kube: Kubectl, name: str, container: str | None) -> HotfixTarget:
     return _target_from_pod_json(kube, kube.get_pod(name), container)
 
 
@@ -856,14 +856,14 @@ def _target_from_pod_json(
     container: str | None,
     *,
     follow_owner: bool = True,
-) -> PatchTarget:
+) -> HotfixTarget:
     metadata = as_dict(pod_json.get("metadata"))
     name = _as_str(metadata.get("name"))
     if name is None:
-        raise PatchError("pod JSON has no metadata.name")
+        raise HotfixError("pod JSON has no metadata.name")
     chosen = _application_container(pod_json, container)
     image, digest = _image_of(pod_json, chosen)
-    target = PatchTarget(
+    target = HotfixTarget(
         pod=PodRef(kube.namespace, name),
         container=chosen,
         image=image,
@@ -878,17 +878,17 @@ def _target_from_pod_json(
     if kind in ("statefulset", "deployment"):
         return _with_workload(kube, target, kind, owner_name)
     # Something else owns it — a Job, an operator's CRD. Not refused: there is
-    # one pod and the patch is legitimate, but the annotation cannot go on a
+    # one pod and the hotfix is legitimate, but the annotation cannot go on a
     # template podbench does not understand.
     return replace(target, workload_kind=kind, workload_name=owner_name, replicas=1)
 
 
-def _through_replicaset(kube: Kubectl, target: PatchTarget, name: str) -> PatchTarget:
+def _through_replicaset(kube: Kubectl, target: HotfixTarget, name: str) -> HotfixTarget:
     """Resolve a pod's ReplicaSet to the Deployment that owns it.
 
     The Deployment is what has to be annotated: annotating the ReplicaSet's
     template would be overwritten by the next rollout, and annotating the pod
-    does not survive the reschedule Patch mode depends on.
+    does not survive the reschedule Hotfix mode depends on.
     """
     replicaset = _get_json(kube, "replicaset", name)
     replicas = replica_count(replicaset)
@@ -903,8 +903,8 @@ def _through_replicaset(kube: Kubectl, target: PatchTarget, name: str) -> PatchT
 
 
 def _with_workload(
-    kube: Kubectl, target: PatchTarget, kind: str, name: str
-) -> PatchTarget:
+    kube: Kubectl, target: HotfixTarget, kind: str, name: str
+) -> HotfixTarget:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
     if replicas is not None and replicas != 1:
@@ -921,11 +921,11 @@ def _application_container(pod_json: Mapping[str, Any], requested: str | None) -
         if (name := _as_str(as_dict(entry).get("name"))) is not None
     ]
     if not names:
-        raise PatchError("pod has no containers")
+        raise HotfixError("pod has no containers")
     if requested is None:
         return names[0]
     if requested not in names:
-        raise PatchError(f"container {requested!r} not in pod (has {names})")
+        raise HotfixError(f"container {requested!r} not in pod (has {names})")
     return requested
 
 
@@ -963,7 +963,7 @@ def _phase(pod_json: Mapping[str, Any]) -> str:
 def seat_container(kube: Kubectl, pod: str, requested: str | None) -> str:
     """The podbench container that mounts the same claim.
 
-    Patch mode's premise is that this container exists: it is the one with git
+    Hotfix mode's premise is that this container exists: it is the one with git
     and a shell, and — because it mounts the claim at the identical mountPath —
     the one place where the checkout and the venv resolve to the same paths the
     application sees.
@@ -972,8 +972,8 @@ def seat_container(kube: Kubectl, pod: str, requested: str | None) -> str:
         return requested
     seat = running_seat(kube.get_pod(pod))
     if seat is None:
-        raise PatchError(
-            f"no running podbench container in pod {pod}. Patch mode reaches the "
+        raise HotfixError(
+            f"no running podbench container in pod {pod}. Hotfix mode reaches the "
             "claim through the seat, which must mount it at the same mountPath "
             f"as the application: run `podbench attach {pod}` first, or "
             f"pass --seat if it is named something other than {CONTAINER_BASE}-N."
@@ -984,11 +984,11 @@ def seat_container(kube: Kubectl, pod: str, requested: str | None) -> str:
 # -- health ----------------------------------------------------------------
 
 
-class PatchHealth(Enum):
+class HotfixHealth(Enum):
     """What ``status`` found, worst-first when it has to pick one."""
 
     ACTIVE = "active"
-    """The patch is live and the image it was made against is still deployed."""
+    """The hotfix is live and the image it was made against is still deployed."""
 
     INTERPRETER_MISMATCH = "interpreter"
     """The image's interpreter no longer matches the venv on the claim."""
@@ -998,51 +998,51 @@ class PatchHealth(Enum):
     stale and is now the only thing keeping the old code alive."""
 
     IMAGE_CHANGED = "image-changed"
-    """The image was upgraded under a live patch mount, so the pod is running
+    """The image was upgraded under a live hotfix mount, so the pod is running
     the claim's venv and not the new image's."""
 
     UNREADABLE = "unreadable"
-    """The pod says it is patched and its manifest cannot be read."""
+    """The pod says it is hotfixed and its manifest cannot be read."""
 
     @property
     def summary(self) -> str:
         """One line for the status table."""
         return {
-            PatchHealth.ACTIVE: "patched, base image unchanged",
-            PatchHealth.INTERPRETER_MISMATCH: "venv interpreter no longer matches",
-            PatchHealth.SUPERSEDED: "consolidated; claim is probably stale",
-            PatchHealth.IMAGE_CHANGED: "image upgraded under the patch mount",
-            PatchHealth.UNREADABLE: "marked patched, manifest unreadable",
+            HotfixHealth.ACTIVE: "hotfixed, base image unchanged",
+            HotfixHealth.INTERPRETER_MISMATCH: "venv interpreter no longer matches",
+            HotfixHealth.SUPERSEDED: "consolidated; claim is probably stale",
+            HotfixHealth.IMAGE_CHANGED: "image upgraded under the hotfix mount",
+            HotfixHealth.UNREADABLE: "marked hotfixed, manifest unreadable",
         }[self]
 
     @property
     def ok(self) -> bool:
         """Whether this needs somebody's attention today."""
-        return self is PatchHealth.ACTIVE
+        return self is HotfixHealth.ACTIVE
 
 
 def assess(
-    manifest: PatchManifest | None,
+    manifest: HotfixManifest | None,
     *,
     current_digest: str,
     probe: InterpreterProbe | None = None,
-) -> tuple[PatchHealth, str]:
-    """Judge one patched pod. Pure, because this is the whole feature.
+) -> tuple[HotfixHealth, str]:
+    """Judge one hotfixed pod. Pure, because this is the whole feature.
 
     The order is deliberate: a broken interpreter beats everything, because the
-    pod is not running what anyone thinks it is; a consolidated patch on a
+    pod is not running what anyone thinks it is; a consolidated hotfix on a
     changed image beats a merely-changed image, because that one has a known
     remedy (retire the claim).
     """
     if manifest is None:
         return (
-            PatchHealth.UNREADABLE,
-            "the pod carries the patched annotation but no readable manifest; "
+            HotfixHealth.UNREADABLE,
+            "the pod carries the hotfixed annotation but no readable manifest; "
             "provenance for whatever is on the claim has been lost",
         )
     if probe is not None and not probe.ok:
         return (
-            PatchHealth.INTERPRETER_MISMATCH,
+            HotfixHealth.INTERPRETER_MISMATCH,
             f"the venv's interpreter would not run in this container: "
             f"{probe.detail}. The claim's bin/python points into the image, and "
             "an image change can move it.",
@@ -1050,7 +1050,7 @@ def assess(
     if probe is not None and probe.version is not None:
         warning = interpreter_warning(manifest.interpreter, probe.version)
         if warning is not None:
-            return PatchHealth.INTERPRETER_MISMATCH, warning
+            return HotfixHealth.INTERPRETER_MISMATCH, warning
     changed = bool(
         manifest.base_image_digest
         and current_digest
@@ -1058,30 +1058,30 @@ def assess(
     )
     if changed and manifest.consolidated_branch is not None:
         return (
-            PatchHealth.SUPERSEDED,
-            f"the patch was consolidated onto {manifest.consolidated_branch} and "
+            HotfixHealth.SUPERSEDED,
+            f"the hotfix was consolidated onto {manifest.consolidated_branch} and "
             "the image has changed since. If the rebuild included it, the claim "
             "is now shadowing the released fix with an older copy of it: retire "
-            "the claim and turn patchVenv off.",
+            "the claim and turn hotfixVenv off.",
         )
     if changed:
         return (
-            PatchHealth.IMAGE_CHANGED,
-            f"deployed image is {current_digest.split('@')[-1][:19]}, the patch "
+            HotfixHealth.IMAGE_CHANGED,
+            f"deployed image is {current_digest.split('@')[-1][:19]}, the hotfix "
             f"was made against {manifest.base_image_digest.split('@')[-1][:19]}. "
             "The claim's venv shadows the new image's, so the upgrade has not "
             "reached the running code.",
         )
-    return PatchHealth.ACTIVE, f"{manifest.ahead} commit(s) ahead of the image"
+    return HotfixHealth.ACTIVE, f"{manifest.ahead} commit(s) ahead of the image"
 
 
 @dataclass(frozen=True)
-class PatchRow:
-    """One patched pod, as ``status`` reports it."""
+class HotfixRow:
+    """One hotfixed pod, as ``status`` reports it."""
 
     pod: PodRef
-    manifest: PatchManifest | None
-    health: PatchHealth
+    manifest: HotfixManifest | None
+    health: HotfixHealth
     detail: str
     current_image: str = ""
     notes: tuple[str, ...] = ()
@@ -1089,8 +1089,8 @@ class PatchRow:
 
 def status_rows(
     kube: Kubectl, *, probe: bool = True, python: str = DEFAULT_PYTHON
-) -> list[PatchRow]:
-    """Every patched pod in the namespace, with its drift and its risks.
+) -> list[HotfixRow]:
+    """Every hotfixed pod in the namespace, with its drift and its risks.
 
     The manifest travels in an annotation so this is one ``get pods`` for the
     whole namespace. The interpreter is only probed when the image has moved,
@@ -1099,22 +1099,22 @@ def status_rows(
     command nobody runs is how silently-diverged pods happen.
     """
     result = kube.run("get", "pods", "-o", "json")
-    rows: list[PatchRow] = []
+    rows: list[HotfixRow] = []
     for item in _as_list(_load_json(result.stdout).get("items")):
         pod_json = as_dict(item)
         metadata = as_dict(pod_json.get("metadata"))
         annotations = as_dict(metadata.get("annotations"))
-        if _as_str(annotations.get(PATCHED_ANNOTATION)) != "true":
+        if _as_str(annotations.get(HOTFIXED_ANNOTATION)) != "true":
             continue
         name = _as_str(metadata.get("name"))
         if name is None:
             continue
         pod = PodRef(kube.namespace, name)
         notes: list[str] = []
-        manifest: PatchManifest | None
+        manifest: HotfixManifest | None
         try:
             manifest = manifest_from_pod(pod_json)
-        except (PatchError, ValueError) as error:
+        except (HotfixError, ValueError) as error:
             manifest = None
             notes.append(str(error))
         container = manifest.container if manifest is not None else ""
@@ -1136,7 +1136,7 @@ def status_rows(
                 "written by an older podbench and some provenance may be absent"
             )
         rows.append(
-            PatchRow(
+            HotfixRow(
                 pod=pod,
                 manifest=manifest,
                 health=health,
@@ -1148,10 +1148,10 @@ def status_rows(
     return rows
 
 
-def format_status(rows: Sequence[PatchRow]) -> str:
+def format_status(rows: Sequence[HotfixRow]) -> str:
     """The status report. Empty is a real and reassuring answer, so say it."""
     if not rows:
-        return "no patched pods in this namespace"
+        return "no hotfixed pods in this namespace"
     lines: list[str] = []
     for row in rows:
         manifest = row.manifest
@@ -1184,7 +1184,7 @@ def format_status(rows: Sequence[PatchRow]) -> str:
 # -- the workflow ----------------------------------------------------------
 
 
-def annotate(kube: Kubectl, target: PatchTarget, manifest: PatchManifest) -> str:
+def annotate(kube: Kubectl, target: HotfixTarget, manifest: HotfixManifest) -> str:
     """Record the provenance where the reschedule cannot lose it.
 
     A *merge* patch, and deliberately the opposite choice from the Service
@@ -1203,7 +1203,7 @@ def annotate(kube: Kubectl, target: PatchTarget, manifest: PatchManifest) -> str
         )
         return (
             f"annotated {target.workload} pod template; the edit rolls the "
-            "workload, which is how the patch is picked up"
+            "workload, which is how the hotfix is picked up"
         )
     kube.patch(
         "pod",
@@ -1217,8 +1217,8 @@ def annotate(kube: Kubectl, target: PatchTarget, manifest: PatchManifest) -> str
     )
 
 
-def _identity(store: PatchStore, checkout: str, author: str | None) -> tuple[str, str]:
-    """The name and email a patch commit is made under.
+def _identity(store: HotfixStore, checkout: str, author: str | None) -> tuple[str, str]:
+    """The name and email a hotfix commit is made under.
 
     Read from the checkout's git config when the caller does not say, so the
     provenance is whoever the seat is configured as rather than a constant. The
@@ -1244,8 +1244,8 @@ def _now() -> str:
 
 def init(
     kube: Kubectl,
-    store: PatchStore,
-    target: PatchTarget,
+    store: HotfixStore,
+    target: HotfixTarget,
     *,
     venv: str,
     repo: str,
@@ -1253,7 +1253,7 @@ def init(
     base_commit: str | None = None,
     author: str | None = None,
     install: bool = True,
-) -> tuple[PatchManifest, list[str]]:
+) -> tuple[HotfixManifest, list[str]]:
     """Prepare a claim: verify the seed, put the source on it, record the base.
 
     The seed is *verified*, never performed. Once the claim is mounted over the
@@ -1266,11 +1266,11 @@ def init(
     actions: list[str] = []
     config = store.read_text(f"{venv.rstrip('/')}/pyvenv.cfg")
     if config is None:
-        raise PatchError(
+        raise HotfixError(
             f"{venv}/pyvenv.cfg is missing: the claim is mounted but was never "
             "seeded from the image's venv. Seeding has to happen in an "
             "initContainer, before the mount hides the image's copy — run "
-            "`podbench patch --print-values` for the snippet, and note "
+            "`podbench hotfix --print-values` for the snippet, and note "
             "that the initContainer must use the application's own image."
         )
     settings = parse_pyvenv_cfg(config)
@@ -1299,7 +1299,7 @@ def init(
         actions.append(_install(kube, target, venv, checkout))
 
     name, email = _identity(store, checkout, author)
-    manifest = PatchManifest(
+    manifest = HotfixManifest(
         venv=venv,
         checkout=checkout,
         repo=repo,
@@ -1320,11 +1320,11 @@ def init(
     return manifest, actions
 
 
-def _install(kube: Kubectl, target: PatchTarget, venv: str, checkout: str) -> str:
+def _install(kube: Kubectl, target: HotfixTarget, venv: str, checkout: str) -> str:
     argv = install_argv(venv, checkout)
     result = kube.exec_(target.pod.name, argv, container=target.container, check=False)
     if result.returncode != 0:
-        raise PatchError(
+        raise HotfixError(
             f"editable install failed in container {target.container}: "
             f"{result.stderr.strip() or result.stdout.strip()}. It has to run "
             "there and not in the seat: the venv's bin/python is a symlink into "
@@ -1334,28 +1334,28 @@ def _install(kube: Kubectl, target: PatchTarget, venv: str, checkout: str) -> st
     return f"editable install of {checkout} into {venv}"
 
 
-def apply_patch(
+def apply_hotfix(
     kube: Kubectl,
-    store: PatchStore,
-    target: PatchTarget,
+    store: HotfixStore,
+    target: HotfixTarget,
     *,
     venv: str,
     message: str,
     author: str | None = None,
     bounce: bool = True,
-) -> tuple[PatchManifest, list[str]]:
+) -> tuple[HotfixManifest, list[str]]:
     """Commit what is in the checkout, reinstall if needed, and roll the pod.
 
-    The commit is not optional and not a convenience: a patch that is only a
+    The commit is not optional and not a convenience: a hotfix that is only a
     working-tree edit has no sha, and without a sha the manifest cannot say what
     is running and ``consolidate`` has nothing to push.
     """
     actions: list[str] = []
     manifest = read_manifest(store, venv)
     if manifest is None:
-        raise PatchError(
-            "no patch manifest on the claim: run `patch init` first so the "
-            "commit this patch diverges from is recorded"
+        raise HotfixError(
+            "no hotfix manifest on the claim: run `hotfix init` first so the "
+            "commit this hotfix diverges from is recorded"
         )
     checkout = manifest.checkout or checkout_path(manifest.venv)
 
@@ -1420,8 +1420,8 @@ def apply_patch(
     return manifest, actions
 
 
-def _bounce(kube: Kubectl, target: PatchTarget) -> str:
-    """Make the kubelet pick the patch up.
+def _bounce(kube: Kubectl, target: HotfixTarget) -> str:
+    """Make the kubelet pick the hotfix up.
 
     With a pod template the annotation edit has already rolled the workload, so
     there is nothing more to do — and doing more would race the rollout. A bare
@@ -1442,33 +1442,33 @@ def _bounce(kube: Kubectl, target: PatchTarget) -> str:
 
 def consolidate(
     kube: Kubectl,
-    store: PatchStore,
-    target: PatchTarget,
+    store: HotfixStore,
+    target: HotfixTarget,
     *,
     venv: str,
     branch: str,
     remote: str = "origin",
     push: bool = True,
-) -> tuple[PatchManifest, list[str]]:
+) -> tuple[HotfixManifest, list[str]]:
     """Push the claim's checkout as a branch, ready for a real rebuild.
 
     The PR itself is not opened here: that needs a forge client podbench does
     not depend on, and a printed ``gh pr create`` is one paste. What matters is
     that the branch exists and that the manifest — and therefore ``status`` —
-    records that this patch is on its way into an image, because that is what
+    records that this hotfix is on its way into an image, because that is what
     turns a stale claim from a mystery into a named condition.
     """
     actions: list[str] = []
     manifest = read_manifest(store, venv)
     if manifest is None:
-        raise PatchError("no patch manifest on the claim; nothing to consolidate")
+        raise HotfixError("no hotfix manifest on the claim; nothing to consolidate")
     checkout = manifest.checkout or checkout_path(manifest.venv)
     commits = drift_commits(store, checkout, manifest.base_commit)
     if not commits:
-        raise PatchError(
+        raise HotfixError(
             f"the checkout is not ahead of {manifest.base_commit[:7]}: there is "
-            "no patch to consolidate. If the fix is already in the image, retire "
-            "the claim instead — see `patch status`."
+            "no hotfix to consolidate. If the fix is already in the image, retire "
+            "the claim instead — see `hotfix status`."
         )
     if push:
         store.run(["git", "-C", checkout, "push", remote, f"HEAD:refs/heads/{branch}"])
@@ -1491,22 +1491,22 @@ def consolidate(
 
 
 def _retirement_checklist(
-    branch: str, manifest: PatchManifest, target: PatchTarget
+    branch: str, manifest: HotfixManifest, target: HotfixTarget
 ) -> str:
     workload = target.workload or f"pod/{target.pod.name}"
     return "\n".join(
         [
             "",
             "next, in order — the claim is now the only copy of this fix:",
-            f"  1. gh pr create --head {branch} --title 'consolidate patch "
+            f"  1. gh pr create --head {branch} --title 'consolidate hotfix "
             f"{manifest.commit[:7]}'",
             "  2. merge, and let CI build and publish the image",
             f"  3. roll {workload} onto the new image and confirm it is healthy",
             "  4. remove the volume/volumeMount from the application's values",
-            "  5. set patchVenv.enabled=false and delete the claim",
+            "  5. set hotfixVenv.enabled=false and delete the claim",
             "",
             "until step 5 the claim keeps shadowing the image's venv, and "
-            "`patch status` will report this pod as superseded.",
+            "`hotfix status` will report this pod as superseded.",
         ]
     )
 
@@ -1579,7 +1579,7 @@ def values_snippet(
         [
             f"# 1. values for the podbench release — creates the claim {claim}",
             f"#    and the identity ConfigMap {configmap}",
-            "patchVenv:",
+            "hotfixVenv:",
             "  enabled: true",
             "  claims:",
             f"    - name: {app}",
@@ -1595,7 +1595,7 @@ def values_snippet(
             "  # the API server forbids subPath on an ephemeral container, so a",
             "  # live-pod seat registers its own record instead —",
             "  # `podbench attach ... --new --seat-gid-root`. It is enabled",
-            "  # here because Patch mode's seat is one; set it false if this",
+            "  # here because Hotfix mode's seat is one; set it false if this",
             "  # application only ever gets live-pod `attach` sessions.",
             "  enabled: true",
             "  apps:",
@@ -1608,7 +1608,7 @@ def values_snippet(
             "#    keys; the names below are the common convention, not a",
             "#    requirement. The shapes underneath them are plain Kubernetes.",
             f"{volumes_key}:",
-            "  - name: podbench-patch-venv",
+            "  - name: podbench-hotfix-venv",
             "    persistentVolumeClaim:",
             f"      claimName: {claim}",
             "  # The next two are the seat's, and they are deliberately *declared",
@@ -1637,7 +1637,7 @@ def values_snippet(
             "      # storage and an overrun evicts the pod — application included.",
             f"      sizeLimit: {home_size}",
             f"{mounts_key}:",
-            "  - name: podbench-patch-venv",
+            "  - name: podbench-hotfix-venv",
             f"    mountPath: {venv}",
             f"{security_key}:",
             "  # Not optional if the seat is to be able to write its own home: an",
@@ -1659,12 +1659,12 @@ def values_snippet(
             "      - test -e /podbench-seed/pyvenv.cfg || cp -a "
             f"{venv.rstrip('/')}/. /podbench-seed/",
             "    volumeMounts:",
-            "      - name: podbench-patch-venv",
+            "      - name: podbench-hotfix-venv",
             "        mountPath: /podbench-seed",
             "",
             "# Single replica only: the claim is ReadWriteOnce and one checkout",
-            "# cannot serve two writers. Take patchVenv off again — and delete the",
-            "# claim — once `patch consolidate` has been through the pipeline.",
+            "# cannot serve two writers. Take hotfixVenv off again — and delete the",
+            "# claim — once `hotfix consolidate` has been through the pipeline.",
             f"# {SEAT_HOME_VOLUME} has no such lifetime: it is deployment",
             "# furniture, it costs one volume the application does not mount, and",
             "# it is what keeps a seat's disk use off the workload's budget on",
@@ -1763,7 +1763,9 @@ _KubectlBinary = Annotated[
 ]
 
 
-def _store_for(kube: Kubectl, pod: str, *, seat: str | None, local: bool) -> PatchStore:
+def _store_for(
+    kube: Kubectl, pod: str, *, seat: str | None, local: bool
+) -> HotfixStore:
     if local:
         return LocalStore()
     return PodStore(kube=kube, pod=pod, container=seat_container(kube, pod, seat))
@@ -1846,7 +1848,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         ] = "<the application's runAsGroup>",
     ) -> None:
         """Durable in-place fixes: a venv on a claim, every change a commit, and
-        a status command that will not let a patched pod go unnoticed.
+        a status command that will not let a hotfixed pod go unnoticed.
         """
         if print_values:
             if app_name is None or venv_path is None:
@@ -1866,7 +1868,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 )
             )
             raise typer.Exit(0)
-        # `patch --print-values` is a legitimate whole command line, so the
+        # `hotfix --print-values` is a legitimate whole command line, so the
         # subcommand is only required once that flag has been ruled out.
         require_subcommand(ctx)
 
@@ -1939,7 +1941,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             bool,
             typer.Option(
                 "--no-bounce",
-                help="leave the running process alone; the patch takes effect "
+                help="leave the running process alone; the hotfix takes effect "
                 "on the next restart",
             ),
         ] = False,
@@ -1954,7 +1956,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kube = _kubectl(namespace, context, kubectl, runner)
         resolved = resolve_target(kube, target, container=container)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
-        _, actions = apply_patch(
+        _, actions = apply_hotfix(
             kube,
             store,
             resolved,
@@ -1965,7 +1967,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         )
         raise typer.Exit(_report(actions))
 
-    @app.command(help="every patched pod in the namespace, and its drift")
+    @app.command(help="every hotfixed pod in the namespace, and its drift")
     def status(
         no_probe: Annotated[
             bool,
@@ -2033,20 +2035,20 @@ def _build_app(runner: Runner | None) -> typer.Typer:
 
 
 def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
-    """Entry point for ``podbench patch <subcommand>``.
+    """Entry point for ``podbench hotfix <subcommand>``.
 
     ``status`` exits non-zero when any pod needs attention, so that it is usable
     as a shutdown-checklist assertion — "no pod is still carrying an unretired
-    patch" is a thing a facility wants to be able to test, not read.
+    hotfix" is a thing a facility wants to be able to test, not read.
     """
     argv = list(sys.argv[1:] if args is None else args)
     # The central dispatcher keeps the verb in argv; this app's subcommands are
-    # the *sub*-verbs, so the leading `patch` is consumed here.
-    if argv and argv[0] == "patch":
+    # the *sub*-verbs, so the leading `hotfix` is consumed here.
+    if argv and argv[0] == "hotfix":
         argv = argv[1:]
     try:
-        return run(_build_app(runner), argv, prog="podbench patch")
-    except (PatchError, KubectlError, ValueError) as error:
+        return run(_build_app(runner), argv, prog="podbench hotfix")
+    except (HotfixError, KubectlError, ValueError) as error:
         print(f"podbench: {error}", file=sys.stderr)
         return 2
 

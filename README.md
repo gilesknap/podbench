@@ -246,7 +246,7 @@ Known-unproven, stated plainly:
   actually come from.
 * **In-place pod resize is lightly proven** — see `--resize` above.
 * **Patch mode has never been run against a cluster.** The workflow exists
-  (`podbench patch init|apply|status|consolidate`, and `patch --print-values`
+  (`podbench hotfix init|apply|status|consolidate`, and `hotfix --print-values`
   for the chart snippet) and is unit-tested, but every one of those tests drives
   a temp directory and a fake `kubectl`. `attach --mount` now puts the claim
   into the seat at the application's own mountPath, so the workflow is

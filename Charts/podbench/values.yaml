@@ -52,7 +52,7 @@ rbac:
   # provenance annotations — which is also what rolls the workload. That makes it
   # a code-deploying grant, so it is the one to hand out most sparingly. Assumes
   # observe as well; on its own it cannot read a pod or reach the claim.
-  patch: false
+  hotfix: false
 
 # The scratch workspace PVC for Iterate mode. Created by this chart only —
 # there is no `podbench init` verb; the launcher never creates a claim.
@@ -76,13 +76,13 @@ scratchPvc:
 # Durable-across-restart code has to sit on a volume that was present in the pod
 # spec at creation: pod volumes are immutable and a container's rootfs is reset on
 # every restart. This chart creates the PVC; the application's own chart must
-# mount it over its venv path. `podbench patch --print-values` emits the snippet.
+# mount it over its venv path. `podbench hotfix --print-values` emits the snippet.
 #
 # This is the one place podbench asks for deploy-time cooperation, and it is
 # deliberately the last thing in the design for that reason.
-patchVenv:
+hotfixVenv:
   enabled: false
-  # One entry per application whose venv may be patched.
+  # One entry per application whose venv may be hotfixed.
   #   - name: myapp
   #     size: 2Gi
   #     storageClassName: ""
@@ -114,7 +114,7 @@ patchVenv:
 #
 # This chart emits the ConfigMap. It cannot put it into anybody's pod — the
 # application's own chart must declare the volume, the same cooperation
-# patchVenv already needs; `podbench patch --print-values` emits both halves.
+# hotfixVenv already needs; `podbench hotfix --print-values` emits both halves.
 # Enabling this on its own therefore changes nothing about any running pod: it
 # creates a ConfigMap that nothing yet mounts.
 seatIdentity:

@@ -185,8 +185,8 @@ FEATURES: tuple[RbacFeature, ...] = (
         (Grant("patch", "pods/resize"),),
     ),
     RbacFeature(
-        "patch",
-        "patch",
+        "hotfix",
+        "hotfix",
         (
             Grant("get", "deployments.apps"),
             Grant("get", "replicasets.apps"),

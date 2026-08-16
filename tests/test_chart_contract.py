@@ -3,14 +3,14 @@ identity, the RBAC table, and ``values.schema.json``.
 
 Everything else in the suite asserts the *Python* side agrees with itself: the
 launcher mounts what :mod:`podbench.model` names, the snippet points at what
-:func:`podbench.patch.identity_configmap` derives. None of it renders the chart,
+:func:`podbench.hotfix.identity_configmap` derives. None of it renders the chart,
 so the one failure this feature is actually exposed to - the ConfigMap emitting
 a key, a login name, a home or a name the launcher does not look for - passes
 every one of those tests and ``helm lint`` too, and surfaces at runtime as
 ``Permission denied (publickey)``.
 
 The mounts are asked of :func:`podbench.launcher.seat_identity_mounts` against a
-pod built from :func:`podbench.patch.values_snippet`, rather than written out
+pod built from :func:`podbench.hotfix.values_snippet`, rather than written out
 here, so this file cannot drift from either half by being edited to match.
 
 The second contract is the RBAC table. ``podbench doctor`` reports each feature
@@ -36,6 +36,7 @@ import yaml
 
 from podbench.agent import GROUP_PATH, PASSWD_PATH
 from podbench.doctor import FEATURES, RbacFeature
+from podbench.hotfix import identity_configmap, values_snippet
 from podbench.launcher import SEAT_IDENTITY_MOUNTS, seat_identity_mounts
 from podbench.model import (
     SEAT_GROUP_KEY,
@@ -44,7 +45,6 @@ from podbench.model import (
     SEAT_IDENTITY_VOLUME,
     SEAT_PASSWD_KEY,
 )
-from podbench.patch import identity_configmap, values_snippet
 from podbench.spec import dev_pod_spec
 from podbench.sshcfg import SEAT_USER
 
@@ -102,7 +102,7 @@ def configmap() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def snippet() -> dict[str, Any]:
-    """``patch --print-values``, parsed - the pod spec the user is told to write."""
+    """``hotfix --print-values``, parsed - the pod spec the user is told to write."""
     return cast(
         dict[str, Any],
         yaml.safe_load(values_snippet(APP, "/venv", uid=str(UID), gid=str(GID))),
@@ -205,7 +205,7 @@ def test_the_launcher_mounts_what_the_snippet_declares_and_attach_may_carry(
 
 
 def origin_from_snippet(snippet: dict[str, Any]) -> dict[str, Any]:
-    """A pod deployed as ``patch --print-values`` says, in one place.
+    """A pod deployed as ``hotfix --print-values`` says, in one place.
 
     The application's own uid and gid are on the container because that is what
     the snippet's comments *require* of whoever pastes it: the numbers in
@@ -367,7 +367,7 @@ def test_the_documented_example_entries_are_ones_the_schema_accepts() -> None:
     """``example.values.yaml`` is the item shape, so it has to install.
 
     It exists to teach the schema what one ``rbac.subjects`` /
-    ``patchVenv.claims`` / ``seatIdentity.apps`` entry looks like. Feeding it
+    ``hotfixVenv.claims`` / ``seatIdentity.apps`` entry looks like. Feeding it
     back in is what catches an example edited to document a field the generator
     never saw - which would otherwise read as documentation and behave as a
     refusal.
@@ -378,7 +378,7 @@ def test_the_documented_example_entries_are_ones_the_schema_accepts() -> None:
         "--set",
         "rbac.create=true",
         "--set",
-        "patchVenv.enabled=true",
+        "hotfixVenv.enabled=true",
         "--set",
         "seatIdentity.enabled=true",
     )

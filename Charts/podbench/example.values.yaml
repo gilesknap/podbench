@@ -20,7 +20,7 @@ rbac:
       # User and Group subjects have no namespace at all.
       namespace: ""
 
-patchVenv:
+hotfixVenv:
   claims:
     - name: myapp # @schema required
       size: 2Gi
