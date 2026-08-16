@@ -35,6 +35,14 @@ rather than run because ptracing the workload is not something authoring a
 launch.json may do on its own, and writing 15 MB into the workload's writable
 layer is the larger of the two mutations.
 
+Which is also why ``--provision`` does *both*. Having ordered them, asking twice
+for the lesser one made no sense: the flag installed debugpy, emitted a
+configuration that connects to ``127.0.0.1:5678``, and left nothing listening
+there — so the first F5 was `ECONNREFUSED` and the remedy was a paste. One flag
+means "make this target debuggable", and :func:`inject_debugpy` is the second
+half of it. A bare ``debug-config`` still only prints, because that really is
+authoring a launch.json and nothing more.
+
 The one genuinely new precondition is a **writable rootfs**, so it is probed
 rather than assumed (brief, "Diagnose, don't mystify"): ``readOnlyRootFilesystem:
 true`` lives in the *target's* mount namespace, so it surfaces here only as
@@ -46,17 +54,21 @@ and not a constant.
 from __future__ import annotations
 
 import errno
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .kubectl import Runner, run_subprocess
+from .kubectl import CommandResult, Runner, run_subprocess
 from .proc import DEFAULT_PROC, sysroot_path
 
 __all__ = [
     "CAVEATS",
     "PROVISION_DEST",
+    "Injected",
     "Provisioned",
     "blocker_sentence",
+    "inject_debugpy",
     "provision_command",
     "provision_debugpy",
     "provision_paste",
@@ -243,6 +255,82 @@ class Provisioned:
     @property
     def ok(self) -> bool:
         return self.path is not None
+
+
+def _last_line(result: CommandResult) -> str:
+    """What a failed injection actually said, on one line.
+
+    ``stderr`` first and ``stdout`` only as a fallback, because the driver here
+    is gdb wrapped in debugpy's bootstrap: the useful sentence ("ptrace:
+    Operation not permitted") is on stderr, while stdout is pages of MI.
+    """
+    for stream in (result.stderr, result.stdout):
+        lines = [line.strip() for line in stream.splitlines() if line.strip()]
+        if lines:
+            return lines[-1]
+    return "it said nothing"
+
+
+@dataclass(frozen=True)
+class Injected:
+    """What the injection did, and how long the target was held to do it."""
+
+    ok: bool
+
+    seconds: float
+    """Wall clock for the whole ptrace attach.
+
+    Reported because it is the only number here that a probed pod cares about:
+    the app answers no probe while it is stopped, and the readiness budget is
+    tens of seconds. 3.4 s measured on the k3s bench against an 11-16 s
+    readiness budget, matching issue #45's ~3 s.
+    """
+
+    messages: tuple[str, ...] = ()
+
+
+def inject_debugpy(
+    command: str,
+    *,
+    runner: Runner | None = None,
+    port: int,
+    clock: Callable[[], float] = time.monotonic,
+) -> Injected:
+    """Run the injection ``command`` this seat would otherwise have printed.
+
+    ``command`` is taken rather than rebuilt so that what runs is character for
+    character what :func:`podbench.flavour.injection_command` prints — the two
+    cannot drift into a paste that works and a run that does not, and the
+    continuation backslash is handled by ``sh`` for both.
+
+    Timed rather than merely run. The ptrace attach *stops the app*, so on a
+    probed pod the duration is the thing that decides whether this was free or
+    whether the pod quietly left its Service. ``clock`` is a seam so the unit
+    suite can assert the number without one.
+    """
+    run = runner if runner is not None else run_subprocess
+    started = clock()
+    result = run(["sh", "-c", command])
+    seconds = clock() - started
+    if result.returncode != 0:
+        return Injected(
+            False,
+            seconds,
+            (
+                f"injection exited {result.returncode} after {seconds:.1f}s: "
+                f"{_last_line(result)}",
+                "the app is not left stopped by a failed attach - gdb detaches "
+                "on the way out - so this costs the pause and nothing else",
+            ),
+        )
+    return Injected(
+        True,
+        seconds,
+        (
+            f"injected in {seconds:.1f}s; the app now serves debugpy on "
+            f"127.0.0.1:{port}",
+        ),
+    )
 
 
 def provision_debugpy(

@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from podbench.editor import EditorError, open_seat, resolve_editor
+from podbench.editor import PROVISION_FLAG, EditorError, open_seat, resolve_editor
 from podbench.kubectl import CommandResult, Kubectl
 from podbench.model import ContainerRef, PodRef
 
@@ -49,6 +49,8 @@ class FakeSeat:
         configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
         debug_config_rc: int = 0,
         debug_config_stderr: str = "",
+        provision_rc: int = 0,
+        provisioned_configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
         files: dict[str, str] | None = None,
         unreadable: Sequence[str] = (),
         unwritable: Sequence[str] = (),
@@ -58,6 +60,9 @@ class FakeSeat:
         self.configurations = list(configurations)
         self.debug_config_rc = debug_config_rc
         self.debug_config_stderr = debug_config_stderr
+        self.provision_rc = provision_rc
+        self.provisioned_configurations = list(provisioned_configurations)
+        self.provisioned = False
         self.files = dict(files or {})
         self.unreadable = set(unreadable)
         self.unwritable = set(unwritable)
@@ -85,10 +90,18 @@ class FakeSeat:
         # resolves: matching a bare `debug-config` here would keep this fake
         # green against a launcher that execs nothing in a real seat.
         if command[:2] == ["podbench", "debug-config"]:
+            if PROVISION_FLAG in command:
+                self.provisioned = True
+                self.debug_config_rc = self.provision_rc
+                self.configurations = list(self.provisioned_configurations)
             if self.debug_config_rc != 0:
                 return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
             document = {"version": "0.2.0", "configurations": self.configurations}
-            return _result(0, stdout=json.dumps(document))
+            # stderr on a *successful* run too: debug-config narrates the
+            # assessment and prints the injection command there, and relaying
+            # that is the difference between a launch.json that connects and one
+            # whose F5 meets a closed port.
+            return CommandResult((), 0, json.dumps(document), self.debug_config_stderr)
         if command[:2] == ["sh", "-c"] and command[2].startswith("mkdir -p"):
             assert stdin is not None, "a write must carry its content on stdin"
             path = _written_path(command[2])
@@ -153,7 +166,9 @@ def _read_path(script: str) -> str:
     return script.rsplit("cat ", 1)[1].strip("'")
 
 
-def run_open(seat: FakeSeat, *, folder: str = HOME) -> list[str]:
+def run_open(
+    seat: FakeSeat, *, folder: str = HOME, provision: bool = False
+) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
     goes rather than returning a list at the end, because the install is a
     download and a progress report that arrives afterwards is not one."""
@@ -165,6 +180,7 @@ def run_open(seat: FakeSeat, *, folder: str = HOME) -> list[str]:
         folder=folder,
         report=notes.append,
         editor="code",
+        provision=provision,
         runner=seat,
     )
     return notes
@@ -267,6 +283,127 @@ def test_a_target_no_debugger_fits_still_gets_the_guard_and_the_folder() -> None
     assert any("no launch.json" in note for note in notes)
 
 
+# -- what the seat said ------------------------------------------------------
+
+_REFUSAL = (
+    "debug-config: python target, observe mode, x86_64\n"
+    "debug-config: debugpy unavailable: debugpy is not importable by the target\n"
+    "debug-config:   install it into the target from this seat, which is what\n"
+    "  `podbench debug-config --provision` runs\n"
+    "debug-config: no debugger flavour could be emitted for this target - every "
+    "mechanism that said no is named above\n"
+)
+"""A live refusal, trimmed. The shape that matters is that the diagnosis is in
+the *middle*: the last line points at the ones above it."""
+
+_SUCCESS = (
+    "debug-config: python target, observe mode, x86_64\n"
+    "debug-config: nothing is listening on 127.0.0.1:5678 yet. Start the server "
+    "inside the app with:\n"
+    "PYTHONPATH=/proc/1/root/opt/podbench-debugpy \\\n"
+    "  python -m debugpy --listen 127.0.0.1:5678 --pid 1\n"
+)
+
+
+def test_the_whole_refusal_is_relayed_not_just_its_last_line() -> None:
+    """ "every mechanism that said no is named above" is the last line, so a
+    caller that keeps only the last line points at output it just discarded —
+    which is exactly how a missing launch.json read as a podbench bug."""
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
+    notes = run_open(seat)
+
+    assert any("debugpy is not importable by the target" in note for note in notes)
+
+
+def test_the_injection_command_survives_a_successful_run() -> None:
+    """The debugpy configuration is emitted once the prerequisites are met, and
+    nothing is listening until the injection runs. Dropping stderr on success
+    writes a launch.json whose F5 meets a closed port with nothing said."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    notes = run_open(seat)
+
+    assert f"{HOME}/.vscode/launch.json" in seat.files
+    assert any("nothing is listening on 127.0.0.1:5678" in note for note in notes)
+    # One note per line: the launcher's report formatter re-wraps on whitespace,
+    # so the continuation backslash only survives at the end of its own note.
+    assert any(note.endswith("\\") for note in notes)
+
+
+def test_a_seat_that_never_ran_the_verb_still_says_what_happened() -> None:
+    """127 from a `podbench` the image does not resolve carries sh's message and
+    no narration at all, and that message is the whole diagnosis."""
+    seat = FakeSeat(debug_config_rc=127, debug_config_stderr="")
+    notes = run_open(seat)
+
+    assert any("no launch.json: it said nothing" in note for note in notes)
+
+
+# -- provisioning ------------------------------------------------------------
+
+
+def test_the_provision_flag_is_offered_where_the_seat_named_it() -> None:
+    """The remedy existed on the in-pod verb and was unreachable from here, so
+    the refusal has to name the flag that reaches it."""
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
+    notes = run_open(seat)
+
+    assert any("--open --provision" in note for note in notes)
+
+
+def test_no_provision_offer_for_a_flavour_it_cannot_help() -> None:
+    """There is no --provision for a missing delve, and an offer that does not
+    apply is a step the reader takes and learns nothing from."""
+    seat = FakeSeat(
+        debug_config_rc=2,
+        debug_config_stderr="debug-config: no gdb in this image, and no lldb\n",
+    )
+    notes = run_open(seat)
+
+    assert not any("--provision" in note for note in notes)
+
+
+def test_provision_asks_the_seat_and_gets_a_launch_json() -> None:
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL, provision_rc=0)
+    run_open(seat, provision=True)
+
+    assert seat.provisioned
+    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
+    assert document["configurations"] == [DEBUGPY_CONFIG]
+    assert seat.installed == ["ms-python.python", "ms-python.debugpy"]
+
+
+def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
+    """It is a uv resolve and download into somebody else's writable layer. A
+    cost named after the write is not a cost the user got to decline."""
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
+    timeline: list[tuple[str, int]] = []
+    open_seat(
+        Kubectl("demo", runner=seat),
+        SEAT,
+        alias=ALIAS,
+        folder=HOME,
+        report=lambda note: timeline.append((note, len(seat.calls))),
+        editor="code",
+        provision=True,
+        runner=seat,
+    )
+    notice, announced = next(
+        (note, calls) for note, calls in timeline if note.startswith("--provision")
+    )
+    assert announced == 0
+    assert "egress" in notice and "restart" in notice and "15 MB" in notice
+
+
+def test_nothing_is_provisioned_unless_it_is_asked_for() -> None:
+    """Issue #45: writing ~15 MB into the workload is the larger of the two
+    mutations a config author must be asked for."""
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
+    run_open(seat)
+
+    assert not seat.provisioned
+    assert not any(PROVISION_FLAG in call for call in seat.calls)
+
+
 # -- extensions --------------------------------------------------------------
 
 
@@ -325,6 +462,35 @@ def test_the_install_is_announced_before_it_runs() -> None:
         calls for note, calls in timeline if note.startswith("installing ms-python")
     )
     assert not any("--install-extension" in call for call in seat.calls[:announced])
+
+
+def test_a_second_open_says_the_window_has_to_be_reloaded() -> None:
+    """An extension host that is already running does not pick up an extension
+    unpacked into ~/.vscode-server underneath it. Proved in the seat: the host
+    started at 16:53 and ms-python.debugpy landed at 17:33, installed and not
+    running - so the adapter was missing and nothing said why."""
+    seat = FakeSeat()
+    notes = run_open(seat)
+
+    assert any("Developer: Reload Window" in note for note in notes)
+
+
+def test_nothing_is_said_about_reloading_when_nothing_was_installed() -> None:
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr="nothing fits")
+    notes = run_open(seat)
+
+    assert not any("Reload Window" in note for note in notes)
+
+
+def test_no_reload_note_when_every_install_failed() -> None:
+    """The note asserts that --install-extension unpacked something into the
+    seat. A run whose installs all failed unpacked nothing, so it would send the
+    reader to look for an extension the lines above just said is not there."""
+    seat = FakeSeat(install_rc=1)
+    notes = run_open(seat)
+
+    assert any("could not install ms-python.python" in note for note in notes)
+    assert not any("Reload Window" in note for note in notes)
 
 
 def test_the_open_step_does_not_claim_the_window_connected() -> None:

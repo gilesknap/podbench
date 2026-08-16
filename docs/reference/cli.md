@@ -325,6 +325,14 @@ what that seat can actually do.
 │                                              once it lands, with the /proc and /sys excludes,    │
 │                                              this target's launch.json and only the extensions   │
 │                                              its debugger needs. Needs `code` on PATH            │
+│ --provision                                  with --open, make the target debuggable: install    │
+│                                              debugpy when it cannot import one, then start the   │
+│                                              server so F5 has something to connect to -          │
+│                                              otherwise a stock Python workload gets no           │
+│                                              launch.json at all. Mutates the workload: ~15 MB of │
+│                                              shared ephemeral storage, needs egress from the     │
+│                                              pod, ptraces the app for a few seconds, and no      │
+│                                              restart survives it                                 │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -456,7 +464,17 @@ Notes:
     "Install in SSH: `<alias>`" button as a flag. A locally installed extension
     runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
     means anything, and the failure looks like a bad `launch.json`. They are
-    also recommended in `<home>/.vscode/extensions.json` as a fallback;
+    also recommended in `<home>/.vscode/extensions.json` as a fallback. An
+    install only unpacks into the seat's `~/.vscode-server`, so a window that
+    was **already** connected keeps the extension host it started and never
+    loads it — the adapter stays unregistered and its `launch.json` entry
+    cannot run. A first `--open` is unaffected, since the install finishes
+    before the window opens; a later run needs the reload only where it put a
+    *new* extension in the seat, and the *Developer: Reload Window* reminder is
+    printed whenever an install **succeeded**, because `code` exits 0 for
+    "already installed" too and this side cannot tell an open window from a
+    fresh one. A run whose every install failed prints no reminder, having
+    unpacked nothing;
   * opens the **seat's home** — `/root`, or `/home/podbench` on a
     `podbench-home` volume. Never `/`: a folder there points the watcher at
     `/proc/<pid>/root`, which is a symlink into another container's rootfs, and
@@ -465,8 +483,56 @@ Notes:
   It cannot be combined with `--print-config`, which writes no stanza:
   `code --remote ssh-remote+<alias>` resolves the alias through ssh, and ssh
   reads the config dir. A target no debugger fits is not a failure — the
-  excludes, the folder and the terminals are the rest of the seat, and
-  `debug-config` has already named every mechanism that said no.
+  excludes, the folder and the terminals are the rest of the seat.
+
+  `debug-config`'s own stderr is relayed line by line rather than summarised.
+  It is the only thing in the run that can see the target, so its narration is
+  the diagnosis — it names every mechanism that said no, and on success it also
+  carries the injection command, which the emitted debugpy configuration needs
+  and cannot state: the entry is written once the *prerequisites* are met, and
+  nothing is listening until that command is run.
+* **`--provision`** passes through to that `debug-config` run and means *make
+  this target debuggable*. It is the answer to the commonest empty-handed case:
+  a Python target whose image has no debugpy. The injection bootstrap runs
+  inside the target's interpreter, so debugpy has to be importable *there*;
+  without it no configuration can be emitted and `--open` writes no
+  `launch.json` at all.
+
+  It does both halves. The seat installs debugpy into the target with `uv`,
+  resolved for the *target's* Python version rather than the seat's, and then
+  starts the debugpy server inside the app — so the emitted configuration has
+  something to connect to and F5 works when the command finishes. The two are
+  one flag because issue #45 ordered these mutations and put *installing* above
+  *injecting*: a run already allowed the larger one has been allowed the
+  smaller, and asking twice left the configuration emitted, the port closed and
+  the first F5 at `ECONNREFUSED`.
+
+  It is opt-in and stays so. It writes ~15 MB into the workload's writable
+  layer, on an ephemeral-storage budget the seat shares with the workload and
+  **cannot reserve** — an ephemeral container may not declare `resources`
+  (report 3.9); it needs egress from the pod, since uv resolves and downloads
+  from an index; starting the server ptraces the app, so it stops answering
+  probes for the few seconds that takes (~3 s measured, against the deadlines
+  the report above prints); and a restart of the target container ends the
+  debugging. The two halves do not expire together: the **server** never
+  survives a restart, being a live process in the container that died, while the
+  **install** survives one where `--provision-dest` names a volume mounted into
+  the target — an `emptyDir` is pod-scoped and outlives a container — and not at
+  the default `/opt/podbench-debugpy`, which is the container's own writable
+  layer. Either way the next step is `--provision` again, since without the
+  server nothing is listening. Installing debugpy into the app image, or baking
+  `debugpy.listen()` into the app, is the durable answer.
+
+  A **bare** `debug-config` still only prints the injection command. That is
+  `injection_command`'s rule unchanged — authoring a `launch.json` may not
+  ptrace the workload on its own — and `--provision` is what revokes it.
+
+  Without `--open` it is **refused**, not ignored: there is no `debug-config`
+  run for it to change, and a flag that reads as a promise to mutate the
+  workload must not quietly decline to keep it. Where the target's rootfs is
+  read-only the write fails with `EROFS` — the mount flag lives in the target's
+  mount namespace — and the seat's own `podbench debug-config --provision-dest`
+  is what points it at a writable volume instead.
 
   Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
   mode is on the **workload's** ephemeral-storage budget: a server plus one

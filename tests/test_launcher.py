@@ -1744,6 +1744,87 @@ def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
     assert cluster.seat_files == {}
 
 
+def test_open_does_not_ask_for_the_verb_it_has_just_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A step the reader has already had done for them reads as a step that did
+    not happen - and `--open` reports what debug-config actually got, which the
+    static line cannot."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            attach_argv(tmp_path, "--open"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+
+    assert "run `podbench debug-config` in the seat" not in captured.out
+    # The rest of the block is what the reader needs either way.
+    assert "ssh config written to" in captured.out
+
+
+def test_without_open_the_seat_is_still_told_how_to_get_a_launch_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert main(attach_argv(tmp_path), runner=cluster, which=lambda _: None) == 0
+
+    assert "run `podbench debug-config` in the seat" in capsys.readouterr().out
+
+
+def test_provision_without_open_is_refused_before_a_seat_is_spent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The flag reads as a promise to mutate the workload. Honouring it needs
+    the debug-config run only `--open` makes, so a run that quietly did nothing
+    would leave the user believing the target now has debugpy in it."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    code = main(
+        attach_argv(tmp_path, "--provision"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    # Refused before the attach, because an ephemeral container's name is
+    # permanent and this run was never going to reach the editor.
+    assert cluster.added == []
+    assert "--provision only has an effect with --open" in capsys.readouterr().err
+
+
+def test_provision_reaches_the_seats_own_debug_config(tmp_path: Path) -> None:
+    """The remedy shipped on the in-pod verb and had no way in from a laptop."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    code = main(
+        attach_argv(tmp_path, "--open", "--provision"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    asked = [call for call in cluster.calls if "debug-config" in call]
+    assert asked and all("--provision" in call for call in asked)
+
+
+def test_open_alone_provisions_nothing(tmp_path: Path) -> None:
+    """Issue #45: ~15 MB into the workload's writable layer is the larger of the
+    two mutations a config author has to be asked for."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            attach_argv(tmp_path, "--open"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+
+    assert not any("--provision" in call for call in cluster.calls)
+
+
 def test_open_follows_the_home_volume_rather_than_assuming_root(
     tmp_path: Path,
 ) -> None:
