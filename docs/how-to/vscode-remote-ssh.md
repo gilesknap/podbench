@@ -163,6 +163,19 @@ runs — ptracing the workload is not something authoring a `launch.json` may do
 on its own. `--open` relays the seat's own output, so the command to run is
 printed with the rest, along with every mechanism that said no.
 
+### Re-running `--open` on a window that is already connected? Reload it
+
+`--install-extension` unpacks into the seat's `~/.vscode-server`. A window that
+is *already* connected started its extension host before that, and does not pick
+it up: the extension is installed, the debug adapter is not registered, and its
+`launch.json` entry cannot run. Nothing on the remote side says so — the
+debugger is simply not there.
+
+The first `--open` is unaffected, because the install finishes before the window
+opens. For any run after that, **Command Palette → Developer: Reload Window**.
+`--open` prints the reminder whenever it installed anything, since it cannot
+tell an already-open window from a fresh one.
+
 Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
 window, a devcontainer or a Codespace, `code` on the PATH is the *remote* CLI,
 which talks to the window you are already in: it would install the extensions

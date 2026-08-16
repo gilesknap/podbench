@@ -462,7 +462,14 @@ Notes:
     "Install in SSH: `<alias>`" button as a flag. A locally installed extension
     runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
     means anything, and the failure looks like a bad `launch.json`. They are
-    also recommended in `<home>/.vscode/extensions.json` as a fallback;
+    also recommended in `<home>/.vscode/extensions.json` as a fallback. An
+    install only unpacks into the seat's `~/.vscode-server`, so a window that
+    was **already** connected keeps the extension host it started and never
+    loads it — the adapter stays unregistered and its `launch.json` entry
+    cannot run. A first `--open` is unaffected, since the install finishes
+    before the window opens; every run after one prints the
+    *Developer: Reload Window* reminder, because this side cannot tell the two
+    apart;
   * opens the **seat's home** — `/root`, or `/home/podbench` on a
     `podbench-home` volume. Never `/`: a folder there points the watcher at
     `/proc/<pid>/root`, which is a symlink into another container's rootfs, and

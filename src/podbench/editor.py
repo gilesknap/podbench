@@ -156,6 +156,28 @@ the flag lived on the in-pod verb alone, so from a laptop the remedy could be
 read and not reached.
 """
 
+_RELOAD_NOTE = (
+    "if a VS Code window was already connected to this alias, reload it now "
+    "(Command Palette -> Developer: Reload Window). --install-extension only "
+    "unpacks into the seat's ~/.vscode-server; the extension host that window "
+    "started does not pick that up, so the debug adapter stays unregistered "
+    "and its launch.json entry cannot run. A window this command opens for the "
+    "first time is fine - the install has already happened by then."
+)
+"""The step a *second* ``--open`` needs and a first one does not.
+
+Measured in the seat on 2026-08-16: the extension host started at 16:53 and
+never restarted, and `ms-python.debugpy` was unpacked into
+``~/.vscode-server/extensions`` at 17:33 — on disk, installed successfully, and
+not running. Nothing in VS Code says so from the remote side, and the symptom is
+the debugger simply not being there.
+
+Said whenever anything was installed rather than only when a window is known to
+be open, because this side cannot tell: ``code --install-extension`` exits 0 for
+"already installed", and the desktop ``code`` returns as soon as a window has
+the argv.
+"""
+
 _STORAGE_NOTE = (
     "these unpack into the seat's ~/.vscode-server, which in Observe mode is on "
     "the workload's ephemeral-storage budget - an ephemeral container may not "
@@ -304,6 +326,8 @@ def open_seat(
         # "is installed", not "installed": `code` exits 0 for "already
         # installed" too, and this run cannot tell the two apart.
         report(f"{extension} is installed in SSH: {alias}")
+    if extensions:
+        report(_RELOAD_NOTE)
 
     result = run([editor, "--remote", authority, folder])
     if result.returncode != 0:

@@ -464,6 +464,24 @@ def test_the_install_is_announced_before_it_runs() -> None:
     assert not any("--install-extension" in call for call in seat.calls[:announced])
 
 
+def test_a_second_open_says_the_window_has_to_be_reloaded() -> None:
+    """An extension host that is already running does not pick up an extension
+    unpacked into ~/.vscode-server underneath it. Proved in the seat: the host
+    started at 16:53 and ms-python.debugpy landed at 17:33, installed and not
+    running - so the adapter was missing and nothing said why."""
+    seat = FakeSeat()
+    notes = run_open(seat)
+
+    assert any("Developer: Reload Window" in note for note in notes)
+
+
+def test_nothing_is_said_about_reloading_when_nothing_was_installed() -> None:
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr="nothing fits")
+    notes = run_open(seat)
+
+    assert not any("Reload Window" in note for note in notes)
+
+
 def test_the_open_step_does_not_claim_the_window_connected() -> None:
     """The desktop `code` hands the argv to a window and returns, so its exit
     code is not evidence: the authority is resolved in the window afterwards
