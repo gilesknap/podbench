@@ -448,7 +448,7 @@ Notes:
     Host*. Inside a home, `**/.vscode-server/**` is the entry that earns its
     place first, and `C_Cpp.files.exclude` the only one that stops cpptools'
     tag parser walking on its own account;
-  * runs `debug-config --print-config` in the seat and merges the result into
+  * runs `podbench debug-config --print-config` in the seat and merges the result into
     `<home>/.vscode/launch.json`, matching on configuration name, so a second
     `--open` updates its own entries rather than appending copies;
   * installs **only** the extensions the emitted configurations name, with

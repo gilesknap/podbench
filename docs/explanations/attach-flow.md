@@ -107,7 +107,7 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--mount CLAIM:PATH
 ┌──────────────────────────────────────────────────────────────────┐
 │ DRIVE THE CLIENT                                                 │
 │                                                                  │
-│   exec -c SEAT -- debug-config --print-config                    │
+│   exec -c SEAT -- podbench debug-config --print-config           │
 │        one assessment; its adapter types name the extensions     │
 │   write <home>/.vscode/settings.json   ← the /proc excludes,     │
 │        BEFORE the window: the walk starts when it opens          │

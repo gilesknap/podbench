@@ -81,7 +81,10 @@ class FakeSeat:
     # -- the seat ----------------------------------------------------------
 
     def _in_seat(self, command: list[str], stdin: str | None) -> CommandResult:
-        if command[0] == "debug-config":
+        # The two-token verb, because that is the only spelling the image
+        # resolves: matching a bare `debug-config` here would keep this fake
+        # green against a launcher that execs nothing in a real seat.
+        if command[:2] == ["podbench", "debug-config"]:
             if self.debug_config_rc != 0:
                 return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
             document = {"version": "0.2.0", "configurations": self.configurations}
