@@ -110,7 +110,9 @@ _STORAGE_NOTE = (
     "these unpack into the seat's ~/.vscode-server, which in Observe mode is on "
     "the workload's ephemeral-storage budget - an ephemeral container may not "
     "declare resources of its own (report 3.9), and a server plus one extension "
-    "measured 1215 MiB live"
+    "measured 1215 MiB live. VS Code resolves each one's dependencies too, so "
+    "ms-python.python brings Pylance and vscode-python-envs with it, measured "
+    "in spike s2"
 )
 
 

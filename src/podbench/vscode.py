@@ -269,7 +269,11 @@ drifted would go on looking correct right up to the walk that ends the seat.
 #: emitted configuration *is* the extension's own identifier for it: install
 #: what the types name and a configuration VS Code cannot start is impossible by
 #: construction. ``debugpy`` takes two because ``ms-python.debugpy`` is the
-#: adapter and ``ms-python.python`` is what registers the interpreter it debugs.
+#: adapter and ``ms-python.python`` is what registers the interpreter it debugs
+#: — and that second one is an extension *pack*, so VS Code resolves
+#: ``ms-python.vscode-pylance`` alongside it whatever is asked for here. That is
+#: why :data:`SEAT_MACHINE_SETTINGS` carries ``python.analysis.exclude``: Pylance
+#: is going to be in the seat, and it walks on its own account.
 EXTENSIONS: dict[str, tuple[str, ...]] = {
     ADAPTER_CPPDBG: ("ms-vscode.cpptools",),
     ADAPTER_LLDB: ("vadimcn.vscode-lldb",),
@@ -281,12 +285,23 @@ EXTENSIONS: dict[str, tuple[str, ...]] = {
 def extensions_for(configurations: Sequence[Mapping[str, Any]]) -> list[str]:
     """The extensions ``configurations`` cannot run without, in emission order.
 
-    Exactly these and no bundle. In Observe mode an extension is unpacked into
-    the seat's ``~/.vscode-server``, which sits on the *workload's*
-    ephemeral-storage budget — an ephemeral container may not declare
-    ``resources`` (report 3.9) — and ``ms-vscode.cpptools`` alone is 330 MiB
-    against a server that already measured 1215 MiB live. Installing a language
-    the target does not use spends the workload's disk on nothing (issue #42).
+    The debuggers the target actually has, and no others: in Observe mode an
+    extension is unpacked into the seat's ``~/.vscode-server``, which sits on the
+    *workload's* ephemeral-storage budget — an ephemeral container may not
+    declare ``resources`` (report 3.9) — and ``ms-vscode.cpptools`` alone is
+    330 MiB against a server that already measured 1215 MiB live. Installing a
+    language the target does not use spends the workload's disk on nothing
+    (issue #42).
+
+    What this cannot promise is "and nothing else". ``ms-python.python`` is an
+    extension *pack*: s2 §7 ran the install and got ``vscode-python-envs``,
+    ``debugpy`` and ``vscode-pylance`` with it, and Pylance alone is a 117 MiB
+    install whose RSS is still unmeasured (report R2). It stays on the list
+    anyway — without it the interpreter the ``debugpy`` configuration names is
+    not registered, and the CLI has no "without its pack" — which is why
+    :data:`SEAT_MACHINE_SETTINGS` carries ``python.analysis.exclude``: the guard
+    is written for the extensions that actually arrive, not for the two named
+    here.
 
     >>> extensions_for([{"type": "debugpy"}, {"type": "debugpy"}])
     ['ms-python.python', 'ms-python.debugpy']

@@ -471,7 +471,12 @@ Notes:
   Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
   mode is on the **workload's** ephemeral-storage budget: a server plus one
   extension measured 1215 MiB live, and `ms-vscode.cpptools` alone is 330 MiB.
-  That is why only the flavour's own extensions are installed.
+  That is why only the flavour's own extensions are installed — though "only"
+  is the *list*, not the outcome: VS Code resolves each entry's dependencies,
+  and `ms-python.python` is an extension pack, so a Python target also lands
+  `ms-python.vscode-pylance` (117 MiB) and `ms-python.vscode-python-envs`. The
+  excludes are written for what actually arrives, which is why
+  `python.analysis.exclude` is among them.
 * Exit code is `0` for any seat that lands, including a degraded one; `2` for a
   real error.
 
