@@ -440,12 +440,25 @@ def detect_lsm(*, proc: Path = DEFAULT_PROC, sysfs: Path = DEFAULT_SYSFS) -> Lsm
 
     enforce = _read_text(sysfs / SELINUX_ENFORCE_PATH)
     if enforce is not None:
-        return LsmStatus(Lsm.SELINUX, context, _parse_int(enforce) == 1)
+        # ``None`` rather than "permissive" for a value that did not parse:
+        # `confines` reads False either way, but the report says out loud that
+        # `enforce` is 0, and it must not say that about a string it never read
+        # as 0.
+        mode = _parse_int(enforce)
+        return LsmStatus(Lsm.SELINUX, context, None if mode is None else mode == 1)
 
     apparmor = _read_text(sysfs / APPARMOR_ENABLED_PATH)
     if apparmor is not None and apparmor.strip().upper().startswith("Y"):
         return LsmStatus(Lsm.APPARMOR, context, _apparmor_mode(context))
 
+    if context not in (None, "unconfined"):
+        # Something wrote that context, so "no LSM is loaded" is not an answer
+        # available here whatever /sys did or did not say - and it is the one
+        # `confines` reads as "nothing denied anything". Neither module owned
+        # up, which happens when the file is unreadable at this uid, when
+        # selinuxfs is not mounted into the container, or when a third module
+        # (Smack, TOMOYO) wrote it. All three are `unknown`.
+        return LsmStatus(Lsm.UNKNOWN, context)
     if apparmor is not None or _listable(sysfs):
         return LsmStatus(Lsm.NONE, context)
     return LsmStatus(Lsm.UNKNOWN, context)

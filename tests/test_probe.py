@@ -313,6 +313,57 @@ def test_a_disabled_apparmor_module_is_not_an_active_one(tmp_path: Path) -> None
     assert detect_lsm(proc=proc, sysfs=sysfs_for(proc)).kind is Lsm.NONE
 
 
+def test_a_context_nobody_claimed_is_unknown_rather_than_no_lsm(
+    tmp_path: Path,
+) -> None:
+    """The realistic /sys failure, and the one direction that must not lie.
+
+    ``_read_text`` folds ENOENT and EACCES onto the same ``None``, so a seat at
+    uid 1000 that may not read ``/sys/module/apparmor/parameters/enabled``, or
+    one on an SELinux node with no selinuxfs bind-mounted, looks exactly like a
+    node carrying no LSM at all — while ``attr/current`` still holds a context
+    somebody wrote. ``Lsm.NONE`` is read as an exoneration downstream, so it is
+    not an answer available here. A Smack label lands in the same place, and
+    Smack can deny ptrace.
+    """
+    for context in (DIAMOND_CONTEXT, "_"):
+        proc = make_proc(tmp_path / context, lsm=Lsm.NONE, context=context)
+        status = detect_lsm(proc=proc, sysfs=sysfs_for(proc))
+        assert status == LsmStatus(Lsm.UNKNOWN, context)
+        assert status.confines is False
+
+
+def test_selinux_wins_when_both_modules_publish_state(tmp_path: Path) -> None:
+    """Only one exclusive LSM initialises, and a mounted selinuxfs says which.
+
+    AppArmor compiled in and answering ``Y`` does not make it the module that
+    wrote the context: ``/sys/fs/selinux/enforce`` exists only once SELinux has
+    initialised, so first-match-wins is the right order rather than an accident
+    of it.
+    """
+    proc = make_proc(tmp_path, lsm=Lsm.SELINUX, context=DIAMOND_CONTEXT)
+    write(sysfs_for(proc) / "module" / "apparmor" / "parameters" / "enabled", "Y\n")
+    assert detect_lsm(proc=proc, sysfs=sysfs_for(proc)).kind is Lsm.SELINUX
+
+
+def test_an_unparseable_enforce_value_is_not_reported_as_permissive(
+    tmp_path: Path,
+) -> None:
+    """``enforcing`` is three-valued, and the note it drives quotes the file.
+
+    "SELinux is permissive on this node (/sys/fs/selinux/enforce is 0)" must
+    not be printed about a string that was never read as 0.
+    """
+    proc = make_proc(tmp_path, lsm=Lsm.SELINUX, context=DIAMOND_CONTEXT)
+    write(sysfs_for(proc) / "fs" / "selinux" / "enforce", "\n")
+
+    status = detect_lsm(proc=proc, sysfs=sysfs_for(proc))
+    assert status.enforcing is None
+    assert status.confines is False
+    report = probe(1, proc=proc, attacher=attacher())
+    assert not any("permissive" in note for note in report.notes)
+
+
 def test_a_complain_mode_profile_does_not_confine(tmp_path: Path) -> None:
     """AppArmor states its mode in the profile string; complain permits.
 

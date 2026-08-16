@@ -483,12 +483,16 @@ class Lsm(enum.Enum):
     APPARMOR = "apparmor"
 
     NONE = "none"
-    """No LSM that writes a context is loaded, so none of them denied anything."""
+    """Nothing wrote a context and neither module owns up, so no LSM denied
+    anything. It takes both halves: a context with no module behind it is
+    :attr:`UNKNOWN`, because a third module (Smack, TOMOYO) can write one and
+    can deny ptrace, and this value is read as an exoneration."""
 
     UNKNOWN = "unknown"
-    """Neither module could be confirmed or ruled out — ``/sys`` was not
-    readable. Distinct from :attr:`NONE`, because "no LSM here" and "could not
-    ask" send a reader to different places."""
+    """A context is set that neither module claimed — ``/sys`` was unreadable,
+    selinuxfs is not mounted into the container, or something else wrote it.
+    Distinct from :attr:`NONE`, because "no LSM here" and "could not ask" send a
+    reader to different places."""
 
 
 @dataclass(frozen=True)
