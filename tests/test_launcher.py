@@ -1509,6 +1509,56 @@ def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
     assert cluster.seat_files == {}
 
 
+def test_open_follows_the_home_volume_rather_than_assuming_root(
+    tmp_path: Path,
+) -> None:
+    """A pod carrying `podbench-home` moves the seat's home, and the folder has
+    to move with it: it comes from the same `SshdLayout` the ProxyCommand does,
+    so the two cannot disagree about where the seat lives."""
+    cluster = FakeCluster(identity_pod())
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    assert set(cluster.seat_files) == {
+        "/home/podbench/.vscode/settings.json",
+        "/home/podbench/.vscode/launch.json",
+        "/home/podbench/.vscode/extensions.json",
+    }
+    opened = [
+        call
+        for call in cluster.calls
+        if call[0] == "/usr/bin/code" and "--install-extension" not in call
+    ]
+    assert opened[-1][-1] == "/home/podbench"
+
+
+def test_open_on_a_seat_with_no_stanza_says_so_rather_than_opening_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Remote-SSH needs a host, and a degraded seat got no stanza to name one.
+    The block above has already named the mechanism, so this only has to say
+    that `--open` is the part that cannot go on - the exec helpers still work."""
+    cluster = FakeCluster(
+        pod_document(uid=1000), psa_denies_ptrace=True, login_user=None
+    )
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
+    captured = capsys.readouterr()
+    assert "no ssh alias" in captured.err
+    # The seat itself landed and was reported: only --open is refused.
+    assert "no ssh config was written" in captured.out
+
+
 def test_open_stops_at_a_seat_file_it_cannot_write(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
