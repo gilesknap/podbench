@@ -1,5 +1,13 @@
 #!/bin/sh
-# gdb, started from a directory that is guaranteed to exist.
+# gdb for a seat: started from a directory that exists, and given a sysroot
+# whenever it is asked to attach to a pid.
+#
+# Safe to be `gdb` on PATH, and the image installs it as one. Both bugs below
+# hit *every* tool that shells out to gdb in a seat — debugpy's attach-to-pid
+# is only the one that was caught — and neither reports anything a reader can
+# act on.
+#
+# 1. A cwd that no longer exists kills gdb during startup.
 #
 # VS Code's cpptools launches gdb as a child and it inherits cpptools' own cwd,
 # which is the extension directory. VS Code replaces that directory wholesale on
@@ -17,11 +25,58 @@
 #
 # `dbg` never hits this: it does not enable pretty-printing, so gdb's Python is
 # never initialised. That is why the CLI works on a seat where the VS Code
-# debugger cannot start at all, and why this wrapper exists only for the DAP
-# path. See `podbench debug-config`, which points miDebuggerPath here.
+# debugger cannot start at all. See `podbench debug-config`, which points
+# miDebuggerPath here.
 #
 # Reproduce the bug in any seat with:
 #   mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
 #   printf -- "-enable-pretty-printing\n-gdb-exit\n" | gdb --interpreter=mi
+#
+# 2. `gdb --pid <n>` with no sysroot reads the wrong libraries.
+#
+# A seat and its target share a PID namespace but not a mount namespace, so a
+# bare attach loads *this* container's libc for *that* container's process:
+#
+#   Error reading attached process's symbol file.
+#   Error while mapping shared library sections:
+#
+# and, when it does not error, a plausible and wrong backtrace (report 3.3).
+# `dbg` and `debug-config` both set `set sysroot /proc/<pid>/root` themselves;
+# a third-party caller does not know it has to. So the pid is taken from argv
+# here and the setting supplied.
+#
+# It MUST be `-iex` and not `-ex`: `--pid` attaches during *startup*, so an
+# `-ex` command runs after the attach and is too late — the same
+# sysroot-before-attach ordering report 3.3 made load-bearing, and the anti-
+# pattern docs/how-to/debug-with-gdb.md already names.
+#
+# The pid is read from `--pid N`, `--pid=N` and `-p N`, which is every spelling
+# gdb accepts; debugpy uses the first. Anything non-numeric, or a pid with no
+# /proc entry, is left alone rather than guessed at — gdb's own error for a
+# bad pid is better than one from a wrapper.
+#
+# The liveness test is `-d /proc/<pid>` and deliberately NOT `-e
+# /proc/<pid>/root`: resolving that symlink needs PTRACE_MODE_READ, so on the
+# degraded rung it fails for a process that exists, and the wrapper would then
+# skip the sysroot exactly where it matters most — silently.
+pid=
+previous=
+for argument in "$@"; do
+	case "$previous" in
+	--pid | -p) pid=$argument ;;
+	esac
+	case "$argument" in
+	--pid=*) pid=${argument#--pid=} ;;
+	esac
+	previous=$argument
+done
+case "$pid" in
+'' | *[!0-9]*) pid= ;;
+esac
+[ -n "$pid" ] && [ -d "/proc/$pid" ] || pid=
+
 cd /root 2>/dev/null || cd / || exit 1
+if [ -n "$pid" ]; then
+	exec /usr/bin/gdb -iex "set sysroot /proc/$pid/root" "$@"
+fi
 exec /usr/bin/gdb "$@"
