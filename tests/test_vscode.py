@@ -696,6 +696,28 @@ def test_provision_probes_writability_before_it_runs_uv(
     assert f"cannot write {proc}/{PID}/root/readonly/x" in capsys.readouterr().err
 
 
+def test_provision_refuses_where_no_wheel_could_help(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On arm64 the install would spend the workload's storage for nothing.
+
+    debugpy publishes no aarch64 Linux wheel and ships `attach_linux_amd64.so`
+    alone, so there is no helper for the injection to dlopen on any path — the
+    one prerequisite with no remedy inside the pod.
+    """
+    proc = python_proc(tmp_path, machine=EM_AARCH64)
+    uv = InstallingUv()
+    main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert uv.argv == []
+    assert "publishes no aarch64 attach helper" in capsys.readouterr().err
+
+
 def test_provision_says_no_in_dev_mode_rather_than_installing_anyway(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

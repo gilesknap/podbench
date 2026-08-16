@@ -34,6 +34,7 @@ __all__ = [
     "GO_SECTIONS",
     "ElfInfo",
     "debugpy_helper_name",
+    "debugpy_helper_published",
     "machine_name",
     "read_elf",
 ]
@@ -127,6 +128,24 @@ def debugpy_helper_name(machine: str) -> str:
     """
     suffix = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
     return f"attach_linux_{suffix.get(machine, machine)}.so"
+
+
+def debugpy_helper_published(machine: str) -> bool:
+    """Whether debugpy ships an attach helper for ``machine`` *anywhere*.
+
+    The difference decides whether a missing helper is a wall or a chore: amd64
+    is in every wheel, so its absence from a particular tree means that tree is
+    an incomplete install and re-installing fixes it, while on anything else
+    there is no wheel to install and no remedy inside the pod at all. Calling
+    the first case "architecture" would be the false report — "not published for
+    x86_64" — that the message wording exists to avoid.
+
+    >>> debugpy_helper_published("x86_64")
+    True
+    >>> debugpy_helper_published("aarch64")
+    False
+    """
+    return debugpy_helper_name(machine) == "attach_linux_amd64.so"
 
 
 def read_elf(path: Path | str) -> ElfInfo | None:

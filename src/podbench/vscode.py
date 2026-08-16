@@ -65,6 +65,7 @@ from typing import Annotated, Any, cast
 import typer
 
 from .cli import new_app, run
+from .elf import debugpy_helper_name, debugpy_helper_published
 from .flavour import (
     DEBUGPY_PORT,
     Assessment,
@@ -844,10 +845,10 @@ def _provision(
     ephemeral-storage budget an ephemeral container may not reserve (report
     3.9), and a verb that authors a configuration file must stay safe to re-run.
 
-    Every refusal below is a case where the install would be pointless rather
-    than impossible, and each is named: a config author that quietly does
-    nothing when asked to do something is the failure this module exists to
-    avoid, one layer up.
+    Every refusal below names its mechanism, in the same house style as the
+    verdicts: a config author that quietly does nothing when it was asked to do
+    something is the silent wrong answer this module exists to prevent, one
+    layer up from where it usually appears.
     """
     if mode is Mode.DEV:
         _warn(
@@ -869,12 +870,30 @@ def _provision(
             "configuration connects to it without any of this"
         )
         return False
-    if seat.debugpy_there is not None:
+    machine = target.machine or seat.machine
+    if not debugpy_helper_published(machine):
+        # 15 MB into the workload that could never help: debugpy publishes no
+        # aarch64 Linux wheel, so there is no helper to dlopen on any path.
+        _warn(
+            f"--provision: debugpy publishes no {machine} attach helper, so "
+            "installing one cannot make pid-injection work here - bake "
+            "`debugpy.listen()` into the app image, or use `podbench dev`"
+        )
+        return False
+    if seat.debugpy_there is not None and seat.debugpy_helper:
         _warn(
             f"--provision: the target can already import debugpy from "
             f"{seat.debugpy_there}, so nothing is installed"
         )
         return False
+    if seat.debugpy_there is not None:
+        # Importable but incomplete, which is the one case worth writing over:
+        # the injection would get as far as the dlopen and then fail on the
+        # helper the target's own copy does not have.
+        _warn(
+            f"--provision: the target's debugpy at {seat.debugpy_there} has no "
+            f"{debugpy_helper_name(machine)}, so a complete copy goes in beside it"
+        )
     if which("uv") is None:
         _warn(
             "--provision: no uv on PATH in this seat, and it is uv's "

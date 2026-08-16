@@ -54,6 +54,7 @@ def make_proc(
     machine: int = EM_X86_64,
     cwd: str = "/",
     site_packages: str | None = None,
+    target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = False,
 ) -> Path:
     """A ``/proc`` with one target process and a rootfs behind it."""
@@ -74,9 +75,13 @@ def make_proc(
     (entry / "cmdline").write_text(cmdline.replace(" ", "\x00"))
     (entry / "cwd").symlink_to(cwd)
     if site_packages is not None:
-        package = entry / "root" / site_packages / "debugpy"
-        package.mkdir(parents=True)
-        (package / "__init__.py").write_text("")
+        # With the helpers by default, because that is what a wheel unpacks to.
+        # The tree the injection loads is the target's, so a target debugpy with
+        # no helper in it models a *broken* install rather than an ordinary one.
+        write_debugpy(
+            entry / "root" / site_packages,
+            helpers=AMD64_HELPER if target_helpers is None else target_helpers,
+        )
     return tmp_path
 
 
@@ -86,6 +91,7 @@ def python_proc(
     exe: str | None = "/usr/local/bin/python3.12",
     machine: int = EM_X86_64,
     site_packages: str | None = None,
+    target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = True,
 ) -> Path:
     """``podbench-demo/demo-service``, as a synthetic tree."""
@@ -95,6 +101,7 @@ def python_proc(
         cmdline="python /src/demo_service.py",
         machine=machine,
         site_packages=site_packages,
+        target_helpers=target_helpers,
         cap_sys_ptrace=cap_sys_ptrace,
     )
 
@@ -393,9 +400,9 @@ def test_the_provisioned_copy_is_found_by_one_more_fixed_path(
     container's rootfs, which is the unrecoverable OOM.
     """
     proc = python_proc(tmp_path)
-    package = proc / str(PID) / "root" / "opt" / "podbench-debugpy" / "debugpy"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("")
+    write_debugpy(
+        proc / str(PID) / "root" / "opt" / "podbench-debugpy", helpers=AMD64_HELPER
+    )
     target = inspect_target(PID, proc=proc)
     seat = survey_seat(
         target,
@@ -427,6 +434,35 @@ def test_a_chosen_destination_is_the_one_searched_and_the_one_printed(
     )
     remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).remedy or ""
     assert f"--target /proc/{PID}/root/scratch/debugpy debugpy" in remedy
+
+
+def test_the_helper_is_looked_for_in_the_tree_the_injection_loads(
+    tmp_path: Path,
+) -> None:
+    """The seat's tree is the wrong one to ask.
+
+    The injection runs with ``PYTHONPATH`` pointed at the *target's* copy, so
+    the helper the seat happens to have says nothing about the dlopen that copy
+    will ask for. Harmless while both sides come from the same amd64 wheel, and
+    a misreport the moment they differ — which provisioning makes possible.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, target_helpers=[])
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    assert f"no attach_linux_amd64.so in /proc/{PID}/root/{SITE_PACKAGES}" in (
+        result.reason
+    )
+    # And not blamed on the architecture: amd64 is in every wheel, so this is an
+    # incomplete install with a remedy, not the arm64 wall with none.
+    assert "nothing to install" not in result.reason
+    assert "uv pip install" in (result.remedy or "")
 
 
 def test_a_missing_sysroot_gdb_is_named_too(tmp_path: Path) -> None:

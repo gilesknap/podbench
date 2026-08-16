@@ -902,6 +902,12 @@ alone and publishes no aarch64 Linux wheel, so there is nothing to install.
 `debugpy.listen()` baked into the app is pure Python and works on any
 architecture — as does `podbench dev`.
 
+The helper is looked for in the tree the **injection** loads, and the message
+names that tree: `PYTHONPATH` points the driver at the *target's* copy whenever
+there is one, so the seat's copy answers a different question. On amd64 the
+helper is in every wheel, so a tree without one is an incomplete install with a
+re-install to fix it, not the architecture.
+
 #### Installing debugpy into the target (`--provision`)
 
 A stock Python image has no debugpy, and debugpy's pid-injection needs it

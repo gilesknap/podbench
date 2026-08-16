@@ -54,7 +54,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .elf import ElfInfo, debugpy_helper_name, read_elf
+from .elf import ElfInfo, debugpy_helper_name, debugpy_helper_published, read_elf
 from .proc import (
     DEFAULT_PROC,
     read_cmdline,
@@ -261,7 +261,10 @@ class Seat:
     path that resolves in both mount namespaces."""
 
     debugpy_helper: bool = False
-    """Whether the attach helper for the *target's* architecture exists."""
+    """Whether the attach helper for the *target's* architecture exists **in the
+    tree the injection will load** — the target's copy when there is one, since
+    that is what ``PYTHONPATH`` points the driver at, and this seat's only when
+    there is not."""
 
     provision_dest: str = PROVISION_DEST
     """Where a provisioned debugpy would go, as the target spells it. Carried on
@@ -578,17 +581,21 @@ def survey_seat(
         debuggers=inventory(which=which, debugpy_root=debugpy_root),
         debugpy_here=None if here is None else str(here),
         debugpy_there=None if there is None else _spelled(target.pid, proc, there),
-        debugpy_helper=_helper_present(here, target.machine),
+        # Asked of the tree the *injection* loads, which is the target's copy
+        # whenever there is one: the driver runs with PYTHONPATH pointed at it,
+        # so the seat's copy answers a question nobody asked, and would misreport
+        # the moment the two differ.
+        debugpy_helper=_helper_present(there or here, target.machine),
         sysroot_gdb=sysroot_gdb_on_path(which),
         listening_port=listening_port,
         provision_dest=provision_dest,
     )
 
 
-def _helper_present(here: Path | None, machine: str | None) -> bool:
-    if here is None or machine is None:
+def _helper_present(tree: Path | None, machine: str | None) -> bool:
+    if tree is None or machine is None:
         return False
-    return (here / _HELPER_RELATIVE / debugpy_helper_name(machine)).is_file()
+    return (tree / _HELPER_RELATIVE / debugpy_helper_name(machine)).is_file()
 
 
 def _has_debugpy(directory: Path) -> bool:
@@ -903,20 +910,34 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     # The helper is only asked about when there is a debugpy to ask: with none
     # installed its absence says nothing about the architecture, and reporting
     # "not published for x86_64" — which is false — would be worse than saying
-    # nothing.
-    if seat.debugpy_here is not None and not seat.debugpy_helper:
+    # nothing. The tree asked is the one the injection loads, and it is named in
+    # the message, because with a copy on each side they can disagree.
+    tree = seat.debugpy_there or seat.debugpy_here
+    if tree is not None and not seat.debugpy_helper:
         machine = target.machine or seat.machine
-        unmet.append(
-            (
-                True,
-                f"no {debugpy_helper_name(machine)} in this seat's debugpy: it "
-                "ships the amd64 helper alone and publishes no aarch64 Linux "
-                f"wheel at all, so on {machine} there is nothing to install",
-                "bake `debugpy.listen()` into the app image, or use "
-                "`podbench dev` - both are pure Python and work on any "
-                "architecture",
+        helper = debugpy_helper_name(machine)
+        if debugpy_helper_published(machine):
+            unmet.append(
+                (
+                    False,
+                    f"no {helper} in {tree}, which is the debugpy the injection "
+                    "loads: PYTHONPATH points the driver at the target's copy "
+                    "whenever there is one, not at this seat's",
+                    f"re-install it there: `{_provision_paste(target, seat)}`",
+                )
             )
-        )
+        else:
+            unmet.append(
+                (
+                    True,
+                    f"no {helper} in {tree}: debugpy ships the amd64 helper "
+                    "alone and publishes no aarch64 Linux wheel at all, so on "
+                    f"{machine} there is nothing to install",
+                    "bake `debugpy.listen()` into the app image, or use "
+                    "`podbench dev` - both are pure Python and work on any "
+                    "architecture",
+                )
+            )
     if not seat.cap_sys_ptrace:
         unmet.append(
             (
