@@ -75,7 +75,17 @@ case "$pid" in
 esac
 [ -n "$pid" ] && [ -d "/proc/$pid" ] || pid=
 
-cd /root 2>/dev/null || cd / || exit 1
+# Only when getcwd() itself fails. Once this wrapper is `gdb` on PATH it is no
+# longer only cpptools calling it — an interactive `gdb ./a.out` or `gdb -c
+# core` resolves its relative arguments against the cwd, and moving to /root
+# unconditionally would turn those into "No such file or directory". getcwd is
+# also the exact call that kills gdb above, so probing it tests the real
+# condition rather than a proxy for it.
+#
+# `/bin/pwd`, not the `pwd` builtin: dash's builtin answers from $PWD and so
+# reports success for a directory that has been unlinked, which is precisely
+# the case being detected.
+/bin/pwd >/dev/null 2>&1 || cd /root 2>/dev/null || cd / || exit 1
 if [ -n "$pid" ]; then
 	exec /usr/bin/gdb -iex "set sysroot /proc/$pid/root" "$@"
 fi
