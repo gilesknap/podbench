@@ -559,19 +559,6 @@ class CapabilityReport:
         return self.verdict is Verdict.LIVE_ATTACH
 
     @property
-    def ptrace_reads(self) -> dict[str, bool]:
-        """Only the measured reads that :data:`PTRACE_READ_PATHS` names.
-
-        A launcher may be a version behind the image it ran, so this takes the
-        intersection rather than assuming the matrix has every key.
-        """
-        return {
-            name: self.proc_reads[name]
-            for name in PTRACE_READ_PATHS
-            if name in self.proc_reads
-        }
-
-    @property
     def reads_ok(self) -> bool:
         """Whether read-only inspection of the target actually works.
 
@@ -590,9 +577,18 @@ class CapabilityReport:
     def can_debug_launched(self) -> bool:
         """Whether the seat can debug a process it starts itself.
 
-        Measured, and by the one attach that no policy may refuse: Yama and the
-        credential check both always permit a tracer's own descendant, so a
-        scratch attach that failed means ptrace(2) is unusable here and
-        ``gdb ./prog`` — which traces a child of its own — cannot work either.
+        Measured, and by the attach that policy is least likely to refuse: the
+        credential check always passes against your own child and Yama permits
+        it below ``ptrace_scope=2``, so a scratch attach that failed means
+        ptrace(2) is unusable here and ``gdb ./prog`` — which traces a child of
+        its own — cannot work either.
+
+        It is a proxy in the other direction, and knowingly: the probe issues
+        ``PTRACE_ATTACH`` on a fork while ``gdb ./prog`` uses
+        ``PTRACE_TRACEME``, which report 3.12 measured as two separate rows.
+        Yama gates the pair identically (scopes 0 and 1 permit both, 2 requires
+        CAP_SYS_PTRACE of the tracer for both, 3 denies both) and a seccomp
+        filter rejecting ``ptrace`` takes both, so the only known divergence is
+        an AppArmor profile transition on the ``exec`` of the launched binary.
         """
         return self.child_attach_ok is True
