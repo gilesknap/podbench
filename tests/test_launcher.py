@@ -184,6 +184,7 @@ class FakeCluster:
         patch_error: str | None = None,
         ssh_probe_rc: int = 0,
         ssh_probe_err: str = "",
+        limit_ranges: Sequence[dict[str, Any]] = (),
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -202,6 +203,7 @@ class FakeCluster:
         self.patch_error = patch_error
         self.ssh_probe_rc = ssh_probe_rc
         self.ssh_probe_err = ssh_probe_err
+        self.limit_ranges = [dict(entry) for entry in limit_ranges]
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
         # What `--open` reads and writes: the configurations `debug-config`
@@ -253,6 +255,8 @@ class FakeCluster:
             return _ok("demo\n")
         if rest[:2] == ["get", "pods"]:
             return _ok(json.dumps({"items": [self.pod, *self.others]}))
+        if rest[:2] == ["get", "limitranges"]:
+            return _ok(json.dumps({"items": list(self.limit_ranges)}))
         if rest[:2] == ["get", "pod"]:
             found = self._named(rest[2])
             if found is None:

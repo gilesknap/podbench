@@ -314,6 +314,31 @@ class Kubectl:
             if isinstance(item, dict)
         ]
 
+    def list_limit_ranges(self) -> list[dict[str, Any]]:
+        """Every ``LimitRange`` in the namespace, or none if they cannot be read.
+
+        ``check=False`` because this is asked to *improve* a resize, not to
+        permit one: RBAC that grants pod writes and no ``list`` on limitranges
+        is ordinary, and a namespace with no LimitRange is the common case. Both
+        answer "nothing constrains this", and the resize is submitted either
+        way — the cluster gets the last word, as it did before this was read at
+        all.
+        """
+        result = self.run("get", "limitranges", "-o", "json", check=False)
+        if result.returncode != 0:
+            return []
+        try:
+            items = _parse_json_object(result.stdout, result.argv).get("items")
+        except (KubectlError, json.JSONDecodeError):
+            return []
+        if not isinstance(items, list):
+            return []
+        return [
+            cast(dict[str, Any], item)
+            for item in cast(list[Any], items)
+            if isinstance(item, dict)
+        ]
+
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:
         """A pod subresource's JSON, e.g. ``ephemeralcontainers``."""
         result = self.run(

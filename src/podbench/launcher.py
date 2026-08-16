@@ -66,6 +66,16 @@ from .model import (
     Verdict,
     as_dict,
 )
+from .resize import (
+    CPU,
+    MEMORY,
+    ResizeError,
+    ResizePlan,
+    Want,
+    namespace_limits,
+    parse_want,
+    plan_resize,
+)
 from .spec import (
     AGENT_COMMAND,
     InvalidSpecError,
@@ -233,16 +243,17 @@ attention is about to leave the terminal for a GUI.
 """
 
 RESIZE_WARNING = (
-    "--resize raises the target container's memory limit in place (kubectl "
-    "patch pod --subresource resize). It is opt-in for two reasons (report "
-    "R13). It is only partly proven: three pods, two of them "
-    "Deployment-managed - a ReplicaSet reconciles pod existence, not pod "
+    "--resize and --resize-cpu raise the target container's limits in place "
+    "(kubectl patch pod --subresource resize), and raise its requests with "
+    "them where a LimitRange bounds limit/request. They are opt-in for two "
+    "reasons (report R13). They are only partly proven: three pods, two of "
+    "them Deployment-managed - a ReplicaSet reconciles pod existence, not pod "
     "spec, so it does not fight the resize - but one Kubernetes version, and "
-    "never against a LimitRange or a ResourceQuota. And the raised limit "
-    "lives on the pod, not on its controller: the template still asks for "
-    "the old limit and nothing "
-    "reconciles the difference, so a rollout, a scale, an image bump or an "
-    "eviction regenerates the pod from it and silently reverts the resize."
+    "never against a ResourceQuota. And the raised limits live on the pod, "
+    "not on its controller: the template still asks for the old ones and "
+    "nothing reconciles the difference, so a rollout, a scale, an image bump "
+    "or an eviction regenerates the pod from it and silently reverts the "
+    "resize."
 )
 
 _UNPINNED_UID = 65534
@@ -1965,13 +1976,29 @@ def emit_ssh_config(
 # -- in-place resize --------------------------------------------------------
 
 
-def try_resize(kubectl: Kubectl, pod: str, container: str, memory: str) -> str:
-    """Raise the target container's memory limit in place; never fatal.
+def try_resize(
+    kubectl: Kubectl,
+    pod: str,
+    container: str,
+    memory: str | None = None,
+    *,
+    cpu: str | None = None,
+    pod_json: Mapping[str, Any] | None = None,
+) -> str:
+    """Raise the target container's limits in place; never fatal.
 
     A strategic-merge patch, not the JSON patch the rest of podbench prefers:
     resize addresses containers by name, and a JSON patch would need the
     container's *index*, which is positional and would silently resize the wrong
     container if the pod spec changed under us.
+
+    **Requests move with limits.** A ``LimitRange`` carrying
+    ``maxLimitRequestRatio`` bounds limit ÷ request, so raising a limit alone
+    only ever widens that ratio: at Diamond a 6Gi limit over the workload's
+    64Mi request was refused for a ratio of 96 against a cap of 10, which made
+    ``--resize`` unusable on every pod in the namespace. The request podbench
+    submits alongside is derived from the namespace's own numbers — see
+    :func:`podbench.resize.plan_resize` for the two invariants that bound it.
 
     Failure is reported rather than raised — the mitigation is only partly
     proven (report R13) and a seat that lands with a loud warning beats one that
@@ -1982,26 +2009,73 @@ def try_resize(kubectl: Kubectl, pod: str, container: str, memory: str) -> str:
     object alone, so the next thing to regenerate the pod from an unchanged
     template takes it away again with no other symptom than a seat that OOMs.
     """
-    body = {
-        "spec": {
-            "containers": [
-                {"name": container, "resources": {"limits": {"memory": memory}}}
-            ]
-        }
-    }
+    wants: dict[str, Want] = {}
     try:
-        kubectl.patch("pod", pod, body, patch_type="strategic", subresource="resize")
+        if memory is not None:
+            wants[MEMORY] = parse_want(memory, resource=MEMORY)
+        if cpu is not None:
+            wants[CPU] = parse_want(cpu, resource=CPU)
+        document = pod_json if pod_json is not None else kubectl.get_pod(pod)
+        plan = plan_resize(
+            container,
+            current=_container_resources(document, container),
+            wants=wants,
+            limits=namespace_limits(kubectl.list_limit_ranges()),
+        )
+    except ResizeError as error:
+        return f"no resize was attempted: {error}"
+
+    asked = ", ".join(
+        f"{resource} {value}" for resource, value in sorted(_asked(plan).items())
+    )
+    try:
+        kubectl.patch(
+            "pod", pod, plan.body, patch_type="strategic", subresource="resize"
+        )
     except KubectlError as error:
         return (
-            f"in-place resize to {memory} was refused, so podbench is sharing "
-            f"the pod's existing limits: {error.stderr.strip() or error}"
+            f"in-place resize ({asked}) was refused, so podbench is sharing the "
+            f"pod's existing limits: {error.stderr.strip() or error}"
         )
-    return (
-        f"resized {container} to a {memory} memory limit; restore it on detach. "
-        "The raised limit lives on this pod, not on any controller that owns "
-        "it: a rollout, a scale, an image bump or an eviction regenerates the "
-        "pod from an unchanged template and silently reverts the resize."
+    return "\n".join(
+        [
+            f"resized {container} to {asked}; restore it on detach.",
+            *plan.notes,
+            "The raised limits live on this pod, not on any controller that "
+            "owns it: a rollout, a scale, an image bump or an eviction "
+            "regenerates the pod from an unchanged template and silently "
+            "reverts the resize. A GitOps controller does not itself revert "
+            "this - Argo CD reconciles the workload object, and the pod is not "
+            "one of its manifests - but the sync that rolls the workload does.",
+        ]
     )
+
+
+def _asked(plan: ResizePlan) -> dict[str, str]:
+    """What the patch says, flattened for one line of report."""
+    resources = as_dict(as_dict(plan.body["spec"]["containers"][0]).get("resources"))
+    stated: dict[str, str] = {}
+    for resource, value in as_dict(resources.get("limits")).items():
+        request = as_dict(resources.get("requests")).get(resource)
+        stated[resource] = f"{request}/{value}" if request else str(value)
+    return stated
+
+
+def _container_resources(
+    pod_json: Mapping[str, Any], container: str
+) -> Mapping[str, Any]:
+    """One container's ``resources`` as the pod carries them now.
+
+    Read from ``spec`` rather than from ``status.containerStatuses``: an earlier
+    resize that the kubelet has accepted but not yet actuated shows the new
+    numbers in the spec and the old ones in the status, and what the next patch
+    has to be consistent with is the spec.
+    """
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        candidate = as_dict(entry)
+        if candidate.get("name") == container:
+            return as_dict(candidate.get("resources"))
+    return {}
 
 
 # -- namespace / listing ----------------------------------------------------
@@ -2811,7 +2885,18 @@ def _build_app(
             typer.Option(
                 "--resize",
                 metavar="MEMORY",
-                help="raise the target's memory limit in place first, e.g. 6Gi",
+                help="raise the target's memory in place first, as LIMIT or "
+                "REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request is raised too "
+                "where a LimitRange bounds limit/request",
+            ),
+        ] = None,
+        resize_cpu: Annotated[
+            str | None,
+            typer.Option(
+                "--resize-cpu",
+                metavar="CPU",
+                help="raise the target's cpu in place first, as LIMIT or "
+                "REQUEST:LIMIT, e.g. 4 or 500m:4",
             ),
         ] = None,
         identity: _Identity = DEFAULT_IDENTITY,
@@ -2866,11 +2951,19 @@ def _build_app(
 
         # Resize before attaching, not after: the headroom has to exist before
         # vscode-server starts allocating into a limit podbench cannot reserve.
-        if resize is None:
+        if resize is None and resize_cpu is None:
             resize_note = RESIZE_WARNING
         else:
-            workload = target_container_name(kube.get_pod(name), target)
-            resize_note = try_resize(kube, name, workload, resize)
+            pod_json = kube.get_pod(name)
+            workload = target_container_name(pod_json, target)
+            resize_note = try_resize(
+                kube,
+                name,
+                workload,
+                resize,
+                cpu=resize_cpu,
+                pod_json=pod_json,
+            )
 
         session = attach(
             kube,
