@@ -611,7 +611,8 @@ A pre-flight read of the target pod's `securityContext.runAsNonRoot` lets it ski
       `rm -rf $DATA/data/CachedExtensionVSIXs` (−190 MiB after 6 extensions).
 - [ ] **Size the pod before attaching:** `kubectl patch pod --subresource resize` to raise the target
       container's memory limit, restore on detach. Fall back to a loud pre-flight warning when the
-      subresource is unavailable or a controller would fight it.
+      subresource is unavailable. Say, on success too, that the raised limit is on the pod and not
+      on whatever owns it, so a rollout reverts it (R13).
 - [ ] Treat the ephemeral container as **strictly disposable** — nothing may live only in its
       writable layer. Name containers `podbench-<n>` with an incrementing suffix: a dead ephemeral
       container name is **burnt for the pod's lifetime**, and `kubectl debug … -- true` leaves a
@@ -804,8 +805,58 @@ evicted mid-session was never exercised.
 `extensionDependencies` (e.g. `ms-python.debugpy`) still reach the marketplace even when installed
 from a local `.vsix`, so an offline bundle must ship the full dependency closure. Unspiked.
 
-**R13 — In-place pod resize as a load-bearing mechanism is only lightly proven.** It worked here
-(3Gi→6Gi→7Gi, `ResizeCompleted`, no restarts, non-disruptive to a running ephemeral container), but
-it was tried on one k3s version, one pod, and never against a controller that would fight the
-change or a namespace with a `LimitRange`/`ResourceQuota`. Podbench is being asked to depend on it
-to avoid the unrecoverable OOM of §3.9.
+**R13 — In-place pod resize works on a controller-managed pod, but it silently diverges that pod
+from its controller.** The spike itself was thin evidence: 3Gi→6Gi→7Gi, `ResizeCompleted`, no
+restarts, non-disruptive to a running ephemeral container — but one standalone pod
+(`podbench-s2/target-amd64`), patched by hand, with no controller in the picture. It has since been
+measured on **two further pods, both Deployment-managed, both resized by `podbench attach --resize`
+rather than by raw kubectl** — which settles the controller question and raises a different one
+nobody had written down. The Kubernetes version is *not* a second data point: everything below ran
+on the same k3s v1.34.6+k3s1 cluster as the spikes, so "one Kubernetes version" still stands.
+
+*Measured 2026-08-15 on k3s v1.34.6+k3s1: `podbench-demo/demo-service`, a one-replica
+`python:3.12-slim` Deployment pinned to an amd64 node with `limits.memory: 256Mi`, whose seat had
+just been OOM-killed. Raised by `podbench attach --new --resize 4Gi`, then read back:*
+
+| check | result |
+|---|---|
+| pod spec `limits.memory` | `256Mi` → `4Gi` |
+| `memory.max` in the **app** container's own cgroup | `4294967296` — the kernel applied it, not just the API server |
+| `app` container restarts | 0, `started=true` — genuinely in place |
+| pod conditions | `Ready=True`, `ContainersReady=True` |
+| the app through its Service | uninterrupted throughout |
+
+**A Deployment does not fight an in-place resize.** The pod is owned by
+`ReplicaSet/demo-service-5cbbc6654f` and the ReplicaSet left the raised limit alone, which is what
+the controller's contract predicts: a ReplicaSet reconciles pod *existence*, not pod *spec*. So the
+common case — resizing a pod under a Deployment — is fine, and "a controller that would fight the
+change" was the wrong thing to have been afraid of.
+
+**The right thing to be afraid of is drift.** The resize writes to the pod; the Deployment's
+template still says `256Mi`, and nothing reconciles the two. The divergence therefore holds
+indefinitely and then vanishes without warning: any rollout, scale, image bump or eviction
+regenerates the pod from the unchanged template at the original limit. Someone who resizes to make
+a seat viable and later triggers a rollout for an unrelated reason gets a pod that OOMs again with
+no visible connection to what they did. It is the same class of drift that `podbench patch status`
+exists to surface — a pod quietly unlike the thing that declares it — arriving in a place nothing
+was watching.
+
+That reversion is measured, not predicted. The same manifest in a scratch namespace, resized to
+`1Gi` (pod `1Gi` / template `256Mi`, `memory.max` `1073741824`, 0 restarts, `started=true`), then
+`kubectl rollout restart deployment/demo-service`: the replacement pod came back at **`256Mi`**,
+carrying no seat, with nothing in the rollout that mentioned either.
+
+The divergence outlives a *container* restart, which is the same fact from the other side: re-read
+8 h later, the resized `podbench-demo` pod still carried `4Gi` against a `256Mi` template and
+`memory.max` was still `4294967296` **after** the `app` container had restarted once (exit 137).
+The raised limit lives on the pod object, so only regenerating the pod reverts it.
+
+**Still unproven, and still in the warning:** a namespace with a `LimitRange` or a `ResourceQuota`.
+Neither namespace measured had either, so nothing here says how the resize behaves when the raised
+limit has to be re-admitted against a quota. A second Kubernetes version is also still untested.
+Podbench is still being asked to depend on this to avoid the unrecoverable OOM of §3.9.
+
+**`--resize` is memory-only.** It takes a memory value and patches `limits.memory`; a CPU limit is
+not raised with it. That did not bite in this measurement — `cpu.stat` showed `nr_throttled 0` with
+a vscode-server plus extensions running — but a throttled seat under a tight `limits.cpu` has no
+mitigation in the flag.
