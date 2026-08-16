@@ -9,7 +9,7 @@ available to you before taste does.
 | **What it does** | puts a seat in the running pod | runs a sacrificial clone of it | makes an edit outlive the session |
 | **Touches the workload** | no — adds a container to the pod | no — the origin is left alone | yes — needs a claim in the chart |
 | **Singleton-safe** | **yes** | **no** — the clone is a second copy | **yes** |
-| **GitOps-safe** | **yes** | not yet ([#31](https://github.com/gilesknap/podbench/issues/31)) | mostly ([#32](https://github.com/gilesknap/podbench/issues/32)) |
+| **GitOps-safe** | **yes** | **no** — refused outright | mostly ([#32](https://github.com/gilesknap/podbench/issues/32)) |
 | **Languages** | any | any, but only Python is set up for you | Python only ([#34](https://github.com/gilesknap/podbench/issues/34)) |
 | **Survives a restart** | no | no | **yes** |
 | **Inner loop** | no | **yes**, ~1 s | yes, one rollout per edit |
@@ -32,11 +32,21 @@ git-managed object is drift and gets reverted, usually within seconds and always
 telling you.
 
 `attach` is clear because its mutations are pod-level — an ephemeral container and an
-in-place resize — and pods made by a controller are not compared against git. `dev` is
-currently at risk from the other direction: the clone can look like a tracked resource
-that has gone missing from git, and be pruned mid-session. `hotfix` works, but records its
-provenance on the pod template, which self-heal strips — so the fix keeps running while
-`hotfix status` stops being able to see it. Both are fixable; both are open.
+in-place resize — and pods made by a controller are not compared against git.
+
+`dev` **refuses to run** against a workload carrying a GitOps mark, and there is no
+override. The reason is `--take-traffic`: a Service is a tracked object straight out of
+git, so self-heal reverts the selector within seconds and the traffic you think you have
+returns to the original pod with no error anywhere. Making the dev pod itself survive is
+possible and was rejected — it works by hiding the pod from the controller, which turns a
+loud failure into a silent one and leaves the Service problem untouched. Detection looks
+at the *workload*, not the pod, because that is where the mark is; a cluster that leaves
+Argo's `instanceLabelKey` at its default is not detected, which is the safer direction to
+be wrong in.
+
+`hotfix` works, but records its provenance on the pod template, which self-heal strips —
+so the fix keeps running while `hotfix status` stops being able to see it
+([#32](https://github.com/gilesknap/podbench/issues/32)).
 
 ## Languages
 

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ways in &#8212; podbench 0.1.0b4.dev35+g18f9d3421 documentation</title>
+    <title>Ways in &#8212; podbench 0.1.0b4.dev38+gff3b1fd0e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=14d22ba8"></script>
+    <script src="../_static/documentation_options.js?v=3164784b"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -534,7 +534,7 @@ available to you before taste does.</p>
 </tr>
 <tr class="row-odd"><td><p><strong>GitOps-safe</strong></p></td>
 <td><p><strong>yes</strong></p></td>
-<td><p>not yet (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/31">#31</a>)</p></td>
+<td><p><strong>no</strong> — refused outright</p></td>
 <td><p>mostly (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/32">#32</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>Languages</strong></p></td>
@@ -571,11 +571,19 @@ the clone <em>is</em> the mode. Use <code class="docutils literal notranslate"><
 git-managed object is drift and gets reverted, usually within seconds and always without
 telling you.</p>
 <p><code class="docutils literal notranslate"><span class="pre">attach</span></code> is clear because its mutations are pod-level — an ephemeral container and an
-in-place resize — and pods made by a controller are not compared against git. <code class="docutils literal notranslate"><span class="pre">dev</span></code> is
-currently at risk from the other direction: the clone can look like a tracked resource
-that has gone missing from git, and be pruned mid-session. <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> works, but records its
-provenance on the pod template, which self-heal strips — so the fix keeps running while
-<code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> stops being able to see it. Both are fixable; both are open.</p>
+in-place resize — and pods made by a controller are not compared against git.</p>
+<p><code class="docutils literal notranslate"><span class="pre">dev</span></code> <strong>refuses to run</strong> against a workload carrying a GitOps mark, and there is no
+override. The reason is <code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code>: a Service is a tracked object straight out of
+git, so self-heal reverts the selector within seconds and the traffic you think you have
+returns to the original pod with no error anywhere. Making the dev pod itself survive is
+possible and was rejected — it works by hiding the pod from the controller, which turns a
+loud failure into a silent one and leaves the Service problem untouched. Detection looks
+at the <em>workload</em>, not the pod, because that is where the mark is; a cluster that leaves
+Argo’s <code class="docutils literal notranslate"><span class="pre">instanceLabelKey</span></code> at its default is not detected, which is the safer direction to
+be wrong in.</p>
+<p><code class="docutils literal notranslate"><span class="pre">hotfix</span></code> works, but records its provenance on the pod template, which self-heal strips —
+so the fix keeps running while <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> stops being able to see it
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/32">#32</a>).</p>
 </section>
 <section id="languages">
 <h2>Languages<a class="headerlink" href="#languages" title="Link to this heading">#</a></h2>
