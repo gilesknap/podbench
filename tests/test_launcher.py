@@ -1265,6 +1265,23 @@ def test_capability_report_from_json_survives_an_unknown_blocker() -> None:
     assert any("cgroup-devices" in note for note in report.notes)
 
 
+def test_an_unknown_verdict_is_said_rather_than_flattened() -> None:
+    """The sibling of the unknown-blocker note. This PR added a rung, so a
+    launcher one release behind an image is a shape that now exists: reading
+    `no access to the target process` off a verdict it has never heard of hides
+    exactly what the newer image was trying to report."""
+    report = capability_report_from_json(
+        capreport_payload(
+            verdict="single_step_only",
+            exit_code=17,
+            summary="single-step only",
+        )
+    )
+    assert report.verdict is Verdict.NONE
+    assert any("single_step_only" in note for note in report.notes)
+    assert any("single-step only" in note for note in report.notes)
+
+
 def test_capability_report_from_json_keeps_an_unreadable_target_uid_none() -> None:
     report = capability_report_from_json(
         capreport_payload(target_uid=None, target_pid=None, yama_scope=None)

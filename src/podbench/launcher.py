@@ -1174,6 +1174,20 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         )
         blocker = Blocker.UNKNOWN
     verdict = _verdict_from(payload.get("verdict"))
+    if verdict is None:
+        # The sibling of the unknown-blocker note above, and newly load-bearing:
+        # this PR added a rung, so a launcher one release behind an image is now
+        # a real shape rather than a hypothetical one. The read-only and
+        # gdb-launch ticks self-correct because they are recomputed from
+        # `proc_reads` and `child_attach_ok`, but the verdict line cannot be
+        # recomputed, so it says what it does not know instead of reading
+        # `no access to the target process` off a rung it has never heard of.
+        notes.append(
+            f"this launcher does not know the verdict {payload.get('verdict')!r} "
+            f"the image reported ({payload.get('summary')}); shown as no access, "
+            "which may understate what the seat can do"
+        )
+        verdict = Verdict.NONE
     reads = {
         str(key): bool(value)
         for key, value in as_dict(payload.get("proc_reads")).items()
@@ -1198,12 +1212,17 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
     )
 
 
-def _verdict_from(value: object) -> Verdict:
+def _verdict_from(value: object) -> Verdict | None:
+    """The named verdict, or ``None`` for one this launcher has never heard of.
+
+    ``None`` rather than a silent :attr:`Verdict.NONE`, so the caller has to
+    decide what to say about the gap.
+    """
     name = str(value).upper()
     for verdict in Verdict:
         if verdict.name == name:
             return verdict
-    return Verdict.NONE
+    return None
 
 
 # -- the capability report the user reads -----------------------------------
