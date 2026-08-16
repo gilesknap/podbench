@@ -65,7 +65,6 @@ from typing import Annotated, Any, cast
 import typer
 
 from .cli import new_app, run
-from .dev import LISTENERS_COMMAND, listeners_on, parse_ss
 from .flavour import (
     DEBUGPY_PORT,
     Assessment,
@@ -808,7 +807,17 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     ``debugpy.listen()`` itself" path work with no capability and on any
     architecture. An ``ss`` that cannot run answers ``None``, since a guess here
     would emit a configuration that connects to nothing.
+
+    Imported here rather than at module scope because the three modules that
+    hold VS Code, dev-pod and seat-preparation knowledge genuinely each need a
+    little of the next: ``agent`` wants this module's machine settings, ``dev``
+    wants ``agent``'s pubkey env var, and this function wants ``dev``'s ``ss``
+    parsing — a cycle that only appears once all three are present. This is the
+    narrowest of the three edges, a single call in a single function, so it is
+    the one that gives way.
     """
+    from .dev import LISTENERS_COMMAND, listeners_on, parse_ss
+
     run = runner if runner is not None else run_subprocess
     result = run(list(LISTENERS_COMMAND))
     if result.returncode != 0:
