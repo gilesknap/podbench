@@ -1839,6 +1839,7 @@ def emit_ssh_config(
     host_alias: str | None = None,
     user: str | None = None,
     print_config: bool = False,
+    opening: bool = False,
 ) -> SshSeat:
     """Generate the client stanza for a landed seat, and write it.
 
@@ -1853,6 +1854,12 @@ def emit_ssh_config(
     identity comes from a projected passwd record naming whatever the chart
     chose; the default is the one ``attach`` has always used, where the seat's
     rung decides.
+
+    ``opening`` drops the closing "run ``podbench debug-config`` in the seat"
+    line, because ``--open`` is about to run it and say what it got. Only that
+    one line: the alias, the ``Include`` and the ssh command are what the reader
+    needs whether or not a window opens, and ``--open``'s own exit code is not
+    evidence the window connected.
     """
     if session.ssh is not None and session.ssh.refused:
         # Nothing below can help: sshd resolves the login name before it looks
@@ -1913,9 +1920,18 @@ def emit_ssh_config(
                 # The VS Code debugger needs a launch.json whose pid,
                 # sysroot-prefixed program and setup ordering are all things
                 # this launcher already knows and a human cannot guess; every
-                # wrong answer fails silently rather than erroring.
-                "to debug in VS Code, run `podbench debug-config` in the seat "
-                "(writes .vscode/launch.json)",
+                # wrong answer fails silently rather than erroring. Dropped
+                # under --open, which runs that verb itself a few lines further
+                # down and reports what it actually got: a step the reader has
+                # already had done for them reads as a step that did not happen.
+                *(
+                    []
+                    if opening
+                    else [
+                        "to debug in VS Code, run `podbench debug-config` in the "
+                        "seat (writes .vscode/launch.json)"
+                    ]
+                ),
             ]
         ),
         alias=alias,
@@ -2846,6 +2862,7 @@ def _build_app(
             host_alias=host_alias,
             ssh_user=ssh_user,
             print_config=print_config,
+            opening=editor is not None,
         )
         print(wiring.note)
         if editor is not None:
@@ -2982,6 +2999,7 @@ def _emit(
     host_alias: str | None,
     ssh_user: str | None,
     print_config: bool,
+    opening: bool = False,
 ) -> SshSeat:
     """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
     return emit_ssh_config(
@@ -2992,6 +3010,7 @@ def _emit(
         host_alias=host_alias,
         user=ssh_user,
         print_config=print_config,
+        opening=opening,
     )
 
 

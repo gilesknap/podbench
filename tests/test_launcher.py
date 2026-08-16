@@ -1655,6 +1655,37 @@ def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
     assert cluster.seat_files == {}
 
 
+def test_open_does_not_ask_for_the_verb_it_has_just_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A step the reader has already had done for them reads as a step that did
+    not happen - and `--open` reports what debug-config actually got, which the
+    static line cannot."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            attach_argv(tmp_path, "--open"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+
+    assert "run `podbench debug-config` in the seat" not in captured.out
+    # The rest of the block is what the reader needs either way.
+    assert "ssh config written to" in captured.out
+
+
+def test_without_open_the_seat_is_still_told_how_to_get_a_launch_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert main(attach_argv(tmp_path), runner=cluster, which=lambda _: None) == 0
+
+    assert "run `podbench debug-config` in the seat" in capsys.readouterr().out
+
+
 def test_provision_without_open_is_refused_before_a_seat_is_spent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
