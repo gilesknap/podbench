@@ -396,6 +396,21 @@ def test_a_remote_that_cannot_be_reached_names_remote_ssh() -> None:
         run_open(seat)
 
 
+@pytest.mark.parametrize("folder", ["/", "//", "-w", "relative/path"])
+def test_a_folder_that_could_end_the_seat_is_refused_not_assumed_away(
+    folder: str,
+) -> None:
+    """The home follows a `podbench-home` mount, so it is not a constant, and
+    `/` is the one value that cannot be undone: an OOM-killed ephemeral
+    container cannot be restarted. A leading dash would be read by `code` as an
+    option and open nothing, reported as success."""
+    seat = FakeSeat()
+    with pytest.raises(EditorError, match="as a folder"):
+        run_open(seat, folder=folder)
+
+    assert seat.calls == [], "nothing is written and nothing is opened"
+
+
 def test_a_file_that_cannot_be_written_ends_the_run_before_anything_opens() -> None:
     """The first of these files is the exclude list, and a window opened without
     it walks /proc/<pid>/root. The sentence names the layer that refused, which

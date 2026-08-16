@@ -41,7 +41,7 @@ from shlex import quote
 from typing import Any, cast
 
 from .kubectl import Kubectl, Runner, run_subprocess
-from .model import ContainerRef, as_dict
+from .model import SEAT_HOME_VOLUME, ContainerRef, as_dict
 from .vscode import (
     extensions_for,
     merge_extensions_json,
@@ -181,9 +181,12 @@ def open_seat(
 ) -> None:
     """Configure ``folder`` in the seat, install what it needs, and open it.
 
-    ``folder`` is the caller's choice and is never ``/``: ``attach`` passes the
-    seat's own home, which is where the workload is read from through
-    ``/proc/<pid>/root``.
+    ``folder`` is the caller's choice — ``attach`` passes the seat's own home,
+    which is where the workload is read from through ``/proc/<pid>/root`` — and
+    it is checked here rather than assumed, because it is the one argument whose
+    wrong value is unrecoverable and it is not a constant: the home follows a
+    ``podbench-home`` mount, and ``--mount podbench-home:/`` is a spelling of
+    that a user can reach.
 
     ``report`` is called with each line **as it becomes true**, not with a list
     at the end. The install is the reason: it bootstraps vscode-server in the
@@ -196,6 +199,15 @@ def open_seat(
     exception — a missing ``launch.json`` costs an F5, whereas the excludes and
     the folder are what keep the seat alive.
     """
+    if not folder.startswith("/") or folder.strip("/") == "":
+        raise EditorError(
+            f"--open will not open `{folder}` as a folder. It has to be an "
+            "absolute path and it cannot be `/`: a folder at the root walks "
+            "/proc/<pid>/root, which is a symlink into another container's "
+            "rootfs, so the walk has no bottom and OOMs a seat that cannot be "
+            "restarted. This is the seat's $HOME - `--mount "
+            f"{SEAT_HOME_VOLUME}:<path>` is what moves it."
+        )
     run = runner if runner is not None else run_subprocess
     configurations = _configurations(kubectl, seat, report)
     extensions = extensions_for(configurations)
