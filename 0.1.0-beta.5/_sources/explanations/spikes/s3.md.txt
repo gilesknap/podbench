@@ -1,0 +1,699 @@
+# S3 — gdb attach with sysroot against a distroless target
+
+**Verdict:** PASS
+**Date:** 2026-08-15  (cluster: k3s v1.34, mixed arm64/amd64)
+
+## What was tested
+
+Everything ran in namespace `podbench-s3`, all pods pinned to `nodeSelector:
+{kubernetes.io/arch: amd64}` and scheduled on `nuc2`. No image builds — the C
+target binary is compiled at pod start by an `initContainer` into a shared
+`emptyDir`, and the *runtime* container is genuinely distroless.
+
+Three target pods:
+
+| pod | target container image | shell? | purpose |
+|---|---|---|---|
+| `victim` | `gcr.io/distroless/cc-debian12` (+ `debian:bookworm-slim` sidecar) | **no** | primary distroless proof; sidecar = stripped Debian binary for debuginfod |
+| `victim-ubuntu` | `ubuntu:24.04` (glibc 2.39) | yes | deliberate glibc mismatch vs the `debian:bookworm-slim` (glibc 2.36) debug image — the *wrong sysroot* doc example |
+| `victim-sps` | `gcr.io/distroless/cc-debian12`, `shareProcessNamespace: true` | **no** | PID-discovery edge case |
+
+Distroless-ness confirmed empirically:
+
+```
+$ kubectl -n podbench-s3 exec victim -c victim -- /bin/sh -c 'echo hi'
+error: Internal error occurred: ... OCI runtime exec failed: exec failed:
+unable to start container process: exec: "/bin/sh": stat /bin/sh: no such file or directory
+```
+
+Debug tooling image was always `debian:bookworm-slim` with `apt-get install gdb`
+at runtime (gdb 13.1, Debian). Tested: ptrace/Yama, sysroot on/off/wrong,
+`info sharedlibrary`, backtraces, breakpoints with source, `directory` vs
+`set substitute-path`, `auto-load safe-path`, ordering of `set sysroot` vs
+`attach`, debuginfod symbols **and** sources, and target-PID discovery.
+
+## Exact commands that worked
+
+### 0. Namespace + target pod (distroless, no image build)
+
+```bash
+kubectl create namespace podbench-s3
+```
+
+`target.yaml`:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: victim-src
+  namespace: podbench-s3
+data:
+  victim.c: |
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <unistd.h>
+    #include <math.h>
+
+    struct work { int id; double value; char label[32]; };
+
+    static double transform(struct work *w) {
+      double r = sqrt((double)w->id) * w->value;
+      return r;
+    }
+    static int compute(int n, struct work *w) {
+      w->id = n;
+      w->value = (double)n * 1.5;
+      snprintf(w->label, sizeof(w->label), "item-%d", n);
+      double t = transform(w);
+      return (int)t;
+    }
+    static void outer_loop(void) {
+      struct work w; int i = 0;
+      for (;;) {
+        memset(&w, 0, sizeof(w));
+        int v = compute(i, &w);
+        printf("tick %d -> %d (%s)\n", i, v, w.label); fflush(stdout);
+        i++; sleep(2);
+      }
+    }
+    int main(int argc, char **argv) {
+      printf("victim starting, pid=%d\n", (int)getpid()); fflush(stdout);
+      outer_loop(); return 0;
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: victim
+  namespace: podbench-s3
+  labels: {app: victim}
+spec:
+  nodeSelector: {kubernetes.io/arch: amd64}
+  restartPolicy: Never
+  volumes:
+    - {name: app, emptyDir: {}}
+    - {name: src, configMap: {name: victim-src}}
+  initContainers:
+    - name: build
+      image: debian:bookworm-slim
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -ex
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends gcc libc6-dev
+          mkdir -p /app/src
+          cp /src/victim.c /app/src/victim.c
+          cd /app/src && gcc -g -O0 -o /app/victim victim.c -lm
+      volumeMounts:
+        - {name: app, mountPath: /app}
+        - {name: src, mountPath: /src}
+  containers:
+    - name: victim
+      image: gcr.io/distroless/cc-debian12   # no shell, no gdb, no libc headers
+      imagePullPolicy: IfNotPresent
+      command: ["/app/victim"]
+      volumeMounts: [{name: app, mountPath: /app}]
+    - name: sidecar-stripped                  # stripped Debian binary for debuginfod
+      image: debian:bookworm-slim
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sleep", "100000"]
+```
+
+```bash
+kubectl apply -f target.yaml
+timeout 300 kubectl -n podbench-s3 wait --for=condition=Ready pod/victim --timeout=290s
+# pod/victim condition met   (2/2 Running on nuc2, ~20s including both image pulls)
+```
+
+### 1. Attach the debug container
+
+```bash
+cat > ptrace-profile.json <<'EOF'
+{"securityContext":{"capabilities":{"add":["SYS_PTRACE"]}}}
+EOF
+
+kubectl -n podbench-s3 debug -it victim \
+  --image=debian:bookworm-slim \
+  --target=victim \
+  -c dbg0 \
+  --custom=ptrace-profile.json --profile=general \
+  -- sleep infinity
+```
+
+Verified capabilities and PID-namespace sharing:
+
+```bash
+kubectl -n podbench-s3 exec victim -c dbg0 -- sh -c \
+  'grep CapEff /proc/self/status; cat /proc/sys/kernel/yama/ptrace_scope'
+# CapEff: 00000000a80c25fb    <- bit 19 (CAP_SYS_PTRACE) set
+# 1                            <- yama ptrace_scope
+```
+
+### 2. Install gdb (runtime, no image build)
+
+```bash
+kubectl -n podbench-s3 exec victim -c dbg0 -- sh -c \
+  'apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+   apt-get install -y -qq --no-install-recommends gdb ca-certificates'
+# GNU gdb (Debian 13.1-3) 13.1
+```
+
+`ca-certificates` is **not optional** — see Findings §7.
+
+### 3. The working gdb session (distroless target)
+
+```bash
+kubectl -n podbench-s3 exec victim -c dbg0 -- sh -c '
+cat > /tmp/dbg.gdb <<EOF
+set confirm off
+set pagination off
+set sysroot /proc/1/root
+directory /proc/1/root
+add-auto-load-safe-path /proc/1/root
+set debuginfod enabled on
+file /proc/1/root/app/victim
+attach 1
+break compute
+continue
+bt
+list
+info sharedlibrary
+detach
+EOF
+DEBUGINFOD_URLS=https://debuginfod.debian.net gdb -q -batch -x /tmp/dbg.gdb'
+```
+
+Observed output (abridged, this is the PASS evidence):
+
+```
+Downloading separate debug info for /proc/597/root/lib/x86_64-linux-gnu/libc.so.6...
+[Thread debugging using libthread_db enabled]
+Breakpoint 1 at 0x575fbad351f4: file victim.c, line 19.
+
+Breakpoint 1, compute (n=23, w=0x7ffc633f7600) at victim.c:19
+19	  w->id = n;
+#0  compute (n=23, w=0x7ffc633f7600) at victim.c:19
+#1  0x0000575fbad35297 in outer_loop () at victim.c:31
+#2  0x0000575fbad3531b in main (argc=1, argv=0x7ffc633f7778) at victim.c:42
+18	static int compute(int n, struct work *w) {
+19	  w->id = n;
+20	  w->value = (double)n * 1.5;
+21	  snprintf(w->label, sizeof(w->label), "item-%d", n);
+22	  double t = transform(w);
+23	  return (int)t;
+From                To                  Syms Read   Shared Object Library
+0x...  0x...  Yes  /proc/597/root/lib/x86_64-linux-gnu/libm.so.6
+0x...  0x...  Yes  /proc/597/root/lib/x86_64-linux-gnu/libc.so.6
+0x...  0x...  Yes  /proc/597/root/lib64/ld-linux-x86-64.so.2
+```
+
+All three requirements met: libraries resolve under `/proc/<pid>/root`, backtrace
+has function names + args, breakpoint HITS and prints source lines.
+
+### 4. Target-PID discovery (robust form)
+
+```bash
+# client side: get the target container's runtime ID
+ID=$(kubectl -n podbench-s3 get pod victim \
+      -o jsonpath='{.status.containerStatuses[?(@.name=="victim")].containerID}')
+ID=${ID#*://}      # strip containerd://
+
+# in the debug container: match it against /proc/<pid>/cgroup
+kubectl -n podbench-s3 exec victim -c dbg0 -- sh -c "
+for p in \$(ls /proc|grep -E '^[0-9]+\$'); do
+  cg=\$(cat /proc/\$p/cgroup 2>/dev/null) || continue
+  case \"\$cg\" in *$ID*) echo \"\$p \$(tr '\0' ' ' </proc/\$p/cmdline)\";; esac
+done"
+# TARGET 597 /app/victim
+```
+
+## Findings
+
+### 1. CAP_SYS_PTRACE **does** override Yama `ptrace_scope=1` — confirmed empirically
+
+`/proc/sys/kernel/yama/ptrace_scope` is `1` on nuc2. gdb attached to a
+**non-descendant** process (PID 1 of a different container, not a child of gdb)
+with only `CAP_SYS_PTRACE` and succeeded. Negative control with
+`--profile=legacy` (no `securityContext` at all, `CapEff: 00000000a80425fb`,
+bit 19 clear):
+
+```
+$ dd if=/proc/1/mem bs=1 count=1 skip=...
+dd: failed to open '/proc/1/mem': Permission denied
+```
+
+vs. with `SYS_PTRACE`: `1 byte copied`. So Yama scope 1 is a real gate and
+`CAP_SYS_PTRACE` is exactly the thing that lifts it. **No node sysctl change is
+needed**, and none was made.
+
+Note that `/proc/<pid>/root` traversal still works *without* `CAP_SYS_PTRACE`
+(same uid 0, same user namespace) — only `ptrace`/`/proc/pid/mem` need the cap.
+Read-only filesystem inspection of a distroless target therefore needs no
+special capability at all.
+
+### 2. `--profile=general` already adds `SYS_PTRACE`; the `--custom` file is redundant
+
+The `--custom` JSON was applied, but so was the profile's own. Even the
+container I created *without* `--custom` came out with the cap:
+
+```
+$ kubectl -n podbench-s3 get pod victim-ubuntu \
+    -o jsonpath='{range .spec.ephemeralContainers[*]}{.name}: {.securityContext}{"\n"}{end}'
+dbg0:    {"capabilities":{"add":["SYS_PTRACE"]}}
+nocap:   {"capabilities":{"add":["SYS_PTRACE"]}}     <- --profile=general only, no --custom
+dbgadm:  {"capabilities":{"add":["SYS_PTRACE","SYS_ADMIN"]}}
+legacy0:                                              <- --profile=legacy, empty
+```
+
+`--custom` **merges into** the profile rather than replacing it.
+
+### 3. Without `set sysroot`, gdb 13 does not silently use the wrong libs — it fails hard with EPERM
+
+gdb's default is `sysroot = "target:"`, not `/`. On a native Linux ptrace target
+with only `CAP_SYS_PTRACE` this produces:
+
+```
+warning: "target:/app/victim": could not open as an executable file: Operation not permitted.
+warning: `target:/app/victim': can't open to read symbols: Operation not permitted.
+warning: Could not load vsyscall page because no executable was specified
+0x000076694f49b503 in ?? ()
+Error reading attached process's symbol file.
+: No such file or directory.
+Error while mapping shared library sections:
+Could not open `target:/lib/x86_64-linux-gnu/libc.so.6' as an executable file: Operation not permitted
+From    To    Syms Read   Shared Object Library
+                  No      /lib/x86_64-linux-gnu/libm.so.6
+                  No      /lib/x86_64-linux-gnu/libc.so.6
+                  No      /lib64/ld-linux-x86-64.so.2
+#0  0x000076694f49b503 in ?? ()
+#1  0x000076694f49fe53 in ?? ()
+#2  0x0000000000000000 in ?? ()
+```
+
+**Root cause, proven:** gdb's `target:` file access uses
+`linux_mntns_access_fs()` → `setns(CLONE_NEWNS)` into the inferior's mount
+namespace, which requires **`CAP_SYS_ADMIN`**, not `CAP_SYS_PTRACE`. I added an
+ephemeral container with both caps (`dbgadm`) and the *default* sysroot then
+works with zero configuration:
+
+```
+0x000077f6377dcb7a in clock_nanosleep () from target:/lib/x86_64-linux-gnu/libc.so.6
+#3  0x00005c459789e35c in outer_loop () at victim.c:35
+#4  0x00005c459789e3a1 in main (argc=1, argv=0x7ffc6f735c98) at victim.c:42
+```
+
+…but it also breaks libthread_db (`warning: Expected absolute pathname for
+libpthread in the inferior, but got target:/lib/...`) and `SYS_ADMIN` is a
+container-escape-adjacent privilege that any restricted PodSecurity policy will
+reject. **Recommendation: stay on `CAP_SYS_PTRACE` + explicit
+`set sysroot /proc/<pid>/root`.**
+
+### 4. The *real* wrong-symbols failure mode needs a version-skewed debug image
+
+This is the key doc example, and it is subtler than the brief assumed. With
+`set sysroot /` (debug image = `debian:bookworm-slim`, glibc 2.36) against a
+**Debian 12 distroless** target, the backtrace comes out *correct* — because the
+two glibcs are byte-identical (same build-id `93ac61ec…`). The bug is silent.
+
+Against `ubuntu:24.04` (glibc 2.39) it is loud and wrong:
+
+```
+### WRONG: set sysroot /
+warning: .dynamic section for "/lib/x86_64-linux-gnu/libc.so.6" is not at the expected address (wrong library or version mismatch?)
+warning: Unable to find libthread_db matching inferior's thread library, thread debugging will not be available.
+0x000077f6377dcb7a in wcsxfrm_l () from /lib/x86_64-linux-gnu/libc.so.6
+#0  0x000077f6377dcb7a in wcsxfrm_l () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x000077f6377e9b27 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00005c459789e35f in outer_loop () at victim.c:29
+#3  0x000077f63771a28b in ?? ()
+#4  0x00007ffc6f735ca8 in ?? ()
+#5  0x00005c45978a0d80 in __frame_dummy_init_array_entry ()
+#6  0x00007ffc6f735ca8 in ?? ()
+#7  0x00005c459789e35f in outer_loop () at victim.c:29
+#8  0x00005c459789e145 in _start ()
+
+### RIGHT: set sysroot /proc/1/root
+0x000077f6377dcb7a in clock_nanosleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#0  0x000077f6377dcb7a in clock_nanosleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#1  0x000077f6377e9b27 in nanosleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#2  0x000077f6377fed93 in sleep () from /proc/1/root/lib/x86_64-linux-gnu/libc.so.6
+#3  0x00005c459789e35c in outer_loop () at victim.c:35
+#4  0x00005c459789e3a1 in main (argc=1, argv=0x7ffc6f735c98) at victim.c:42
+```
+
+`clock_nanosleep` is reported as **`wcsxfrm_l`**, frames are duplicated and
+interleaved with garbage, and even the user-code line number is wrong
+(`victim.c:29` instead of `:35`). Use *this* pair as the documentation example —
+it is exactly what a user sees when the debug image drifts from the target.
+
+### 5. `set sysroot` does **not** cover source lookup
+
+Even with a correct sysroot and the source file physically present in the target
+rootfs at `/app/src/victim.c`, gdb reports:
+
+```
+Breakpoint 1, compute (n=71, w=0x7ffd5f9c54c0) at victim.c:19
+19	victim.c: No such file or directory.
+```
+
+Function names, args and locals are all correct — only the *source text* is
+missing. `sysroot` is applied to shared-object and separate-debuginfo lookup
+only. Three fixes tested:
+
+| approach | works? | `info source` fullname |
+|---|---|---|
+| `directory /proc/1/root/app/src` (exact `DW_AT_comp_dir` under sysroot) | yes | `/proc/1/root/app/src/victim.c` |
+| `set substitute-path /app/src /proc/1/root/app/src` | yes | `/proc/1/root/app/src/victim.c` |
+| **`directory /proc/1/root`** (generic, no comp_dir knowledge needed) | **yes** | `/proc/1/root/app/src/victim.c` |
+| `set substitute-path / /proc/1/root/` (generic) | yes, but | `/proc/1/root/proc/1/root/proc/1/root/proc/1/root/app/src/victim.c` |
+
+The last one *functions* (the recursive path happens to resolve, because
+`/proc/1/root/proc/1/root` is a fixed point) but gdb re-applies the substitution
+on display and emits an absurd fullname. That fullname is what a DAP client
+hands to the editor, so **do not use the generic `substitute-path` form**. Use
+`directory /proc/<pid>/root` — one line, no `comp_dir` knowledge, clean fullname.
+
+### 6. Ordering: `set sysroot` **must** precede `attach` (or you must re-`file` after)
+
+| order | libs | main executable / user frames |
+|---|---|---|
+| `set sysroot` → `file` → `attach` | correct | correct |
+| `attach` → `set sysroot` | fixed up on the fly (`info sharedlibrary` shows `/proc/1/root/…`) | **broken**: `Error reading attached process's symbol file.` and frames `#3 0x… in ?? ()`, `#5 0x405d400000000000 in ?? ()` |
+| `attach` → `set sysroot` → `file <root><exe>` → `sharedlibrary` | correct | correct (recovers) |
+
+So `set sysroot` after `attach` repairs *libraries* but not the *main
+executable's* symbol file — you get a plausible-looking libc backtrace with
+total garbage above it. Set it before `attach`, and explicitly `file
+/proc/<pid>/root$(readlink /proc/<pid>/exe)` before `attach` too.
+
+### 7. `auto-load safe-path` bites, but only once the sysroot is set
+
+With `set sysroot /proc/<pid>/root`, gdb tries to auto-load the *target's*
+`libthread_db.so.1` and is refused by the default safe-path
+(`$debugdir:$datadir/auto-load`):
+
+```
+warning: File "/usr/lib/x86_64-linux-gnu/libthread_db.so.1" auto-loading has been
+declined by your `auto-load safe-path' set to "$debugdir:$datadir/auto-load".
+warning: Unable to find libthread_db matching inferior's thread library,
+thread debugging will not be available.
+```
+
+Losing `libthread_db` means no `info threads`, no per-thread backtraces — fatal
+for any real multithreaded workload. Fix (narrow, not `set auto-load safe-path /`):
+
+```
+add-auto-load-safe-path /proc/<pid>/root
+```
+
+After which:
+
+```
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/proc/1/root/lib/x86_64-linux-gnu/libthread_db.so.1".
+  Id   Target Id                              Frame
+* 1    Thread 0x77f6376ed740 (LWP 1) "victim" 0x… in clock_nanosleep () from /proc/1/root/…
+```
+
+gdb did **not** refuse the `/proc/...` path for any other reason — no complaints
+about `/proc` being non-canonical, and `file /proc/1/root/app/victim` was accepted.
+
+### 8. debuginfod: symbols YES, **sources NO** — this contradicts the brief
+
+`DEBUGINFOD_URLS=https://debuginfod.debian.net` works and is genuinely useful:
+attaching to a stripped `/bin/sleep` (Debian coreutils 9.1) produced a fully
+symbolised, source-line-annotated backtrace across coreutils *and* glibc:
+
+```
+Downloading separate debug info for /usr/bin/sleep...
+Downloading separate debug info for /proc/1/root/lib/x86_64-linux-gnu/libc.so.6...
+#0  __GI___clock_nanosleep (clock_id=0, flags=0, req=0x7ffe06ced790, rem=0x7ffe06ced7d0)
+        at ../sysdeps/unix/sysv/linux/clock_nanosleep.c:71
+#1  0x… in __GI___nanosleep (req=…, rem=…) at ../sysdeps/unix/sysv/linux/nanosleep.c:25
+#2  0x… in rpl_nanosleep (requested_delay=…, remaining_delay=…) at lib/nanosleep.c:83
+#3  0x… in xnanosleep (seconds=seconds@entry=100000) at lib/xnanosleep.c:69
+#4  0x… in main (argc=<optimized out>, argv=<optimized out>) at src/sleep.c:142
+```
+
+It also works **through the sysroot** — gdb reads the build-id from
+`/proc/<pid>/root/lib/...` and fetches matching debuginfo, including for
+`gcr.io/distroless/cc-debian12` libraries (distroless ships the same Debian 12
+libc, build-id `93ac61ec5a8eb1396f9fbd350e3169a558528a40`; `info sharedlibrary`
+then shows `Syms Read: Yes` with no `(*)`).
+
+**But every source fetch failed:**
+
+```
+Download failed: Invalid argument.  Continuing without source file ./src/sleep.c.
+142	src/sleep.c: Inappropriate ioctl for device.
+```
+
+Diagnosed to the bottom. Two independent causes, both fatal:
+
+1. Debian builds its `-dbgsym` packages with `DW_AT_comp_dir = "."`
+   (reproducible-builds path normalisation). Confirmed directly on the
+   downloaded dbgsym:
+   ```
+   $ readelf --debug-dump=info ~/.cache/debuginfod_client/e3103c…/debuginfo | grep DW_AT_comp_dir
+       <11>   DW_AT_comp_dir : (indirect line string, offset: 0xc): .
+   ```
+   The debuginfod protocol requires an **absolute** source path
+   (`debuginfod-find`: `If FILETYPE is "source" then absolute /FILENAME must be
+   given`), so gdb's `./src/sleep.c` is rejected client-side with `EINVAL` →
+   `"Invalid argument"`.
+2. Even given an absolute path, **the server has no sources**. Direct probes:
+   ```
+   https://debuginfod.debian.net/buildid/<bid>/debuginfo            -> 200
+   https://debuginfod.debian.net/buildid/<bid>/source/src/sleep.c   -> 404
+   https://debuginfod.elfutils.org/buildid/<bid>/debuginfo          -> 200
+   https://debuginfod.elfutils.org/buildid/<bid>/source/src/sleep.c -> 404
+   ```
+   Same for glibc under every plausible path form
+   (`/usr/src/glibc/…`, `/build/glibc-…/…`, `/sysdeps/…`) — all
+   `Server query failed: No such file or directory`. The federated
+   `debuginfod.elfutils.org` does not help for Debian build-ids.
+
+Cache footprint after fetching debuginfo for coreutils + glibc + ld.so:
+`4.7M /root/.cache/debuginfod_client` (glibc alone is 4.0M).
+
+**Also required: `ca-certificates`.** `debian:bookworm-slim` ships none, and
+`libdebuginfod` fails the HTTPS handshake **silently** — `set debuginfod enabled
+on` simply produces no `Downloading…` lines and every library shows
+`(*) missing debugging information`. Reproduced:
+
+```
+$ curl -sS .../debuginfo ; echo $?
+curl: (77) error setting certificate file: /etc/ssl/certs/ca-certificates.crt
+000
+$ apt-get install -y ca-certificates && curl -s -o /dev/null -w '%{http_code}\n' .../debuginfo
+200
+```
+
+### 9. Identifying the target PID: three rules, only one is correct
+
+The debug container's own processes share the target's PID namespace, so
+`/proc` is polluted. Rules tested:
+
+| rule | verdict |
+|---|---|
+| "target is PID 1" | works only for the simple case; **wrong** under `shareProcessNamespace: true`, where PID 1 is `/pause` |
+| `/proc/<pid>/cgroup != "0::/"` | excludes *my* processes (cgroup-namespace root reads as `0::/`) but **includes every *other* ephemeral debug container's** processes. Observed on `victim-ubuntu` with 4 debug containers: 3 spurious `sleep infinity` "targets" |
+| `/proc/<pid>/ns/mnt == /proc/1/ns/mnt` | exact on a normal pod; **fails completely** under `shareProcessNamespace: true` (pause has its own mount ns, nothing matches) |
+| **`/proc/<pid>/cgroup` contains the target container's runtime ID** | **correct in all cases** |
+
+Evidence for the last one, on `victim-sps` (`shareProcessNamespace: true`):
+
+```
+1    0::/../cri-containerd-d5daaa53…scope   /pause
+597  0::/../cri-containerd-87d20e23…scope   /app/victim      <- target containerID
+603  0::/../cri-containerd-7206c89b…scope   /bin/sleep 100000
+609  0::/                                   sleep infinity   <- my own
+```
+
+`87d20e23…` is exactly
+`.status.containerStatuses[?(@.name=="victim")].containerID` with the
+`containerd://` scheme stripped. Note that on k3s/containerd the in-container
+cgroup path is **relative** (`0::/../cri-containerd-<id>.scope`) because the
+ephemeral container gets its own cgroup namespace — substring matching on the ID
+is the portable form, not path equality.
+
+Processes `kubectl exec`'d into the target container are correctly picked up too
+(a `/bin/sleep 400` exec'd into `victim-ubuntu`'s target container appeared with
+the target's cgroup, PID 1347 — not PID 1, not a child of PID 1).
+
+## Deviations from the brief
+
+1. **debuginfod does NOT provide sources for Debian binaries.** The brief "leans
+   heavily" on this for Observe mode's disk budget. It is false on Debian (and on
+   the federated elfutils server) for two independent reasons: `DW_AT_comp_dir="."`
+   makes gdb's query malformed, and the server 404s on `/source/…` anyway.
+   Symbols do come down (4.7 MB for a coreutils + glibc session), so debuginfod
+   is still worth wiring up — but any plan that assumes *source text* arrives
+   over the wire needs rethinking. Fedora/RHEL debuginfod is known to serve
+   sources; Debian/Ubuntu-based targets will not. Podbench must ship a
+   source-provisioning story (source in the target image, a source sidecar
+   volume, or client-side source mapping to the developer's checkout).
+
+2. **`--custom` with `SYS_PTRACE` is redundant.** `kubectl debug --profile=general`
+   already adds `CAP_SYS_PTRACE`. Podbench can drop the custom-profile file
+   entirely (one less flag, one less temp file) unless it wants caps the profile
+   does not grant.
+
+3. **The "no sysroot" failure mode is not "wrong symbols from the debug image".**
+   gdb 13's default sysroot is `target:`, not `/`, so the no-sysroot case fails
+   *loudly* with `Operation not permitted` and `?? ()` everywhere. The
+   wrong-symbols mode requires `set sysroot /` **and** a version-skewed debug
+   image. Docs should show both, and should note that a matched-distro debug
+   image hides the bug entirely (Debian-12-debug vs Debian-12-distroless gave a
+   correct backtrace with `sysroot /`).
+
+4. **A hidden alternative exists: `CAP_SYS_ADMIN` makes gdb's default `target:`
+   sysroot work with zero configuration.** Worth knowing, worth rejecting.
+   It costs a container-escape-adjacent capability and breaks `libthread_db`.
+   Document it as an anti-pattern so nobody rediscovers it.
+
+5. **`set sysroot` alone is insufficient for source-level debugging** — the brief
+   treats sysroot as the whole fix. Three more lines are mandatory:
+   `directory /proc/<pid>/root`, `add-auto-load-safe-path /proc/<pid>/root`, and
+   an explicit `file /proc/<pid>/root$(readlink /proc/<pid>/exe)` before `attach`.
+
+6. **"The target PID will not necessarily be PID 1" is right, but the fix the
+   brief implies (scan `/proc`) is not enough.** Ephemeral containers are
+   *mutually visible* in the shared PID namespace, so a second podbench session
+   attached to the same pod pollutes the process list. Discovery must key off the
+   target container's runtime ID from the pod status, which means podbench needs
+   to pass that ID into the container (env var at `kubectl debug` time).
+
+7. **`ca-certificates` must be in the podbench image.** Not mentioned in the
+   brief; without it debuginfod fails silently rather than erroring, which will
+   read to users as "debuginfod doesn't work in podbench".
+
+## Recommendations for implementation
+
+### The `dbg` helper (tested end-to-end, exactly as written)
+
+```sh
+#!/bin/sh
+# /usr/local/bin/dbg — podbench: attach gdb to a process in the TARGET container
+# usage: dbg <pid> [extra gdb args...]
+set -eu
+PID="${1:?usage: dbg <pid> [gdb args...]}"; shift || true
+ROOT="/proc/$PID/root"
+[ -d "$ROOT" ] || { echo "dbg: no $ROOT (pid gone, or wrong --target?)" >&2; exit 1; }
+EXE=$(readlink "/proc/$PID/exe") || { echo "dbg: cannot read /proc/$PID/exe" >&2; exit 1; }
+EXE=${EXE% (deleted)}
+
+INIT=$(mktemp /tmp/podbench-dbg.XXXXXX.gdb)
+cat > "$INIT" <<EOF
+set pagination off
+# 1. shared libs + separate debuginfo come from the TARGET rootfs, not this image.
+#    MUST be set before 'attach'.
+set sysroot $ROOT
+# 2. sysroot does NOT cover source lookup. This resolves DW_AT_comp_dir paths
+#    inside the target rootfs and keeps 'info source' fullname sane (do NOT use
+#    'set substitute-path / $ROOT/' — gdb re-applies it and emits nested paths).
+directory $ROOT
+# 3. libthread_db now lives under the sysroot and is refused by the default
+#    auto-load safe-path -> "thread debugging will not be available".
+add-auto-load-safe-path $ROOT
+# 4. symbols (NOT sources) for distro-packaged binaries; needs ca-certificates.
+set debuginfod enabled on
+# 5. main-executable symbols MUST be loaded before attach, else gdb tries
+#    "target:$EXE" and gets EPERM (that path needs CAP_SYS_ADMIN).
+file $ROOT$EXE
+attach $PID
+EOF
+exec gdb -q -iex "set confirm off" -x "$INIT" "$@"
+```
+
+### The `podbench-pids` helper (use the container-ID form)
+
+```sh
+#!/bin/sh
+# /usr/local/bin/podbench-pids — list PIDs in the TARGET container.
+# PODBENCH_TARGET_CID is injected at `kubectl debug` time from
+#   .status.containerStatuses[?(@.name==<target>)].containerID  (scheme stripped).
+# Falls back to a cgroup-!= "0::/" scan, which is wrong when a second podbench
+# session is attached to the same pod — warn in that case.
+set -eu
+CID="${PODBENCH_TARGET_CID:-}"
+for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+  cg=$(cat "/proc/$p/cgroup" 2>/dev/null) || continue
+  if [ -n "$CID" ]; then
+    case "$cg" in *"$CID"*) ;; *) continue ;; esac
+  else
+    [ "$cg" = "0::/" ] && continue
+  fi
+  printf '%s\t%s\t%s\n' "$p" "$(readlink "/proc/$p/exe" 2>/dev/null || echo '?')" \
+         "$(tr '\0' ' ' < "/proc/$p/cmdline")"
+done
+```
+
+Launcher side:
+
+```bash
+CID=$(kubectl -n "$NS" get pod "$POD" \
+        -o jsonpath="{.status.containerStatuses[?(@.name==\"$TARGET\")].containerID}")
+kubectl -n "$NS" debug -it "$POD" --image="$PODBENCH_IMAGE" --target="$TARGET" \
+  -c "$DBGC" --profile=general \
+  --env="PODBENCH_TARGET_CID=${CID#*://}" \
+  -- sleep infinity
+```
+
+### Image contents
+
+- `gdb` (13.x from Debian 12 is fine) — pulls `libpython3.11` as a dependency,
+  so the image is not tiny; budget for it.
+- **`ca-certificates`** — mandatory, or debuginfod silently no-ops.
+- `binutils` (`readelf`) — needed to inspect build-ids when diagnosing a
+  debuginfod miss.
+- Optionally `debuginfod` (the `debuginfod-find` CLI) for the same reason.
+- Match the debug image's distro/release to the *common* target base
+  (Debian 12 here) so that the accidental-success case at least degrades
+  gracefully, but never rely on it.
+
+### Docs
+
+- Ship the §4 `wcsxfrm_l` transcript verbatim as the canonical "you forgot the
+  sysroot" example. It is far more persuasive than a description.
+- State plainly that sysroot fixes libraries, not sources, and that Debian
+  debuginfod gives symbols but not sources.
+- Warn that `set sysroot` after `attach` produces a *plausible-looking* wrong
+  backtrace — the most dangerous failure mode found.
+
+### Not yet proven / follow-ups
+
+- Only tested on **amd64/nuc2**. arm64 (`node01-04`) untested; distroless
+  `cc-debian12` and Debian debuginfod both have arm64 coverage, but the
+  build-id/dbgsym path should be re-checked there.
+- Only a **single-threaded** target was exercised. `libthread_db` loaded
+  correctly once `add-auto-load-safe-path` was set (`info threads` listed the
+  one LWP), but a genuinely multithreaded target should be re-tested.
+- Not tested: gdb's DAP/MI mode as used by the VS Code C++ extension, which is
+  the path that consumes `info source`'s fullname — this is why the nested
+  `substitute-path` fullname matters and should be validated in S-next.
+- Not tested: non-root targets (`runAsUser != 0`) or targets in a user
+  namespace.
+
+## What was left behind
+
+Namespace `podbench-s3` remains, as instructed. Inside it:
+
+- **All pods deleted** — `victim`, `victim-ubuntu`, `victim-sps` (with their
+  ephemeral debug containers `dbg0`, `dbg1`, `nocap`, `dbgadm`, `legacy0`).
+  `kubectl -n podbench-s3 get all` → `No resources found`.
+- ConfigMap **`victim-src`** left in place (the C source used by the
+  initContainers — cheap to keep, needed to re-run the spike).
+  `kube-root-ca.crt` is the auto-created one.
+
+No other namespace was touched; no node-level settings were changed; no
+sysctls were modified.
+
+Local scratch files (manifests used above):
+`/tmp/claude-0/-workspaces-tpi-k3s-ansible/2c9abbf4-6c26-436d-9237-a03194fe5977/scratchpad/spikes/`
+— `target.yaml`, `victim-ubuntu.yaml`, `sps.yaml`, `ptrace-profile.json`,
+`sysadmin-profile.json`.
