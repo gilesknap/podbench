@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>S6 — Suspending an Argo-managed workload: server-side apply field ownership &#8212; podbench 0.1.0b4.dev38+gff3b1fd0e documentation</title>
+    <title>S6 — Suspending an Argo-managed workload: server-side apply field ownership &#8212; podbench 0.1.0b4.dev40+gbf51f579f documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=3164784b"></script>
+    <script src="../../_static/documentation_options.js?v=04a41802"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -768,7 +768,7 @@ podbench performing the Finding 6 pre-flight and refusing rather than proceeding
 when it cannot see an SSA baseline.</p>
 <p><strong>Superseded by a simpler answer.</strong> During review of these results the actual
 requirement dissolved: for a singleton, the mode that gives an inner loop without
-a second copy is Patch mode, whose venv-on-a-PVC makes the container restart the
+a second copy is Hotfix mode, whose venv-on-a-PVC makes the container restart the
 relaunch mechanism. Iterate mode remains the mode for workloads that tolerate a
 clone. <strong>No suspension feature is therefore planned</strong>, and this report exists to
 record why the obvious-looking route was not taken, and what it would cost if

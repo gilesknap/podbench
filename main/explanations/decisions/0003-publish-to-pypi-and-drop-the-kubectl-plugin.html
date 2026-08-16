@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>3. Publish the launcher to PyPI and drop the kubectl plugin &#8212; podbench 0.1.0b4.dev38+gff3b1fd0e documentation</title>
+    <title>3. Publish the launcher to PyPI and drop the kubectl plugin &#8212; podbench 0.1.0b4.dev40+gbf51f579f documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=3164784b"></script>
+    <script src="../../_static/documentation_options.js?v=04a41802"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -524,7 +524,7 @@ plugin therefore could not deliver the ergonomics it existed for.</p>
 <p>It also gave the cluster-side verbs two spellings that were not equivalent.
 <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">podbench</span></code> routed <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">list</span></code> only,
 because the plugin entry point handed argv straight to the launcher’s parser,
-which has no <code class="docutils literal notranslate"><span class="pre">dev</span></code> or <code class="docutils literal notranslate"><span class="pre">patch</span></code> subparser. Every document that named a verb had to
+which has no <code class="docutils literal notranslate"><span class="pre">dev</span></code> or <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> subparser. Every document that named a verb had to
 say which of the two spellings it took, and a reader who guessed wrong got an
 argparse <code class="docutils literal notranslate"><span class="pre">invalid</span> <span class="pre">choice</span></code> and exit 2.</p>
 <p>Meanwhile the cluster-side half already needed no checkout: the chart is

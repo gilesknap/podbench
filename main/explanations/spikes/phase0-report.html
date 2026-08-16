@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.1.0b4.dev38+gff3b1fd0e documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.1.0b4.dev40+gbf51f579f documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=3164784b"></script>
+    <script src="../../_static/documentation_options.js?v=04a41802"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1557,7 +1557,7 @@ template still says <code class="docutils literal notranslate"><span class="pre"
 indefinitely and then vanishes without warning: any rollout, scale, image bump or eviction
 regenerates the pod from the unchanged template at the original limit. Someone who resizes to make
 a seat viable and later triggers a rollout for an unrelated reason gets a pod that OOMs again with
-no visible connection to what they did. It is the same class of drift that <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">status</span></code>
+no visible connection to what they did. It is the same class of drift that <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span></code>
 exists to surface — a pod quietly unlike the thing that declares it — arriving in a place nothing
 was watching.</p>
 <p>That reversion is measured, not predicted. The same manifest in a scratch namespace, resized to

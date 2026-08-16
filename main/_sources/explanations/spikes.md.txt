@@ -1,9 +1,15 @@
 # Spikes
 
-Findings notes from throwaway experiments, kept verbatim. They are the reason several
-things in podbench are built the way they are rather than the obvious way, so they are
-recorded as evidence rather than summarised away — when a later change looks like an easy
-simplification, the relevant note usually explains what it would break.
+Findings notes from throwaway experiments. They are the reason several things in podbench
+are built the way they are rather than the obvious way, so they are recorded as evidence
+rather than summarised away — when a later change looks like an easy simplification, the
+relevant note usually explains what it would break.
+
+Kept as written, with one exception: when a verb is renamed the notes are renamed with it,
+because a note that sends the reader to a command which no longer exists has stopped being
+evidence and become a puzzle. Nothing measured is edited — no result, command output or
+conclusion — and where a note records what was *typed* at the time, it stays typed that
+way.
 
 ## Phase 0
 

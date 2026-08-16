@@ -228,7 +228,7 @@ when it cannot see an SSA baseline.
 
 **Superseded by a simpler answer.** During review of these results the actual
 requirement dissolved: for a singleton, the mode that gives an inner loop without
-a second copy is Patch mode, whose venv-on-a-PVC makes the container restart the
+a second copy is Hotfix mode, whose venv-on-a-PVC makes the container restart the
 relaunch mechanism. Iterate mode remains the mode for workloads that tolerate a
 clone. **No suspension feature is therefore planned**, and this report exists to
 record why the obvious-looking route was not taken, and what it would cost if
