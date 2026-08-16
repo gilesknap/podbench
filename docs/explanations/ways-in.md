@@ -4,7 +4,7 @@ Podbench has three modes. They are not three interfaces to the same thing — ea
 makes a different trade against the pod it is aimed at, and the trade decides which is
 available to you before taste does.
 
-| | `attach` | `dev` | `hotfix` |
+| | [`attach`](attach-flow.md) | [`dev`](dev-flow.md) | [`hotfix`](hotfix-flow.md) |
 |---|---|---|---|
 | **What it does** | puts a seat in the running pod | runs a sacrificial clone of it | makes an edit outlive the session |
 | **Touches the workload** | no — adds a container to the pod | no — the origin is left alone | yes — needs a claim in the chart |
@@ -13,6 +13,11 @@ available to you before taste does.
 | **Languages** | any | any, but only Python is set up for you | Python only ([#34](https://github.com/gilesknap/podbench/issues/34)) |
 | **Survives a restart** | no | no | **yes** |
 | **Inner loop** | no | **yes**, ~1 s | yes, one rollout per edit |
+| **What it actually does** | [step by step](attach-flow.md) | [step by step](dev-flow.md) | [step by step](hotfix-flow.md) |
+
+The last row goes to a page per mode: every check it makes, in order, and the `kubectl`
+commands each step becomes. Anything in them you have not met before — PSA, Yama,
+`subPath`, the ambient set — is in the [Glossary](../reference/glossary.md).
 
 ## Singleton-safe
 

@@ -15,6 +15,7 @@ Where to start
 * Here to change code in the cluster — [Iterate on Python](how-to/iterate-on-python.md).
 * Here to decide whether to allow it — [Security model](explanations/security.md).
 * Looking for a flag — [Command-line reference](reference/cli.md).
+* Met a word you do not know — [Glossary](reference/glossary.md).
 
 How the documentation is structured
 -----------------------------------
