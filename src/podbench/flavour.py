@@ -895,9 +895,9 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                 "install it into the target from this seat: "
                 f"`{_provision_paste(target, seat)}` - uv resolves for an "
                 "interpreter it is not running, so what lands is the wheel the "
-                "target's own version loads, and `debug-config --provision` "
-                "runs exactly that after probing the target's rootfs for "
-                "writability. It needs egress from the pod, "
+                "target's own version loads, and `podbench debug-config "
+                "--provision` runs exactly that after probing the target's "
+                "rootfs for writability. It needs egress from the pod, "
                 "~15 MB of the ephemeral-storage budget this seat shares with "
                 "the workload, and it survives no restart - baking "
                 "`debugpy.listen()` into the app image is the durable answer",
