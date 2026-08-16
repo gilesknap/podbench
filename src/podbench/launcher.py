@@ -2137,6 +2137,12 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -
     the one fact a listing is asked for and the cluster cannot answer: which
     alias to ssh to. Required rather than defaulted so a caller cannot drop the
     connect line by omission.
+
+    The alias is offered only where a seat is *running*. A stanza outlives the
+    container it was written for — nothing deletes it, and an ephemeral
+    container's name is burnt for the pod's lifetime once it exits — so a pod
+    whose only seat has terminated would otherwise be listed with an ssh line
+    that cannot work, one line under the row saying why.
     """
     lines = [str(pod)]
     for seat in present:
@@ -2145,7 +2151,13 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -
             f"{seat.rung.description}"
         )
         lines.append(f"  {'':<12} {seat.detail}")
-    lines.append(ssh_connect_line(directory, pod))
+    if any(seat.running for seat in present):
+        lines.append(ssh_connect_line(directory, pod))
+    else:
+        lines.append(
+            f"  nothing to ssh to here: podbench attach -n {pod.namespace} "
+            f"{pod.name} lands the next seat"
+        )
     return "\n".join(lines)
 
 
