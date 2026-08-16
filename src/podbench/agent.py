@@ -39,6 +39,7 @@ import typer
 from .cli import new_app, run
 from .model import SEAT_HOME_VOLUME, SEAT_IDENTITY_VOLUME, ContainerRef, PodRef
 from .sshcfg import SEAT_USER, SshdLayout, proxy_command, sshd_config
+from .vscode import MACHINE_SETTINGS_PATH, merge_machine_settings
 
 __all__ = [
     "request_stop",
@@ -54,6 +55,7 @@ __all__ = [
     "NSS_WAY_OUT",
     "PASSWD_PATH",
     "PUBKEY_ENV",
+    "VSCODE_SETTINGS_WAY_OUT",
     "CheckResult",
     "CommandRunner",
     "EnsureReport",
@@ -65,6 +67,7 @@ __all__ = [
     "ensure_passwd_entry",
     "ensure_privsep_dir",
     "ensure_sshd_config",
+    "ensure_vscode_settings",
     "fd2_check",
     "idle",
     "login_name",
@@ -76,6 +79,7 @@ __all__ = [
     "reaper_status",
     "run_command",
     "proxy_shape_check",
+    "session_home",
     "stdio_roundtrip_check",
     "self_check",
 ]
@@ -297,6 +301,14 @@ def _uid_named(user: str) -> int | None:
     """The uid NSS resolves ``user`` to, or ``None``."""
     try:
         return pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return None
+
+
+def _home_for_uid(uid: int | None = None) -> str | None:
+    """The home directory NSS records for ``uid``, or ``None`` for no record."""
+    try:
+        return pwd.getpwuid(os.geteuid() if uid is None else uid).pw_dir or None
     except KeyError:
         return None
 
@@ -581,6 +593,75 @@ def read_host_public_key(layout: SshdLayout) -> str | None:
     return path.read_text().strip() if path.is_file() else None
 
 
+def session_home(layout: SshdLayout) -> str:
+    """Where an ssh session's ``$HOME`` lands, which is not always ``layout.home``.
+
+    sshd sets a session's ``HOME`` from the *passwd record*, never from its own
+    environment — the same rule that makes ``SetEnv`` the only way podbench's own
+    variables reach a session — so this, not the container's ``$HOME``, is where
+    ``~/.vscode-server`` is unpacked and where the machine settings have to be.
+
+    For an ``attach`` seat the two agree, because the record is the one
+    :func:`ensure_passwd_entry` wrote and it names ``layout.home``. A
+    ``podbench dev`` sidecar is the shape that separates them: its ``$HOME`` is
+    pinned to the workspace volume so uv's caches and venvs land there, while
+    the projected ``podbench-identity`` record names
+    :data:`podbench.model.SEAT_HOME_PATH` — which is where
+    :data:`podbench.model.SEAT_HOME_VOLUME` is mounted, and so where these
+    settings survive a re-attach. Writing them under ``layout.home`` would put
+    them somewhere nothing ever looks.
+    """
+    return _home_for_uid() or layout.home
+
+
+VSCODE_SETTINGS_WAY_OUT = (
+    "Machine-level settings are the only ones that apply to every folder a "
+    "Remote-SSH client opens, and without them File -> Open Folder -> / points "
+    "the watcher and the search indexer at /proc, where every /proc/<pid>/root "
+    "is a symlink into another container's rootfs and the walk has no bottom. "
+    "A seat cannot reserve memory of its own (report 3.9) and an OOM-killed "
+    "ephemeral container cannot be restarted, so that walk ends the seat and "
+    "burns its name for the pod's lifetime. Until the file parses again, open "
+    "/root rather than /, or repair it: podbench adds only missing keys and "
+    "never overwrites one you set."
+)
+"""Named mechanism, then the way out — the shape :data:`NSS_WAY_OUT` uses.
+
+The only reader is somebody whose own ``settings.json`` podbench refused to
+touch, and the consequence of leaving it that way is not "an editor setting is
+missing" but "the next folder you open may take the seat with it".
+"""
+
+
+def ensure_vscode_settings(layout: SshdLayout, *, home: str | None = None) -> bool:
+    """Put VS Code's machine settings in place before a client ever connects.
+
+    This is the agent's job rather than the image's because ``~/.vscode-server``
+    is created by the *client* on first connect: a file baked in at build time
+    would be in the image's ``/root`` and not in the home the passwd record
+    names, and would be gone entirely from the fresh rootfs a pod restart hands
+    an ephemeral container. "Prepare the container for a seat" is what every
+    other step here does, and this belongs beside them — pre-creating the
+    directory is harmless, since the client's installer only ever creates what
+    is missing.
+
+    ``home`` is a test seam; production passes none.
+    """
+    path = Path(home if home is not None else session_home(layout)) / (
+        MACHINE_SETTINGS_PATH
+    )
+    existing = path.read_text() if path.is_file() else None
+    try:
+        merged = merge_machine_settings(existing)
+    except ValueError as error:
+        raise RuntimeError(
+            f"{path} was left exactly as it is: {error}. {VSCODE_SETTINGS_WAY_OUT}"
+        ) from error
+    if merged is None:
+        return False
+    return _write_if_changed(path, merged, 0o644)
+
+
 @dataclass(frozen=True)
 class EnsureReport:
     """What start-up changed, and what it could not do.
@@ -667,6 +748,14 @@ def ensure_all(
     )
     step(
         "sshd-config", f"wrote {layout.config_path}", lambda: ensure_sshd_config(layout)
+    )
+    # After the passwd entry, which is what decides the home this lands in: an
+    # `attach` seat's record is written by the step above and a session's $HOME
+    # follows it, not the container's.
+    step(
+        "vscode-settings",
+        f"wrote {session_home(layout)}/{MACHINE_SETTINGS_PATH}",
+        lambda: ensure_vscode_settings(layout),
     )
     return EnsureReport(tuple(changes), tuple(failures))
 
@@ -1050,8 +1139,9 @@ def _run(
         # exec-reachable half of the seat down along with the ssh half - which
         # is most of what spike S5 found the degraded rung to be worth.
         _say(
-            f"{failures} start-up check(s) failed, so ssh into this container "
-            "may not work. Staying up: capreport, pids, dbg --launch and a "
+            f"{failures} start-up check(s) failed; each one's reason is on a "
+            "line above, and ssh into this container may be among the "
+            "casualties. Staying up: capreport, pids, dbg --launch and a "
             "shell are reached with kubectl exec and need none of sshd."
         )
 

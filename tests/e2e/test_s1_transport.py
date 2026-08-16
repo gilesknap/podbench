@@ -24,6 +24,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -201,6 +202,31 @@ def test_megabyte_stream_is_byte_identical(ssh_config: tuple[Path, str]) -> None
         f"{len(result.stdout)} with rc={result.returncode}"
     )
     assert result.stdout == payload
+
+
+def test_the_seat_carries_vscode_machine_settings(
+    ssh_config: tuple[Path, str],
+) -> None:
+    """The agent's machine settings are in the *session's* own ``$HOME``.
+
+    Asserted over ssh rather than over ``kubectl exec``, and it rides this
+    module's fixture for that reason: ``~`` in an ssh session is the home the
+    passwd record names, which is the one a Remote-SSH client unpacks
+    vscode-server into and the only one the settings are read from. A
+    ``kubectl exec`` shell would answer about the container's ``$HOME``, which
+    is a different directory on a ``podbench dev`` sidecar.
+
+    Without these, File -> Open Folder -> ``/`` walks ``/proc/<pid>/root`` into
+    every other container in the pod and OOMs a seat that cannot be restarted.
+    """
+    config, alias = ssh_config
+    result = _ssh(
+        config, alias, ["cat", "$HOME/.vscode-server/data/Machine/settings.json"]
+    )
+    settings = cast("dict[str, Any]", json.loads(result.stdout.decode()))
+    assert settings["search.exclude"]["**/proc/**"] is True
+    assert settings["files.watcherExclude"]["**/sys/**"] is True
+    assert settings["search.followSymlinks"] is False
 
 
 def test_second_concurrent_session_works(ssh_config: tuple[Path, str]) -> None:

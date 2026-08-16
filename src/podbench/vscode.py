@@ -1,4 +1,5 @@
-"""Author the VS Code debug configuration for a seat.
+"""Author the VS Code configuration for a seat — the debug config, and the
+machine-level settings that keep opening a folder from killing the seat.
 
 ``attach`` already does this job for ssh: it writes a ready-made stanza and
 prints the alias, so nobody hand-writes a ProxyCommand. Debugging had no
@@ -26,10 +27,17 @@ The ordering inside ``setupCommands`` is not this module's invention: it is
 :func:`podbench.gdbcmd.attach_commands` with the two lines cpptools issues
 itself removed, so the sequence report 3.3 made load-bearing cannot drift
 between the CLI path and the DAP path.
+
+:data:`SEAT_MACHINE_SETTINGS` is the other half, and the one that has to be in
+place *before* the user does anything: File -> Open Folder -> ``/`` is the
+obvious first move in a seat and it can OOM the container unrecoverably. See
+that constant for why each entry is there. :func:`podbench.agent.ensure_vscode_settings`
+is what installs it, because the file lives in a directory the client creates.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import platform
 import sys
@@ -54,12 +62,16 @@ __all__ = [
     "ADAPTER_CPPDBG",
     "ADAPTER_LLDB",
     "GDB_WRAPPER",
+    "MACHINE_SETTINGS_PATH",
     "SEAT_CWD",
+    "SEAT_MACHINE_SETTINGS",
     "cppdbg_configuration",
     "launch_json_text",
     "lldb_configuration",
+    "machine_settings_text",
     "main",
     "merge_launch_json",
+    "merge_machine_settings",
     "setup_commands",
     "target_architecture",
 ]
@@ -98,6 +110,148 @@ _DESCRIPTION = (
     "Write the VS Code debug configuration for this seat, with the pid, the "
     "sysroot-prefixed program path and the gdb setup order already filled in."
 )
+
+MACHINE_SETTINGS_PATH = ".vscode-server/data/Machine/settings.json"
+"""VS Code's machine-scope settings file, relative to the ssh session's ``$HOME``.
+
+Machine scope, not user or workspace scope, because it is the only one that
+applies to *every* folder without the user having configured anything — and the
+folder that kills the seat is the first one they open.
+
+The path is relative because the home it hangs off is the one the **passwd
+record** names, which is not always the container's ``$HOME``; see
+:func:`podbench.agent.session_home`.
+"""
+
+_SEAT_EXCLUDES = {
+    # /proc/<pid>/root is a symlink into another container's root, so a
+    # recursive walk from / has no bottom. An ephemeral seat shares the pod's
+    # memory limit and cannot reserve its own (report 3.9), and an OOM-killed
+    # ephemeral container cannot be restarted — the seat is gone and its name is
+    # burnt for the pod's lifetime.
+    "**/proc/**": True,
+    # sysfs is a symlink graph with cycles (/sys/class/* back into
+    # /sys/devices/*) and nothing under it is source.
+    "**/sys/**": True,
+    # /dev/fd is a symlink to /proc/self/fd, so a walker that skipped /proc
+    # re-enters it here.
+    "**/dev/**": True,
+    # ~/.vscode-server is 700 MiB before a single extension and 2.2 GB with a
+    # few (s2 §"Aggregate"), and the seat's own home is a folder we tell people
+    # to open.
+    "**/.vscode-server/**": True,
+}
+
+SEAT_MACHINE_SETTINGS: dict[str, Any] = {
+    "files.watcherExclude": dict(_SEAT_EXCLUDES),
+    "search.exclude": dict(_SEAT_EXCLUDES),
+    # ripgrep is given --follow by default, and the one thing a seat must never
+    # follow is /proc/<pid>/root: it is the doorway into every other container
+    # in the pod, and /proc/self/root makes the walk re-enter itself.
+    "search.followSymlinks": False,
+    # Pylance's spelling: a list of globs, and absolute ones, rather than the
+    # workspace-relative object the two above take.
+    "python.analysis.exclude": [
+        "/proc/**",
+        "/sys/**",
+        "/dev/**",
+        "**/.vscode-server/**",
+    ],
+    # cpptools' tag parser walks the workspace on its own account, so excluding
+    # it from search and the watcher does not stop it. cpptools is the extension
+    # this image's debug configuration is written for.
+    "C_Cpp.files.exclude": dict(_SEAT_EXCLUDES),
+}
+"""The machine settings a seat needs before its first folder is opened.
+
+Deliberately *not* ``files.exclude``: that hides the paths from the explorer,
+and browsing the workload's filesystem through ``/proc/<pid>/root`` is the whole
+point of Observe mode. Opening a *file* under ``/proc`` is safe; it is the
+recursive walk a folder starts that is not.
+"""
+
+
+def machine_settings_text(settings: Mapping[str, Any]) -> str:
+    """A whole machine ``settings.json`` document, newline-terminated."""
+    return json.dumps(dict(settings), indent=2) + "\n"
+
+
+def _add_missing_keys(current: dict[str, Any], defaults: Mapping[str, Any]) -> bool:
+    """Add the keys ``current`` lacks. Returns whether anything was added."""
+    added = False
+    for key, value in defaults.items():
+        if key not in current:
+            current[key] = value
+            added = True
+    return added
+
+
+def _append_missing(current: list[Any], defaults: Sequence[Any]) -> bool:
+    """Append the entries ``current`` lacks. Returns whether anything was."""
+    added = False
+    for value in defaults:
+        if value not in current:
+            current.append(value)
+            added = True
+    return added
+
+
+def merge_machine_settings(existing: str | None) -> str | None:
+    """Add :data:`SEAT_MACHINE_SETTINGS` to a settings document, clobbering none
+    of it. ``None`` means the document already says everything we would say.
+
+    Merged per *key* rather than written only when the file is absent, and the
+    difference is not cosmetic: the file-level rule would mean a user who set
+    one unrelated setting — a font size, a theme — silently loses every exclude,
+    and the failure that costs is an unrecoverable seat. Merged per key, an
+    existing value always wins, including a deliberate ``"**/proc/**": false``,
+    and a pattern we never heard of is left where it is.
+
+    Raises ``ValueError`` when the file cannot be parsed, for the same reason
+    :func:`merge_launch_json` does: VS Code permits comments in ``settings.json``
+    and :mod:`json` does not, so rewriting it would discard whatever this parser
+    could not see. The caller reports the refusal rather than swallowing it —
+    unapplied excludes are exactly the silence this file exists to end.
+
+    >>> shipped = merge_machine_settings(None)
+    >>> json.loads(shipped)["search.followSymlinks"]
+    False
+    >>> merge_machine_settings(shipped) is None
+    True
+    >>> mine = merge_machine_settings('{"search.followSymlinks": true}')
+    >>> json.loads(mine)["search.followSymlinks"]
+    True
+    >>> json.loads(mine)["search.exclude"]["**/proc/**"]
+    True
+    """
+    if existing is None or not existing.strip():
+        return machine_settings_text(copy.deepcopy(SEAT_MACHINE_SETTINGS))
+    document: Any
+    try:
+        document = json.loads(existing)
+    except ValueError as error:
+        raise ValueError(f"cannot parse the existing settings.json: {error}") from error
+    if not isinstance(document, dict):
+        raise ValueError("the existing settings.json is not a JSON object")
+    settings = cast("dict[str, Any]", document)
+
+    changed = False
+    for key, default in SEAT_MACHINE_SETTINGS.items():
+        current: Any = settings.get(key)
+        if isinstance(default, dict) and isinstance(current, dict):
+            changed |= _add_missing_keys(
+                cast("dict[str, Any]", current), cast("dict[str, Any]", default)
+            )
+        elif isinstance(default, list) and isinstance(current, list):
+            changed |= _append_missing(
+                cast("list[Any]", current), cast("list[Any]", default)
+            )
+        elif key not in settings:
+            settings[key] = copy.deepcopy(cast("Any", default))
+            changed = True
+        # Anything else is a value the user set to a shape we did not expect,
+        # and theirs beats ours.
+    return machine_settings_text(settings) if changed else None
 
 
 def target_architecture(machine: str | None = None) -> str | None:
