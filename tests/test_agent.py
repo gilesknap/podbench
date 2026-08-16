@@ -7,6 +7,7 @@ is already serving a session is the normal reconnection path.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from collections.abc import Sequence
@@ -17,6 +18,7 @@ import pytest
 from podbench import agent
 from podbench.model import SEAT_IDENTITY_VOLUME
 from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config
+from podbench.vscode import MACHINE_SETTINGS_PATH
 
 PUBKEY = "ssh-ed25519 AAAAC3NzaC1FIRST dev@laptop"
 SECOND_PUBKEY = "ssh-ed25519 AAAAC3NzaC1SECOND colleague@laptop"
@@ -39,7 +41,13 @@ class FakePasswd:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        path.write_text(f"someone:x:{os.geteuid()}:{os.getegid()}::/tmp:/bin/sh\n")
+        # The home field is not decoration: the agent writes VS Code's machine
+        # settings into the home the *passwd record* names, so a real one here
+        # would put a unit test's writes in the developer's own ~.
+        self.home = path.parent / "seat-home"
+        path.write_text(
+            f"someone:x:{os.geteuid()}:{os.getegid()}::{self.home}:/bin/sh\n"
+        )
 
     def _records(self) -> list[list[str]]:
         return [
@@ -61,10 +69,18 @@ class FakePasswd:
                 return int(fields[2])
         return None
 
+    def home_for(self, uid: int | None = None) -> str | None:
+        wanted = os.geteuid() if uid is None else uid
+        for fields in self._records():
+            if len(fields) > 5 and fields[2] == str(wanted):
+                return fields[5] or None
+        return None
+
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(agent, "PASSWD_PATH", str(self.path))
         monkeypatch.setattr(agent, "login_name", self.name_for)
         monkeypatch.setattr(agent, "_uid_named", self.uid_for)
+        monkeypatch.setattr(agent, "_home_for_uid", self.home_for)
 
 
 def make_unwritable(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -173,7 +189,7 @@ def test_ensure_all_is_idempotent(tmp_path: Path, env: dict[str, str]) -> None:
 
     first = agent.ensure_all(layout, env=env, runner=runner)
     assert first.failures == ()
-    assert len(first.changes) == 5
+    assert len(first.changes) == 6
     assert first.changes[0] == f"prepared {layout.home}"
     before = {
         path: Path(path).read_text()
@@ -668,3 +684,95 @@ def test_the_ssh_public_key_is_never_forwarded_into_a_session() -> None:
         {agent.PUBKEY_ENV: "ssh-ed25519 AAAA", "PODBENCH_NODE_NAME": "nuc2"}
     )
     assert forwarded == {"PODBENCH_NODE_NAME": "nuc2"}
+
+
+# --- VS Code machine settings ----------------------------------------------
+#
+# The seat prepares these before any client connects, because the folder that
+# kills it is the first one the user opens and an OOM-killed ephemeral container
+# cannot be restarted.
+
+
+def test_machine_settings_land_in_the_home_the_passwd_record_names(
+    tmp_path: Path, passwd: FakePasswd, env: dict[str, str]
+) -> None:
+    """Not ``layout.home``: sshd puts a session in the home NSS gives it, so a
+    ``podbench dev`` sidecar — whose ``$HOME`` is pinned to the workspace volume
+    — would otherwise get the settings written where nothing ever looks."""
+    layout = make_layout(tmp_path / "workspace", root=False)
+    (tmp_path / "workspace").mkdir()
+
+    report = agent.ensure_all(layout, env=env, runner=FakeRunner())
+
+    assert report.failures == ()
+    assert not (Path(layout.home) / MACHINE_SETTINGS_PATH).exists()
+    settings = passwd.home / MACHINE_SETTINGS_PATH
+    assert json.loads(settings.read_text())["search.exclude"]["**/proc/**"] is True
+
+
+def test_machine_settings_survive_a_re_attach(
+    tmp_path: Path, passwd: FakePasswd, env: dict[str, str]
+) -> None:
+    """The home is where a ``podbench-home`` volume is mounted, so "present on
+    the second attach" is what persistence across re-attaches means here."""
+    layout = make_layout(tmp_path)
+    agent.ensure_all(layout, env=env, runner=FakeRunner())
+    settings = passwd.home / MACHINE_SETTINGS_PATH
+    written = settings.read_text()
+
+    second = agent.ensure_all(layout, env=env, runner=FakeRunner())
+
+    assert second == agent.EnsureReport()
+    assert settings.read_text() == written
+
+
+def test_a_users_own_settings_are_merged_into_rather_than_replaced(
+    tmp_path: Path, passwd: FakePasswd, env: dict[str, str]
+) -> None:
+    settings = passwd.home / MACHINE_SETTINGS_PATH
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"editor.fontSize": 15, "search.exclude": {}}))
+
+    agent.ensure_all(make_layout(tmp_path), env=env, runner=FakeRunner())
+
+    document = json.loads(settings.read_text())
+    assert document["editor.fontSize"] == 15
+    assert document["search.exclude"]["**/proc/**"] is True
+
+
+def test_settings_that_cannot_be_parsed_are_left_alone_and_reported(
+    tmp_path: Path, passwd: FakePasswd, env: dict[str, str]
+) -> None:
+    """VS Code allows comments in settings.json and :mod:`json` does not.
+
+    Rewriting would discard them, and staying quiet would leave the seat one
+    File -> Open Folder away from an unrecoverable OOM — so the file is
+    untouched and the reason is a recorded failure.
+    """
+    settings = passwd.home / MACHINE_SETTINGS_PATH
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{ // mine\n}")
+
+    report = agent.ensure_all(make_layout(tmp_path), env=env, runner=FakeRunner())
+
+    assert settings.read_text() == "{ // mine\n}"
+    failure = {check.name: check for check in report.failures}["ensure-vscode-settings"]
+    assert "cannot parse" in failure.detail
+    assert "OOM-killed" in failure.detail
+    # …and self_check is where a `--self-check` over kubectl exec finds it.
+    checks = agent.self_check(make_layout(tmp_path), runner=FakeRunner(), ensure=report)
+    assert not {check.name: check for check in checks}["ensure-vscode-settings"].ok
+
+
+def test_the_settings_home_falls_back_when_nss_resolves_nothing(
+    tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The degraded rung has no passwd record at all. ssh cannot work there
+    either, but the step must not be the one that raises about it."""
+
+    def no_record(uid: int | None = None) -> str | None:
+        return None
+
+    monkeypatch.setattr(agent, "_home_for_uid", no_record)
+    layout = make_layout(tmp_path)
+    assert agent.session_home(layout) == layout.home
