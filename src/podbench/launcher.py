@@ -45,6 +45,7 @@ from .budget import (
     memory_budget,
     memory_warning,
     probe_budgets,
+    probe_explanation,
     probe_qualifier,
     probe_spend,
     probe_warning,
@@ -102,6 +103,7 @@ __all__ = [
     "CONFIG_D",
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
+    "EXPLAIN_HINT",
     "HOST_KEY_ARGV",
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
@@ -124,6 +126,7 @@ __all__ = [
     "declared_volumes",
     "default_host_alias",
     "emit_ssh_config",
+    "explain_note",
     "features",
     "forget_known_hosts",
     "forget_ssh_config",
@@ -134,6 +137,7 @@ __all__ = [
     "host_alias_in",
     "identity_paths",
     "kubectl_for",
+    "latest_seat",
     "list_seats",
     "main",
     "match_pod_choices",
@@ -975,7 +979,7 @@ def attach(
     # a caution about probed pods. It is stated before anyone sets a
     # breakpoint, because the readiness half of it is invisible afterwards.
     budgets = probe_budgets(pod_json, session.workload)
-    probe_note = probe_warning(session.workload, budgets)
+    probe_note = probe_explanation(session.workload, budgets)
     if probe_note is not None:
         warnings.append(probe_note)
     # Not also a warning: `features` reports it under "supports", which is where
@@ -1523,8 +1527,9 @@ def format_session(session: Session) -> str:
         + ("  (reconnected)" if session.reused else "  (new)"),
         f"target      {session.workload}",
         f"rung        {session.rung.value} - {session.rung.description}",
-        "ladder",
     ]
+    if session.steps:
+        lines.append("ladder")
     for step in session.steps:
         mark = "landed " if step.admitted else "refused"
         lines.extend(
@@ -2183,6 +2188,25 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -
     return "\n".join(lines)
 
 
+def latest_seat(
+    pod_json: Mapping[str, Any], present: Sequence[SeatInfo]
+) -> tuple[SeatInfo | None, str]:
+    """The seat a report about this pod is about, and the container it watches.
+
+    The running one, or the last one landed if none is running: a burnt seat
+    still names the target its budget was spent against, and falling back to
+    the pod's first container would quietly report a different container's
+    numbers on a multi-container pod.
+    """
+    latest = next((seat for seat in reversed(present) if seat.running), None) or (
+        present[-1] if present else None
+    )
+    container = (latest.target if latest is not None else None) or (
+        target_container_name(pod_json)
+    )
+    return latest, container
+
+
 def probe_spend_note(
     kubectl: Kubectl,
     pod: str,
@@ -2202,16 +2226,11 @@ def probe_spend_note(
     grants one and not the other must still get its listing: the failure
     reports itself and costs this block only.
     """
-    latest = next((seat for seat in reversed(present) if seat.running), None) or (
-        present[-1] if present else None
-    )
     # Both of these are named in the block's own header rather than implied:
     # `status` lists every seat the pod has ever carried and only one of them
     # sets this window, and a seat that declares no targetContainerName gets
     # the same first-container default the rest of the launcher uses.
-    container = (latest.target if latest is not None else None) or (
-        target_container_name(pod_json)
-    )
+    latest, container = latest_seat(pod_json, present)
     if not (budgets := probe_budgets(pod_json, container)):
         return (
             f"probes on {container!r}: none declared, so there is no budget to "
@@ -2238,6 +2257,106 @@ def probe_spend_note(
         since=landed,
         seat=latest.name if latest is not None else None,
         target=target_status(pod_json, container),
+    )
+
+
+EXPLAIN_HINT = "podbench status --explain"
+"""Where the reasoning went, named wherever something was compressed out.
+
+A command nobody has heard of is not "one command away", so the compact report
+carries this line rather than trusting the reader to find the flag.
+"""
+
+
+def explain_note(
+    kubectl: Kubectl,
+    pod: str,
+    pod_json: Mapping[str, Any],
+    present: Sequence[SeatInfo],
+) -> str:
+    """The reasoning ``attach`` compresses out of its report.
+
+    It lives on ``status`` because ``status`` is where someone looks *before*
+    setting a breakpoint — which is the moment the arithmetic matters, and a
+    different moment from connecting — and because it mutates nothing, so it is
+    safe to re-run as often as the question comes back. ``attach``'s report
+    states the conclusions; this states what they were computed from.
+
+    The capability half is measured again rather than remembered: nothing of an
+    attach survives on the client, the seat is still there to be asked, and a
+    report kept from an earlier session would age silently on a node whose Yama
+    setting or LSM had changed underneath it.
+    """
+    latest, container = latest_seat(pod_json, present)
+    blocks: list[tuple[str, list[str]]] = []
+    if latest is not None and latest.running:
+        session = _seat_session(kubectl, pod, pod_json, latest, container)
+        blocks.append(
+            (
+                f"what {latest.name} supports, and what decided it",
+                # Carried through as it is: the capability report aligns its
+                # own columns, and re-wrapping it here would take the columns
+                # out and leave the numbers no longer comparing down them.
+                format_session(session).split("\n"),
+            )
+        )
+    else:
+        blocks.append(
+            (
+                "what these seats support",
+                _warning_lines(
+                    "nothing is running here to ask. capreport measures from "
+                    "inside the seat, on the node the pod is on, and a burnt "
+                    "container cannot answer - `podbench attach --new` lands "
+                    "one that can"
+                ),
+            )
+        )
+    explanation = probe_explanation(container, probe_budgets(pod_json, container))
+    if explanation is not None:
+        blocks.append(
+            (f"what a pause costs on {container!r}", _warning_lines(explanation))
+        )
+    budget = memory_budget(pod_json)
+    blocks.append(
+        ("the memory a seat shares", _warning_lines(f"{budget.summary}. {OOM_WARNING}"))
+    )
+    blocks.append(("raising that limit with --resize", _warning_lines(RESIZE_WARNING)))
+    lines: list[str] = []
+    for heading, body in blocks:
+        lines.append(f"explain: {heading}")
+        lines.extend(f"  {line}" for line in body)
+    return "\n".join(lines)
+
+
+def _seat_session(
+    kubectl: Kubectl,
+    pod: str,
+    pod_json: Mapping[str, Any],
+    seat: SeatInfo,
+    container: str,
+) -> Session:
+    """A running seat as a :class:`Session`, measured now.
+
+    Everything the seat's own spec records is read back from it rather than
+    assumed, as ``ssh-config`` does and for the same reason: this may be a seat
+    landed from another machine, and nothing of that attach is in hand here.
+    """
+    reference = ContainerRef(PodRef(kubectl.namespace, pod), seat.name)
+    report, notes = run_capreport(kubectl, reference)
+    return Session(
+        seat=reference,
+        workload=container,
+        rung=seat.rung,
+        reused=True,
+        uid=seat.uid,
+        home=seat.home,
+        identity_mounted=seat.identity_mounted,
+        identity_declared=SEAT_IDENTITY_VOLUME in declared_volumes(pod_json),
+        probes=probe_budgets(pod_json, container),
+        report=report,
+        ssh=probe_ssh_identity(kubectl, reference),
+        warnings=tuple(notes),
     )
 
 
@@ -2937,6 +3056,15 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     @app.command(help="the podbench containers in one pod and what each supports")
     def status(
         pod: _Pod = None,
+        explain: Annotated[
+            bool,
+            typer.Option(
+                "--explain",
+                help="also print the reasoning attach's report compresses out: "
+                "what a pause costs, what memory the seat shares, and what this "
+                "seat supports with the mechanism that decided each",
+            ),
+        ] = False,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
@@ -2965,6 +3093,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         print(
             "\n".join(_warning_lines(probe_spend_note(kube, name, pod_json, present)))
         )
+        if explain:
+            print(explain_note(kube, name, pod_json, present))
         raise typer.Exit(0)
 
     @app.command(

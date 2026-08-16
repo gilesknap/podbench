@@ -2165,6 +2165,77 @@ def test_the_window_of_a_seat_the_restart_took_with_it_is_still_readable(
     assert "A count is not a streak" in out
 
 
+def test_explain_measures_the_seat_again_rather_than_describing_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nothing of an attach survives on the client, and the seat is still there
+    to be asked - so `--explain` runs capreport in it, on the node it is on."""
+    cluster = probed_cluster()
+    assert main(["status", "target", "-n", "demo", "--explain"], runner=cluster) == 0
+
+    out = capsys.readouterr().out
+    assert "explain: what podbench-1 supports, and what decided it" in out
+    assert "[x] live attach (gdb -p <pid>)" in out
+    assert "node02" in out
+    assert [argv for argv in cluster.calls if "capreport" in argv]
+
+
+def test_explain_carries_the_arithmetic_attach_no_longer_prints(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = probed_cluster()
+    assert main(["status", "target", "-n", "demo", "--explain"], runner=cluster) == 0
+
+    out = capsys.readouterr().out
+    assert "explain: what a pause costs on 'app'" in out
+    assert "readiness, 11-16s into a pause" in out
+    assert "liveness, 21-31s into a pause" in out
+    assert "cannot be changed on a running pod" in out
+    # The memory half, in this pod's own numbers rather than in general terms.
+    assert "explain: the memory a seat shares" in out
+    assert "no memory limit on this pod" in out
+    assert "LimitRange" in out, "R13's untested half is still untested"
+
+
+def test_explain_says_why_a_dead_seat_cannot_be_measured(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A burnt container is the normal state of a pod that has been debugged,
+    and a missing block with no explanation reads as a bug in podbench."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            probes=PROBED,
+            ephemeral=[{"name": "podbench-1", "targetContainerName": "app"}],
+            ephemeral_statuses=[
+                {
+                    "name": "podbench-1",
+                    "state": {"terminated": {"reason": "OOMKilled", "exitCode": 137}},
+                }
+            ],
+        )
+    )
+    assert main(["status", "target", "-n", "demo", "--explain"], runner=cluster) == 0
+
+    out = capsys.readouterr().out
+    assert "explain: what these seats support" in out
+    assert "burnt container cannot answer" in out
+    assert not [argv for argv in cluster.calls if "capreport" in argv]
+    # The blocks that need no seat are still there.
+    assert "explain: what a pause costs on 'app'" in out
+
+
+def test_status_without_explain_stays_the_listing_it_was(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cluster = probed_cluster()
+    assert main(["status", "target", "-n", "demo"], runner=cluster) == 0
+
+    out = capsys.readouterr().out
+    assert "explain:" not in out
+    assert not [argv for argv in cluster.calls if "capreport" in argv]
+
+
 def test_list_finds_pods_carrying_a_seat(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

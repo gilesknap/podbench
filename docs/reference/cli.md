@@ -474,6 +474,9 @@ landed.
 │                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --explain                        also print the reasoning attach's report compresses out: what a │
+│                                  pause costs, what memory the seat shares, and what this seat    │
+│                                  supports with the mechanism that decided each                   │
 │ --no-prompt                      never ask which pod: an ambiguous or missing POD is refused     │
 │                                  with the candidates instead. Already implied when stdin is not  │
 │                                  a tty                                                           │
@@ -485,6 +488,50 @@ landed.
 │ --help                           Show this message and exit.                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+(status-explain)=
+
+#### `--explain`, where the reasoning lives
+
+`attach` reports conclusions: this seat supports these things, a pause here has
+this long, this pod is this short of memory. `--explain` is where each of those
+came from, and it is on `status` rather than on `attach` for two reasons. It is
+the question you have *before setting a breakpoint*, which is a different
+moment from connecting; and `status` mutates nothing, so it can be re-run as
+often as the question comes back.
+
+Four blocks, each conditional on there being something to say:
+
+```
+explain: what podbench-1 supports, and what decided it
+  seat        demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (reconnected)
+  ...
+  supports
+    [x] live attach (gdb -p <pid>)
+    ...
+  measured
+    verdict     live attach available
+explain: what a pause costs on 'app'
+  a breakpoint on 'app' is on a timer: it answers probes, and a process
+  stopped in a debugger does not - which the kubelet cannot tell from a hang.
+    readiness, 11-16s into a pause: ...
+    liveness, 21-31s into a pause: ...
+explain: the memory a seat shares
+  512Mi pod limit, 256Mi of it reserved by the workload, leaving 256Mi for a
+  seat. podbench shares this pod's memory and ephemeral-storage limits and
+  cannot reserve its own: ...
+explain: raising that limit with --resize
+  --resize raises the target container's memory limit in place ...
+```
+
+The capability half is **measured again**, by running `capreport` inside the
+running seat exactly as `attach` does. Nothing of an attach survives on the
+client, the seat is still there to be asked, and a report kept from an earlier
+session would age silently on a node whose Yama setting or LSM had changed
+underneath it. That costs one `kubectl exec` and is why it is behind a flag.
+A pod whose seats are all dead gets the other three blocks and is told why the
+first is missing: `capreport` runs *inside* the seat, and a burnt container
+cannot answer.
 
 #### The probe budget already spent
 

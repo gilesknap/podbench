@@ -25,9 +25,9 @@ from podbench.budget import (
     memory_budget,
     memory_warning,
     probe_budgets,
+    probe_explanation,
     probe_qualifier,
     probe_spend,
-    probe_warning,
     target_status,
 )
 
@@ -148,7 +148,9 @@ def test_a_satisfied_startup_probe_is_not_the_deadline() -> None:
     budgets = by_kind(probe_budgets(pod_document(DEMO_PROBES, started=True), APP))
     assert not budgets[ProbeKind.STARTUP].in_force
     assert budgets[ProbeKind.LIVENESS].in_force
-    assert "already satisfied" in (probe_warning(APP, tuple(budgets.values())) or "")
+    assert "already satisfied" in (
+        probe_explanation(APP, tuple(budgets.values())) or ""
+    )
 
 
 def test_a_running_startup_probe_holds_the_other_two_off() -> None:
@@ -177,7 +179,7 @@ def test_readiness_and_liveness_stand_alone_without_a_startup_probe() -> None:
 
 def test_the_warning_names_both_budgets_and_the_way_out() -> None:
     budgets = probe_budgets(pod_document(DEMO_PROBES), APP)
-    warning = probe_warning(APP, budgets)
+    warning = probe_explanation(APP, budgets)
     assert warning is not None
     assert "11-16s" in warning
     assert "21-31s" in warning
@@ -197,7 +199,7 @@ def test_an_unprobed_target_is_said_out_loud_and_not_warned_about() -> None:
     the report has to say which one this pod is."""
     budgets = probe_budgets(pod_document(), APP)
     assert budgets == ()
-    assert probe_warning(APP, budgets) is None
+    assert probe_explanation(APP, budgets) is None
     qualifier = probe_qualifier(APP, budgets)
     assert qualifier.startswith("no deadline")
     assert "no readiness, liveness or startup probe" in qualifier
@@ -214,8 +216,8 @@ def test_a_container_the_pod_does_not_have_has_no_budget() -> None:
 
 
 def test_initial_delay_is_named_only_when_the_spec_states_one() -> None:
-    with_delay = probe_warning(APP, probe_budgets(pod_document(DEMO_PROBES), APP))
-    without = probe_warning(
+    with_delay = probe_explanation(APP, probe_budgets(pod_document(DEMO_PROBES), APP))
+    without = probe_explanation(
         APP,
         probe_budgets(pod_document({"livenessProbe": {"periodSeconds": 10}}), APP),
     )

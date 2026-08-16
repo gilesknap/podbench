@@ -79,6 +79,7 @@ __all__ = [
     "memory_budget",
     "memory_warning",
     "probe_budgets",
+    "probe_explanation",
     "probe_qualifier",
     "probe_spend",
     "probe_warning",
@@ -298,10 +299,10 @@ def probe_budgets(
     )
 
 
-def probe_warning(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
-    """The WARNING text for a probed target, or ``None`` when it has none.
+def probe_explanation(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
+    """The arithmetic in full, for ``status --explain``, or ``None`` if unprobed.
 
-    Silence is the right output for an unprobed pod: a warning that says
+    Silence is the right output for an unprobed pod: a paragraph that says
     nothing is wrong teaches the reader to skip the block that one day will
     say something is. The good news goes to :func:`probe_qualifier` instead,
     which prints either way.
@@ -338,7 +339,7 @@ def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
     A bare tick beside "live attach" says the same thing on a pod that will
     restart under you in twenty seconds as on one that will wait all afternoon,
     and those are different products. The arithmetic stays in
-    :func:`probe_warning`; this is the qualifier on the tick.
+    :func:`probe_explanation`; this is the qualifier on the tick.
 
     """
     live = [budget for budget in budgets if budget.in_force]
@@ -1069,6 +1070,26 @@ class MemoryBudget:
         """
         free = self.free
         return free is None or free >= SEAT_WORKING_SET
+
+    @property
+    def summary(self) -> str:
+        """The measurement in words, for ``podbench status --explain``.
+
+        >>> MemoryBudget(512 * MIB, 256 * MIB).summary
+        '512Mi pod limit, 256Mi of it reserved by the workload, 256Mi for a seat'
+        >>> MemoryBudget(None, 0).summary
+        'no memory limit on this pod, so its cgroup has no ceiling for a seat to hit'
+        """
+        free = self.free
+        if self.limit is None or free is None:
+            return (
+                "no memory limit on this pod, so its cgroup has no ceiling for "
+                "a seat to hit"
+            )
+        return (
+            f"{_human(self.limit)} pod limit, {_human(self.reserved)} of it "
+            f"reserved by the workload, {_human(free)} for a seat"
+        )
 
     @property
     def suggestion(self) -> str:
