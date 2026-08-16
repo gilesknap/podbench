@@ -482,6 +482,17 @@ def test_nothing_is_said_about_reloading_when_nothing_was_installed() -> None:
     assert not any("Reload Window" in note for note in notes)
 
 
+def test_no_reload_note_when_every_install_failed() -> None:
+    """The note asserts that --install-extension unpacked something into the
+    seat. A run whose installs all failed unpacked nothing, so it would send the
+    reader to look for an extension the lines above just said is not there."""
+    seat = FakeSeat(install_rc=1)
+    notes = run_open(seat)
+
+    assert any("could not install ms-python.python" in note for note in notes)
+    assert not any("Reload Window" in note for note in notes)
+
+
 def test_the_open_step_does_not_claim_the_window_connected() -> None:
     """The desktop `code` hands the argv to a window and returns, so its exit
     code is not evidence: the authority is resolved in the window afterwards

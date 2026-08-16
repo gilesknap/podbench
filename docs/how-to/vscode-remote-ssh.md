@@ -155,8 +155,17 @@ layer, on an ephemeral-storage budget the seat *shares with the workload and
 cannot reserve*; it needs egress from the pod, since uv downloads from an index;
 starting the server ptraces the app, which stops answering probes for the few
 seconds that takes (~3 s measured — compare it against the deadlines `attach`
-prints); and no container restart survives any of it. Without `--open` it is
-refused rather than ignored — there is no configuration run for it to change.
+prints); and a restart of the target container ends the debugging. Without
+`--open` it is refused rather than ignored — there is no configuration run for
+it to change.
+
+The two halves do not expire together. The **server** never survives a restart:
+it is a live process inside the one that died. The **install** survives one only
+where `--provision-dest` names a volume mounted into the target — an `emptyDir`
+is pod-scoped and outlives a container. At the default `/opt/podbench-debugpy`
+it does not: that is the container's own writable layer, which a restart
+rebuilds from the image. Either way you are re-running `--provision`, since
+without the server there is nothing to connect to.
 
 Baking `debugpy.listen()` into the app image is the durable answer, and the only
 one that survives a restart. `--provision` is for the pod that is already
@@ -177,9 +186,12 @@ it up: the extension is installed, the debug adapter is not registered, and its
 debugger is simply not there.
 
 The first `--open` is unaffected, because the install finishes before the window
-opens. For any run after that, **Command Palette → Developer: Reload Window**.
-`--open` prints the reminder whenever it installed anything, since it cannot
-tell an already-open window from a fresh one.
+opens. A later run needs **Command Palette → Developer: Reload Window** only if
+it actually put a *new* extension in the seat — but `--open` cannot tell that
+from "already installed" (`code` exits 0 for both), and cannot tell an open
+window from a fresh one either, so it prints the reminder whenever an install
+succeeded. On the runs where nothing changed, reloading costs a few seconds and
+nothing else.
 
 Run it from a terminal on the machine your VS Code runs on. Inside a Remote-SSH
 window, a devcontainer or a Codespace, `code` on the PATH is the *remote* CLI,

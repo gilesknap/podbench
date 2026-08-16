@@ -324,6 +324,12 @@ def open_seat(
             f"one bootstraps vscode-server in the seat, so this is a download "
             f"and not just a copy ({_STORAGE_NOTE})"
         )
+    # Whether anything actually landed, not whether anything was asked for: the
+    # reload note asserts that `--install-extension` unpacked something into the
+    # seat, and a run whose every install failed unpacked nothing. Telling
+    # somebody to reload a window over that sends them to look for an extension
+    # the lines above have just said is not there.
+    installed = False
     for extension in extensions:
         result = run([editor, "--remote", authority, "--install-extension", extension])
         if result.returncode != 0:
@@ -332,7 +338,8 @@ def open_seat(
         # "is installed", not "installed": `code` exits 0 for "already
         # installed" too, and this run cannot tell the two apart.
         report(f"{extension} is installed in SSH: {alias}")
-    if extensions:
+        installed = True
+    if installed:
         report(_RELOAD_NOTE)
 
     result = run([editor, "--remote", authority, folder])

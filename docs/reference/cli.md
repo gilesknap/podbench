@@ -469,9 +469,12 @@ Notes:
     was **already** connected keeps the extension host it started and never
     loads it — the adapter stays unregistered and its `launch.json` entry
     cannot run. A first `--open` is unaffected, since the install finishes
-    before the window opens; every run after one prints the
-    *Developer: Reload Window* reminder, because this side cannot tell the two
-    apart;
+    before the window opens; a later run needs the reload only where it put a
+    *new* extension in the seat, and the *Developer: Reload Window* reminder is
+    printed whenever an install **succeeded**, because `code` exits 0 for
+    "already installed" too and this side cannot tell an open window from a
+    fresh one. A run whose every install failed prints no reminder, having
+    unpacked nothing;
   * opens the **seat's home** — `/root`, or `/home/podbench` on a
     `podbench-home` volume. Never `/`: a folder there points the watcher at
     `/proc/<pid>/root`, which is a symlink into another container's rootfs, and
@@ -510,8 +513,14 @@ Notes:
   (report 3.9); it needs egress from the pod, since uv resolves and downloads
   from an index; starting the server ptraces the app, so it stops answering
   probes for the few seconds that takes (~3 s measured, against the deadlines
-  the report above prints); and neither the install nor the injection survives a
-  container restart. Installing debugpy into the app image, or baking
+  the report above prints); and a restart of the target container ends the
+  debugging. The two halves do not expire together: the **server** never
+  survives a restart, being a live process in the container that died, while the
+  **install** survives one where `--provision-dest` names a volume mounted into
+  the target — an `emptyDir` is pod-scoped and outlives a container — and not at
+  the default `/opt/podbench-debugpy`, which is the container's own writable
+  layer. Either way the next step is `--provision` again, since without the
+  server nothing is listening. Installing debugpy into the app image, or baking
   `debugpy.listen()` into the app, is the durable answer.
 
   A **bare** `debug-config` still only prints the injection command. That is
