@@ -84,7 +84,7 @@ from .model import (
     Rung,
     as_dict,
 )
-from .proc import DEFAULT_PROC, read_cgroup, read_cmdline, read_comm
+from .proc import DEFAULT_PROC, read_cgroup, read_cmdline, read_comm, same_root
 from .sshcfg import host_key_alias
 
 __all__ = [
@@ -489,18 +489,9 @@ def identify_owner(
         comm=read_comm(pid, proc=proc),
         cmdline=read_cmdline(pid, proc=proc) or None,
         container_id=cgroup,
-        same_container=_same_root(pid, proc=proc),
+        same_container=same_root(pid, proc=proc),
         is_target=bool(target_cid and cgroup and target_cid in cgroup),
     )
-
-
-def _same_root(pid: int, *, proc: Path) -> bool | None:
-    try:
-        mine = os.stat(proc / "self" / "root")
-        theirs = os.stat(proc / str(pid) / "root")
-    except OSError:
-        return None
-    return (mine.st_dev, mine.st_ino) == (theirs.st_dev, theirs.st_ino)
 
 
 # -- the port pre-flight ---------------------------------------------------
