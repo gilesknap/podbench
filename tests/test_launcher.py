@@ -2106,6 +2106,57 @@ def test_events_refused_costs_the_probe_block_and_nothing_else(
     assert "needs `list` on events" in out
 
 
+def test_the_window_of_a_seat_the_restart_took_with_it_is_still_readable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The scenario the whole block exists for, end to end: a liveness streak
+    completed, the target restarted, the seat sharing its namespaces died with
+    it and its name is burnt. A terminated container keeps its `startedAt`, so
+    the window survives its occupant and the events either side of it are the
+    only place the sequence shows."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            probes=PROBED,
+            restarts=1,
+            target_started="2026-08-15T10:04:41Z",
+            ephemeral=[{"name": "podbench-1", "targetContainerName": "app"}],
+            ephemeral_statuses=[
+                {
+                    "name": "podbench-1",
+                    "state": {
+                        "terminated": {
+                            "startedAt": "2026-08-15T09:00:00Z",
+                            "reason": "Error",
+                            "exitCode": 137,
+                        }
+                    },
+                }
+            ],
+        ),
+        events=[
+            unhealthy("Liveness", 3, "2026-08-15T10:04:11Z", "2026-08-15T10:04:31Z")
+        ],
+    )
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "probes on 'app' since podbench-1 landed (2026-08-15T09:00:00Z)" in out
+    assert "liveness: 3 failures" in out
+    assert "restarts: 1" in out
+    assert "after the seat landed" in out
+    assert "cannot come back" in out
+    # Still not a streak: three aggregated failures are not three in a row, and
+    # the restart is what proves one completed.
+    assert "3 of 3" not in out
+    assert "A count is not a streak" in out
+
+
 def test_list_finds_pods_carrying_a_seat(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
