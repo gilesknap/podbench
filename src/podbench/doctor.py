@@ -48,7 +48,6 @@ from .launcher import (
 from .model import DEFAULT_IMAGE, IMAGE_ENV, as_dict
 
 __all__ = [
-    "AGENT_SOCKET",
     "FEATURES",
     "MIN_KUBECTL",
     "SSH_CONFIG",
@@ -60,7 +59,6 @@ __all__ = [
     "Report",
     "Status",
     "agent_fingerprints",
-    "check_ssh_agent",
     "client_version",
     "diagnose",
     "format_report",
