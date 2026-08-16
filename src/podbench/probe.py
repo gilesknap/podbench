@@ -32,6 +32,7 @@ from typing import Annotated, Protocol
 import typer
 
 from .cli import new_app, run
+from .flavour import Debugger, format_inventory, inventory
 from .model import TARGET_CID_ENV, Blocker, CapabilityReport, Verdict
 from .proc import (
     DEFAULT_PROC,
@@ -540,16 +541,34 @@ def _confined(profile: str | None) -> bool:
     return profile is not None and profile != "unconfined"
 
 
-def format_report(report: CapabilityReport, json_output: bool) -> str:
-    """Render the report, either for a human or as the stable JSON form."""
+def format_report(
+    report: CapabilityReport,
+    json_output: bool,
+    debuggers: Sequence[Debugger] = (),
+) -> str:
+    """Render the report, either for a human or as the stable JSON form.
+
+    ``debuggers`` rides along with the capability verdict rather than living in
+    a verb of its own, because the two answers are only useful together: a seat
+    that may attach but ships no adapter for the target's language fails at F5
+    with an error naming neither. It is a parameter rather than a field of
+    :class:`~podbench.model.CapabilityReport` because it describes the *image*,
+    not the probe.
+    """
     if json_output:
-        return json.dumps(_json_payload(report), indent=2, sort_keys=True)
-    return _human_report(report)
+        return json.dumps(_json_payload(report, debuggers), indent=2, sort_keys=True)
+    return _human_report(report, debuggers)
 
 
-def _json_payload(report: CapabilityReport) -> dict[str, object]:
+def _json_payload(
+    report: CapabilityReport, debuggers: Sequence[Debugger] = ()
+) -> dict[str, object]:
     """The JSON shape is a public interface — CI runs ``capreport --json``."""
     return {
+        "debuggers": {
+            entry.name: {"present": entry.present, "detail": entry.detail}
+            for entry in debuggers
+        },
         "verdict": report.verdict.name.lower(),
         "exit_code": report.verdict.value,
         "summary": report.verdict.summary,
@@ -572,7 +591,7 @@ def _json_payload(report: CapabilityReport) -> dict[str, object]:
     }
 
 
-def _human_report(report: CapabilityReport) -> str:
+def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) -> str:
     width = 72
     lines = [" capreport ".center(width, "=")]
 
@@ -613,6 +632,10 @@ def _human_report(report: CapabilityReport) -> str:
             f"live attach (pid {report.target_pid})",
             _attach_text(report.target_attach_ok),
         )
+
+    if debuggers:
+        lines.append("DEBUGGERS (what this image ships)")
+        lines.extend(f"  {line}" for line in format_inventory(debuggers))
 
     lines.append("-" * width)
     lines.append(f"VERDICT: {report.verdict.summary} (exit {report.verdict.value})")
@@ -707,7 +730,7 @@ def _run(
         notes.extend(discovery_notes)
 
     report = probe(pid, proc=proc, attacher=attacher, extra_notes=notes)
-    print(format_report(report, json_output))
+    print(format_report(report, json_output, inventory()))
     return report.verdict.value
 
 

@@ -672,6 +672,10 @@ JSON_KEYS = {
     "target_attach_ok",
     "proc_reads",
     "notes",
+    # What the image ships, beside what the kernel allows: a seat that may
+    # attach but has no adapter for the target's language fails at F5 with an
+    # error naming neither (issue #20).
+    "debuggers",
 }
 
 
