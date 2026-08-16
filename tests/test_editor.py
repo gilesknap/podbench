@@ -56,6 +56,8 @@ class FakeSeat:
         unwritable: Sequence[str] = (),
         install_rc: int = 0,
         open_rc: int = 0,
+        ssh_rc: int = 0,
+        ssh_stderr: str = "",
     ) -> None:
         self.configurations = list(configurations)
         self.debug_config_rc = debug_config_rc
@@ -68,6 +70,8 @@ class FakeSeat:
         self.unwritable = set(unwritable)
         self.install_rc = install_rc
         self.open_rc = open_rc
+        self.ssh_rc = ssh_rc
+        self.ssh_stderr = ssh_stderr
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(
@@ -80,6 +84,8 @@ class FakeSeat:
         self.calls.append(tuple(argv))
         if argv[0] == "code":
             return self._editor(list(argv))
+        if argv[0] == "ssh":
+            return self._ssh(list(argv))
         command = list(argv)[list(argv).index("--") + 1 :]
         return self._in_seat(command, stdin)
 
@@ -121,6 +127,13 @@ class FakeSeat:
 
     # -- the laptop --------------------------------------------------------
 
+    def _ssh(self, argv: list[str]) -> CommandResult:
+        assert argv[-2] == ALIAS, (
+            "the preflight has to use the alias VS Code will, through the same "
+            f"config: {argv}"
+        )
+        return _result(self.ssh_rc, stderr=self.ssh_stderr)
+
     def _editor(self, argv: list[str]) -> CommandResult:
         assert argv[1:3] == ["--remote", f"ssh-remote+{ALIAS}"], (
             "every code invocation must name the remote, or the extension "
@@ -150,6 +163,11 @@ class FakeSeat:
             if call[0] == "code" and "--install-extension" not in call:
                 return index
         raise AssertionError(f"nothing opened a folder: {self.calls}")
+
+
+def _seat_calls(seat: FakeSeat) -> int:
+    """How many calls have reached the pod - the ssh preflight reaches nothing."""
+    return len([call for call in seat.calls if call[0] not in ("ssh", "code")])
 
 
 def _result(returncode: int, *, stdout: str = "", stderr: str = "") -> CommandResult:
@@ -184,6 +202,59 @@ def run_open(
         runner=seat,
     )
     return notes
+
+
+# -- the preflight -----------------------------------------------------------
+
+DLS_REFUSAL = (
+    "/tmp/podbench-home/.podbench/sshd_config: No such file or directory\n"
+    "command terminated with exit code 1\n"
+    "kex_exchange_identification: Connection closed by remote host\n"
+    "Connection closed by UNKNOWN port 65535\n"
+)
+"""What a seat with no ssh transport says, measured at DLS on 2026-08-16.
+
+Four lines, and the *first* is the one that names the mechanism — which is why
+the failure is quoted whole rather than through ``_detail``, whose last line
+here is ssh giving up on a port number that means nothing.
+"""
+
+
+def test_an_unreachable_seat_is_reported_rather_than_opened() -> None:
+    """The whole point of the preflight.
+
+    ``code --remote`` returns as soon as a window has the argv, so an alias
+    that does not work is discovered in the GUI, minutes and one vscode-server
+    download later, in a log the user has to know to open. Nothing here is
+    written, installed or launched until ssh has answered.
+    """
+    seat = FakeSeat(ssh_rc=255, ssh_stderr=DLS_REFUSAL)
+
+    with pytest.raises(EditorError) as raised:
+        run_open(seat)
+
+    message = str(raised.value)
+    assert f"`ssh {ALIAS}` does not reach the seat" in message
+    # Quoted whole: the mechanism is on the first line and ssh's own summary,
+    # on the last, names a port that does not exist.
+    assert "sshd_config: No such file or directory" in message
+    assert "kex_exchange_identification" in message
+    assert "attach --new" in message, "a named way out, not just a diagnosis"
+    assert [call[0] for call in seat.calls] == ["ssh"], (
+        "nothing may run after the probe fails - the extension install reports "
+        "success without a connection, and the window would too"
+    )
+    assert seat.files == {}
+
+
+def test_the_alias_is_proven_before_the_first_thing_that_needs_it() -> None:
+    seat = FakeSeat()
+
+    notes = run_open(seat)
+
+    assert seat.calls[0][0] == "ssh", f"the probe must come first: {seat.calls}"
+    assert seat.calls[0][-1] == "true", "the probe has to run a command in the seat"
+    assert any(f"`ssh {ALIAS}` reaches the seat" in note for note in notes)
 
 
 # -- the OOM guard -----------------------------------------------------------
@@ -374,7 +445,13 @@ def test_provision_asks_the_seat_and_gets_a_launch_json() -> None:
 
 def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
     """It is a uv resolve and download into somebody else's writable layer. A
-    cost named after the write is not a cost the user got to decline."""
+    cost named after the write is not a cost the user got to decline.
+
+    Counted in *seat* calls rather than in calls: the reachability preflight
+    runs first and deliberately so - provisioning writes into the workload and
+    ptraces it, which is not worth spending on a seat no editor can reach - but
+    it opens one ssh connection and changes nothing.
+    """
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     timeline: list[tuple[str, int]] = []
     open_seat(
@@ -382,7 +459,7 @@ def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
         SEAT,
         alias=ALIAS,
         folder=HOME,
-        report=lambda note: timeline.append((note, len(seat.calls))),
+        report=lambda note: timeline.append((note, _seat_calls(seat))),
         editor="code",
         provision=True,
         runner=seat,
@@ -496,12 +573,19 @@ def test_no_reload_note_when_every_install_failed() -> None:
 def test_the_open_step_does_not_claim_the_window_connected() -> None:
     """The desktop `code` hands the argv to a window and returns, so its exit
     code is not evidence: the authority is resolved in the window afterwards
-    and a failure arrives there as a dialog and here as a zero."""
+    and a failure arrives there as a dialog and here as a zero.
+
+    What is left to warn about is now one thing rather than a list, because the
+    preflight has already proven every cause that lives outside VS Code.
+    """
     seat = FakeSeat()
     notes = run_open(seat)
 
-    assert any("not evidence the seat was reached" in note for note in notes)
+    assert any("could not establish connection" in note for note in notes)
     assert any("ms-vscode-remote.remote-ssh" in note for note in notes)
+    assert not any("podbench doctor --fix" in note for note in notes), (
+        "the Include line cannot be the cause: ssh read it a moment ago"
+    )
 
 
 def test_an_already_installed_extension_is_not_claimed_as_new() -> None:

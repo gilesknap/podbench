@@ -67,8 +67,11 @@ from .vscode import (
 
 __all__ = [
     "DEFAULT_EDITOR",
+    "DEFAULT_SSH",
+    "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_FLAG",
+    "check_reachable",
     "open_seat",
     "remote_authority",
     "resolve_editor",
@@ -194,6 +197,34 @@ _STORAGE_NOTE = (
 )
 
 
+DEFAULT_SSH = "ssh"
+"""The client ``--open`` proves the seat with, and the one VS Code will use."""
+
+SSH_CONNECT_TIMEOUT = 15
+"""Seconds ssh may spend establishing the connection, matching what Remote-SSH
+gives its own probe. The ProxyCommand is a ``kubectl exec``, so this covers an
+apiserver that is slow as well as one that is unreachable."""
+
+_PROBE_COMMAND = "true"
+"""What the probe runs in the seat. It has to run *something*: authentication,
+the seat's login name and sshd's config file are all resolved before a command
+is dispatched, so anything that exits 0 proves the whole path."""
+
+UNREACHABLE_CAUSES = """\
+  - `Could not resolve hostname`: ssh never read podbench's stanza. The
+    Include line is missing from ~/.ssh/config, or sits below a `Host *`
+    block. `podbench doctor --fix`
+  - `agent refused operation`: your ssh agent holds that key and will not
+    sign for it - nothing in the pod is involved. `IdentityAgent none` in a
+    `Host podbench-*` block, below the Include line
+  - `sshd_config: No such file or directory`: the seat has no ssh transport,
+    because its agent never wrote one. `podbench attach --new` lands a fresh
+    seat; the exec helpers work on this one meanwhile
+  - `Permission denied (publickey)`: this seat's authorized_keys was written
+    when it started and does not carry the key in the stanza. `podbench
+    attach --new` is the only way to change it"""
+
+
 class EditorError(RuntimeError):
     """``--open`` cannot be honoured, and the sentence says which mechanism.
 
@@ -247,6 +278,64 @@ def remote_authority(alias: str) -> str:
     return f"ssh-remote+{alias}"
 
 
+def check_reachable(
+    alias: str,
+    *,
+    ssh: str = DEFAULT_SSH,
+    runner: Runner | None = None,
+) -> None:
+    """Prove the seat answers on ``alias``, or refuse to start VS Code.
+
+    Remote-SSH cannot be asked whether it will work. ``code --remote`` returns
+    as soon as a window has the argv, so the connection — and every way it can
+    fail — happens in the GUI afterwards, where the only trace is the Remote-SSH
+    log the user has to know to open. In between, ``--open`` bootstraps
+    vscode-server in the seat, so the cost of finding out the hard way is
+    several minutes and a 214 MiB download that also fails.
+
+    One ``ssh <alias> true`` settles it, and settles all of it: ssh resolves the
+    alias through the config it will use, runs the ProxyCommand, authenticates
+    with the key in the stanza and asks sshd for a command. Everything
+    Remote-SSH needs is exercised, and it is exercised *by* the ssh binary
+    Remote-SSH itself will spawn.
+
+    Deliberately not ``BatchMode=yes``. A passphrase-protected key with no agent
+    prompts here and succeeds, which is the truth — VS Code would have prompted
+    too — whereas BatchMode would turn it into a refusal, and a preflight whose
+    false negatives block a working setup is worse than none. The connection is
+    left multiplexed for the window that follows, so it also costs the editor's
+    first connect nothing.
+    """
+    run = runner if runner is not None else run_subprocess
+    result = run(
+        [
+            ssh,
+            "-T",
+            "-o",
+            f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+            alias,
+            _PROBE_COMMAND,
+        ]
+    )
+    if result.returncode == 0:
+        return
+    raise EditorError(
+        f"--open: `ssh {alias}` does not reach the seat, so VS Code was not "
+        "started - a Remote-SSH window would have failed the same way, minutes "
+        "and one vscode-server download later. ssh said:\n"
+        f"{_quoted(result.stderr or result.stdout)}\n"
+        f"{UNREACHABLE_CAUSES}\n"
+        "The seat itself is landed and the kubectl exec helpers above work "
+        "regardless; this is the ssh half of it."
+    )
+
+
+def _quoted(output: str) -> str:
+    """Another program's stderr, indented so it cannot be read as ours."""
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    return "\n".join(f"    {line}" for line in lines) or "    (nothing)"
+
+
 def open_seat(
     kubectl: Kubectl,
     seat: ContainerRef,
@@ -256,9 +345,14 @@ def open_seat(
     report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
     provision: bool = False,
+    ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
 ) -> None:
     """Configure ``folder`` in the seat, install what it needs, and open it.
+
+    Nothing is written, downloaded or launched until :func:`check_reachable`
+    has proven the alias: the two steps that follow it both report success on a
+    seat ssh cannot reach.
 
     ``folder`` is the caller's choice — ``attach`` passes the seat's own home,
     which is where the workload is read from through ``/proc/<pid>/root`` — and
@@ -293,6 +387,15 @@ def open_seat(
             f"{SEAT_HOME_VOLUME}:<path>` is what moves it."
         )
     run = runner if runner is not None else run_subprocess
+    # Before anything is written, installed or downloaded: everything below
+    # this line travels over the alias, and the two steps that do - the
+    # extension install and the window itself - both report success without it
+    # (`code --install-extension` exits 0 having only queued the work for a
+    # window that has not connected yet). --provision is here too: it writes
+    # ~15 MB into the workload and ptraces it, which is not worth spending on a
+    # seat no editor can reach.
+    check_reachable(alias, ssh=ssh, runner=run)
+    report(f"`ssh {alias}` reaches the seat, so Remote-SSH will too")
     configurations = _configurations(kubectl, seat, report, provision=provision)
     extensions = extensions_for(configurations)
 
@@ -347,24 +450,19 @@ def open_seat(
         raise EditorError(
             f"`{editor} --remote {authority} {folder}` failed: "
             f"{_detail(result.stderr)}. --remote needs the Remote - SSH "
-            "extension (ms-vscode-remote.remote-ssh) in the local VS Code, and "
-            "an alias ssh itself resolves - `podbench doctor --fix` adds the "
-            "Include line that makes podbench's stanzas visible."
+            "extension (ms-vscode-remote.remote-ssh) in the local VS Code; the "
+            "alias itself was proven above."
         )
     report(f"asked VS Code to open {folder} over Remote-SSH ({alias})")
-    # Said rather than implied by an exit code, because the exit code is not
-    # evidence: the desktop `code` hands the argv to a window and returns, and
-    # the authority is resolved in that window afterwards. So the two failures
-    # a first run actually meets - no Remote - SSH extension locally, and an
-    # alias ssh cannot resolve because ~/.ssh/config never got the Include line
-    # - both arrive as a dialog there and as a zero here.
+    # The exit code still is not evidence - `code` hands the argv to a window
+    # and returns, and the connection is made in that window afterwards - but
+    # the preflight has already removed every cause that lives outside VS Code,
+    # so what is left to say is small and specific.
     report(
-        "that exit code is not evidence the seat was reached: `code` returns "
-        "as soon as the window has the argv, and the connection is made in the "
-        "window. 'could not establish connection' there means the local VS Code "
-        "has no Remote - SSH extension (ms-vscode-remote.remote-ssh), or ssh "
-        "cannot resolve the alias - the Include line above, or `podbench "
-        "doctor --fix`."
+        "if that window says 'could not establish connection', the local VS "
+        "Code has no Remote - SSH extension (ms-vscode-remote.remote-ssh): ssh "
+        f"itself reached {alias} a moment ago, from this terminal, with the "
+        "same config the window reads."
     )
 
 

@@ -182,6 +182,8 @@ class FakeCluster:
         login_user: str | None = SEAT_USER,
         login_user_returncode: int = 1,
         patch_error: str | None = None,
+        ssh_probe_rc: int = 0,
+        ssh_probe_err: str = "",
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -198,6 +200,8 @@ class FakeCluster:
         self.login_user = login_user
         self.login_user_returncode = login_user_returncode
         self.patch_error = patch_error
+        self.ssh_probe_rc = ssh_probe_rc
+        self.ssh_probe_err = ssh_probe_err
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
         # What `--open` reads and writes: the configurations `debug-config`
@@ -222,6 +226,10 @@ class FakeCluster:
             # `--open` drives the VS Code CLI through the same runner, so a unit
             # test never starts an editor.
             return CommandResult(tuple(argv), 0, "", "")
+        if argv[0] == "ssh":
+            # `--open`'s preflight, for the same reason: it proves the alias
+            # before anything is written, and a unit test opens no connection.
+            return CommandResult(tuple(argv), self.ssh_probe_rc, "", self.ssh_probe_err)
         rest = self._strip_global_flags(list(argv))
         result = self._dispatch(rest, stdin, argv)
         return CommandResult(
@@ -1710,6 +1718,43 @@ def test_open_configures_the_seats_home_and_opens_that(
     assert "open /root over Remote-SSH" in capsys.readouterr().out
 
 
+def test_open_refuses_a_seat_ssh_cannot_reach_and_says_why(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The seat lands, the stanza is written, and VS Code is not started.
+
+    ``code --remote`` returns as soon as a window has the argv, so an alias
+    that does not work costs a vscode-server download and is diagnosed in a log
+    the user has to know to open. One ``ssh <alias> true`` beforehand settles
+    it, and the failure it prints is ssh's own.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        ssh_probe_rc=255,
+        ssh_probe_err=(
+            "/tmp/podbench-home/.podbench/sshd_config: No such file or directory\n"
+            "kex_exchange_identification: Connection closed by remote host\n"
+        ),
+    )
+
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "does not reach the seat" in captured.err
+    assert "sshd_config: No such file or directory" in captured.err
+    assert not [call for call in cluster.calls if call[0] == "/usr/bin/code"], (
+        "the editor must not be started, nor asked to install anything"
+    )
+    assert cluster.seat_files == {}, "nothing is written into a seat ssh cannot reach"
+    # The seat is still real, and the block above still says how to use it.
+    assert "ssh config written to" in captured.out
+
+
 def test_open_without_the_vs_code_cli_never_burns_a_container_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2362,6 +2407,45 @@ def test_a_seat_landed_elsewhere_is_named_as_such_not_guessed_at(
     assert "no ssh config here" in out
     assert "podbench ssh-config -n demo target" in out
     assert "ssh podbench-demo-target" not in out
+
+
+def test_a_pod_whose_seat_is_gone_is_not_offered_an_alias(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stanza outlives the container it was written for.
+
+    Nothing deletes it, and an ephemeral container's name is burnt for the
+    pod's lifetime once it exits — so the alias is still on disk and still
+    resolves, and the connection it makes cannot work. Measured at DLS on
+    2026-08-16, where a listing printed `ssh <alias>` one line under
+    ``terminated ... name burnt for this pod's lifetime``.
+    """
+    written_stanza(tmp_path / "cfg", "podbench-demo-target")
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1"}],
+            ephemeral_statuses=[
+                {
+                    "name": "podbench-1",
+                    "state": {"terminated": {"reason": "Error", "exitCode": 1}},
+                }
+            ],
+        )
+    )
+
+    assert (
+        main(
+            ["list", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "name burnt for this pod's lifetime" in out, "the row still says why"
+    assert "ssh podbench-demo-target" not in out
+    assert "podbench attach -n demo target" in out
 
 
 def test_an_unreadable_config_dir_costs_the_alias_not_the_listing(
