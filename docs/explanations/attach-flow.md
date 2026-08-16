@@ -306,7 +306,7 @@ host rather than as a man-in-the-middle warning.
 
 ## What you get back
 
-The report is four to six lines of *measured* capability, not of requested capability:
+The report is six lines of *measured* capability, not of requested capability:
 
 * **live attach** — `gdb -p <pid>`, qualified by the probe deadline this pod puts on a
   breakpoint (a stopped process stops answering probes, and the kubelet cannot tell

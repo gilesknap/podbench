@@ -729,16 +729,22 @@ Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
 `PTRACE_MODE_READ`; `cmdline`, `status` and `fd` need no permission at all and are
 therefore readable on a pod where nothing else is, so they are reported and never
 counted as evidence. The JSON form carries both — the full matrix as `proc_reads`,
-and the decision as `reads_ok`:
+and the decision as `reads_ok`. The matrix comes back alphabetical rather than
+grouped — `podbench capreport --json` emits with `sort_keys`, so the two halves
+cannot disagree about ordering:
 
 ```
-$ capreport --json | jq '{verdict, reads_ok, proc_reads}'
+$ podbench capreport --json | jq '{verdict, reads_ok, proc_reads}'
 {
   "verdict": "launch_only",
   "reads_ok": false,
   "proc_reads": {
-    "cmdline": true, "status": true, "fd": true,
-    "root": false, "maps": false, "environ": false
+    "cmdline": true,
+    "environ": false,
+    "fd": true,
+    "maps": false,
+    "root": false,
+    "status": true
   }
 }
 ```
