@@ -541,8 +541,13 @@ The matrix is in the line because it is the honest form of the answer: `cmdline`
 and "the target is closed" would be the same overclaim as issue #51, pointing
 the other way.
 
-`--launch` is unaffected by any of it: gdb forks the inferior and traces its own
-descendant, which no policy in play here refuses.
+`--launch` survives all of that: gdb forks the inferior and traces its own
+descendant, which needs no capability and no Yama exemption. It is still
+*measured* rather than assumed, and the tick beside **debug launched processes**
+is the measurement — `capreport` attaches to a child it forked itself before it
+claims the rung. Two things take it away with everything else: a seccomp filter
+that rejects `ptrace(2)` outright, and `ptrace_scope=3`, neither of which cares
+whose descendant the inferior is.
 
 ## Gotchas
 
