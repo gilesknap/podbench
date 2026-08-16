@@ -49,8 +49,8 @@ place *before* the user does anything: File -> Open Folder -> ``/`` is the
 obvious first move in a seat and it can OOM the container unrecoverably. See
 that constant for why each entry is there. :func:`podbench.agent.ensure_vscode_settings`
 is what installs it, because the file lives in a directory the client creates.
-:data:`SEAT_FOLDER_SETTINGS` is the same guard spelled for a folder, which is
-the one copy that survives *Kill/Uninstall VS Code Server on Host* — and the
+:data:`SEAT_FOLDER_SETTINGS` is the same guard in the folder's own file, which
+is the one copy that survives *Kill/Uninstall VS Code Server on Host* — and the
 only one podbench can put in place from the laptop, which is what
 ``attach --open`` does.
 """
@@ -108,7 +108,6 @@ __all__ = [
     "ADAPTER_DELVE",
     "ADAPTER_LLDB",
     "EXTENSIONS",
-    "FOLDER_SETTINGS_KEYS",
     "GDB_WRAPPER",
     "MACHINE_SETTINGS_PATH",
     "SEAT_CWD",
@@ -243,30 +242,26 @@ recursive walk a folder starts that is not.
 """
 
 
-FOLDER_SETTINGS_KEYS = (
-    "files.watcherExclude",
-    "search.exclude",
-    "python.analysis.exclude",
-)
-"""The keys of :data:`SEAT_MACHINE_SETTINGS` that VS Code scopes to a *resource*.
+SEAT_FOLDER_SETTINGS: dict[str, Any] = dict(SEAT_MACHINE_SETTINGS)
+"""The same guard, in a file podbench controls — derived, never restated.
 
-Machine scope reaches every folder and is therefore the right home for all of
-them, but the machine file lives under ``~/.vscode-server`` — a directory the
-client owns and *Kill/Uninstall VS Code Server on Host* deletes wholesale. A
-folder's own ``.vscode/settings.json`` is a file podbench fully controls and can
-write before any client exists, and these three keys are the ones VS Code will
-honour from there; the rest are silently ignored outside machine scope, so
-copying them in would be a guard that reads as present and is not.
-"""
+Machine scope reaches every folder and is the right home for all of these, but
+the machine file lives under ``~/.vscode-server``, a directory the client owns
+and *Kill/Uninstall VS Code Server on Host* deletes wholesale. A folder's own
+``.vscode/settings.json`` is the copy that survives that, and the only one
+``attach --open`` can write before a client exists.
 
-SEAT_FOLDER_SETTINGS: dict[str, Any] = {
-    key: SEAT_MACHINE_SETTINGS[key] for key in FOLDER_SETTINGS_KEYS
-}
-"""The OOM guard as a folder can carry it — derived, never restated.
+Every key, not a resource-scoped subset. ``--open`` opens a *single* folder, so
+that file is VS Code's **workspace** settings, which honour window- and
+resource-scoped settings alike; only machine and application scope are dropped
+there, and none of these is either. The asymmetry settles what is left over:
+a key VS Code ignores costs nothing, while an omitted one costs the seat — and
+``C_Cpp.files.exclude`` is the omission that would bite, since cpptools' tag
+parser walks on its own account (so the search and watcher excludes do not stop
+it) and cpptools is exactly what ``--open`` installs for a C/C++ target.
 
-Two copies of an exclude list would be two things to keep true, and the one
-that drifted would go on looking correct right up to the walk that ends the
-seat.
+Two copies of an exclude list would be two things to keep true, and the one that
+drifted would go on looking correct right up to the walk that ends the seat.
 """
 
 #: Adapter ``type`` to the extension that contributes it. Keyed on the type
@@ -414,7 +409,7 @@ def merge_machine_settings(existing: str | None) -> str | None:
 def merge_folder_settings(existing: str | None) -> str | None:
     """The same, for the ``.vscode/settings.json`` of the folder about to open.
 
-    A narrower set — see :data:`FOLDER_SETTINGS_KEYS` — and the same key-by-key
+    The same set — see :data:`SEAT_FOLDER_SETTINGS` — and the same key-by-key
     merge, so a folder that already carries a user's excludes keeps every one of
     them.
 

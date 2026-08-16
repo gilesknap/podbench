@@ -429,12 +429,15 @@ Notes:
   *before* the seat is landed, because an ephemeral container's name is
   permanent and a run that was always going to end at "no `code`" must not burn
   one. In order it:
-  * writes `<home>/.vscode/settings.json` with the `files.watcherExclude`,
-    `search.exclude` and `python.analysis.exclude` entries for `/proc`, `/sys`
-    and `/dev` — **before** the window opens, because the walk starts the
-    moment it does. This is the same guard `podbench agent` writes at machine
-    scope, in the one place that survives *Kill/Uninstall VS Code Server on
-    Host*;
+  * writes `<home>/.vscode/settings.json` with every exclude `podbench agent`
+    writes at machine scope — the watcher, search, Pylance and cpptools entries
+    for `/proc`, `/sys`, `/dev` and `~/.vscode-server` — **before** the window
+    opens, because the walk starts the moment it does. A single folder makes
+    that file the *workspace* settings, so none of the keys is dropped there,
+    and this is the one copy that survives *Kill/Uninstall VS Code Server on
+    Host*. Inside a home, `**/.vscode-server/**` is the entry that earns its
+    place first, and `C_Cpp.files.exclude` the only one that stops cpptools'
+    tag parser walking on its own account;
   * runs `debug-config --print-config` in the seat and merges the result into
     `<home>/.vscode/launch.json`, matching on configuration name, so a second
     `--open` updates its own entries rather than appending copies;

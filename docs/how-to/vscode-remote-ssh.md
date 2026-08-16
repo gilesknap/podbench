@@ -319,13 +319,16 @@ that kills a seat is the first one.
 explorer, and reading the workload's files through `/proc/<pid>/root` is what
 Observe mode is for.
 
-`attach --open` writes the three **resource-scoped** ones of those —
-`files.watcherExclude`, `search.exclude` and `python.analysis.exclude` — a
-second time, into the `.vscode/settings.json` of the folder it opens. Only those
-three are honoured outside machine scope, so the rest would be a guard that
-reads as present and is not. The folder copy matters because it is the one
-podbench fully controls: `~/.vscode-server` belongs to the client, and
-**Kill/Uninstall VS Code Server on Host** takes the machine file with it.
+`attach --open` writes all of those a second time, into the
+`.vscode/settings.json` of the folder it opens. It opens a *single* folder, so
+that file is VS Code's **workspace** settings, where window- and resource-scoped
+keys are both honoured — including `C_Cpp.files.exclude`, which is the only one
+that stops cpptools' tag parser, and cpptools is what `--open` installs for a
+C/C++ target. The folder copy matters because it is the one podbench fully
+controls: `~/.vscode-server` belongs to the client, and **Kill/Uninstall VS Code
+Server on Host** takes the machine file with it. Inside a home the entry that
+earns its place first is `**/.vscode-server/**` — 700 MiB before a single
+extension, in the folder podbench is about to open.
 
 Settings you have written yourself are never overwritten. The agent adds only
 the keys that are missing, so a deliberate `"**/proc/**": false` survives, and a

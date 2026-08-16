@@ -26,7 +26,6 @@ from podbench.flavour import Mode
 from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
 from podbench.vscode import (
-    FOLDER_SETTINGS_KEYS,
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
     SEAT_CWD,
@@ -410,22 +409,27 @@ def test_merge_refuses_a_document_that_is_not_an_object() -> None:
 # -- the same guard, in a folder ---------------------------------------------
 
 
-def test_folder_settings_carry_the_three_resource_scoped_excludes() -> None:
-    """The OOM guard as a folder can carry it. Everything else in the machine
-    document is ignored outside machine scope, and a key VS Code drops would be
-    a guard that reads as present and is not."""
+def test_folder_settings_carry_the_whole_guard_including_cpptools() -> None:
+    """``--open`` opens a single folder, so that file is the *workspace*
+    settings, where window- and resource-scoped keys are both honoured.
+
+    ``C_Cpp.files.exclude`` is the one that would be missed: cpptools' tag
+    parser walks on its own account, so the search and watcher excludes do not
+    stop it, and cpptools is exactly what ``--open`` installs for a C/C++
+    target. A key VS Code ignores costs nothing; an omitted one costs the seat.
+    """
     document = json.loads(merge_folder_settings(None) or "")
-    assert set(document) == set(FOLDER_SETTINGS_KEYS)
     assert document["files.watcherExclude"]["**/proc/**"] is True
     assert document["search.exclude"]["**/sys/**"] is True
     assert "/proc/**" in document["python.analysis.exclude"]
+    assert document["C_Cpp.files.exclude"]["**/proc/**"] is True
+    assert document["search.followSymlinks"] is False
 
 
 def test_folder_settings_are_the_machine_ones_and_not_a_second_copy() -> None:
     """Two exclude lists would be two things to keep true, and the one that
     drifted would look correct until the walk that ends the seat."""
-    for key in FOLDER_SETTINGS_KEYS:
-        assert SEAT_FOLDER_SETTINGS[key] == SEAT_MACHINE_SETTINGS[key]
+    assert SEAT_FOLDER_SETTINGS == SEAT_MACHINE_SETTINGS
 
 
 def test_a_folders_own_settings_survive_the_merge() -> None:

@@ -158,6 +158,9 @@ def test_the_excludes_are_written_into_the_folder_that_opens() -> None:
     assert settings["files.watcherExclude"]["**/proc/**"] is True
     assert settings["search.exclude"]["**/sys/**"] is True
     assert "/proc/**" in settings["python.analysis.exclude"]
+    # cpptools' tag parser walks on its own account, and cpptools is what
+    # `--open` installs for a C/C++ target.
+    assert settings["C_Cpp.files.exclude"]["**/proc/**"] is True
 
 
 def test_the_excludes_land_before_the_window_does() -> None:
