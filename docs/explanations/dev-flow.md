@@ -38,6 +38,10 @@ podbench dev POD -n NS [--container NAME] [--port 8080]
                                          key can only be deleted and remade
 ┌──────────────────────────────────────────────────────────────────┐
 │ READ THE ORIGIN         get pod POD -o json                      │
+│                                                                  │
+│   A pod carrying podbench.dev/devpod is refused: it is somebody  │
+│   else's dev pod, and cloning it would copy its sidecar in as an │
+│   ordinary container. Clone the workload it was made from.       │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐

@@ -1319,6 +1319,16 @@ def create_dev_pod(
     reads the key before it creates anything, exactly as ``attach`` does.
     """
     origin_json = kube.get_pod(origin)
+    if is_dev_pod(origin_json):
+        # Reachable since `dev` took substring resolution: with the origin gone
+        # and its clone still there, `dev demo` matches `demo-podbench`. Cloning
+        # that copies the sidecar in as an ordinary container, so the result is
+        # a pod with two podbench containers and a target that is already idle —
+        # and the failures it produces name neither.
+        raise DevError(
+            f"{origin} is itself a podbench dev pod; clone the workload it was "
+            "made from instead"
+        )
     # Before anything is authored, and before the Service is touched: the point
     # of refusing is that the user finds out now rather than from traffic that
     # quietly stopped arriving.

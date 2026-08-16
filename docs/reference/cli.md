@@ -526,7 +526,9 @@ Notes:
 * The namespace comes from your kubeconfig context when `-n` is not given, the
   same as everywhere else. It used to mean the literal namespace `default`
   here, which is the fix in issue #44.
-* The origin pod is never modified.
+* The origin pod is never modified, and a pod podbench itself authored is
+  refused as one: cloning a dev pod would copy its sidecar in as an ordinary
+  container. Name the workload it was made from.
 * `--take-traffic` and `--cutover` are the only ways the dev pod sees Service
   traffic, and both are explicit. `--cutover` uses a JSON *replace* patch — a
   merge patch would union the selector maps and quietly leave the original pod

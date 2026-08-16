@@ -1623,6 +1623,40 @@ def test_cli_reads_the_key_before_it_asks_which_pod(
     assert not any(argv[3:5] == ("get", "pods") for argv in kube.commands)
 
 
+def test_cli_will_not_clone_a_dev_pod(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    """Reachable the moment `dev` took substrings: the origin is gone, its
+    clone is still there, and `dev demo` matches `demo-podbench`.
+
+    Cloning that copies the sidecar in as an ordinary container, and what the
+    user then sees is a complaint about container counts or an AlreadyExists,
+    neither of which names what actually happened.
+    """
+    kube = FakeKubectl(**{"pod/demo-podbench": labelled_dev_pod("demo-podbench")})
+    monkeypatch.setattr(dev, "kubectl_for", always(kube))
+
+    code = dev.main(
+        [
+            "dev",
+            "demo",
+            "-n",
+            "podbench-test",
+            "--identity",
+            identity_file(tmp_path),
+            "--container",
+            "app",
+            "--name",
+            "demo2",
+            "--dry-run",
+        ]
+    )
+
+    assert code == 1
+    assert "is itself a podbench dev pod" in capsys.readouterr().err
+    assert not any("create" in argv for argv in kube.commands)
+
+
 def test_cli_run_will_not_relaunch_without_being_told_the_port():
     # The port is what the pre-flight and the ownership check are about, so
     # there is no default for it.
