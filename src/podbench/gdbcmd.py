@@ -238,8 +238,8 @@ def resolve_target_pid(
     if len(targets) > 1:
         notes.append(
             f"target container has {len(targets)} processes; debugging the "
-            f"lowest pid ({targets[0].pid}, {targets[0].comm}). Run `pids` to "
-            "choose another."
+            f"lowest pid ({targets[0].pid}, {targets[0].comm}). Run "
+            "`podbench pids` to choose another."
         )
     return targets[0].pid, notes
 
@@ -253,18 +253,18 @@ def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
     needs no capability at all (3.12).
     """
     lines = [
-        f"dbg: cannot attach to pid {pid}: {report.blocker.value}",
+        f"podbench dbg: cannot attach to pid {pid}: {report.blocker.value}",
         f"  {report.blocker.explanation}",
         f"  verdict: {report.verdict.summary}",
     ]
     if report.verdict is Verdict.READ_ONLY:
         lines.append(
             "  the target's rootfs, maps and environ are still readable, so "
-            "`pids` and read-only inspection work."
+            "`podbench pids` and read-only inspection work."
         )
     lines.append(
-        "  ptrace-free alternative: `dbg --launch ./yourprog [args]`. gdb "
-        "forks the inferior itself, which needs no capability and is not "
+        "  ptrace-free alternative: `podbench dbg --launch ./yourprog [args]`. "
+        "gdb forks the inferior itself, which needs no capability and is not "
         "subject to Yama."
     )
     lines.append(

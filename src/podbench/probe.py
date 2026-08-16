@@ -563,7 +563,8 @@ def format_report(
 def _json_payload(
     report: CapabilityReport, debuggers: Sequence[Debugger] = ()
 ) -> dict[str, object]:
-    """The JSON shape is a public interface — CI runs ``capreport --json``."""
+    """The JSON shape is a public interface — CI runs ``podbench capreport
+    --json`` against the built image, and the launcher parses what it prints."""
     return {
         "debuggers": {
             entry.name: {"present": entry.present, "detail": entry.detail}

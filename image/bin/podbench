@@ -2,6 +2,8 @@
 # podbench itself, on PATH for an ssh session.
 #
 # `ssh host 'podbench ...'` runs a non-interactive shell that sources no profile
-# and does not inherit the image's ENV PATH, so the venv has to be named in full
-# here exactly as it is in the other helpers.
+# and does not inherit the image's ENV PATH, so the venv — which is on no
+# default PATH — has to be named in full here. This one file is what makes
+# every in-pod verb reachable as `podbench <verb>`; there are no per-subcommand
+# wrappers beside it (image/README.md, deviation 6).
 exec /app/.venv/bin/podbench "$@"

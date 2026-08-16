@@ -188,10 +188,13 @@ ENV PATH=/app/.venv/bin:$PATH
 RUN uv pip install --python /app/.venv/bin/python \
     --target /opt/podbench/debugpy debugpy==1.8.21
 
-# The helpers the brief puts on PATH. They are one-line `exec podbench <sub>`
-# wrappers so there is a single tested implementation rather than a second one
-# in shell - see image/README.md for why `run`/`stop` are `podbench-run` and
-# `podbench-stop` here.
+# Two files, both structural, and deliberately not the brief's per-subcommand
+# helpers - see image/README.md, deviation 6, for why those went away.
+#
+#   podbench      the venv at /app/.venv/bin is on no default PATH and sshd is
+#                 built UsePAM no, so `ssh <seat> podbench pids` gets sshd's
+#                 compiled-in PATH. This is the file that makes it resolve.
+#   gdb-podbench  installed as `gdb` below, for third-party callers.
 COPY --chmod=0755 image/bin/ /usr/local/bin/
 
 # `gdb` on PATH is the wrapper, and /usr/local/bin comes first. Every tool that
@@ -199,14 +202,14 @@ COPY --chmod=0755 image/bin/ /usr/local/bin/
 # sysroot, so it reads this container's libraries for another container's
 # process, and a cwd cpptools may have deleted. debugpy's injection is the
 # instance that was caught; the bug belongs to the seat, not to debugpy, so the
-# fix goes where every caller gets it. `dbg` and `debug-config` are unaffected:
-# they set the sysroot themselves and never pass --pid.
+# fix goes where every caller gets it. `podbench dbg` and `podbench debug-config`
+# are unaffected: they set the sysroot themselves and never pass --pid.
 RUN ln -s gdb-podbench /usr/local/bin/gdb
 
 # sshd is built with UsePAM no in report 4.1's config, so login shells get
 # sshd's compiled-in default PATH and never see the ENV above. This fixes
 # interactive sessions; `ssh host <cmd>` sources nothing at all, which is why
-# the helpers in image/bin/ call podbench by absolute path.
+# /usr/local/bin/podbench calls the venv by absolute path.
 RUN printf '%s\n' 'PATH="/app/.venv/bin:$PATH"' 'export PATH' \
     > /etc/profile.d/podbench.sh
 

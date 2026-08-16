@@ -122,39 +122,39 @@ making the trim default.
 
 ## Helpers on PATH
 
-Installed into `/usr/local/bin` from `image/bin/`. Each is a one-line
-`exec /app/.venv/bin/podbench <subcommand> "$@"` wrapper, so there is a single
-tested Python implementation instead of a second one in shell.
+Two files, installed into `/usr/local/bin` from `image/bin/`. Both are
+structural; neither is a convenience.
 
-| On PATH | Subcommand | Purpose |
+| On PATH | What it is | Why it has to exist |
 |---|---|---|
-| `pids` | `podbench pids` | processes belonging to the target container |
-| `dbg` | `podbench dbg` | gdb with sysroot/source/auto-load path preset |
-| `capreport` | `podbench capreport` | probe ptrace permissions, name the blocker |
-| `debug-config` | `podbench debug-config` | write VS Code's `launch.json` for this seat |
-| `dev-bootstrap` | `podbench dev-bootstrap` | clone + sync + editable install |
-| `podbench-run` | `podbench run` | relaunch the workload |
-| `podbench-stop` | `podbench stop` | stop it, by recorded PID |
+| `podbench` | `exec /app/.venv/bin/podbench "$@"` | the venv is on no default `PATH`, and report 4.1's sshd_config sets `UsePAM no`, so `ssh <seat> podbench pids` gets sshd's compiled-in `PATH`. That includes `/usr/local/bin` and not `/app/.venv/bin`. |
+| `gdb-podbench` | a shell wrapper around `/usr/bin/gdb`, installed as `gdb` too | its caller is a *third party* — debugpy's injection shells out to `gdb --nw --nh --nx --pid 1`, and without the wrapper it gets no `set sysroot` and a cwd VS Code may have deleted. No podbench subcommand can stand in for it. |
 
-`gdb-podbench` is installed alongside them and is **not** a podbench subcommand:
-it is a two-line shell wrapper that `cd`s somewhere that exists before `exec`ing
-`/usr/bin/gdb`. `debug-config` points `miDebuggerPath` at it because cpptools
-launches gdb inheriting its own extension directory as a cwd, which VS Code
-deletes on update — gdb's libpython then fails `getcwd()` and the process dies
-during startup with no signal name. See the script's own comment, and
-`docs/how-to/debug-with-gdb.md`.
+The `podbench` shim calls the venv by **absolute path** on purpose: `ssh <host>
+podbench capreport` runs a non-login, non-interactive shell that sources
+nothing, so the image's `ENV PATH` is not in effect. Interactive login shells
+are covered separately by `/etc/profile.d/podbench.sh`, needed for the same
+`UsePAM no` reason.
 
-They call podbench by **absolute path** on purpose: `ssh <host> capreport` runs a
-non-login, non-interactive shell that sources nothing, so the image's `ENV PATH`
-is not in effect. Interactive login shells are covered separately by
-`/etc/profile.d/podbench.sh`, which is needed because report 4.1's sshd_config
-sets `UsePAM no` and sshd then supplies its own compiled-in `PATH`.
+Everything a seat can do is reached as `podbench <verb>` — `podbench pids`,
+`podbench dbg`, `podbench capreport`, `podbench debug-config`, `podbench
+dev-bootstrap`, `podbench run`, `podbench stop` — and `podbench --help` lists
+them all under "Inside the debug container". There are no per-subcommand
+aliases; see deviation 6.
+
+`gdb-podbench` is **not** a podbench subcommand. `podbench debug-config` points
+`miDebuggerPath` at it because cpptools launches gdb inheriting its own
+extension directory as a cwd, which VS Code deletes on update — gdb's libpython
+then fails `getcwd()` and the process dies during startup with no signal name.
+See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
 
 ## Deviations from the brief
 
-1. **`run`/`stop` are installed as `podbench-run`/`podbench-stop`.**
-   `/usr/local/bin` precedes `/usr/bin`, so helpers called `run` and `stop` would
-   shadow far too much of a user's own tooling inside their own shell.
+1. **`run`/`stop` were installed as `podbench-run`/`podbench-stop`,** because
+   `/usr/local/bin` precedes `/usr/bin` and helpers called `run` and `stop`
+   would shadow far too much of a user's own tooling inside their own shell.
+   Superseded by deviation 6, which removed them; the reasoning is kept because
+   it is half of that argument.
 2. **Helpers are wrappers, not bash implementations.** The brief's
    `bin/` sketch implies shell scripts; the logic they need (container-id
    substring matching in `/proc/<pid>/cgroup`, socket-inode ownership checks,
@@ -172,15 +172,30 @@ sets `UsePAM no` and sshd then supplies its own compiled-in `PATH`.
    variable is unset (verified in-cluster), so this changes no behaviour — it
    makes the setting visible in `docker inspect` and gives the launcher one
    place to point at a mirror. S3 measured the endpoint working.
+6. **The per-subcommand helpers are gone.** The brief's `bin/` sketch names
+   `pids`, `dbg`, `capreport`, `debug-config`, `dev-bootstrap` and `run`/`stop`
+   as files on `PATH`; the image ships none of them ([#47]). Each was literally
+   `exec /app/.venv/bin/podbench <subcommand> "$@"`, so they added no behaviour,
+   only a second name for every verb — a contract this README and CI both had
+   to pin. Deviation 1 is the argument in miniature: two of the seven had to be
+   renamed away from the brief's spelling to stop them shadowing a user's own
+   `run` and `stop`, which left them *longer* to type than the `podbench run`
+   they aliased. The discoverability they were meant to buy is already in
+   `podbench --help`, which lists every in-pod verb.
+
+   `gdb-podbench` stays, and it is the exception that shows the rule: its caller
+   is debugpy, not a human, so no amount of `podbench --help` reaches it.
+
+[#47]: https://github.com/gilesknap/podbench/issues/47
 
 ## Assumptions this image makes of the rest of podbench
 
-* Subcommand names: `pids`, `dbg`, `capreport`, `debug-config`, `dev-bootstrap`,
-  `run`, `stop`, and `--version`. `capreport` must accept `--json` and exit 0/10/20 per
-  `Verdict`; `pids` must accept `--help`. CI checks both by overriding the
-  entrypoint. `podbench --version` must exit 0 — the build runs it as its own
-  final step, so a broken CLI fails the build rather than the first attach.
-* The venv stays at `/app/.venv`. The wrappers hard-code it.
+* `podbench capreport --json` exits 0/10/20 per `Verdict`, and `podbench pids`
+  accepts `--help`. CI checks both through `/usr/local/bin/podbench` by
+  overriding the entrypoint. `podbench --version` must exit 0 — the build runs
+  it as its own final step, so a broken CLI fails the build rather than the
+  first attach.
+* The venv stays at `/app/.venv`. The `podbench` shim hard-codes it.
 * `HOME` is **not** set by the image. Root's ssh config lives under `/root`
   (report 4.1), while the Iterate-mode sidecar wants `HOME=/workspace` so uv's
   caches land in the `emptyDir` rather than the container's writable layer (S4).
@@ -202,8 +217,10 @@ What CI verifies on every build, per architecture:
   smoke tests below are a real execution of the artefact that gets published;
 * `podbench --version` runs — as the final `RUN` of the build itself, and again
   through the entrypoint;
-* `capreport --json` and `pids --help` run through their `/usr/local/bin`
-  wrappers, and `gdb`, `sshd`, `uv` and `git` resolve on `PATH`;
+* `capreport --json` and `pids --help` run through `/usr/local/bin/podbench`
+  named by absolute path — the `ENV PATH` puts the venv first, so a bare
+  `podbench` would leave the shim every ssh session resolves untested — and
+  `gdb`, `sshd`, `uv` and `git` resolve on `PATH`;
 * the published manifest list is assembled from the digests that were tested,
   rather than by a second build.
 

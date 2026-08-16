@@ -335,7 +335,10 @@ class FakeCluster:
 
     def _exec(self, rest: list[str]) -> CommandResult:
         command = rest[rest.index("--") + 1 :]
-        if command[0] == "capreport":
+        # Matched as the two-token verb, not as a bare `capreport`: the image
+        # has no per-subcommand aliases on PATH, so a launcher that sent one
+        # would exec nothing in a real seat and must miss here too.
+        if command[:2] == ["podbench", "capreport"]:
             if self.capreport_output is not None:
                 return _ok(self.capreport_output, returncode=127)
             return _ok(

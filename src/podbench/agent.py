@@ -15,7 +15,8 @@ strictly disposable" true rather than aspirational.
 And no ensure step may be fatal. The agent is PID 1 of a container that cannot
 be restarted and whose name is burnt for the pod's lifetime the moment it exits
 (report 4.2), so a step that cannot do its job records the reason and the agent
-idles anyway: ``capreport``, ``pids`` and ``dbg --launch`` are reached by
+idles anyway: ``podbench capreport``, ``podbench pids`` and ``podbench dbg
+--launch`` are reached by
 ``kubectl exec`` and need nothing sshd needs. Spike S5's degraded rung is most
 of a seat without ssh and none of one with a dead container.
 """

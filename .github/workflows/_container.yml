@@ -75,13 +75,20 @@ jobs:
       - name: Test cli works in cached runtime image
         run: docker run --rm tag_for_testing --version
 
-      # The image is only useful in a cluster, so exercise the in-image helpers
-      # too: they are the surface `podbench` drives once attached.
-      - name: Test in-image helpers are present and self-report
+      # The image is only useful in a cluster, so exercise the in-pod verbs too:
+      # they are the surface `podbench` drives once attached.
+      #
+      # Driven through /usr/local/bin/podbench by absolute path, which is the
+      # only helper there is now the per-subcommand wrappers are gone, and the
+      # one an `ssh <seat> podbench …` finds. Naming it in full rather than
+      # letting PATH pick is deliberate: the ENV PATH puts /app/.venv/bin first,
+      # so a bare `podbench` would test the venv and leave the shim - the file
+      # every ssh session actually resolves - untested.
+      - name: Test in-pod verbs are present and self-report
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint capreport tag_for_testing --json
-          docker run --rm --entrypoint pids tag_for_testing --help
+          docker run --rm --entrypoint /usr/local/bin/podbench tag_for_testing capreport --json
+          docker run --rm --entrypoint /usr/local/bin/podbench tag_for_testing pids --help
           docker run --rm --entrypoint sh tag_for_testing -c 'command -v gdb sshd uv git'
 
       # Pushed by digest and left untagged: a per-architecture tag would be a

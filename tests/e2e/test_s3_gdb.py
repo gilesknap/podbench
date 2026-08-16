@@ -200,7 +200,7 @@ def _dry_run_commands(kubectl: KubectlCli, victim: str, seat: Session) -> list[s
         victim,
         # --no-debuginfod: symbols from the network are not what this asserts,
         # and a CI runner without egress would fail for the wrong reason.
-        ["dbg", "--dry-run", "--no-debuginfod"],
+        ["podbench", "dbg", "--dry-run", "--no-debuginfod"],
         container=seat.seat.container,
     )
     commands = [line for line in result.stdout.splitlines() if line.strip()]

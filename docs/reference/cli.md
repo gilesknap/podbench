@@ -1,10 +1,10 @@
 # Command-line reference
 
-One binary serves both halves of podbench. On your machine it is reached as
-`podbench <verb>`; inside the debug container the same binary is PID 1 and backs
-the helpers on `PATH`. Keeping it as one package means the capability logic that
-decides what a session can do is the same code in both places, rather than a
-launcher's guess and a helper's separate guess.
+One binary serves both halves of podbench, under one spelling. On your machine
+it is reached as `podbench <verb>`; inside the debug container the same binary
+is PID 1 and answers to the same `podbench <verb>`. Keeping it as one package
+means the capability logic that decides what a session can do is the same code
+in both places, rather than a launcher's guess and a helper's separate guess.
 
 ```
 $ podbench --help
@@ -58,9 +58,10 @@ choice, and all three run the same code:
 See [Installation](../tutorials/installation.md) for the details, including how
 to run it before the first PyPI release.
 
-The in-pod verbs are also reachable as `podbench <verb>` from a terminal in the
-seat; several have shorter aliases on `PATH` (`pids`, `dbg`, `capreport`,
-`debug-config`, `dev-bootstrap`, `podbench-run`, `podbench-stop`).
+The in-pod verbs are spelled the same way from a terminal in the seat:
+`podbench pids`, `podbench dbg`, and so on. There are no shorter aliases on
+`PATH` — the image once shipped one file per subcommand and no longer does
+(`image/README.md`, deviation 6).
 
 ## Common options
 
@@ -884,7 +885,7 @@ the port.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Installed on `PATH` as `podbench-run`. Exits non-zero when the port is not owned
+Exits non-zero when the port is not owned
 by the process it started — a socket poll alone gives a false PASS, and
 `SO_REUSEPORT` will otherwise split traffic between old and new code with
 nothing in any log to say so.
@@ -906,7 +907,7 @@ Stop it, by recorded pid.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Installed on `PATH` as `podbench-stop`. Never `pkill -f`: under
+Never `pkill -f`: under
 `shareProcessNamespace: true` that matches the invoking shell and every other
 container's processes.
 

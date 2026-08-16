@@ -3,10 +3,11 @@
 One binary serves both halves of the tool. On a developer's machine it is
 reached as ``podbench <verb>`` — canonically ``uvx podbench <verb>``, with nothing
 installed — and drives the cluster; inside the debug container the same binary is
-PID 1 (``podbench agent``) and backs the helpers on
-``PATH`` (``pids``, ``dbg``, ``capreport``, ...). Keeping it as one package means
-the capability logic that decides what a session can do is the same code in both
-places, rather than a launcher's guess and a helper's separate guess.
+PID 1 (``podbench agent``) and answers to the same spelling for the in-pod verbs
+(``podbench pids``, ``podbench dbg``, ``podbench capreport``, ...). Keeping it as
+one package means the capability logic that decides what a session can do is the
+same code in both places, rather than a launcher's guess and a helper's separate
+guess.
 
 Dispatch is deliberately dumb: each verb names a module, and the module owns its
 own argument parsing. Two of them predate the dispatcher and parse an argv that

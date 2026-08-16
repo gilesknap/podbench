@@ -125,7 +125,7 @@ $ podbench attach web --target api
 
 Without `--target` it picks the pod's first container. On a multi-container pod,
 name it — the target choice determines the sysroot, the UID of the degraded
-rung, and what `pids` calls a target process.
+rung, and what `podbench pids` calls a target process.
 
 If the pod spec does not state a `runAsUser` for the target (so the UID comes
 from the image), tell podbench with `--target-uid 1000`. The degraded rung must
@@ -260,7 +260,7 @@ for whatever it has written.
 | container status `CreateContainerConfigError`, `container's runAsUser breaks non-root policy` | the kubelet refused a root container *after* the API server accepted it | podbench pre-empts this by reading `runAsNonRoot` and skips the full rung; if you forced it, do not |
 | traffic stopped reaching the pod while you sat at a breakpoint, and came back on its own | the readiness budget expired: the pod went not-ready, so its EndpointSlice kept the address but flipped `conditions.ready` to false and kube-proxy stopped routing to it. Quiet, not silent — `Unhealthy` events are emitted while it lasts, but no restart survives it | nothing to fix — it self-heals. Stay inside the budget `attach` printed, or use a dev pod |
 | the workload restarted mid-session and the seat went with it | the liveness budget expired; the seat shares the target's namespaces | `attach --new` for a fresh seat (the old name is burnt), and debug in a dev pod if you need to stop for longer |
-| attach lands but `blocker: yama-scope` | Yama's `ptrace_scope >= 1` on **that node** forbids attaching to non-descendants | `dbg --launch`, or have the target call `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` |
+| attach lands but `blocker: yama-scope` | Yama's `ptrace_scope >= 1` on **that node** forbids attaching to non-descendants | `podbench dbg --launch`, or have the target call `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` |
 | every library reports `missing debugging information` | `ca-certificates` absent, so `libdebuginfod` fails the TLS handshake silently | use the published image; it is mandatory there for exactly this reason |
 | attach works on one pod, is denied on the next | Yama differs **per node**, by kernel flavour, not by architecture | nothing to fix. The report prints the node name and Yama state for this reason |
 | `pods "web-..." is forbidden: User cannot update resource "pods/ephemeralcontainers"` | your kubeconfig lacks a verb podbench needs, discovered mid-attach | `podbench doctor -n demo` asks for every verb up front and names the chart flag that grants it |
