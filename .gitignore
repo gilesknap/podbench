@@ -69,3 +69,7 @@ lockfiles/
 
 # ruff cache
 .ruff_cache/
+
+# worktrees for a parallel batch live inside the repo; without this a fresh
+# clone stages them as gitlinks on the first `git add -A`
+.claude/worktrees/
