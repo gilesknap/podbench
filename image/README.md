@@ -155,11 +155,13 @@ See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
    would shadow far too much of a user's own tooling inside their own shell.
    Superseded by deviation 6, which removed them; the reasoning is kept because
    it is half of that argument.
-2. **Helpers are wrappers, not bash implementations.** The brief's
-   `bin/` sketch implies shell scripts; the logic they need (container-id
-   substring matching in `/proc/<pid>/cgroup`, socket-inode ownership checks,
-   the four-subsystem ptrace probe) is not shell-sized and is tested once in
-   Python.
+2. **The verbs were never implemented in bash.** The brief's `bin/` sketch
+   implies shell scripts; the logic they need (container-id substring matching
+   in `/proc/<pid>/cgroup`, socket-inode ownership checks, the four-subsystem
+   ptrace probe) is not shell-sized and is tested once in Python. Deviation 6
+   then removed the wrappers that stood in front of it, which leaves
+   `gdb-podbench` as the one file here that *is* a shell implementation — it
+   has to be, because its caller execs `gdb`.
 3. **The image lives at the repo root `Dockerfile`, not `Containerfile`**, and
    keeps the copier template's developer → build → runtime layering plus the
    `ENTRYPOINT ["podbench"] / CMD ["--version"]` smoke test that CI runs.
@@ -185,6 +187,16 @@ See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
 
    `gdb-podbench` stays, and it is the exception that shows the rule: its caller
    is debugpy, not a human, so no amount of `podbench --help` reaches it.
+
+   One skew this does break, and it is the direction a new launcher cannot fix:
+   a launcher released **before** #47 execs a bare `capreport` over `kubectl
+   exec`, which on this image exits 127, so it reports "capreport produced no
+   parsable JSON" and prints no capability report at all. The attach still
+   works. A fallback in the launcher would be code the affected launcher does
+   not have, and the default never reaches it — a launcher asks for the image
+   tag matching its own version. It needs a pin (`PODBENCH_IMAGE`, `--image`,
+   the chart's `image.tag`) that moves the image ahead of the launcher, so it
+   belongs in the release notes of the version that first carries this change.
 
 [#47]: https://github.com/gilesknap/podbench/issues/47
 
