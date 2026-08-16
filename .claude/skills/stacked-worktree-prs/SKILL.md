@@ -1,6 +1,6 @@
 ---
 name: stacked-worktree-prs
-description: How to fan a batch of issues out into parallel git worktrees and stacked pull requests in this repo, and the four things that fail quietly when you do. Read before creating worktrees, restacking a branch whose parent was rewritten, or pacing a batch of PRs through CodeRabbit.
+description: How to fan a batch of issues out into parallel git worktrees and stacked pull requests in this repo, and the things that fail quietly when you do. Read before fanning a batch of issues out into worktrees, restacking a branch whose parent was rewritten, or pacing a batch of PRs through CodeRabbit.
 ---
 
 # Stacked PRs in parallel worktrees
@@ -8,20 +8,24 @@ description: How to fan a batch of issues out into parallel git worktrees and st
 Several issues at once, each in its own worktree under `.claude/worktrees/<slug>`, each its
 own branch and its own pull request. Issues that touch the same code **stack**: the child
 branch is cut from the parent branch rather than from `main`, and its PR is opened with
-`--base <parent-branch>`, so the diff GitHub shows is the child's own work and not the
-parent's replayed on top.
+`gh pr create --base <parent-branch>`, so the diff GitHub shows is the child's own work
+and not the parent's replayed on top.
 
-Proven on 2026-08-16: nine issues, nine PRs, five chains, all green.
+Proven on 2026-08-16: nine issues, nine PRs, five chains, CI green on every one.
+Numbers below are **issues**; they became PRs #55-#63.
 
 ```
-main ──┬── #44 ── #47 ── #53        (standalone, cut from main)
-       ├── #51 ── #52 ── #50 ── #54 (each cut from the one before)
+main ──┬── #44                       three standalone branches,
+       ├── #47                       each cut from main
+       ├── #53
+       ├── #51 ── #52 ── #50 ── #54  (each cut from the one before)
        └── #45 ── #49
 ```
 
-**Order the stack by what the code needs, not by issue number.** #54 trimmed the attach
-report into a `status --explain` that #50 had just created, so it went last; putting it
-first would have meant writing the same lines twice and resolving them against each other.
+**Order the stack by what the code needs, not by issue number.** #54 compressed the
+attach report and moved the reasoning it dropped into a new `status --explain`, which
+reuses the probe-spend reporting #50 adds — so #54 went last. The other way round it
+would have meant writing those lines twice and resolving them against each other.
 
 ## Cut the roots yourself, sequentially
 
