@@ -277,6 +277,20 @@ class Seat:
     listening_port: int | None = None
     """A debugpy server already accepting connections in this pod, if any."""
 
+    program_load_error: str | None = None
+    """What gdb said when asked to load the target's binary, if it objected.
+
+    ``None`` covers both "it loaded" and "nobody asked", which is the same
+    answer as far as :func:`assess` is concerned: only a *measured* refusal
+    withdraws the gdb flavour.
+
+    Measured because "gdb can read this file" and "this file has debug
+    information" are different questions that present identically in VS Code,
+    and only the first one is fatal. A binary whose ``.gnu.version_r`` this
+    seat's binutils rejects cannot be read at all — see the glossary's *symbol
+    versioning*.
+    """
+
     def has(self, name: str) -> bool:
         """Whether the inventory found ``name``."""
         return any(entry.present for entry in self.debuggers if entry.name == name)
@@ -573,6 +587,7 @@ def survey_seat(
     debugpy_root: str | None = None,
     listening_port: int | None = None,
     provision_dest: str = PROVISION_DEST,
+    program_load_error: str | None = None,
 ) -> Seat:
     """Gather every fact :func:`assess` needs, with no side effects.
 
@@ -597,6 +612,7 @@ def survey_seat(
         sysroot_gdb=sysroot_gdb_on_path(which),
         listening_port=listening_port,
         provision_dest=provision_dest,
+        program_load_error=program_load_error,
     )
 
 
@@ -696,6 +712,28 @@ def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
     if not seat.has("gdb"):
         return Assessment(
             Flavour.GDB, False, "no gdb on PATH in this seat", remedy=_IMAGE_REMEDY
+        )
+    if seat.program_load_error is not None:
+        # Measured by really asking gdb, because the failure is fatal *only* in
+        # the editor: at the CLI a failed `file` prints and carries on, so
+        # `podbench dbg` attaches and cpptools aborts on the identical fault.
+        # cpptools then reports it as `Program path '<x>' is missing or invalid`
+        # with gdb's message appended - and the path is fine, which sends the
+        # reader after the one thing that is not wrong (issue #92).
+        return Assessment(
+            Flavour.GDB,
+            False,
+            f"gdb cannot read {target.program}, so cpptools would abort on "
+            f"startup rather than attach. gdb said: {seat.program_load_error}",
+            remedy=(
+                "use the lldb entry beside this one - CodeLLDB brings its own "
+                "reader and does not go through binutils. A `.gnu.version_r` "
+                "complaint means this seat's binutils is older than the "
+                "toolchain that linked the target, which is an image change, "
+                "not a flag. `podbench dbg` still attaches: a failed symbol "
+                "load is not fatal at the CLI, it just leaves you without "
+                "symbols for the main executable"
+            ),
         )
     return _no_program(Flavour.GDB, target) or Assessment(
         Flavour.GDB, True, _gdb_reason(target, mode)

@@ -45,6 +45,7 @@ from podbench.vscode import (
     merge_folder_settings,
     merge_launch_json,
     merge_machine_settings,
+    program_load_error,
     python_path_mappings,
     setup_commands,
     target_architecture,
@@ -717,6 +718,128 @@ def test_delve_uses_substitute_path_and_an_int_pid() -> None:
     config = delve_configuration(PID, "/app/server", source_map={"/w": "/app"})
     assert config["processId"] == PID
     assert config["substitutePath"] == [{"from": "/w", "to": "/app"}]
+
+
+# -- can gdb read the program at all? ----------------------------------------
+
+BFD_REFUSAL = (
+    "BFD: /usr/bin/bash: .gnu.version_r invalid entry\n"
+    "Can't read symbols from /usr/bin/bash: bad value\n"
+)
+"""Measured against a RHEL-family target from a Debian bookworm seat.
+
+The seat's binutils is older than the toolchain that linked the target, so BFD
+rejects its symbol-versioning section and the file cannot be opened at all -
+which is a different thing from the file having no debug information, and the
+only one of the two that is fatal.
+"""
+
+
+def gdb_saying(stderr: str, returncode: int = 0) -> Callable[..., CommandResult]:
+    """A gdb whose ``file`` command produced ``stderr``.
+
+    ``returncode`` defaults to 0 on purpose: ``gdb -batch`` exits 0 whether the
+    command worked or not, so a check that trusted it would answer "readable"
+    for every target ever.
+    """
+
+    def runner(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        return CommandResult(tuple(argv), returncode, "", stderr)
+
+    return runner
+
+
+def test_a_program_gdb_cannot_read_withdraws_cppdbg_and_keeps_lldb(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cpptools aborts when the program will not load, and blames the path.
+
+    ``Program path '<x>' is missing or invalid`` while the path is present and
+    readable sends the reader after the one thing that is not wrong. So the
+    entry is not emitted at all - and the lldb entry stays, because CodeLLDB
+    brings its own reader rather than going through binutils.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc_tree,
+        which=which_of("gdb", "gdb-podbench", "lldb"),
+        runner=gdb_saying(BFD_REFUSAL),
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    assert [entry["type"] for entry in document["configurations"]] == ["lldb"]
+
+
+def test_the_refusal_quotes_bfd_rather_than_paraphrasing_it(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BFD's own line names the section, which is what identifies the cause."""
+    main(
+        [str(PID), "--print-config"],
+        proc=proc_tree,
+        which=which_of("gdb", "gdb-podbench", "lldb"),
+        runner=gdb_saying(BFD_REFUSAL),
+    )
+    err = capsys.readouterr().err
+    assert ".gnu.version_r invalid entry" in err
+    assert "cpptools would abort" in err
+
+
+def test_a_silent_gdb_means_the_program_loads(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gdb prints nothing on success - including for a stripped binary.
+
+    So "no output" must not be read as "no answer": a target with no debug info
+    is perfectly debuggable and its entry has to survive this check.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc_tree,
+        which=which_of("gdb", "gdb-podbench"),
+        runner=gdb_saying(""),
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    assert "cppdbg" in [entry["type"] for entry in document["configurations"]]
+
+
+def test_the_load_check_ignores_the_exit_code() -> None:
+    """``gdb -batch`` exits 0 for a `file` that failed, so the text is the only
+    evidence there is."""
+    assert (
+        program_load_error(1, "/proc/1/root/bin/x", runner=gdb_saying(BFD_REFUSAL, 0))
+        is not None
+    )
+
+
+def test_the_load_check_asks_about_the_sysroot_prefixed_path() -> None:
+    """The unprefixed path names *this* image's binary of the same name, so the
+    check would pass on a file the debugger will never open (report §3.3)."""
+    seen: list[tuple[str, ...]] = []
+
+    def runner(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        seen.append(tuple(argv))
+        return CommandResult(tuple(argv), 0, "", "")
+
+    program_load_error(597, "/proc/597/root/app/victim", runner=runner)
+    assert "file /proc/597/root/app/victim" in seen[0]
+    assert "set sysroot /proc/597/root" in seen[0]
+
+
+def test_no_gdb_to_ask_is_not_a_second_refusal() -> None:
+    """`assess` already has a better-worded refusal for an image without gdb."""
+
+    def missing(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    assert program_load_error(1, "/proc/1/root/bin/x", runner=missing) is None
 
 
 # -- the Python path, end to end ---------------------------------------------

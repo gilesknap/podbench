@@ -438,6 +438,69 @@ Yama
   explicable. {term}`CAP_SYS_PTRACE` overrides it.
 ```
 
+## Binaries and symbols
+
+These decide what a debugger can *tell* you once it has attached, and they fail in a
+way worth naming: "cannot read the file" and "the file carries no debug information"
+look alike from the editor and are nothing alike underneath. The first is a refusal,
+the second is a working session with addresses instead of source.
+
+```{glossary}
+:sorted:
+
+BFD
+  The *Binary File Descriptor* library, part of GNU binutils — the layer that actually
+  parses object files. gdb, `objdump`, `ld`, `readelf` and `strip` all read {term}`ELF`
+  through it rather than each implementing the format. So a `BFD: …` line is the
+  library complaining and not gdb, which matters when deciding what to upgrade: gdb's
+  ability to read a binary is its binutils' ability. gdb renders BFD's refusals in its
+  own words, of which `bad value` — `bfd_error_bad_value` — is the one meaning "I
+  parsed this far and the file does not make sense".
+
+build-id
+  A hash the linker embeds in `.note.gnu.build-id`, identifying an exact build of a
+  binary. It is what {term}`debuginfod` looks a binary up by, so a {term}`stripped`
+  binary that kept its build-id can still be given symbols, and one without it cannot.
+  Podbench reads it when deciding what to say about a target: "no `.debug_info`, but
+  the build-id is present" and "no `.debug_info` and no build-id either" are different
+  predictions about what you are about to see.
+
+debuginfod
+  A protocol and public service that serves {term}`DWARF` for a {term}`build-id`, so a
+  stripped distro binary can be debugged without installing a `-dbg` package. Needs
+  egress and `ca-certificates`, which is why `--no-debuginfod` exists. On Debian it
+  serves symbols but not sources (report §3.2), so expect named frames and no source
+  view.
+
+DWARF
+  The debug-information format, carried in `.debug_*` sections. It is what turns
+  addresses into file, line, variable and type — everything a source-level debugger
+  shows beyond a raw backtrace. Its absence is not an error: gdb attaches to a binary
+  with no DWARF perfectly well and shows disassembly and whatever names the symbol
+  tables hold.
+
+ELF
+  *Executable and Linkable Format*, the object-file format on Linux. Podbench parses
+  just enough of it by hand — the machine, the section names — to decide which
+  debugger flavour applies, because that decision must be made from the target's own
+  binary rather than from the node's architecture or from anything the user typed.
+
+stripped
+  A binary whose symbol table, debug sections or both have been removed. Debuggable —
+  breakpoints by address, frames from the dynamic symbol table, library names intact —
+  just not at source level, unless {term}`debuginfod` can serve the missing
+  {term}`DWARF`.
+
+symbol versioning
+  The scheme letting one shared library export several incompatible versions of a
+  symbol, recorded in the `.gnu.version_r` and `.gnu.version_d` sections. Ordinarily
+  invisible; it matters here because a {term}`BFD` older than the toolchain that
+  linked a binary can reject its `.gnu.version_r` outright, and then the file cannot
+  be read *at all*. Measured on a Debian bookworm seat (binutils 2.40) against a
+  RHEL-family target image: the target's own application binaries read fine, its
+  distro binaries — `/usr/bin/bash` among them — did not.
+```
+
 ## ssh, and the transport
 
 ```{glossary}

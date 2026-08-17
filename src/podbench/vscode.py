@@ -132,6 +132,7 @@ __all__ = [
     "merge_launch_configs",
     "merge_launch_json",
     "merge_machine_settings",
+    "program_load_error",
     "python_path_mappings",
     "setup_commands",
     "target_architecture",
@@ -956,6 +957,63 @@ def _parse_source_map(entries: Sequence[str]) -> tuple[dict[str, str], list[str]
     return mapping, problems
 
 
+_LOAD_FAILURES = (
+    "Can't read symbols",
+    "No such file or directory",
+    "not in executable",
+)
+"""gdb's phrasings for "I could not load that program".
+
+Matched on the text because ``gdb -batch`` **exits 0 whether the ``file``
+command worked or not** — an exit code here would silently answer "readable" for
+every target. On success gdb prints nothing at all, including for a
+:term:`stripped` binary, so anything else is worth showing the user verbatim.
+"""
+
+
+def program_load_error(
+    pid: int, program: str, *, runner: Runner | None = None
+) -> str | None:
+    """What gdb says when asked to load ``program``, or ``None`` if it is happy.
+
+    Asked rather than inferred, because the two failures look identical from the
+    editor and only one of them is fatal. A binary with no :term:`DWARF` loads
+    silently and debugs fine; a binary whose :term:`symbol versioning` this
+    seat's :term:`BFD` rejects cannot be opened, and cpptools turns that into
+    ``Program path '<x>' is missing or invalid`` — pointing at the one thing that
+    is not wrong.
+
+    The sysroot goes in with ``-iex`` for report §3.3's reason, so that the
+    separate debug file is looked for in the *target's* rootfs and not this
+    seat's, and debuginfod is off: this is a question about the file in front of
+    us, and a network round trip would make a local answer depend on egress.
+    """
+    run = runner if runner is not None else run_subprocess
+    try:
+        result = run(
+            [
+                GDB_WRAPPER,
+                "-batch",
+                "-iex",
+                f"set sysroot {sysroot_path(pid)}",
+                "-iex",
+                "set debuginfod enabled off",
+                "-ex",
+                f"file {program}",
+            ]
+        )
+    except OSError:
+        # No gdb to ask. `assess` has its own, better-worded refusal for that,
+        # so this must not become a second one saying the same thing.
+        return None
+    output = f"{result.stderr}\n{result.stdout}".strip()
+    if not any(marker in output for marker in _LOAD_FAILURES):
+        return None
+    # Whole and verbatim: BFD's own line names the section it choked on, and a
+    # paraphrase would cost exactly the detail that identifies the mechanism.
+    return " / ".join(line.strip() for line in output.splitlines() if line.strip())
+
+
 def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     """Whether something is already serving ``port`` in this pod.
 
@@ -1343,6 +1401,17 @@ def _for_target(
     for note in target.notes:
         _warn(note)
     mode = mode or detect_mode(pid, proc=proc)
+    # The path cpptools will put in `program`, and so the one to ask gdb about:
+    # unprefixed it names *this* image's binary of the same name, which is the
+    # substitution report §3.3 measured. In dev mode the program is here, so
+    # there is no prefix to add.
+    sysroot_program = (
+        None
+        if not target.program
+        else target.program
+        if mode is Mode.DEV
+        else f"{sysroot_path(pid)}{target.program}"
+    )
 
     def measure() -> Seat:
         # The listener is re-probed on every measurement rather than read once:
@@ -1354,6 +1423,15 @@ def _for_target(
             if target.language is Language.PYTHON
             else None
         )
+        # Only for a native target: asking gdb about a CPython would answer a
+        # question the debugpy flavour does not ask, and cost a gdb start-up per
+        # candidate to do it.
+        load_error = (
+            program_load_error(target.pid, sysroot_program, runner=runner)
+            if sysroot_program
+            and target.language in (Language.NATIVE, Language.UNKNOWN)
+            else None
+        )
         return survey_seat(
             target,
             proc=proc,
@@ -1361,6 +1439,7 @@ def _for_target(
             debugpy_root=debugpy_root,
             listening_port=listening,
             provision_dest=provision_dest,
+            program_load_error=load_error,
         )
 
     seat = measure()
