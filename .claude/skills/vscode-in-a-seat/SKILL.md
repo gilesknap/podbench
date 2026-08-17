@@ -93,7 +93,8 @@ The button has to read "Install in SSH: `<alias>`". A locally-installed
 extension runs the debug adapter on the developer's laptop, where none of the
 `/proc/<pid>/root` paths mean anything, and the failure looks like a bad
 `launch.json` — cpptools reports `Program path '/proc/1/root/...' is missing or
-invalid`, which reads as a wrong path and is really a wrong *machine*.
+invalid`, which reads as a wrong path and is really a wrong *machine*. That is
+one of **two** causes of that message; see the next section before assuming it.
 
 `code --install-extension --remote` cannot report this: it exits 0 for
 "installed", for "already installed" and for "never reached the remote". So
@@ -102,6 +103,36 @@ matched by id prefix, since the directory carries a version and a platform
 triple. Over ssh and not `kubectl exec`, because the home that matters is the
 one NSS gives the *login* user. A failed listing is reported as unverified, never
 as missing: sending someone to reinstall what is already there is its own bug.
+
+## `Program path … is missing or invalid` usually means neither
+
+cpptools composes that sentence for **any** failure to load the program, with
+gdb's real error appended:
+
+```
+Program path '/proc/1/root/usr/bin/bash' is missing or invalid.
+GDB failed with message: "<gdb's own error>"
+```
+
+So the named path is the *last* thing to suspect. Check it (`ls -lL`, `test -r`)
+and then read the second half, which is where the fault actually is. Two causes,
+in order of likelihood:
+
+1. **gdb could not read the file.** gdb reads ELF through **BFD**, the binutils
+   library, so its reach is pinned to the *image's* binutils rather than the
+   user's. Measured: a `debian:bookworm-slim` seat (binutils 2.40) against a
+   RHEL-family target gave `BFD: /usr/bin/bash: .gnu.version_r invalid entry` →
+   `Can't read symbols: bad value`, and the file would not open at all. This is
+   **not** "no debug information" — a stripped binary loads silently and debugs
+   fine at the address level. The asymmetry is the giveaway: a failed symbol load
+   is *non-fatal* at the CLI, so `podbench dbg` attaches and prints the
+   complaint while cpptools aborts. "Works in `dbg`, fails in VS Code" is this.
+   `debug-config` now probes with `gdb -batch -ex file` before emitting a
+   `cppdbg` entry — note that `gdb -batch` exits **0** either way and prints
+   nothing at all on success, so the check reads the text, never the exit code.
+   The remedy is the CodeLLDB entry (its own reader, no binutils) or a newer
+   image; nothing in the launcher can fix it.
+2. **The adapter is on the laptop**, as the previous section describes.
 
 ## The lowest pid is the entrypoint script, not the workload
 
