@@ -68,5 +68,5 @@ spikes/s6
 S6 is a record of a route *not* taken. The mechanism works, but only against an
 Application that uses server-side apply, and against the far commoner client-side case it
 silently hands podbench ownership of the whole workload spec. The requirement it was
-chasing dissolved instead: Patch mode already gives a singleton an inner loop without
+chasing dissolved instead: Hotfix mode already gives a singleton an inner loop without
 cloning it.

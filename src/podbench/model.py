@@ -119,7 +119,7 @@ SEAT_IDENTITY_VOLUME = "podbench-identity"
 A debug seat runs as the *target's* uid, which a stock image has no account
 for — and ssh cannot authenticate a user NSS cannot resolve. A pod's volumes are
 immutable, so the identity has to be put in the pod spec at deploy time, by the
-same chart cooperation Patch mode already needs; from there it is mounted by
+same chart cooperation Hotfix mode already needs; from there it is mounted by
 convention rather than by flag.
 
 Which seat can *use* it is decided by :data:`SEAT_PASSWD_KEY`'s ``subPath``: a

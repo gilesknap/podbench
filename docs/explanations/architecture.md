@@ -267,7 +267,7 @@ worked yesterday" is explicable.
 | Risk to the workload | real: OOM, eviction | none; the origin pod is untouched |
 | Debugging | attach to the live process, or read-only inspection | gdb-launch, debugpy, the relaunch loop |
 
-Patch mode — a PVC mounted over the app's venv so a fix survives restarts and
+Hotfix mode — a PVC mounted over the app's venv so a fix survives restarts and
 reschedules — is the one mode that requires deploy-time cooperation, because
 durable-across-restart code must sit on a volume that was present in the pod
 spec at creation: pod volumes are immutable and a container's rootfs is reset on

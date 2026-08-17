@@ -352,11 +352,11 @@ def resolve_mounts(
     An ephemeral container may mount the volumes its pod **already declares**
     and may not introduce one: ``spec.volumes`` is immutable after the pod is
     created, so nothing an attach does can add a claim to a running pod. That is
-    the whole reason Patch mode asks for deploy-time cooperation, and it is why
+    the whole reason Hotfix mode asks for deploy-time cooperation, and it is why
     an unknown name is refused here rather than turned into a mount the API
     server would reject with a message about a volume podbench invented.
 
-    The mountPath is not a free choice either. Patch mode's premise is that the
+    The mountPath is not a free choice either. Hotfix mode's premise is that the
     claim resolves at the *same* path in the seat as in the application — the
     venv's ``bin/python`` and the checkout's editable install are absolute paths
     recorded on the volume — so the application container's own mountPath is the
@@ -391,7 +391,7 @@ def resolve_mounts(
             raise LauncherError(
                 f"container {workload!r} does not mount volume {volume_name!r}, "
                 "so there is no mountPath to copy: give one explicitly as "
-                f"--mount {name}:/path. In Patch mode it must be the path the "
+                f"--mount {name}:/path. In Hotfix mode it must be the path the "
                 "application's venv lives at, because that is what the manifest "
                 "on the claim records."
             )
@@ -402,7 +402,7 @@ def resolve_mounts(
         ):
             warnings.append(
                 f"--mount asks for {volume_name!r} at {requested_path}, but "
-                f"container {workload!r} mounts it at {app_path}. Patch mode "
+                f"container {workload!r} mounts it at {app_path}. Hotfix mode "
                 "needs the two identical: the venv's bin/python and the "
                 "checkout's editable install are absolute paths on the volume, "
                 "so a seat that mounts the claim elsewhere resolves a different "
@@ -555,7 +555,7 @@ def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
         f"the pod declares no volume named {name!r} and no volume backed by a "
         f"claim called {name!r}, and an ephemeral container may only mount "
         "volumes the pod already has: spec.volumes is immutable once the pod "
-        "exists, so podbench cannot add one now. This is exactly why Patch mode "
+        "exists, so podbench cannot add one now. This is exactly why Hotfix mode "
         "needs the chart's cooperation at deploy time - redeploy the workload "
         f"with a volume bound to claim {name!r}, mounted over the application's "
         "venv path (`podbench hotfix --print-values` emits the volume, the "
@@ -2839,7 +2839,7 @@ def _build_app(
                 metavar="CLAIM:MOUNTPATH",
                 help="mount a volume the pod already declares into the seat, "
                 "named by claim or by volume name. MOUNTPATH defaults to the "
-                "application container's own, which Patch mode requires it to "
+                "application container's own, which Hotfix mode requires it to "
                 "equal. Repeatable",
             ),
         ] = None,

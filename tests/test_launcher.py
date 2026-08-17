@@ -611,7 +611,7 @@ def test_a_dead_container_is_not_reconnected_to() -> None:
     assert "burnt" in listed["podbench-1"].detail
 
 
-# -- mounting the pod's own volumes (Patch mode) ----------------------------
+# -- mounting the pod's own volumes (Hotfix mode) ----------------------------
 
 PATCH_VOLUME: dict[str, Any] = {
     "name": "podbench-patch-venv",
@@ -621,7 +621,7 @@ APP_MOUNT: dict[str, Any] = {"name": "podbench-patch-venv", "mountPath": "/opt/v
 
 
 def patch_pod(**overrides: Any) -> dict[str, Any]:
-    """A pod wired for Patch mode: the claim is a volume, the app mounts it."""
+    """A pod wired for Hotfix mode: the claim is a volume, the app mounts it."""
     settings: dict[str, Any] = {
         "uid": 1000,
         "volumes": [PATCH_VOLUME],
@@ -640,7 +640,7 @@ def test_a_mount_named_by_claim_lands_at_the_applications_own_path() -> None:
     assert cluster.added[0]["volumeMounts"] == [
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
     ]
-    # Patch mode needs the seat and the application to agree on the path, so it
+    # Hotfix mode needs the seat and the application to agree on the path, so it
     # is copied rather than asked for again.
     assert not [w for w in session.warnings if "mountPath" in w]
 
@@ -651,7 +651,7 @@ def test_an_application_sub_path_is_refused_rather_than_copied_or_dropped() -> N
     Copying is forbidden — the API server refuses ``subPath`` on an ephemeral
     container for the whole request — and dropping it would point the seat at
     the volume root where the application sees one directory inside it, so every
-    path Patch mode recorded would resolve to the wrong thing. So it refuses,
+    path Hotfix mode recorded would resolve to the wrong thing. So it refuses,
     before a container name is burnt.
     """
     cluster = FakeCluster(
@@ -684,7 +684,7 @@ def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created
     message = str(raised.value)
     assert "myapp-venv" in message
     # The refusal has to explain that this is not podbench being unhelpful: a
-    # pod's volumes are immutable, which is why Patch mode needs the chart.
+    # pod's volumes are immutable, which is why Hotfix mode needs the chart.
     assert "immutable" in message
     assert "--print-values" in message
     assert cluster.added == [], "nothing may be submitted, and no name burnt"

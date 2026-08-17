@@ -12,7 +12,7 @@
 # principle the tool is built on. This chart exists for the three things that
 # genuinely cannot be done from the client side: granting a team permission to
 # attach at all, giving Iterate mode a workspace that outlives a dev pod, and
-# providing the volume Patch mode needs to have been in the pod spec at creation.
+# providing the volume Hotfix mode needs to have been in the pod spec at creation.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -47,7 +47,7 @@ rbac:
   observe: true # read pods, add an ephemeral container, exec into it
   iterate: false # create and delete dev pods, patch a Service selector
   resize: false # patch pods/resize, to make memory headroom before attaching
-  # Patch mode: read Deployments/StatefulSets/ReplicaSets to find the pod
+  # Hotfix mode: read Deployments/StatefulSets/ReplicaSets to find the pod
   # template and refuse a multi-replica target, then patch that template with the
   # provenance annotations — which is also what rolls the workload. That makes it
   # a code-deploying grant, so it is the one to hand out most sparingly. Assumes
@@ -71,7 +71,7 @@ scratchPvc:
   accessModes:
     - ReadWriteOnce
 
-# Patch mode (design brief Phase 6).
+# Hotfix mode (design brief Phase 6).
 #
 # Durable-across-restart code has to sit on a volume that was present in the pod
 # spec at creation: pod volumes are immutable and a container's rootfs is reset on
