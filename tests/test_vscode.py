@@ -45,6 +45,7 @@ from podbench.vscode import (
     merge_folder_settings,
     merge_launch_json,
     merge_machine_settings,
+    program_load_error,
     python_path_mappings,
     setup_commands,
     target_architecture,
@@ -60,6 +61,7 @@ from test_flavour import (
 
 PID = 597
 EXE = "/app/victim"
+CID = "cafe1234cafe1234cafe1234cafe1234"
 
 
 @pytest.fixture
@@ -516,6 +518,110 @@ def test_every_applicable_flavour_is_emitted_and_named(
     ]
 
 
+def container_tree(
+    tmp_path: Path, processes: Sequence[tuple[int, str, str, int]]
+) -> Path:
+    """A ``/proc`` holding one container's process tree.
+
+    ``processes`` is ``(pid, comm, exe, ppid)``. Every entry lands in the same
+    cgroup, so all of them are the target container's — which is the case the
+    ranking exists for.
+    """
+    (tmp_path / "self").mkdir()
+    (tmp_path / "self" / "cgroup").write_text("0::/\n")
+    for pid, comm, exe, ppid in processes:
+        entry = tmp_path / str(pid)
+        entry.mkdir()
+        (entry / "comm").write_text(f"{comm}\n")
+        (entry / "cmdline").write_text(f"{exe}\x00")
+        (entry / "cgroup").write_text(f"0::/../cri-containerd-{CID}.scope\n")
+        (entry / "status").write_text(
+            f"Name:\t{comm}\nPPid:\t{ppid}\nUid:\t0\t0\t0\t0\n"
+        )
+        (entry / "exe").symlink_to(exe)
+    return tmp_path
+
+
+#: The tree from the live IOC pod that produced the bug: a bash entrypoint, the
+#: Python that supervises it, the ``sh -c`` it re-execs through, and the binary
+#: the pod exists to run — which is the *deepest* of the four, not the lowest.
+IOC_TREE = (
+    (1, "bash", "/usr/bin/bash", 0),
+    (8, "python3", "/usr/bin/python3", 1),
+    (11, "sh", "/usr/bin/sh", 8),
+    (13, "ioc", "/epics/ioc/bin/ioc", 11),
+)
+
+
+def test_an_entrypoint_script_does_not_become_the_debug_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The bug from a live IOC pod: pid 1 is bash, and nobody wants to debug it.
+
+    A cppdbg entry for ``/proc/1/root/usr/bin/bash`` is not a broken
+    configuration — it is a correct configuration for the wrong process, which
+    is exactly why it costs an afternoon. Shells are dropped rather than listed
+    after the real target: an entry in the dropdown gets picked.
+    """
+    proc = container_tree(tmp_path, IOC_TREE)
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    programs = [
+        entry["program"] for entry in document["configurations"] if "program" in entry
+    ]
+    assert programs
+    assert not any("bash" in program or "/sh" in program for program in programs)
+    assert all("/proc/13/root" in program for program in programs)
+
+
+def test_every_candidate_gets_an_entry_rather_than_one_winning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing measurable separates two live children of an entrypoint script.
+
+    So they do not compete for one slot: launch.json holds a list and the choice
+    is made at F5, which is the same reason two flavours of one process are both
+    emitted. The best candidate is first, because VS Code's dropdown defaults to
+    whatever is at the top.
+    """
+    proc = container_tree(
+        tmp_path,
+        (
+            (1, "bash", "/usr/bin/bash", 0),
+            (8, "supervisor", "/app/supervisor", 1),
+            (13, "worker", "/app/worker", 8),
+        ),
+    )
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    pids = [
+        str(entry["processId"])
+        for entry in document["configurations"]
+        if "processId" in entry
+    ]
+    assert pids[0] == "13"
+    assert set(pids) == {"13", "8"}
+
+
+def test_an_explicit_pid_is_not_second_guessed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Naming a pid is an answer, so offering three others is not helpfulness.
+
+    This is also the escape hatch when the ranking is wrong — including the way
+    back to a shell — so it has to be exactly one entry per flavour and not one
+    per process.
+    """
+    proc = container_tree(tmp_path, IOC_TREE)
+    assert cli(["1", "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    pids = {
+        str(entry.get("processId") or entry.get("pid"))
+        for entry in document["configurations"]
+    }
+    assert pids == {"1"}
+
+
 def test_a_refused_flavour_names_its_mechanism(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -612,6 +718,128 @@ def test_delve_uses_substitute_path_and_an_int_pid() -> None:
     config = delve_configuration(PID, "/app/server", source_map={"/w": "/app"})
     assert config["processId"] == PID
     assert config["substitutePath"] == [{"from": "/w", "to": "/app"}]
+
+
+# -- can gdb read the program at all? ----------------------------------------
+
+BFD_REFUSAL = (
+    "BFD: /usr/bin/bash: .gnu.version_r invalid entry\n"
+    "Can't read symbols from /usr/bin/bash: bad value\n"
+)
+"""Measured against a RHEL-family target from a Debian bookworm seat.
+
+The seat's binutils is older than the toolchain that linked the target, so BFD
+rejects its symbol-versioning section and the file cannot be opened at all -
+which is a different thing from the file having no debug information, and the
+only one of the two that is fatal.
+"""
+
+
+def gdb_saying(stderr: str, returncode: int = 0) -> Callable[..., CommandResult]:
+    """A gdb whose ``file`` command produced ``stderr``.
+
+    ``returncode`` defaults to 0 on purpose: ``gdb -batch`` exits 0 whether the
+    command worked or not, so a check that trusted it would answer "readable"
+    for every target ever.
+    """
+
+    def runner(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        return CommandResult(tuple(argv), returncode, "", stderr)
+
+    return runner
+
+
+def test_a_program_gdb_cannot_read_withdraws_cppdbg_and_keeps_lldb(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cpptools aborts when the program will not load, and blames the path.
+
+    ``Program path '<x>' is missing or invalid`` while the path is present and
+    readable sends the reader after the one thing that is not wrong. So the
+    entry is not emitted at all - and the lldb entry stays, because CodeLLDB
+    brings its own reader rather than going through binutils.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc_tree,
+        which=which_of("gdb", "gdb-podbench", "lldb"),
+        runner=gdb_saying(BFD_REFUSAL),
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    assert [entry["type"] for entry in document["configurations"]] == ["lldb"]
+
+
+def test_the_refusal_quotes_bfd_rather_than_paraphrasing_it(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BFD's own line names the section, which is what identifies the cause."""
+    main(
+        [str(PID), "--print-config"],
+        proc=proc_tree,
+        which=which_of("gdb", "gdb-podbench", "lldb"),
+        runner=gdb_saying(BFD_REFUSAL),
+    )
+    err = capsys.readouterr().err
+    assert ".gnu.version_r invalid entry" in err
+    assert "cpptools would abort" in err
+
+
+def test_a_silent_gdb_means_the_program_loads(
+    proc_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gdb prints nothing on success - including for a stripped binary.
+
+    So "no output" must not be read as "no answer": a target with no debug info
+    is perfectly debuggable and its entry has to survive this check.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=proc_tree,
+        which=which_of("gdb", "gdb-podbench"),
+        runner=gdb_saying(""),
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    assert "cppdbg" in [entry["type"] for entry in document["configurations"]]
+
+
+def test_the_load_check_ignores_the_exit_code() -> None:
+    """``gdb -batch`` exits 0 for a `file` that failed, so the text is the only
+    evidence there is."""
+    assert (
+        program_load_error(1, "/proc/1/root/bin/x", runner=gdb_saying(BFD_REFUSAL, 0))
+        is not None
+    )
+
+
+def test_the_load_check_asks_about_the_sysroot_prefixed_path() -> None:
+    """The unprefixed path names *this* image's binary of the same name, so the
+    check would pass on a file the debugger will never open (report §3.3)."""
+    seen: list[tuple[str, ...]] = []
+
+    def runner(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        seen.append(tuple(argv))
+        return CommandResult(tuple(argv), 0, "", "")
+
+    program_load_error(597, "/proc/597/root/app/victim", runner=runner)
+    assert "file /proc/597/root/app/victim" in seen[0]
+    assert "set sysroot /proc/597/root" in seen[0]
+
+
+def test_no_gdb_to_ask_is_not_a_second_refusal() -> None:
+    """`assess` already has a better-worded refusal for an image without gdb."""
+
+    def missing(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    assert program_load_error(1, "/proc/1/root/bin/x", runner=missing) is None
 
 
 # -- the Python path, end to end ---------------------------------------------

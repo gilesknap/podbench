@@ -39,7 +39,10 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import KubectlCli, PodbenchCli
+from podbench.launcher import ssh_config_path
+from podbench.model import PodRef
+
+from .conftest import FIRST_SEAT, KubectlCli, PodbenchCli
 
 # The pod name lands inside the ProxyCommand (`kubectl … exec -i <pod> …`), and
 # the scan below rejects a handful of substrings anywhere in that string — so a
@@ -145,7 +148,10 @@ def seat(
     )
     config_dir = podbench.config_dir
     assert config_dir is not None
-    path = config_dir / "config.d" / f"{kubectl.namespace}-{target}.conf"
+    # Derived, never spelled: the stanza is named per *seat* since issue #93,
+    # and a hand-built path here would go stale the next time that changes -
+    # which is exactly how this assertion broke.
+    path = ssh_config_path(config_dir, PodRef(kubectl.namespace, target), FIRST_SEAT)
     assert path.is_file(), f"attach wrote no ssh config:\n{result.stdout}"
     return path, _host_alias(path)
 

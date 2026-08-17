@@ -29,6 +29,7 @@ from typing import Any, Protocol, cast
 from .model import as_dict
 
 __all__ = [
+    "ADMISSION_DENIAL_MARKERS",
     "CREATE_CONTAINER_CONFIG_ERROR",
     "PSA_SYS_PTRACE_DENIAL",
     "CommandResult",
@@ -48,6 +49,26 @@ PSA_SYS_PTRACE_DENIAL = (
 The surrounding phrase differs between enforcement levels — ``unrestricted
 capabilities`` under ``restricted:latest``, ``non-default capabilities`` under
 ``baseline:latest`` (report 3.18) — so only this fragment may be matched.
+"""
+
+ADMISSION_DENIAL_MARKERS = (
+    ("violates PodSecurity",),
+    ('admission webhook "', "denied the request"),
+)
+"""What a *synchronous policy refusal* looks like, whoever issued it.
+
+Each tuple is a set of fragments that must all appear. Two groups, because the
+two mechanisms word themselves nothing alike: Pod Security Admission is built in
+and says ``violates PodSecurity``, while every webhook — Kyverno, Gatekeeper,
+anything else — is announced by the API server's own wrapper naming the webhook
+and the verdict.
+
+Deliberately narrow on both counts. ``denied the request`` is required beside
+the webhook's name so that a webhook which *failed to answer* — unreachable,
+timed out, ``failed calling webhook`` — stays an error rather than being read as
+a policy verdict: retrying a lower rung against a broken webhook would replace
+one honest failure with three. And neither group matches an RBAC ``Forbidden``
+or a missing pod, which are not something a lesser rung can fix.
 """
 
 CREATE_CONTAINER_CONFIG_ERROR = "CreateContainerConfigError"
@@ -133,9 +154,42 @@ class KubectlError(RuntimeError):
         """Whether Pod Security Admission refused the container over SYS_PTRACE.
 
         A true answer means the *synchronous* channel said no and the launcher
-        should drop to the degraded rung immediately.
+        should drop to the degraded rung immediately. It is a narrower question
+        than :attr:`is_admission_denial`, which is what the ladder acts on;
+        this one is kept because it identifies the *mechanism*, and the report
+        is better for naming PSA where PSA is what refused.
         """
         return PSA_SYS_PTRACE_DENIAL in self.stderr
+
+    @property
+    def is_admission_denial(self) -> bool:
+        """Whether *some* admission policy refused this, synchronously.
+
+        The ladder exists to act on exactly this: a denial is an answer about
+        one rung, not about the attach. Before issue #77 only the Pod Security
+        Admission wording was recognised, so a Kyverno refusal of the full rung
+        ended the walk with a traceback — in a namespace where the degraded rung
+        would have been admitted, and where the whole design promises a working
+        seat rather than an error.
+
+        >>> from podbench.kubectl import CommandResult, KubectlError
+        >>> kyverno = 'Error from server: admission webhook \\
+        ... "validate.kyverno.svc-fail" denied the request: blocked'
+        >>> KubectlError(CommandResult((), 1, "", kyverno)).is_admission_denial
+        True
+        >>> unreachable = 'failed calling webhook "validate.kyverno.svc": \\
+        ... context deadline exceeded'
+        >>> KubectlError(CommandResult((), 1, "", unreachable)).is_admission_denial
+        False
+        >>> rbac = 'Error from server (Forbidden): pods "api" is forbidden'
+        >>> KubectlError(CommandResult((), 1, "", rbac)).is_admission_denial
+        False
+        """
+        text = f"{self.stderr}\n{self.stdout}"
+        return any(
+            all(fragment in text for fragment in group)
+            for group in ADMISSION_DENIAL_MARKERS
+        )
 
 
 class EphemeralContainerError(RuntimeError):

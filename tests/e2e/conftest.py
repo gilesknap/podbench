@@ -41,12 +41,14 @@ import pytest
 import yaml
 
 from podbench.kubectl import Kubectl
+from podbench.launcher import CONTAINER_BASE
 from podbench.model import DEFAULT_IMAGE, IMAGE_ENV, as_dict
 
 __all__ = [
     "CONTEXT_ENV",
     "E2E_ENV",
     "KUBECTL_ENV",
+    "FIRST_SEAT",
     "NAMESPACE_PREFIX",
     "KubectlCli",
     "PodbenchCli",
@@ -74,6 +76,14 @@ the cluster it happens to be running on.
 NAMESPACE_PREFIX = "podbench-e2e-"
 """Every namespace this suite creates starts with it, so a crashed run can be
 cleaned up with one glob and nothing else can be caught by it."""
+
+FIRST_SEAT = f"{CONTAINER_BASE}-1"
+"""The seat name a first `attach` on a fresh pod allocates.
+
+Every pod this suite creates gets exactly one seat, so this is knowable rather
+than guessed — and it has to be spelled somewhere, because the ssh stanza is
+named per seat since issue #93.
+"""
 
 TRUTHY = frozenset({"1", "true", "yes", "on"})
 

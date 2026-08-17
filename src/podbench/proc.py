@@ -24,6 +24,7 @@ from __future__ import annotations
 import enum
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,7 +44,10 @@ __all__ = [
     "Capabilities",
     "ProcessListing",
     "apparmor_profile",
+    "candidate_note",
+    "debug_candidates",
     "env_target_container_id",
+    "is_shell",
     "list_processes",
     "no_new_privs",
     "proc_read_matrix",
@@ -51,6 +55,7 @@ __all__ = [
     "read_cmdline",
     "read_comm",
     "read_exe",
+    "read_ppid",
     "read_status_field",
     "read_tracer_pid",
     "read_uid",
@@ -216,6 +221,11 @@ def read_uid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
         return None
     parts = field.split()
     return _parse_int(parts[0]) if parts else None
+
+
+def read_ppid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
+    """The parent pid from ``/proc/<pid>/status``. ``None`` is a real answer."""
+    return _parse_int(read_status_field(pid, "PPid", proc=proc))
 
 
 def read_tracer_pid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
@@ -442,6 +452,7 @@ def scan_processes(
                 cmdline=cmdline or f"[{comm}]",
                 container_id=_container_id_from_cgroup(cgroup),
                 is_target=_is_target(cid, cgroup, own_cgroup, comm),
+                ppid=read_ppid(pid, proc=proc),
             )
         )
 
@@ -456,6 +467,130 @@ def scan_processes(
             "podbench session's processes as target"
         ),
     )
+
+
+_SHELLS = frozenset(
+    {"sh", "bash", "dash", "ash", "ksh", "mksh", "zsh", "busybox", "tini", "dumb-init"}
+)
+"""``comm`` values that are never the thing anyone came to debug.
+
+Entrypoint shells and init shims: they have no debug info, breaking in one stops
+the supervisor rather than the workload, and on any image whose entrypoint is a
+script one of them is guaranteed to be the *lowest* pid in the container.
+``tini`` and ``dumb-init`` are here for the same reason and not because they are
+shells.
+"""
+
+
+def is_shell(info: ProcInfo) -> bool:
+    """Whether this process is an entrypoint shell or an init shim.
+
+    >>> is_shell(ProcInfo(1, 0, "bash", "/bin/bash /epics/ioc/start.sh"))
+    True
+    >>> is_shell(ProcInfo(13, 0, "ioc", "/epics/ioc/bin/linux-x86_64/ioc"))
+    False
+    """
+    return info.comm in _SHELLS
+
+
+def debug_candidates(targets: Sequence[ProcInfo]) -> list[ProcInfo]:
+    """The target container's processes worth debugging, best first.
+
+    Two rules, in order, and both of them come from a real IOC pod whose lowest
+    pid was ``/bin/bash /epics/ioc/start.sh`` (issue #92):
+
+    * **shells sort last**, never out — a container that is *only* a shell still
+      has to have a target, and the degraded rung has to name something. Among
+      themselves they keep pid order rather than depth order, so the fallback
+      stays the container's own entrypoint;
+    * among the rest, **deepest first**. An entrypoint script is an ancestor of
+      the thing it starts, so depth is what separates a wrapper from a workload,
+      and it is the only signal in ``/proc`` that does. Ties break on pid, so the
+      answer is stable across two calls a second apart.
+
+    A process whose parent is outside ``targets`` has depth 0, which is what puts
+    the container's own pid 1 at the top when nothing else survives.
+
+    >>> tree = [
+    ...     ProcInfo(1, 0, "bash", "/bin/bash /epics/ioc/start.sh", ppid=0),
+    ...     ProcInfo(8, 0, "python", "/venv/bin/python …/stdio-expose", ppid=1),
+    ...     ProcInfo(11, 0, "sh", "/bin/sh -c /epics/ioc/start.sh", ppid=8),
+    ...     ProcInfo(13, 0, "ioc", "…/linux-x86_64/ioc", ppid=11),
+    ... ]
+    >>> [p.pid for p in debug_candidates(tree)]
+    [13, 8, 1, 11]
+    """
+    depths = _depths(targets)
+
+    def rank(info: ProcInfo) -> tuple[bool, int, int]:
+        shell = is_shell(info)
+        return (shell, 0 if shell else -depths[info.pid], info.pid)
+
+    return sorted(targets, key=rank)
+
+
+def candidate_note(candidates: Sequence[ProcInfo], verb: str) -> str | None:
+    """Say which of several processes was picked, and what it was picked over.
+
+    ``None`` when there was nothing to choose. One line, unwrapped: every caller
+    folds notes itself, and a newline here would land inside ``debug-config:``'s
+    per-line prefix.
+
+    The skipped wrappers are *named* rather than counted. "4 processes, debugging
+    pid 13" reads like a coin toss, and the whole point of
+    :func:`debug_candidates` is that it is not one — while the reader who
+    disagrees with the choice needs the pid of the thing they would rather have.
+
+    >>> tree = [
+    ...     ProcInfo(13, 0, "ioc", "ioc", ppid=11),
+    ...     ProcInfo(8, 0, "python", "python", ppid=1),
+    ...     ProcInfo(1, 0, "bash", "bash", ppid=0),
+    ... ]
+    >>> for sentence in candidate_note(tree, "debugging").split(". "):
+    ...     print(sentence)
+    target container has 3 processes; debugging pid 13 (ioc), the deepest non-shell
+    Also debuggable: 8 (python)
+    Skipped as a wrapper: 1 (bash)
+    Run `podbench pids` to choose another.
+    """
+    if len(candidates) < 2:
+        return None
+    chosen, rest = candidates[0], candidates[1:]
+    # A shell at the head means every candidate was one, since shells sort last.
+    why = "the only process here" if is_shell(chosen) else "the deepest non-shell"
+    parts = [
+        f"target container has {len(candidates)} processes; "
+        f"{verb} pid {chosen.pid} ({chosen.comm}), {why}"
+    ]
+    others = [f"{p.pid} ({p.comm})" for p in rest if not is_shell(p)]
+    shells = [f"{p.pid} ({p.comm})" for p in rest if is_shell(p)]
+    if others:
+        parts.append(f"Also debuggable: {', '.join(others)}")
+    if shells:
+        parts.append(f"Skipped as a wrapper: {', '.join(shells)}")
+    parts.append("Run `podbench pids` to choose another.")
+    return ". ".join(parts)
+
+
+def _depths(targets: Sequence[ProcInfo]) -> dict[int, int]:
+    """How far each process sits below the shallowest process in ``targets``.
+
+    Walked with a visited set rather than recursion: ``ppid`` is read per process
+    and a pid can be reused between two of those reads, so a cycle is possible
+    even though a process tree cannot contain one.
+    """
+    by_pid = {info.pid: info for info in targets}
+    depths: dict[int, int] = {}
+    for info in targets:
+        depth = 0
+        seen = {info.pid}
+        parent = info.ppid
+        while parent is not None and parent in by_pid and parent not in seen:
+            seen.add(parent)
+            depth += 1
+            parent = by_pid[parent].ppid
+        depths[info.pid] = depth
+    return depths
 
 
 def _pids(proc: Path) -> list[int]:

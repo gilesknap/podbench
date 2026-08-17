@@ -89,7 +89,7 @@ from .gdbcmd import (
     EXIT_USAGE,
     attach_commands,
     launch_commands,
-    resolve_target_pid,
+    resolve_target_pids,
     sysroot_path,
 )
 from .kubectl import Runner, run_subprocess
@@ -132,6 +132,7 @@ __all__ = [
     "merge_launch_configs",
     "merge_launch_json",
     "merge_machine_settings",
+    "program_load_error",
     "python_path_mappings",
     "setup_commands",
     "target_architecture",
@@ -956,6 +957,63 @@ def _parse_source_map(entries: Sequence[str]) -> tuple[dict[str, str], list[str]
     return mapping, problems
 
 
+_LOAD_FAILURES = (
+    "Can't read symbols",
+    "No such file or directory",
+    "not in executable",
+)
+"""gdb's phrasings for "I could not load that program".
+
+Matched on the text because ``gdb -batch`` **exits 0 whether the ``file``
+command worked or not** — an exit code here would silently answer "readable" for
+every target. On success gdb prints nothing at all, including for a
+:term:`stripped` binary, so anything else is worth showing the user verbatim.
+"""
+
+
+def program_load_error(
+    pid: int, program: str, *, runner: Runner | None = None
+) -> str | None:
+    """What gdb says when asked to load ``program``, or ``None`` if it is happy.
+
+    Asked rather than inferred, because the two failures look identical from the
+    editor and only one of them is fatal. A binary with no :term:`DWARF` loads
+    silently and debugs fine; a binary whose :term:`symbol versioning` this
+    seat's :term:`BFD` rejects cannot be opened, and cpptools turns that into
+    ``Program path '<x>' is missing or invalid`` — pointing at the one thing that
+    is not wrong.
+
+    The sysroot goes in with ``-iex`` for report §3.3's reason, so that the
+    separate debug file is looked for in the *target's* rootfs and not this
+    seat's, and debuginfod is off: this is a question about the file in front of
+    us, and a network round trip would make a local answer depend on egress.
+    """
+    run = runner if runner is not None else run_subprocess
+    try:
+        result = run(
+            [
+                GDB_WRAPPER,
+                "-batch",
+                "-iex",
+                f"set sysroot {sysroot_path(pid)}",
+                "-iex",
+                "set debuginfod enabled off",
+                "-ex",
+                f"file {program}",
+            ]
+        )
+    except OSError:
+        # No gdb to ask. `assess` has its own, better-worded refusal for that,
+        # so this must not become a second one saying the same thing.
+        return None
+    output = f"{result.stderr}\n{result.stdout}".strip()
+    if not any(marker in output for marker in _LOAD_FAILURES):
+        return None
+    # Whole and verbatim: BFD's own line names the section it choked on, and a
+    # paraphrase would cost exactly the detail that identifies the mechanism.
+    return " / ".join(line.strip() for line in output.splitlines() if line.strip())
+
+
 def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     """Whether something is already serving ``port`` in this pod.
 
@@ -977,7 +1035,13 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     from .dev import LISTENERS_COMMAND, listeners_on, parse_ss
 
     run = runner if runner is not None else run_subprocess
-    result = run(list(LISTENERS_COMMAND))
+    try:
+        result = run(list(LISTENERS_COMMAND))
+    except OSError:
+        # "cannot run" includes "is not installed", which is not a non-zero exit
+        # but an exception — and the caller is mid-way through authoring a
+        # configuration, so it must not be one here.
+        return None
     if result.returncode != 0:
         return None
     return port if listeners_on(parse_ss(result.stdout), port) else None
@@ -1181,8 +1245,16 @@ def _emit(
     source_dirs: Sequence[str],
     source_map: Mapping[str, str],
     debuginfod: bool,
+    verbose: bool = True,
 ) -> list[dict[str, Any]]:
-    """Turn the verdicts into configurations, and the refusals into sentences."""
+    """Turn the verdicts into configurations, and the refusals into sentences.
+
+    ``verbose`` is false for a candidate the user did not ask about — the second
+    and third process in the container. Their refusals are the *same* refusals as
+    the target's nine times in ten (one seat, one set of capabilities), and
+    repeating three paragraphs of them buries the configurations that did come
+    out.
+    """
     configurations: list[dict[str, Any]] = []
     for assessment in assessments:
         if assessment.flavour not in wanted:
@@ -1209,7 +1281,7 @@ def _emit(
         # A flavour ruled out purely by language is noise unless it was asked
         # for by name — nobody debugging a C binary needs to be told that delve
         # is for Go. Everything else is a mechanism the user could act on.
-        if explicit or not assessment.language_mismatch:
+        if (explicit or not assessment.language_mismatch) and verbose:
             _warn(assessment.message())
     return configurations
 
@@ -1242,16 +1314,104 @@ def _run(
     if problems:
         return EXIT_USAGE
 
-    pid, notes = resolve_target_pid(pid, container_id, proc=proc)
+    pids, notes = resolve_target_pids(pid, container_id, proc=proc)
     for note in notes:
         _warn(note)
-    if pid is None:
+    if not pids:
+        return EXIT_USAGE
+    explicit_pid = pid is not None
+
+    requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
+    explicit = bool(requested)
+    wanted = set(requested) if explicit else set(Flavour)
+
+    configurations: list[dict[str, Any]] = []
+    # Every candidate gets a configuration, not just the best one. An entrypoint
+    # script's children are usually two *different* languages — an IOC binary
+    # under gdb beside the Python that supervises it — so the flavours do not
+    # compete for one slot, and launch.json holds a list precisely so the choice
+    # can be made at F5 rather than guessed here (issue #92). The best candidate
+    # goes first, and is the only one --provision may touch.
+    for index, candidate in enumerate(pids):
+        primary = index == 0
+        if not primary:
+            _warn(f"also emitting for pid {candidate}")
+        configurations.extend(
+            _for_target(
+                candidate,
+                program=program if explicit_pid else None,
+                mode=mode,
+                wanted=wanted,
+                explicit=explicit,
+                # A refusal is worth a paragraph for the target the user is
+                # about to debug and worth a line for the alternatives, which
+                # they did not ask about and may not want.
+                verbose=primary or explicit_pid,
+                port=port,
+                source_dirs=source_dirs,
+                source_map=source_map,
+                debuginfod=debuginfod,
+                provision=provision and primary,
+                provision_dest=provision_dest,
+                provision_python=provision_python,
+                proc=proc,
+                runner=runner,
+                which=which,
+                debugpy_root=debugpy_root,
+                hint=primary,
+            )
+        )
+
+    if not configurations:
+        _warn(
+            "no debugger flavour could be emitted for this target — every "
+            "mechanism that said no is named above"
+        )
         return EXIT_USAGE
 
+    if print_config:
+        print(launch_json_text(configurations), end="")
+        return 0
+    return _write(configurations, output)
+
+
+def _for_target(
+    pid: int,
+    *,
+    program: str | None,
+    mode: Mode | None,
+    wanted: set[Flavour],
+    explicit: bool,
+    verbose: bool,
+    port: int,
+    source_dirs: Sequence[str],
+    source_map: Mapping[str, str],
+    debuginfod: bool,
+    provision: bool,
+    provision_dest: str,
+    provision_python: str | None,
+    proc: Path,
+    runner: Runner | None,
+    which: Which,
+    debugpy_root: str | None,
+    hint: bool,
+) -> list[dict[str, Any]]:
+    """Everything one candidate pid contributes to ``launch.json``."""
     target = inspect_target(pid, proc=proc, program=program)
     for note in target.notes:
         _warn(note)
     mode = mode or detect_mode(pid, proc=proc)
+    # The path cpptools will put in `program`, and so the one to ask gdb about:
+    # unprefixed it names *this* image's binary of the same name, which is the
+    # substitution report §3.3 measured. In dev mode the program is here, so
+    # there is no prefix to add.
+    sysroot_program = (
+        None
+        if not target.program
+        else target.program
+        if mode is Mode.DEV
+        else f"{sysroot_path(pid)}{target.program}"
+    )
 
     def measure() -> Seat:
         # The listener is re-probed on every measurement rather than read once:
@@ -1263,6 +1423,15 @@ def _run(
             if target.language is Language.PYTHON
             else None
         )
+        # Only for a native target: asking gdb about a CPython would answer a
+        # question the debugpy flavour does not ask, and cost a gdb start-up per
+        # candidate to do it.
+        load_error = (
+            program_load_error(target.pid, sysroot_program, runner=runner)
+            if sysroot_program
+            and target.language in (Language.NATIVE, Language.UNKNOWN)
+            else None
+        )
         return survey_seat(
             target,
             proc=proc,
@@ -1270,6 +1439,7 @@ def _run(
             debugpy_root=debugpy_root,
             listening_port=listening,
             provision_dest=provision_dest,
+            program_load_error=load_error,
         )
 
     seat = measure()
@@ -1295,13 +1465,9 @@ def _run(
             seat = measure()
     assessments = assess(target, mode, seat)
 
-    requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
-    explicit = bool(requested)
-    wanted = set(requested) if explicit else set(Flavour)
-    print(
-        f"debug-config: {target.language.value} target, {mode.value} mode"
-        + (f", {target.machine}" if target.machine else ""),
-        file=sys.stderr,
+    _warn(
+        f"pid {pid} ({target.name}): {target.language.value} target, "
+        f"{mode.value} mode" + (f", {target.machine}" if target.machine else "")
     )
     configurations = _emit(
         assessments,
@@ -1314,22 +1480,22 @@ def _run(
         source_dirs=source_dirs,
         source_map=source_map,
         debuginfod=debuginfod,
+        verbose=verbose,
     )
-    if not configurations:
-        _warn(
-            "no debugger flavour could be emitted for this target — every "
-            "mechanism that said no is named above"
+    if not configurations and not verbose:
+        # The quiet path still has to account for itself: a candidate that was
+        # announced and then contributed nothing reads as a bug in the emitter.
+        refused = next(
+            (a for a in assessments if not a.available and not a.language_mismatch),
+            None,
         )
-        return EXIT_USAGE
-
-    if print_config:
-        print(launch_json_text(configurations), end="")
-    else:
-        code = _write(configurations, output)
-        if code != 0:
-            return code
-    _hint(target, mode, seat, assessments, wanted, port=port)
-    return 0
+        _warn(
+            f"pid {pid} ({target.name}): nothing emitted"
+            + (f" — {refused.reason}" if refused else "")
+        )
+    if hint and configurations:
+        _hint(target, mode, seat, assessments, wanted, port=port)
+    return configurations
 
 
 def _write(configurations: Sequence[Mapping[str, Any]], output: str | None) -> int:

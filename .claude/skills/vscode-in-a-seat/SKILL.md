@@ -92,7 +92,34 @@ connect line one row under the words `name burnt for this pod's lifetime`.
 The button has to read "Install in SSH: `<alias>`". A locally-installed
 extension runs the debug adapter on the developer's laptop, where none of the
 `/proc/<pid>/root` paths mean anything, and the failure looks like a bad
-`launch.json`.
+`launch.json` — cpptools reports `Program path '/proc/1/root/...' is missing or
+invalid`, which reads as a wrong path and is really a wrong *machine*.
+
+`code --install-extension --remote` cannot report this: it exits 0 for
+"installed", for "already installed" and for "never reached the remote". So
+`--open` asks the seat instead — `ssh <alias> ls -1 ~/.vscode-server/extensions`,
+matched by id prefix, since the directory carries a version and a platform
+triple. Over ssh and not `kubectl exec`, because the home that matters is the
+one NSS gives the *login* user. A failed listing is reported as unverified, never
+as missing: sending someone to reinstall what is already there is its own bug.
+
+## The lowest pid is the entrypoint script, not the workload
+
+Most images start `ENTRYPOINT ["/start.sh"]`, so pid 1 in the target container is
+`bash` — no debug info, and breaking in it stops the supervisor rather than the
+app. A real EPICS IOC pod ran `bash` (1) → `python stdio-expose` (8) → `sh -c`
+(11) → `ioc` (13), and the thing anybody wants is the *deepest*, which is the
+only signal in `/proc` that separates a wrapper from a workload.
+
+`podbench.proc.debug_candidates` sorts on that: shells (`sh`, `bash`, `dash`,
+`ash`, `busybox`, and the `tini`/`dumb-init` shims) last, everything else deepest
+first. Shells are dropped from `launch.json` where anything else ran — an entry
+in the dropdown gets picked — but kept as the *fallback* target, since a `dev`
+pod is legitimately a login shell and nothing else. Every surviving candidate
+gets its own entry rather than one winning: two children of an entrypoint script
+are usually two languages, so the flavours do not compete for the slot. An
+explicit `--pid` is taken as given and is the only answer, which is the way back
+to a shell.
 
 ## `pathMappings` / `sourceFileMap` is mode-dependent
 

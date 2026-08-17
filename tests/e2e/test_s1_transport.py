@@ -28,7 +28,10 @@ from typing import Any, cast
 
 import pytest
 
-from .conftest import KubectlCli, PodbenchCli
+from podbench.launcher import ssh_config_path
+from podbench.model import PodRef
+
+from .conftest import FIRST_SEAT, KubectlCli, PodbenchCli
 
 TARGET_POD = "transport-target"
 
@@ -111,7 +114,10 @@ def ssh_config(
     )
     config_dir = podbench.config_dir
     assert config_dir is not None
-    path = config_dir / "config.d" / f"{kubectl.namespace}-{target}.conf"
+    # Derived, never spelled: the stanza is named per *seat* since issue #93,
+    # and a hand-built path here would go stale the next time that changes -
+    # which is exactly how this assertion broke.
+    path = ssh_config_path(config_dir, PodRef(kubectl.namespace, target), FIRST_SEAT)
     assert path.is_file(), f"attach wrote no ssh config:\n{result.stdout}"
     alias = _host_alias(path)
     yield path, alias

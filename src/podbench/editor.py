@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from shlex import quote
 from typing import Any, cast
 
@@ -68,6 +68,7 @@ from .vscode import (
 __all__ = [
     "DEFAULT_EDITOR",
     "DEFAULT_SSH",
+    "EXTENSIONS_DIR",
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_FLAG",
@@ -75,6 +76,7 @@ __all__ = [
     "open_seat",
     "remote_authority",
     "resolve_editor",
+    "unpacked_extensions",
 ]
 
 DEFAULT_EDITOR = "code"
@@ -165,7 +167,8 @@ read and not reached.
 _RELOAD_NOTE = (
     "a window already connected to this alias needs Command Palette -> "
     "Developer: Reload Window, or the debug adapter stays unregistered; one "
-    "this command opens for the first time does not."
+    "this command opens for the first time does not, because the line above "
+    "asked the seat and it is already unpacked there."
 )
 """The step a *second* ``--open`` needs and a first one does not.
 
@@ -428,18 +431,24 @@ def open_seat(
     # seat, and a run whose every install failed unpacked nothing. Telling
     # somebody to reload a window over that sends them to look for an extension
     # the lines above have just said is not there.
-    installed = False
+    attempted = False
     for extension in extensions:
         result = run([editor, "--remote", authority, "--install-extension", extension])
         if result.returncode != 0:
             report(f"could not install {extension}: {_detail(result.stderr)}")
             continue
-        # "is installed", not "installed": `code` exits 0 for "already
-        # installed" too, and this run cannot tell the two apart.
-        report(f"{extension} is installed in SSH: {alias}")
-        installed = True
-    if installed:
-        report(_RELOAD_NOTE)
+        attempted = True
+    if attempted:
+        # The exit code above proves nothing, so the seat is asked. See
+        # `unpacked_extensions` — this is the check whose absence let a DLS run
+        # print "is installed" for three extensions that were not.
+        installed, missing = _verify_installed(
+            alias, extensions, ssh=ssh, runner=run, report=report
+        )
+        if installed:
+            report(_RELOAD_NOTE)
+        if missing:
+            report(_MISSING_REMEDY.format(missing=", ".join(missing), alias=alias))
 
     result = run([editor, "--remote", authority, folder])
     if result.returncode != 0:
@@ -459,6 +468,101 @@ def open_seat(
         "Remote-SSH extension (ms-vscode-remote.remote-ssh); ssh itself reached "
         f"{alias} a moment ago with the same config."
     )
+
+
+EXTENSIONS_DIR = "~/.vscode-server/extensions"
+"""Where vscode-server unpacks an extension, under the *ssh login's* home.
+
+``~`` rather than a path, and asked over ssh rather than over ``kubectl exec``,
+because the home that matters is the one NSS gives the seat's login user — which
+is not always the container's ``$HOME`` (see :func:`podbench.agent.session_home`).
+Asking through the same client, as the same user, is the only spelling that
+cannot be right here and wrong for VS Code.
+"""
+
+_MISSING_REMEDY = (
+    "{missing} did not land in the seat, whatever `code` said: nothing matching "
+    "is unpacked under {dir}. Install it from the Extensions view of the window "
+    "below - the button must read 'Install in SSH: {alias}', because a local "
+    "install runs the debug adapter on this machine, where the /proc/<pid>/root "
+    "paths in launch.json do not exist and the failure reads as a bad "
+    "configuration ('program path is missing or invalid')."
+).replace("{dir}", EXTENSIONS_DIR)
+"""Said when the seat disagrees with ``code``'s exit code. The local-install
+trap is spelled out because it is where somebody sent to the Extensions view by
+this very line then lands: both buttons are there, and only one of them works."""
+
+
+def unpacked_extensions(
+    alias: str,
+    *,
+    ssh: str = DEFAULT_SSH,
+    runner: Runner | None = None,
+) -> set[str] | None:
+    """Extension ids unpacked in the seat, lowercased. ``None`` if unknowable.
+
+    ``code --install-extension --remote`` exits 0 whether it installed anything,
+    found it already installed, or never reached the remote at all — the third
+    of which is what a DLS run hit on 2026-08-16, printing success for
+    extensions that were not there. The seat's own directory listing is the only
+    statement about the seat, so it is the one worth making.
+
+    ``None`` and ``set()`` are different answers: an ssh that failed knows
+    nothing, while an empty directory knows that nothing landed.
+
+    The directory name carries the version — ``ms-vscode.cpptools-1.19.9`` — so
+    the ids are the part before the version, which is what
+    :func:`_verify_installed` matches on rather than comparing whole names.
+    """
+    run = runner if runner is not None else run_subprocess
+    result = run(
+        [
+            ssh,
+            "-T",
+            "-o",
+            f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+            alias,
+            # `|| true` so an absent directory - nothing was ever installed - is
+            # an empty answer rather than an unknown one. `ls` alone exits 2 for
+            # that, which is indistinguishable here from ssh's own failures.
+            f"ls -1 {EXTENSIONS_DIR} 2>/dev/null || true",
+        ]
+    )
+    if result.returncode != 0:
+        return None
+    return {line.strip().lower() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _verify_installed(
+    alias: str,
+    extensions: Sequence[str],
+    *,
+    ssh: str,
+    runner: Runner,
+    report: Callable[[str], None],
+) -> tuple[list[str], list[str]]:
+    """Split ``extensions`` into those the seat has and those it does not."""
+    unpacked = unpacked_extensions(alias, ssh=ssh, runner=runner)
+    if unpacked is None:
+        # The alias worked minutes ago, so this is a transient rather than a
+        # verdict: say what is unproven and claim nothing either way.
+        report(
+            f"could not list {EXTENSIONS_DIR} in the seat, so whether "
+            f"{', '.join(extensions)} landed is unverified. If the debugger is "
+            "not in the Run and Debug list, check the Extensions view"
+        )
+        return [], []
+    installed: list[str] = []
+    missing: list[str] = []
+    for extension in extensions:
+        # Prefix match: the directory carries a version and a platform triple,
+        # and an exact comparison would report every installed extension missing.
+        if any(name.startswith(f"{extension.lower()}-") for name in unpacked):
+            report(f"{extension} is unpacked in SSH: {alias}")
+            installed.append(extension)
+        else:
+            missing.append(extension)
+    return installed, missing
 
 
 def _detail(stderr: str) -> str:

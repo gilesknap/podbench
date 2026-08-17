@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import pytest
 
-from podbench.kubectl import CommandResult, Kubectl
+from podbench.kubectl import CommandResult, Kubectl, KubectlError
 from podbench.launcher import (
     RESIZE_WARNING,
     LauncherError,
@@ -27,6 +27,7 @@ from podbench.launcher import (
     attach,
     capability_report_from_json,
     current_namespace,
+    default_host_alias,
     emit_ssh_config,
     features,
     forget_known_hosts,
@@ -67,6 +68,28 @@ PSA_REFUSAL = (
     'unrestricted capabilities (container "podbench-1" must not include '
     '"SYS_PTRACE" in securityContext.capabilities.add)'
 )
+KYVERNO_REFUSAL = (
+    'Error from server: admission webhook "validate.kyverno.svc-fail" denied '
+    "the request: \n\nresource Pod/hgv27681/bl01t-mo-sim-01-0 was blocked due "
+    "to the following policies\n\n"
+    "kp-validate-block-privileged-containers-standard:\n"
+    "  block privilege escalation: 'validation error: Privileged mode is "
+    "disallowed. rule block privilege escalation failed at path "
+    "/spec/ephemeralContainers/1/securityContext/allowPrivilegeEscalation/'"
+)
+"""Verbatim from a DLS namespace, 2026-08-16 (issue #77).
+
+Kept whole rather than trimmed to the fragment that is matched: the point of the
+test is that podbench recognises what a real policy engine really says, and a
+tidied copy would keep passing against a matcher that no longer works.
+"""
+
+WEBHOOK_UNREACHABLE = (
+    "Error from server (InternalError): failed calling webhook "
+    '"validate.kyverno.svc-fail": context deadline exceeded'
+)
+"""A webhook that did not answer, which is not a verdict about any rung."""
+
 KUBELET_REFUSAL = (
     "container has runAsNonRoot and image will run as root, or container's "
     "runAsUser breaks non-root policy"
@@ -175,6 +198,7 @@ class FakeCluster:
         *,
         others: Sequence[dict[str, Any]] = (),
         psa_denies_ptrace: bool = False,
+        admission_error: str | None = None,
         kubelet_refuses_root: bool = False,
         kubelet_refuses_root_image: bool = False,
         capreport: dict[str, Any] | None = None,
@@ -193,6 +217,7 @@ class FakeCluster:
         # name.
         self.others = [dict(other) for other in others]
         self.psa_denies_ptrace = psa_denies_ptrace
+        self.admission_error = admission_error
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
         self.capreport = capreport if capreport is not None else capreport_payload()
@@ -329,6 +354,8 @@ class FakeCluster:
         )
         if self.psa_denies_ptrace and "SYS_PTRACE" in added_caps:
             return _fail(PSA_REFUSAL, returncode=1)
+        if self.admission_error is not None and "SYS_PTRACE" in added_caps:
+            return _fail(self.admission_error, returncode=1)
 
         self._ephemeral_specs().append(spec)
         # The kubelet's two asynchronous refusals: a root container under the
@@ -439,6 +466,8 @@ def test_full_rung_lands_when_the_namespace_allows_it() -> None:
     assert security_contexts(cluster)[0] == {
         "runAsUser": 0,
         "capabilities": {"add": ["SYS_PTRACE"]},
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
     }
     env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
     assert env["PODBENCH_TARGET_CID"] == TARGET_CID
@@ -458,9 +487,10 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     assert session.uid == 1000
     assert security_contexts(cluster)[1] == {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
     }
     steps = {step.rung: step for step in session.steps}
@@ -1359,9 +1389,11 @@ def test_attach_writes_an_includeable_stanza_and_a_known_hosts_entry(
     )
     assert code == 0
 
-    stanza = (tmp_path / "cfg" / "config.d" / "demo-target.conf").read_text()
-    assert "Host podbench-demo-target" in stanza
-    assert f"HostKeyAlias podbench-{POD_UID}" in stanza
+    stanza = (tmp_path / "cfg" / "config.d" / "demo-target-1.conf").read_text()
+    assert "Host podbench-demo-target-1" in stanza
+    # Seat-qualified too: two live seats mint two host keys, and one alias
+    # over both is a host-key mismatch on the second (issue #93).
+    assert f"HostKeyAlias podbench-{POD_UID}-1" in stanza
     assert "StrictHostKeyChecking yes" in stanza
     # The ProxyCommand shape is the whole transport: -i, -e and a quiet log
     # level, no -t, no redirection (report 4.1).
@@ -1371,7 +1403,7 @@ def test_attach_writes_an_includeable_stanza_and_a_known_hosts_entry(
     ) in stanza
 
     known_hosts = (tmp_path / "cfg" / "known_hosts").read_text()
-    assert known_hosts.startswith(f"podbench-{POD_UID} ssh-ed25519 ")
+    assert known_hosts.startswith(f"podbench-{POD_UID}-1 ssh-ed25519 ")
     assert "Include" in capsys.readouterr().out
 
 
@@ -1623,6 +1655,38 @@ def test_an_image_that_cannot_answer_still_gets_its_stanza(
     assert "not measured" in out
 
 
+def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
+    """Issue #77: a Kyverno refusal of the full rung ended the attach.
+
+    Every non-PSA admission engine took that path, in namespaces where the
+    degraded rung would have been admitted — which is the entire promise of a
+    ladder. A denial is a verdict about one rung, not about the attach.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), admission_error=KYVERNO_REFUSAL)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    # Nothing was stored, so the name the refused rung was submitted under is
+    # still free — the same accounting as a PSA refusal.
+    assert session.seat.container == "podbench-1"
+    steps = {step.rung: step for step in session.steps}
+    assert not steps[Rung.FULL].admitted
+    assert "an admission webhook refused it" in steps[Rung.FULL].detail
+    # The policy's own words, whole: they name the rule and the field, which is
+    # the only thing in the message a cluster admin can act on.
+    assert "kp-validate-block-privileged-containers-standard" in (
+        steps[Rung.FULL].detail
+    )
+
+
+def test_a_webhook_that_did_not_answer_is_still_an_error() -> None:
+    """ "Unreachable" is not "denied", and retrying lower rungs against a broken
+    webhook would turn one honest failure into three."""
+    cluster = FakeCluster(pod_document(uid=1000), admission_error=WEBHOOK_UNREACHABLE)
+    with pytest.raises(KubectlError, match="failed calling webhook"):
+        attach(talking_to(cluster), "target")
+
+
 def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     """Opt-in, and the only difference it makes to the spec is the group."""
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
@@ -1631,9 +1695,10 @@ def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     assert session.rung is Rung.DEGRADED
     assert security_contexts(cluster)[0] == {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
         "runAsGroup": 0,
     }
@@ -1712,7 +1777,7 @@ def test_open_configures_the_seats_home_and_opens_that(
     assert editor[-1] == (
         "/usr/bin/code",
         "--remote",
-        "ssh-remote+podbench-demo-target",
+        "ssh-remote+podbench-demo-target-1",
         "/root",
     )
     # The flavour's extensions, installed in the remote window and nowhere else.
@@ -2018,13 +2083,81 @@ def test_the_stanza_generator_is_shared_and_takes_a_measured_login_name(
         user="somebody-else",
     )
 
-    assert seat.alias == "podbench-demo-target"
+    assert seat.alias == "podbench-demo-target-1"
     assert seat.path is not None
     stanza = seat.path.read_text()
     assert "User somebody-else" in stanza
     assert "ProxyCommand" in stanza
     assert f"then:  ssh {seat.alias}" in seat.note
-    assert seat.path == ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"))
+    assert seat.path == ssh_config_path(
+        tmp_path / "cfg", PodRef("demo", "target"), "podbench-1"
+    )
+
+
+def test_a_side_loaded_image_is_not_asked_for_from_a_registry() -> None:
+    """The e2e regression, pinned. `kind load` puts an image on the node without
+    pulling it, so `Always` — the one policy that *requires* a registry — turns
+    a working cluster into `pull access denied, repository does not exist`.
+
+    Asserted through `attach` rather than on the spec author alone, because the
+    default is the whole point: nothing on this path may reach for `Always` on
+    the strength of the tag looking like a development one.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    attach(talking_to(cluster), "target", image="docker.io/library/podbench:e2e")
+
+    assert cluster.added[0]["imagePullPolicy"] == "IfNotPresent"
+
+
+def test_a_moving_tag_is_named_in_the_report_rather_than_guessed_about() -> None:
+    """No symptom is the problem: the seat starts, and is simply older."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target", image="ghcr.io/x/podbench:main")
+
+    assert any("a tag that moves" in note for note in session.warnings)
+    assert any("--pull always" in note for note in session.warnings)
+
+
+def test_asking_for_always_says_nothing_about_staleness() -> None:
+    """The warning is about the policy that cannot notice, not about the tag."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(
+        talking_to(cluster),
+        "target",
+        image="ghcr.io/x/podbench:main",
+        pull_policy="Always",
+    )
+
+    assert cluster.added[0]["imagePullPolicy"] == "Always"
+    assert not any("a tag that moves" in note for note in session.warnings)
+
+
+def test_two_seats_on_one_pod_get_two_aliases_and_two_stanzas() -> None:
+    """Issue #93. An ephemeral container is never removed, so `--new` leaves the
+    old seat *running* — and one alias over both was wrong twice.
+
+    The stanza is one file per name, so the second seat overwrote the first
+    rather than joining it; and the stanza sets `ControlMaster auto`, whose
+    multiplexing key is the host as typed, so every ssh kept riding the
+    connection already open to the old seat. Measured at DLS: `--open` wrote
+    launch.json into podbench-2 while VS Code read podbench-1's copy.
+    """
+    first = default_host_alias(PodRef("demo", "target"), "podbench-1")
+    second = default_host_alias(PodRef("demo", "target"), "podbench-2")
+    assert first != second
+    assert (first, second) == ("podbench-demo-target-1", "podbench-demo-target-2")
+
+    directory = Path("/h/.podbench")
+    assert ssh_config_path(directory, PodRef("demo", "target"), "podbench-1") != (
+        ssh_config_path(directory, PodRef("demo", "target"), "podbench-2")
+    )
+
+
+def test_a_dev_pods_sole_sidecar_keeps_the_unqualified_name() -> None:
+    """A dev pod has exactly one seat, named `podbench`, so there is nothing to
+    disambiguate — and qualifying it would rename every existing dev alias and
+    orphan the stanza that goes with it."""
+    assert default_host_alias(PodRef("demo", "dev"), "podbench") == "podbench-demo-dev"
 
 
 def test_forgetting_a_seat_takes_its_stanza_and_its_pinned_key(
@@ -2357,9 +2490,9 @@ def seated_cluster() -> FakeCluster:
     )
 
 
-def written_stanza(directory: Path, alias: str) -> Path:
-    """The stanza ``attach`` would have left for ``demo/target``, under ``alias``."""
-    path = ssh_config_path(directory, PodRef("demo", "target"))
+def written_stanza(directory: Path, alias: str, seat: str = "podbench-1") -> Path:
+    """The stanza ``attach`` would have left for one seat, under ``alias``."""
+    path = ssh_config_path(directory, PodRef("demo", "target"), seat)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(f"Host {alias}\n    HostName target\n    User root\n")
     return path
@@ -2476,7 +2609,7 @@ def test_an_unreadable_config_dir_costs_the_alias_not_the_listing(
 def test_a_stanza_with_no_host_line_is_reported_as_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"))
+    path = ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"), "podbench-1")
     path.parent.mkdir(parents=True)
     path.write_text("    User root\n")
     assert (

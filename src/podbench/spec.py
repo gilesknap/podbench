@@ -27,6 +27,7 @@ Three of those rules are hard invariants rather than defaults:
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -55,7 +56,10 @@ __all__ = [
     "dev_pod_spec",
     "dev_seat_identity",
     "devpod_selector",
+    "DEFAULT_PULL_POLICY",
+    "PULL_POLICIES",
     "ephemeral_container_spec",
+    "moves",
     "runs_as_non_root",
     "seat_identity_volume_mounts",
     "service_selector_patch",
@@ -255,6 +259,67 @@ def validate_ephemeral_volume_mounts(
             )
 
 
+_IMMUTABLE_TAG = re.compile(r"^\d+\.\d+\.\d+([.-]?(a|b|rc|alpha|beta)\.?\d+)?$")
+"""A tag CI publishes once and never moves: a release, or a prerelease of one.
+
+Everything else this project publishes is *mutable* — ``main`` moves on every
+default-branch push, and a branch tag (``0.2.0-beta.2-my-branch``) is overwritten
+on every push to that branch.
+"""
+
+DEFAULT_PULL_POLICY = "IfNotPresent"
+"""What a seat asks for unless the caller says otherwise, and it cannot change.
+
+``Always`` is the obvious answer for a tag that moves, and it is wrong: it is
+the only policy that *requires* a registry round trip, so it breaks every image
+that was put on the node rather than pulled to it — ``kind load``, ``ctr
+import``, an air-gapped mirror. Measured, by breaking the e2e suite with it:
+kind side-loads ``docker.io/library/podbench:e2e``, and the kubelet answered
+``pull access denied, repository does not exist``.
+
+The kubelet offers no third option — "re-check if you can, carry on if you
+cannot" is not a policy it has — so the choice belongs to whoever knows where
+their image came from. :func:`moves` is how podbench raises the question at the
+moment it matters instead of guessing at the answer.
+"""
+
+PULL_POLICIES = ("IfNotPresent", "Always", "Never")
+"""What ``--pull`` accepts, in the kubelet's own spelling."""
+
+
+def moves(image: str) -> bool:
+    """Whether this reference can point somewhere else tomorrow.
+
+    Not a policy — a *warning* condition. A seat started from a moving tag on a
+    node that already has a copy is serving whatever was published when that
+    copy was pulled, and since the launcher and the image are two halves of one
+    release, "which half am I running" is the last question anyone thinks to
+    ask. It cost a round of confused debugging on a branch image, where the
+    launcher had the fix and the seat did not.
+
+    >>> moves("ghcr.io/gilesknap/podbench:0.2.0")
+    False
+    >>> moves("ghcr.io/gilesknap/podbench:0.2.0-beta.1")
+    False
+    >>> moves("ghcr.io/gilesknap/podbench@sha256:" + "0" * 64)
+    False
+    >>> moves("ghcr.io/gilesknap/podbench:main")
+    True
+    >>> moves("ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch")
+    True
+    """
+    reference = image.rsplit("/", 1)[-1]
+    # A digest names one manifest for all time — and the `@` beats the `:` in a
+    # reference that carries both.
+    if "@" in reference:
+        return False
+    _, separator, tag = reference.partition(":")
+    # No tag at all means `:latest`, which moves by definition.
+    if not separator:
+        return True
+    return not _IMMUTABLE_TAG.match(tag)
+
+
 def ephemeral_container_spec(
     *,
     name: str,
@@ -268,6 +333,7 @@ def ephemeral_container_spec(
     env: Mapping[str, str] | None = None,
     volume_mounts: Sequence[Mapping[str, Any]] | None = None,
     seat_gid_root: bool = False,
+    pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
     """Author one ephemeral container for a rung of the capability ladder.
 
@@ -298,7 +364,7 @@ def ephemeral_container_spec(
     spec: dict[str, Any] = {
         "name": name,
         "image": image,
-        "imagePullPolicy": "IfNotPresent",
+        "imagePullPolicy": pull_policy,
         "command": list(command),
         "terminationMessagePolicy": "File",
         "securityContext": _rung_security_context(
@@ -344,6 +410,36 @@ def _seat_gid(context: dict[str, Any], gid_root: bool) -> dict[str, Any]:
     return context
 
 
+_NOT_PRIVILEGED = {
+    "privileged": False,
+    "allowPrivilegeEscalation": False,
+}
+"""Stated on every rung, including the full one, rather than left to default.
+
+Both fields default to false, so this changes nothing the kernel does — and it
+is the difference between an admitted seat and a refused one. A Kyverno
+``validate.pattern`` rule fails on an **absent** field unless the pattern wraps
+it in a conditional anchor, and a policy written as ``privileged: "false"``
+therefore rejects a container that never mentioned privilege at all. Measured at
+DLS on 2026-08-16 (issue #77):
+
+    block user privileged access to privileged directories: … rule failed at
+    path /spec/ephemeralContainers/1/securityContext/privileged/
+
+The message says the field "must not be set to true", which is exactly what
+sent the reader looking for where podbench set it. Saying what podbench means
+costs two keys and removes the whole class.
+
+``allowPrivilegeEscalation: false`` on the **full** rung is the one line here
+that is not obviously free, since that rung also asks for ``SYS_PTRACE``. It is
+admissible — only ``privileged: true`` and ``CAP_SYS_ADMIN`` conflict with it —
+and it does not withdraw the capability: ``NoNewPrivs`` restricts privilege
+*gained at* ``execve`` from setuid bits and file capabilities, not the set the
+runtime grants the container at start. ``tests/e2e/test_s3_gdb.py`` asserts the
+capability is still effective, because this repo measures rather than reasons.
+"""
+
+
 def _rung_security_context(
     rung: Rung,
     target_uid: int | None,
@@ -357,13 +453,17 @@ def _rung_security_context(
                 f"the full rung runs as root; it cannot also run as uid "
                 f"{target_uid}. Use Rung.DEGRADED for the target's own uid."
             )
-        return {"runAsUser": 0, "capabilities": {"add": ["SYS_PTRACE"]}}
+        return {
+            "runAsUser": 0,
+            "capabilities": {"add": ["SYS_PTRACE"]},
+            **_NOT_PRIVILEGED,
+        }
 
     restricted: dict[str, Any] = {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        **_NOT_PRIVILEGED,
     }
     if rung is Rung.SEAT:
         # Whatever the cluster will admit. The seat needs nothing from the
@@ -674,6 +774,7 @@ def _sidecar(
     env: Mapping[str, str] | None,
     identity: tuple[int, int] | None = None,
     seat_home: bool = False,
+    pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
     if identity is not None:
         # The identity wins over the capability, and cannot be reconciled with
@@ -720,7 +821,7 @@ def _sidecar(
     return {
         "name": name,
         "image": image,
-        "imagePullPolicy": "IfNotPresent",
+        "imagePullPolicy": pull_policy,
         # The sidecar is this pod's ssh endpoint too, so it runs the agent for
         # the same reason the ephemeral container does: nothing writes the sshd
         # config, the authorized keys or the host key otherwise.

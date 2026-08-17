@@ -80,6 +80,10 @@ silent.
   image against a cluster, **push the branch**: every branch push publishes a
   multi-arch prerelease image named after it, e.g.
   `ghcr.io/gilesknap/podbench:0.1.0-beta.4-my-branch`. See `tests/e2e/README.md`.
+  That tag is **overwritten on every push to the branch**, so a second attach on
+  a node that already pulled it silently keeps the first copy: pass
+  `--pull always` when iterating, or you will test the previous commit and
+  conclude the fix does not work.
 
 ## Two environment foot-guns
 
