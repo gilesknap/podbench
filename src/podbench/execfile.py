@@ -73,6 +73,10 @@ Inside the seat, so it counts against the pod's shared ephemeral-storage budget
 (report 3.9) — 21 MB and 15 ms for the CPython interpreter this was measured
 against. The basename is kept because gdb prints this path back at the user in
 ``info files`` and in every "Symbols from" line.
+
+The seat's own ``/tmp``, not a shared one: an ephemeral container has its own
+writable layer, so this is not a path any other container in the pod can reach.
+:func:`stage_exec_file` still creates it ``0o700`` — see the comment there.
 """
 
 
@@ -120,7 +124,16 @@ def stage_exec_file(
     """
     path = strip_deleted(exe)
     destination = staging / str(pid) / PurePosixPath(path).name
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    # 0o700 on both levels. Nothing in a seat has any business reading the
+    # target's binary through us that could not read it through
+    # `/proc/<pid>/root` already, and the name is fixed and lives under /tmp,
+    # so the default umask would let a second process in the seat replace what
+    # gdb is about to open. `exist_ok=True` skips the mode when the directory
+    # is already there, hence the explicit chmod after it.
+    staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.parent.mkdir(mode=0o700, exist_ok=True)
+    for directory in (staging, destination.parent):
+        directory.chmod(0o700)
     # Copied on every call rather than reused when one is already there: pids
     # are reused, and a seat that outlives the process it staged for would
     # otherwise hand gdb an old binary at the right path — the exact failure

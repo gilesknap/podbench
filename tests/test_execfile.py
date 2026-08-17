@@ -194,6 +194,27 @@ def test_a_stale_copy_is_replaced_rather_than_reused(tmp_path: Path) -> None:
     assert Path(fresh).read_text() == TARGET_BYTES
 
 
+def test_the_staging_directories_are_private_to_the_user_who_made_them(
+    tmp_path: Path,
+) -> None:
+    """0o700 at both levels, and on a directory that was already there.
+
+    The path is fixed and under ``/tmp``, so at the default umask a second
+    process in the seat could replace the file between the copy and gdb's open.
+    ``mkdir(exist_ok=True)`` leaves an existing directory's mode alone, which is
+    the case that matters: the first staging of the session is the only one that
+    creates it.
+    """
+    proc = _proc(tmp_path, ours=SEAT_BYTES)
+    staging = tmp_path / "staged"
+    staging.mkdir(mode=0o777)
+
+    stage_exec_file(TARGET_PID, EXE, proc=proc, staging=staging)
+
+    assert staging.stat().st_mode & 0o777 == 0o700
+    assert (staging / str(TARGET_PID)).stat().st_mode & 0o777 == 0o700
+
+
 def test_staging_leaves_no_partial_file_behind(tmp_path: Path) -> None:
     """A failed copy must not leave a truncated ELF at a name gdb would trust."""
     proc = _proc(tmp_path, ours=SEAT_BYTES, theirs=None)
