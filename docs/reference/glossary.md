@@ -92,11 +92,17 @@ origin
 
 rung
   One step of the {term}`capability ladder`, and the security context that goes with
-  it. **Full** is `runAsUser: 0` plus {term}`CAP_SYS_PTRACE` — live attach. **Degraded**
-  is the target's own uid with all capabilities dropped — read-only inspection.
-  **Seat** is whatever the namespace will admit — editor, shell and git only. There is
-  no rung between full and degraded, because a capability added to a non-root
-  container is a silent no-op.
+  it. **Full** is `runAsUser: 0` plus {term}`CAP_SYS_PTRACE`. **Degraded** is the
+  target's own uid with all capabilities dropped. **Seat** is whatever the namespace
+  will admit. There is no rung between full and degraded, because a capability added
+  to a non-root container is a silent no-op.
+
+  A rung is what was *asked for*, and the seat's rung is read back off the container
+  the cluster admitted — which is not the same as what the seat can do. A mutating
+  webhook that strips `capabilities.add` leaves a root seat indistinguishable from
+  the degraded rung while it attaches perfectly well, so the rung names no verdict.
+  What a seat can do is measured by {term}`capreport`, and `status` reports that
+  measurement — or `not probed`, never the rung — beside each seat it lists.
 
 seat
   A podbench container you can work in: an editor, a shell, git and a debugger, inside

@@ -59,6 +59,29 @@
 # /proc/<pid>/root`: resolving that symlink needs PTRACE_MODE_READ, so on the
 # degraded rung it fails for a process that exists, and the wrapper would then
 # skip the sysroot exactly where it matters most — silently.
+#
+# 3. A sysroot is not enough for the *executable* (issue #90).
+#
+# Left to itself, `gdb --pid <n>` finds the exec file from /proc/<n>/exe and
+# canonicalises the name — and /proc/<n>/root canonicalises to `/`, so the
+# sysroot is erased and BFD reads this container's binary of the same name:
+#
+#   BFD: /python/…/python3.11: .gnu.version_r invalid entry
+#   warning: Can't read symbols from /python/…/python3.11: bad value
+#   Error reading attached process's symbol file.
+#
+# That is the text issue #90 was filed with, reproduced here from exactly this
+# argv. The seat image and any uv-managed workload both install an interpreter
+# at /python/cpython-<version>-<triple>/, so a Python target collides by
+# construction. The cure is a `file` command naming a path nothing of ours
+# shadows, which `podbench dbg --print-exec-file` works out and stages; see
+# src/podbench/execfile.py for the measurements.
+#
+# Asked of podbench rather than worked out here, per deviation 2 in
+# image/README.md: the rule (same mount namespace? shadowed? copy where?) is
+# tested once in Python, and a second implementation in sh could only drift.
+# The path is optional — an unreadable /proc/<pid>/exe prints nothing, and gdb
+# then behaves exactly as it did before this block existed.
 pid=
 previous=
 for argument in "$@"; do
@@ -87,6 +110,13 @@ esac
 # the case being detected.
 /bin/pwd >/dev/null 2>&1 || cd /root 2>/dev/null || cd / || exit 1
 if [ -n "$pid" ]; then
+	# `-iex` for the same reason as the sysroot: --pid attaches during startup,
+	# so an -ex `file` would run after the attach and be too late.
+	exec_file=$(/usr/local/bin/podbench dbg "$pid" --print-exec-file) || exec_file=
+	if [ -n "$exec_file" ]; then
+		exec /usr/bin/gdb -iex "set sysroot /proc/$pid/root" \
+			-iex "file $exec_file" "$@"
+	fi
 	exec /usr/bin/gdb -iex "set sysroot /proc/$pid/root" "$@"
 fi
 exec /usr/bin/gdb "$@"

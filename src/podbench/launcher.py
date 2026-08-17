@@ -54,6 +54,7 @@ from .kubectl import (
 from .model import (
     DEFAULT_IMAGE,
     IMAGE_ENV,
+    NOT_PROBED,
     SEAT_GROUP_KEY,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
@@ -147,6 +148,7 @@ __all__ = [
     "parse_mount",
     "plan_ladder",
     "pod_choices",
+    "probe_seats",
     "probe_ssh_identity",
     "read_public_key",
     "resolve_among",
@@ -1202,8 +1204,11 @@ def run_capreport(
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
         return None, [
-            "capreport produced no parsable JSON, so the capability report "
-            "below is missing: "
+            # Worded for both callers: `attach` prints this above a report with
+            # no `measured` block, `status` beside a seat whose verdict column
+            # therefore says `not probed`, and neither may claim the other's
+            # layout.
+            "capreport produced no parsable JSON, so nothing was measured: "
             + (result.stderr.strip() or result.stdout.strip() or "no output")
         ]
     if not isinstance(payload, dict):
@@ -2298,6 +2303,18 @@ def host_alias_in(stanza: str) -> str | None:
     return None
 
 
+_SEAT_FACT = " " * 4
+"""Where everything said about one seat is indented to, under its row."""
+
+_FACT_INDENT = " " * 14
+"""Where a fact's value starts, and stays on a wrap.
+
+:data:`_SEAT_FACT`, then a label padded to the width of the longest of them,
+then the two spaces that make it a label at all rather than a word a sentence
+opens with (see ``console._LABEL``).
+"""
+
+
 def ssh_connect_line(directory: Path, pod: PodRef, seat: str | None = None) -> str:
     """What to type to sit in ``pod``'s seat — read from disk, never derived.
 
@@ -2309,6 +2326,11 @@ def ssh_connect_line(directory: Path, pod: PodRef, seat: str | None = None) -> s
     match. A listing that names an alias which does not work is worse than one
     that names none, so every case that cannot produce a real alias says which
     file it looked in instead.
+
+    Indented to :data:`_SEAT_FACT`, with the seat's other facts, because it is
+    one seat's alias and a pod can list several. Returned whole and never
+    wrapped: the right-hand half is there to be pasted, and
+    :func:`~podbench.console.wrap` would break it on a space.
     """
     path = ssh_config_path(directory, pod, seat)
     try:
@@ -2318,20 +2340,95 @@ def ssh_connect_line(directory: Path, pod: PodRef, seat: str | None = None) -> s
         # landed from another machine, or by a colleague, is normal and reaches
         # here, and `ssh-config` exists to mint the missing half.
         return (
-            f"  no ssh config here: podbench ssh-config -n {pod.namespace} {pod.name}"
+            f"{_SEAT_FACT}no ssh config here: "
+            f"podbench ssh-config -n {pod.namespace} {pod.name}"
         )
     except OSError as error:
-        return f"  cannot read {path}: {error.strerror or error}"
+        return f"{_SEAT_FACT}cannot read {path}: {error.strerror or error}"
     alias = host_alias_in(stanza)
     if alias is None:
         return (
-            f"  no Host line in {path}: "
+            f"{_SEAT_FACT}no Host line in {path}: "
             f"podbench ssh-config -n {pod.namespace} {pod.name}"
         )
-    return f"  ssh {alias}"
+    return f"{_SEAT_FACT}ssh {alias}"
 
 
-def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -> str:
+def probe_seats(
+    kubectl: Kubectl, pod: PodRef, present: Sequence[SeatInfo]
+) -> dict[str, CapabilityReport | str]:
+    """What ``capreport`` says in each of a pod's seats, keyed by container.
+
+    The measurement :func:`format_seats` needs, and the only honest source for
+    a verdict column: what a seat can do is decided in the kernel, on that
+    node, by four subsystems that the securityContext it was admitted with does
+    not determine (issue #89). So it is asked, per seat, exactly as ``attach``
+    asks it.
+
+    Only a *running* seat can be asked, and a seat that is not one is left out
+    rather than given a reason: the row above it already says ``waiting`` or
+    ``terminated``, and a second sentence saying so is the report growing a
+    line per seat to repeat itself.
+
+    A failed probe is kept, as the text of why. An image too old to answer, an
+    ``exec`` RBAC refusal and a seat that is running but wedged are all real,
+    and dropping them would report a running seat as merely unprobed with no
+    hint that anything was tried.
+    """
+    measured: dict[str, CapabilityReport | str] = {}
+    for seat in present:
+        if not seat.running:
+            continue
+        report, refusals = run_capreport(kubectl, ContainerRef(pod, seat.name))
+        measured[seat.name] = (
+            report
+            if report is not None
+            else "; ".join(refusals) or "capreport gave no answer and no reason"
+        )
+    return measured
+
+
+def _fact(label: str, value: str) -> list[str]:
+    """One ``label   value`` row under a seat, wrapped at the value only.
+
+    The aligned lead goes in ``first`` because :func:`~podbench.console.wrap`
+    splits on ``text.split()`` and so collapses the two spaces that make the
+    label a label — a whole row through :func:`paragraph` comes back a sentence
+    with the value no longer under anything.
+    """
+    return paragraph(value, first=f"{_SEAT_FACT}{label:<7}   ", indent=_FACT_INDENT)
+
+
+def _seat_verdict(measured: CapabilityReport | str | None) -> str:
+    """The one line a listing may put in a verdict column.
+
+    ``measured`` is the seat's :class:`~podbench.model.CapabilityReport`, or
+    the reason there is none, or nothing. Only the first of those can carry a
+    claim, and even then only the claim its own attempts support: see
+    :func:`podbench.model.measured_verdict`.
+
+    >>> _seat_verdict(None)
+    'not probed'
+    >>> _seat_verdict("kubectl exec into this seat was refused")
+    'not probed - kubectl exec into this seat was refused'
+    """
+    if isinstance(measured, CapabilityReport):
+        verdict = measured.measured
+        if verdict is not None:
+            return verdict.summary
+        # A probe that ran and measured nothing — no target pid, no matrix, no
+        # scratch attach — is still an unprobed seat as far as a verdict goes.
+        measured = "capreport measured nothing about the target"
+    return f"{NOT_PROBED} - {measured}" if measured else NOT_PROBED
+
+
+def format_seats(
+    pod: PodRef,
+    present: Sequence[SeatInfo],
+    *,
+    directory: Path,
+    measured: Mapping[str, CapabilityReport | str] | None = None,
+) -> str:
     """One pod's podbench containers, for ``status`` and ``list``.
 
     ``directory`` is the client config dir, and is read — never written — for
@@ -2339,19 +2436,30 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -
     alias to ssh to. Required rather than defaulted so a caller cannot drop the
     connect line by omission.
 
+    ``measured`` carries what ``capreport`` said in each seat, keyed by
+    container name, or the reason it said nothing. A seat missing from it is
+    reported as :data:`~podbench.model.NOT_PROBED` — never as its rung, which
+    is what the cluster admitted and not what the seat can do (issue #89). The
+    two are routinely different in the same direction: a webhook that strips
+    ``capabilities.add`` leaves a root seat reading back as ``degraded`` while
+    it attaches perfectly well, and this column used to call that seat
+    read-only.
+
     The alias is offered only where a seat is *running*. A stanza outlives the
     container it was written for — nothing deletes it, and an ephemeral
     container's name is burnt for the pod's lifetime once it exits — so a pod
     whose only seat has terminated would otherwise be listed with an ssh line
     that cannot work, one line under the row saying why.
     """
-    lines = [str(pod)]
+    probes = measured or {}
+    # Headed, as `format_pod_choices` is, because the third cell now stops at
+    # the rung's name: `degraded` under nothing at all is the very reading this
+    # verb has to stop making, and a header is cheaper than a word per row.
+    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} RUNG"]
     for seat in present:
-        lines.append(
-            f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value:<9} "
-            f"{seat.rung.description}"
-        )
-        lines.append(f"  {'':<12} {seat.detail}")
+        lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
+        lines.extend(_fact("state", seat.detail))
+        lines.extend(_fact("verdict", _seat_verdict(probes.get(seat.name))))
         # Per seat, because the alias now names one: a pod carrying two live
         # seats has two of them, and a single line would have to pick.
         if seat.running:
@@ -3223,20 +3331,39 @@ def _build_app(
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
+        no_probe: Annotated[
+            bool,
+            typer.Option(
+                "--no-probe",
+                help="do not run capreport in the seats; every verdict then "
+                "reads `not probed`, which is what this listing has to say "
+                "when it has measured nothing",
+            ),
+        ] = False,
         config_dir: _ConfigDir = None,
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
+        reference = PodRef(kube.namespace, name)
         present = seats(kube.get_pod(name))
         if not present:
             print(f"no podbench containers in {kube.namespace}/{name}")
             raise typer.Exit(0)
+        # An `exec` per running seat, which is what makes this verb's verdict a
+        # measurement rather than a restatement of the spec: the rung a seat
+        # reads back as is what admission left behind, and a stripped
+        # `capabilities.add` is indistinguishable from the degraded rung
+        # (issue #89). `--no-probe` is for a listing that must touch nothing.
+        measured = {} if no_probe else probe_seats(kube, reference, present)
         # Read-only: the config dir is where the ssh alias for these seats is
         # recorded, and reporting one podbench cannot back up would be worse
         # than reporting none. Nothing here writes a stanza.
         emit(
             format_seats(
-                PodRef(kube.namespace, name), present, directory=client_dir(config_dir)
+                reference,
+                present,
+                directory=client_dir(config_dir),
+                measured=measured,
             )
         )
         raise typer.Exit(0)

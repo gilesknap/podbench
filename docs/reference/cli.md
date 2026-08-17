@@ -611,6 +611,9 @@ burnt.
 │ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context's own)               │
 │ --context             NAME       kubeconfig context                                              │
 │ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --no-probe                       do not run capreport in the seats; every verdict then reads     │
+│                                  `not probed`, which is what this listing has to say when it has │
+│                                  measured nothing                                                │
 │ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
 │                                  ~/.podbench)                                                    │
 │ --help                           Show this message and exit.                                     │
@@ -950,6 +953,12 @@ produces a correct backtrace.
 │ --run                                      with --launch, start the program immediately          │
 │ --dry-run,--print-commands                 print the generated gdb commands and exit, without    │
 │                                            probing or starting gdb                               │
+│ --print-exec-file                          print the one path to give gdb's `file` command and   │
+│                                            exit. It is the target's own path under the sysroot   │
+│                                            unless this container has a file of its own at that   │
+│                                            path, in which case gdb would read ours (issue #90)   │
+│                                            and a copy is staged instead. What `gdb-podbench`     │
+│                                            calls for a third-party `gdb --pid`                   │
 │ --launch                          PROGRAM  debug a program gdb starts itself instead of          │
 │                                            attaching. Needs no capability. Consumes the rest of  │
 │                                            the command line, so put other flags first            │
@@ -959,6 +968,15 @@ produces a correct backtrace.
 
 `--launch` consumes the remainder of the command line, so any other flag must
 come first. See [Debug with gdb](../how-to/debug-with-gdb.md).
+
+`--print-exec-file` exists because `file /proc/<pid>/root<exe>` is not always
+the right answer. gdb canonicalises the exec file's name, the kernel resolves
+`/proc/<pid>/root` to `/`, and a seat that has a file of its own at the target's
+path then reads *ours* — a `.gnu.version_r invalid entry` if the two builds
+differ enough, and the wrong symbols in silence if they do not. Where that
+happens `dbg` copies the target's binary somewhere nothing shadows it, says so
+in one line, and points `file` at the copy; `--dry-run` prints the same command
+it would run, so the sequence stays pasteable.
 
 ### `debug-config`
 

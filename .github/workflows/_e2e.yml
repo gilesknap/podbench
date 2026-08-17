@@ -6,6 +6,15 @@ name: End-to-end tests
 # instead of silently. Several of those mechanisms fail *quietly* when broken —
 # a truncated stdio stream with rc=0, a debug container that guesses which
 # processes belong to the target — so unit tests cannot stand in for it.
+#
+# `ci.yml` calls this workflow twice, and the difference between the two calls
+# is one sysctl. `kernel.yama.ptrace_scope` is a *node* property, and kind nodes
+# are containers sharing the runner's kernel, so it cannot be varied per test,
+# per namespace or per cluster within one runner — see `kind.yaml`, which
+# refuses to tune it because the distributions' default of 1 is the case where
+# CAP_SYS_PTRACE is doing real work and S3 would otherwise pass for the wrong
+# reason. `tests/e2e/test_dls_ioc.py` needs the opposite (issue #89 is a capless
+# seat that *can* attach), so it gets a runner of its own.
 
 on:
   workflow_call:
@@ -13,6 +22,34 @@ on:
       runs-on:
         type: string
         default: ubuntu-latest
+      pytest-target:
+        description: What to hand pytest. Narrow it to give one module a cluster
+          property the rest of the suite must not have.
+        type: string
+        default: tests/e2e
+      ptrace-scope:
+        description: >-
+          kernel.yama.ptrace_scope to set on the runner before the cluster is
+          created, as a string. Empty leaves it at whatever the runner image
+          ships, which is what the main suite wants.
+        type: string
+        default: ""
+      kind-version:
+        description: >-
+          kind release to create the cluster with. The default restates
+          helm/kind-action's own, so that a caller which asks for nothing keeps
+          the Kubernetes version it has today: an input with no value does not
+          fall back to an action's default, it overrides it with the empty
+          string.
+        type: string
+        default: v0.31.0
+      kubectl-version:
+        description: >-
+          kubectl to put on PATH, matched to the server the kind release above
+          brings. The suite shells out to whatever `kubectl` this is, because
+          podbench inherits that binary rather than linking a client library.
+        type: string
+        default: v1.35.0
 
 jobs:
   e2e:
@@ -51,9 +88,35 @@ jobs:
           # runs on an amd64 runner, so that is the scope worth reading.
           cache-from: type=gha,scope=amd64
 
+      # Set before the cluster exists only for tidiness — Yama's scope is a live
+      # global, not something a node container inherits at start-up. Read back
+      # rather than trusted: a `sysctl -w` that silently did nothing (a hardened
+      # runner, a future GitHub image) would turn the one job that exercises #89
+      # into a job that skips it, and a regression test nobody notices has
+      # stopped running is worse than one that was never written.
+      - name: Set kernel.yama.ptrace_scope
+        if: inputs.ptrace-scope != ''
+        # Through the environment rather than interpolated into the script, so
+        # the value is data to the shell and not a line of it.
+        env:
+          WANTED: ${{ inputs.ptrace-scope }}
+        run: |
+          sudo sysctl -w "kernel.yama.ptrace_scope=$WANTED"
+          scope=$(cat /proc/sys/kernel/yama/ptrace_scope)
+          echo "kernel.yama.ptrace_scope is now $scope"
+          test "$scope" = "$WANTED"
+
       - name: Create the kind cluster
         uses: helm/kind-action@v1
         with:
+          # From the caller, not hard-coded here. Only the DLS job needs a newer
+          # Kubernetes — `test_dls_ioc.py` binds a MutatingAdmissionPolicy at
+          # admissionregistration.k8s.io/v1 and skips itself where that is not
+          # served, which would leave the #89 job green and empty — and raising
+          # it for everyone as a side effect would move the version every
+          # existing regression test runs against without anyone choosing it.
+          version: ${{ inputs.kind-version }}
+          kubectl_version: ${{ inputs.kubectl-version }}
           config: kind.yaml
           cluster_name: podbench-e2e
 
@@ -66,7 +129,11 @@ jobs:
           # Side-loaded; the imagePullPolicy must never send kind to a registry
           # for a tag that exists nowhere else.
           PODBENCH_IMAGE: docker.io/library/podbench:e2e
-        run: uv run --no-sync pytest tests/e2e -v -rs
+          TARGET: ${{ inputs.pytest-target }}
+        # `-rs` is not decoration: a module whose cluster prerequisite is absent
+        # skips rather than fails, and the skip line is the only thing that says
+        # so.
+        run: uv run --no-sync pytest "$TARGET" -v -rs
 
       - name: Cluster state on failure
         if: failure()

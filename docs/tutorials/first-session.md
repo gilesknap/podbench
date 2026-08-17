@@ -125,7 +125,7 @@ the spec podbench asked for:
 ```
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
 target      web
-rung        full - root + CAP_SYS_PTRACE (live attach)
+rung        full - root plus CAP_SYS_PTRACE
 ladder
   full      landed   admitted by the API server and the kubelet
 supports
@@ -225,10 +225,12 @@ $ uvx podbench list -n podbench-demo
 ```
 
 `status` lists every podbench container in a pod, including dead ones whose
-names are burnt. `list` does the same across the namespace — useful for finding
-the session you forgot about last week. Each pod's block ends with the `ssh`
-line to reconnect with, taken from the stanza `attach` wrote, so the alias
-survives the attach output scrolling away.
+names are burnt, and re-runs the probe in each running one so that the `verdict`
+beside a seat is measured today rather than inferred from the rung it landed on
+a week ago. `list` does the same across the namespace, minus the probe — every
+verdict there reads `not probed`, because a fleet listing execs into nothing.
+Each pod's block ends with the `ssh` line to reconnect with, taken from the
+stanza `attach` wrote, so the alias survives the attach output scrolling away.
 
 ## 8. Clean up
 

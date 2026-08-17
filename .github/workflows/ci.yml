@@ -74,6 +74,30 @@ jobs:
     needs: container
     uses: ./.github/workflows/_e2e.yml
 
+  # A second runner, for one module, because the property it needs is global to
+  # a kernel. Issue #89 is a seat with no CAP_SYS_PTRACE that can ptrace its
+  # target anyway — classic same-uid ptrace, which only exists at
+  # `kernel.yama.ptrace_scope=0`. The runners ship 1, `kind.yaml` deliberately
+  # will not force 0 (S3 would then pass without the capability doing anything),
+  # and a sysctl cannot be scoped to a namespace or a pod. Hence a job rather
+  # than a skip: skipping unless the scope is 0 costs nothing and buys nothing,
+  # because CI would then never run the regression test at all.
+  e2e-dls:
+    needs: container
+    uses: ./.github/workflows/_e2e.yml
+    with:
+      ptrace-scope: "0"
+      pytest-target: tests/e2e/test_dls_ioc.py
+      # Only this job needs them. `test_dls_ioc.py` binds a
+      # MutatingAdmissionPolicy at admissionregistration.k8s.io/v1 and skips
+      # itself where that is not served, so on the action's default it would run
+      # green and empty. kind 0.32 brings Kubernetes 1.36.1 — the version the
+      # field cluster and the k3s bed both run. The main `e2e` job above is left
+      # on the defaults so this does not move the Kubernetes version every other
+      # regression test runs against.
+      kind-version: v0.32.0
+      kubectl-version: v1.36.1
+
   docs:
     uses: ./.github/workflows/_docs.yml
     permissions:

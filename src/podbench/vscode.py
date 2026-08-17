@@ -63,6 +63,7 @@ import platform
 import shutil
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -70,6 +71,7 @@ import typer
 
 from .cli import new_app, run
 from .elf import debugpy_helper_name, debugpy_helper_published
+from .execfile import gdb_exec_file
 from .flavour import (
     DEBUGPY_PORT,
     Assessment,
@@ -80,6 +82,7 @@ from .flavour import (
     Target,
     Which,
     assess,
+    can_ptrace_target,
     detect_mode,
     injection_command,
     inspect_target,
@@ -94,6 +97,7 @@ from .gdbcmd import (
 )
 from .kubectl import Runner, run_subprocess
 from .model import as_dict
+from .probe import Attacher, default_attacher
 from .proc import DEFAULT_PROC
 from .provision import (
     PROVISION_DEST,
@@ -127,6 +131,7 @@ __all__ = [
     "lldb_configuration",
     "machine_settings_text",
     "main",
+    "measured_attach",
     "merge_extensions_json",
     "merge_folder_settings",
     "merge_launch_configs",
@@ -553,6 +558,7 @@ def cppdbg_configuration(
     pid: int,
     program: str,
     *,
+    exec_file: str | None = None,
     name: str | None = None,
     source_dirs: Sequence[str] = (),
     source_map: Mapping[str, str] | None = None,
@@ -574,6 +580,16 @@ def cppdbg_configuration(
     '597'
     >>> config["name"]
     'podbench: attach to victim (gdb)'
+
+    ``exec_file`` replaces that prefixed path where the seat has a binary of its
+    own at ``program`` — gdb canonicalises the sysroot away and reads ours
+    (issue #90), and cpptools sends ``program`` as ``-file-exec-and-symbols``
+    before any ``setupCommands`` run, so no gdb command can undo it. The name
+    still comes from ``program``, because "attach to victim" is what the reader
+    is choosing between and the staged copy is an implementation detail.
+
+    >>> cppdbg_configuration(597, "/app/victim", exec_file="/tmp/x/victim")["program"]
+    '/tmp/x/victim'
     """
     configuration: dict[str, Any] = {
         "name": name or _name("attach to", Path(program).name, Flavour.GDB),
@@ -582,7 +598,7 @@ def cppdbg_configuration(
         # A string, which is what cpptools' own templates use; an int works
         # today but is not what the schema documents.
         "processId": str(pid),
-        "program": f"{sysroot_path(pid)}{program}",
+        "program": exec_file or f"{sysroot_path(pid)}{program}",
         "cwd": SEAT_CWD,
         "MIMode": "gdb",
         "miDebuggerPath": GDB_WRAPPER,
@@ -802,6 +818,7 @@ def configurations_for(
     source_dirs: Sequence[str] = (),
     source_map: Mapping[str, str] | None = None,
     debuginfod: bool = True,
+    exec_file: str | None = None,
 ) -> list[dict[str, Any]]:
     """Every configuration one available flavour contributes, in emission order.
 
@@ -826,6 +843,7 @@ def configurations_for(
             cppdbg_configuration(
                 target.pid,
                 program,
+                exec_file=exec_file,
                 source_dirs=source_dirs,
                 source_map=source_map,
                 debuginfod=debuginfod,
@@ -1047,6 +1065,62 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     return port if listeners_on(parse_ss(result.stdout), port) else None
 
 
+def measured_attach(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    proc: Path,
+    attacher: Attacher | None,
+) -> bool | None:
+    """Whether this seat can really ptrace ``target``, or ``None`` for unasked.
+
+    The pid injection is ``gdb --pid``, so what the debugpy flavour needs to
+    know is whether ptrace is permitted — and CAP_SYS_PTRACE is one of four ways
+    to be permitted it. A same-uid attach under ``ptrace_scope=0`` needs no
+    capability at all, and reading the bit instead of asking is what refused a
+    Diamond seat the injection that ``capreport`` had measured working, from the
+    same seat, against the same pid, in the same minute (issue #89).
+
+    So it is asked, with the ``PTRACE_ATTACH``/``PTRACE_DETACH`` pair
+    ``capreport`` uses. That attach SIGSTOPs the workload for the instant it
+    takes, which is a real cost to put on a verb that otherwise only authors a
+    file, so it is spent in exactly the case that would otherwise be refused
+    wrongly: a Python target, in attach mode, with nothing already listening,
+    in a seat whose capability bit is clear. Every other call returns ``None``,
+    stops nothing, and leaves :func:`assess` reading the bit as before.
+
+    A synthetic ``/proc`` is never probed. Its pids name unrelated processes on
+    whatever machine is running, so an attach there would measure something
+    else entirely — and the unit tests that inject one must keep answering from
+    the capability mask they wrote into it.
+    """
+    if proc != DEFAULT_PROC:
+        return None
+    if mode is Mode.DEV or target.language is not Language.PYTHON:
+        # Neither consults the answer: dev mode debugs a child of this
+        # container, and a non-Python target has no injection to drive.
+        return None
+    if seat.listening_port is not None or seat.cap_sys_ptrace:
+        # Nothing would be refused, so nothing is worth stopping the workload
+        # for.
+        return None
+    outcome = (default_attacher() if attacher is None else attacher).attach(target.pid)
+    # Notes travel with the outcome because they are about what the attach *did*
+    # — a detach that failed leaves the workload stopped, and that has to be
+    # said whatever the verdict was.
+    for note in outcome.notes:
+        _warn(note)
+    if outcome.ok:
+        _warn(
+            f"measured ptrace to pid {target.pid} rather than reading CapEff: "
+            "PTRACE_ATTACH succeeded, so the injection is offered on the "
+            "measurement and not refused on the capability bit. The attach "
+            "stopped the workload for the instant it took"
+        )
+    return outcome.measured_ok
+
+
 def _inject(
     target: Target,
     mode: Mode,
@@ -1201,14 +1275,18 @@ def _provision(
             "pass --provision-python X.Y (`python -V` in the target names it)"
         )
         return False
-    if not seat.cap_sys_ptrace:
+    # Asked of the same predicate `assess` uses, not of the bit: this sentence
+    # and the refusal it prepares the reader for are two spellings of one fact,
+    # and a seat that measured an attach reads "the injection cannot be driven
+    # from here" immediately before the injection is driven from here (#89).
+    if not can_ptrace_target(seat):
         # Said, not refused - unlike the arm64 gate above. The tree lands in the
         # *target's* rootfs, which outlives this seat, so provisioning now and
         # relaunching on the `full` rung still works; what would be wrong is
         # letting the install land and then reading "CAP_SYS_PTRACE is not in
         # this seat's effective set" two lines later with nothing joining them.
         _warn(
-            "--provision: this seat has no CAP_SYS_PTRACE, so the injection "
+            "--provision: this seat cannot ptrace the target, so the injection "
             "cannot be driven from here whatever gets installed - the copy goes "
             "into the target's own rootfs and outlives this seat, so a relaunch "
             "on the `full` rung picks it up rather than repeating the install"
@@ -1245,6 +1323,7 @@ def _emit(
     source_dirs: Sequence[str],
     source_map: Mapping[str, str],
     debuginfod: bool,
+    exec_file: str | None = None,
     verbose: bool = True,
 ) -> list[dict[str, Any]]:
     """Turn the verdicts into configurations, and the refusals into sentences.
@@ -1275,6 +1354,7 @@ def _emit(
                     source_dirs=source_dirs,
                     source_map=source_map,
                     debuginfod=debuginfod,
+                    exec_file=exec_file,
                 )
             )
             continue
@@ -1305,6 +1385,7 @@ def _run(
     provision_python: str | None,
     proc: Path,
     runner: Runner | None,
+    attacher: Attacher | None,
     which: Which,
     debugpy_root: str | None,
 ) -> int:
@@ -1356,6 +1437,7 @@ def _run(
                 provision_python=provision_python,
                 proc=proc,
                 runner=runner,
+                attacher=attacher,
                 which=which,
                 debugpy_root=debugpy_root,
                 hint=primary,
@@ -1392,6 +1474,7 @@ def _for_target(
     provision_python: str | None,
     proc: Path,
     runner: Runner | None,
+    attacher: Attacher | None,
     which: Which,
     debugpy_root: str | None,
     hint: bool,
@@ -1401,19 +1484,49 @@ def _for_target(
     for note in target.notes:
         _warn(note)
     mode = mode or detect_mode(pid, proc=proc)
-    # The path cpptools will put in `program`, and so the one to ask gdb about:
+    # Bound to its own name for the closure below: a captured variable keeps its
+    # declared type, so `mode` reads as `Mode | None` inside `measure()` however
+    # it was narrowed out here.
+    target_mode = mode
+    # The path cpptools will put in `program`, and so the one to ask gdb about.
+    # Not `sysroot_program`, though the sysroot prefix is where it starts:
     # unprefixed it names *this* image's binary of the same name, which is the
     # substitution report §3.3 measured. In dev mode the program is here, so
     # there is no prefix to add.
-    sysroot_program = (
-        None
-        if not target.program
-        else target.program
-        if mode is Mode.DEV
-        else f"{sysroot_path(pid)}{target.program}"
-    )
+    #
+    # The sysroot prefix is not enough on its own. gdb canonicalises the exec
+    # file's name and `/proc/<pid>/root` canonicalises to `/`, so where this
+    # seat keeps a file at the target's path it reads ours anyway (issue #90) —
+    # and cpptools sends `program` as `-file-exec-and-symbols` before any
+    # setupCommands run, so nothing in the configuration can undo it. A copy is
+    # staged instead, and the same path is used for both the question below and
+    # the configuration: asking gdb about one file and handing cpptools another
+    # is how a seat ends up refusing a target it can debug.
+    #
+    # Staged for the languages that reach gdb only. A Python target's cppdbg
+    # entry is withdrawn on language (`flavour._assess_gdb`), so a copy per
+    # candidate pid would spend the pod's ephemeral storage (report 3.9) on a
+    # configuration that is never written.
+    gdb_program: str | None = None
+    if target.program:
+        if mode is Mode.DEV:
+            gdb_program = target.program
+        elif target.language in (Language.NATIVE, Language.UNKNOWN):
+            gdb_program, exec_file_notes = gdb_exec_file(pid, target.program, proc=proc)
+            for note in exec_file_notes:
+                _warn(note)
+        else:
+            gdb_program = f"{sysroot_path(pid)}{target.program}"
+
+    # Asked at most once, and reused when the seat is re-measured after an
+    # install: whether this seat may ptrace the target is not a question
+    # installing a wheel can change, and each attach stops the workload for the
+    # instant it takes.
+    attach_ok: bool | None = None
+    attach_asked = False
 
     def measure() -> Seat:
+        nonlocal attach_ok, attach_asked
         # The listener is re-probed on every measurement rather than read once:
         # --provision can *start* one part way through this function, and a
         # port sampled before that would emit a configuration whose "already
@@ -1423,16 +1536,19 @@ def _for_target(
             if target.language is Language.PYTHON
             else None
         )
-        # Only for a native target: asking gdb about a CPython would answer a
-        # question the debugpy flavour does not ask, and cost a gdb start-up per
-        # candidate to do it.
+        # Native and unknown targets only, and still, though the debugpy pid
+        # injection now withdraws on the same answer — it drives gdb to `call
+        # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
+        # says about a python-build-standalone interpreter is issue #90's open
+        # question, and measuring it here would settle that issue by accident,
+        # in a verb that otherwise only authors a file, at the price of a gdb
+        # start-up per candidate. #90 is where the Python case joins.
         load_error = (
-            program_load_error(target.pid, sysroot_program, runner=runner)
-            if sysroot_program
-            and target.language in (Language.NATIVE, Language.UNKNOWN)
+            program_load_error(target.pid, gdb_program, runner=runner)
+            if gdb_program and target.language in (Language.NATIVE, Language.UNKNOWN)
             else None
         )
-        return survey_seat(
+        surveyed = survey_seat(
             target,
             proc=proc,
             which=which,
@@ -1441,6 +1557,12 @@ def _for_target(
             provision_dest=provision_dest,
             program_load_error=load_error,
         )
+        if not attach_asked:
+            attach_asked = True
+            attach_ok = measured_attach(
+                target, target_mode, surveyed, proc=proc, attacher=attacher
+            )
+        return replace(surveyed, target_attach_ok=attach_ok)
 
     seat = measure()
     if provision:
@@ -1480,6 +1602,7 @@ def _for_target(
         source_dirs=source_dirs,
         source_map=source_map,
         debuginfod=debuginfod,
+        exec_file=gdb_program if mode is not Mode.DEV else None,
         verbose=verbose,
     )
     if not configurations and not verbose:
@@ -1561,15 +1684,19 @@ def main(
     *,
     proc: Path = DEFAULT_PROC,
     runner: Runner | None = None,
+    attacher: Attacher | None = None,
     which: Which = shutil.which,
     debugpy_root: str | None = None,
 ) -> int:
     """``podbench debug-config`` — author ``launch.json`` for this seat.
 
-    ``proc``, ``runner``, ``which`` and ``debugpy_root`` are test seams; the CLI
-    passes none of them. ``which`` in particular: whether this image ships gdb
-    decides whether a gdb configuration is emitted at all, and a unit test must
-    not answer that question from the machine it happens to run on.
+    ``proc``, ``runner``, ``attacher``, ``which`` and ``debugpy_root`` are test
+    seams; the CLI passes none of them. ``which`` in particular: whether this
+    image ships gdb decides whether a gdb configuration is emitted at all, and a
+    unit test must not answer that question from the machine it happens to run
+    on. ``attacher`` is the ptrace backend :func:`measured_attach` uses, and a
+    test that wants an answer out of it has to inject one *and* a real ``proc``:
+    against a synthetic tree nothing is attached at all.
     """
     app = new_app()
 
@@ -1726,6 +1853,7 @@ def main(
                 provision_python=provision_python,
                 proc=proc,
                 runner=runner,
+                attacher=attacher,
                 which=which,
                 debugpy_root=debugpy_root,
             )

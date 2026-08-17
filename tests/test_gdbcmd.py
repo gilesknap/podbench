@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 import pytest
 
+from podbench import execfile, gdbcmd
 from podbench.gdbcmd import (
+    EXIT_USAGE,
     attach_commands,
     command_file_text,
     format_process_table,
@@ -409,6 +412,140 @@ def test_dbg_execs_gdb_when_attach_is_permitted(tmp_path: Path) -> None:
     )
     assert code == 0
     assert runner.calls == [gdb_argv(attach_commands(TARGET_PID, exe="/app/victim"))]
+
+
+def _shadow_the_targets_exe(proc: Path, tmp_path: Path) -> Path:
+    """Put a *different* ``/app/victim`` in both rootfs views, as #90 needs.
+
+    The synthetic tree has no ``/proc/self/root`` at all, which is why every
+    other test in this file goes on emitting the plain sysroot path: nothing of
+    ours can shadow a path we do not have. Here both sides exist and differ,
+    which is the seat-image-versus-target-image collision.
+
+    Returns the staging directory to redirect ``gdb_exec_file`` at, so the copy
+    lands under ``tmp_path`` instead of the seat's real ``/tmp``.
+    """
+    ours = proc / "self" / "root" / "app" / "victim"
+    ours.parent.mkdir(parents=True, exist_ok=True)
+    ours.write_text("this seat's own /app/victim\n")
+    theirs = proc / str(TARGET_PID) / "root" / "app" / "victim"
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("the target's /app/victim\n")
+    return tmp_path / "staged"
+
+
+def test_dbg_gives_gdb_a_file_command_no_binary_of_ours_can_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #90's wiring: the ``file`` path must hold the *target's* bytes.
+
+    gdb canonicalises the exec file's name, ``/proc/<pid>/root`` canonicalises
+    to ``/``, and BFD then reads whatever this container keeps at that path —
+    so the sequence has to name a path nothing of ours occupies. Asserted on
+    the bytes at the emitted path rather than on its spelling: a `file` command
+    pointing at the right-looking path with the seat's binary behind it is the
+    defect, not the fix.
+    """
+    proc = make_proc(tmp_path)
+    staging = _shadow_the_targets_exe(proc, tmp_path)
+    monkeypatch.setattr(
+        gdbcmd, "gdb_exec_file", partial(execfile.gdb_exec_file, staging=staging)
+    )
+
+    assert main(["dbg", str(TARGET_PID), "--dry-run"], proc=proc) == 0
+    captured = capsys.readouterr()
+    emitted = [
+        line.removeprefix("file ")
+        for line in captured.out.splitlines()
+        if line.startswith("file ")
+    ]
+
+    assert len(emitted) == 1, captured.out
+    assert Path(emitted[0]).read_text() == "the target's /app/victim\n"
+    assert "#90" in captured.err, (
+        "substituting the path silently leaves the reader unable to explain why "
+        f"gdb is reading /tmp: {captured.err}"
+    )
+
+
+def test_dbg_prints_one_path_for_the_gdb_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--print-exec-file`` is what ``image/bin/gdb-podbench`` shells out to.
+
+    One path on stdout and nothing else, because the wrapper interpolates it
+    straight into a ``file`` command for a third-party ``gdb --pid``.
+    """
+    proc = make_proc(tmp_path)
+    staging = _shadow_the_targets_exe(proc, tmp_path)
+    monkeypatch.setattr(
+        gdbcmd, "gdb_exec_file", partial(execfile.gdb_exec_file, staging=staging)
+    )
+    runner = RecordingRunner()
+
+    code = main(["dbg", str(TARGET_PID), "--print-exec-file"], proc=proc, runner=runner)
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert runner.calls == [], "printing a path must not start a debugger"
+    assert out.splitlines() == [str(staging / str(TARGET_PID) / "victim")]
+
+
+def test_print_exec_file_says_nothing_when_the_exe_cannot_be_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A degraded rung cannot read ``/proc/<pid>/exe`` at all (report 3.11).
+
+    The wrapper then has nothing to give gdb and must leave it exactly as it
+    was, so this has to be an empty stdout and a non-zero exit rather than a
+    guess at the path.
+    """
+    proc = make_proc(tmp_path)
+    (proc / str(TARGET_PID) / "exe").unlink()
+
+    code = main(["dbg", str(TARGET_PID), "--print-exec-file"], proc=proc)
+
+    assert code == EXIT_USAGE
+    assert capsys.readouterr().out == ""
+
+
+def test_print_exec_file_never_starts_a_debugger_instead(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--launch`` has no pid, but it must not turn a query into an exec.
+
+    The program is here, in this container, so there is no sysroot to
+    canonicalise away and the answer is the program itself.
+    """
+    runner = RecordingRunner()
+
+    code = main(
+        ["dbg", "--print-exec-file", "--launch", "./prog"],
+        proc=make_proc(tmp_path),
+        runner=runner,
+    )
+
+    assert code == 0
+    assert runner.calls == []
+    assert capsys.readouterr().out == "./prog\n"
+
+
+def test_an_unshadowed_target_still_gets_the_sysroot_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The common case is untouched, and says nothing about #90.
+
+    Every target that does not share a base-image convention with the seat
+    keeps report 4.3's sequence verbatim; a copy would only spend the pod's
+    ephemeral storage.
+    """
+    proc = make_proc(tmp_path)
+
+    assert main(["dbg", str(TARGET_PID), "--print-exec-file"], proc=proc) == 0
+    captured = capsys.readouterr()
+
+    assert captured.out == f"/proc/{TARGET_PID}/root/app/victim\n"
+    assert captured.err == ""
 
 
 def test_dbg_names_the_blocker_and_offers_launch(

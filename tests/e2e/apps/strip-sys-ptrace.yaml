@@ -1,0 +1,153 @@
+# An admission policy that *strips* SYS_PTRACE instead of refusing it.
+#
+# The sibling file `deny-sys-ptrace.yaml` models a policy engine that says no.
+# This one models the engine Diamond actually runs, which says yes and quietly
+# takes the capability away — and that difference is the whole of issue #89.
+#
+# ## Why the denying policy cannot reproduce #89
+#
+# Measured on the k3s bed, 2026-08-17, with `deny-sys-ptrace.yaml` bound to the
+# namespace and `dls-ioc.yaml` as the target:
+#
+#     podbench: no rung of the capability ladder was admitted:
+#       full: an admission webhook refused it synchronously: … denied request …
+#       degraded: the target runs as root, which runAsNonRoot: true cannot express
+#       seat: the kubelet refused it asynchronously (CreateContainerConfigError):
+#             container's runAsUser breaks non-root policy
+#
+# There is no seat at all, so there is nothing to mis-describe. A **root**
+# target — which is what every IOC at Diamond is — has no degraded rung by
+# construction (`spec.py::_rung_security_context` refuses `runAsNonRoot: true`
+# at uid 0), and the seat rung is then refused by the kubelet. Refusal and
+# mutation are not two spellings of one policy: only mutation lands the seat
+# that #89 is about.
+#
+# ## What this reproduces, and why it is the field shape
+#
+# The launcher already knows this shape and says so at `launcher.py::seat_layout`:
+# "a mutating admission webhook that strips `capabilities.add` leaves a root seat
+# looking exactly like the degraded rung: `runAsUser: 0`, nothing added" — cited
+# to DLS, 2026-08-16, the same week #89 was raised. With this policy bound, a
+# `podbench attach` against `dls-ioc.yaml` lands:
+#
+#     rung        full - root plus CAP_SYS_PTRACE           <- what was asked
+#     securityContext {"runAsUser":0,"capabilities":{}}     <- what was given
+#     capreport   CAP_SYS_PTRACE (eff) no … live attach (pid 12) OK
+#
+# uid 0 tracing uid 0 under `kernel.yama.ptrace_scope=0` is classic ptrace and
+# needs no capability, so the probe attaches and every capability-derived claim
+# beside it was wrong in a different direction. `status` said, of that seat:
+#
+#     podbench-1  running  degraded  target UID, no capabilities (read-only
+#                                    inspection)          <- before the fix
+#     podbench-1  running  degraded
+#       verdict   live attach available                   <- after it
+#
+# The rung column still reads `degraded`, and that is not the bug: it is what
+# admission left behind. The verdict beside it is now measured (issue #89).
+#
+# ## Bind it *with* the denying policy, not instead of it
+#
+# Mutating admission runs before validating admission, so the two compose: this
+# policy removes the capability and `deny-sys-ptrace.yaml` then sees a spec that
+# has none. Measured, both bound at once, and the attach landed. Keeping both is
+# what makes the reproduction honest — if this expression ever stops matching,
+# the denying policy fails the attach loudly instead of letting a genuine
+# `full`-rung seat sail through and satisfy every #89 assertion for the wrong
+# reason.
+#
+# ## The two CEL shapes, one of which does not work
+#
+# `patchType: ApplyConfiguration` is the documented way to write a
+# MutatingAdmissionPolicy and it cannot express this. Measured:
+#
+#     invalid ApplyConfiguration: may not mutate atomic arrays, maps or structs:
+#     .spec.ephemeralContainers[0].securityContext.capabilities.add
+#
+# `Capabilities.Add` carries no patch strategy, so server-side apply treats it as
+# atomic and refuses to merge into it at all. JSONPatch is therefore not a style
+# choice here; it is the only mechanism that can remove the field.
+#
+# JSONPatch needs an *index*, and CEL has no `enumerate`: hence the literal index
+# list filtered by `size()`. Eight is well past what any pod carries — an
+# ephemeral container name is burnt for the pod's lifetime, so a pod that has
+# taken eight seats has other problems — and a `remove` of a map key does not
+# shift the list, so removing several in one patch is safe.
+#
+# The `pods/ephemeralcontainers` UPDATE match is load-bearing for the same reason
+# it is in `deny-sys-ptrace.yaml`: a rule written against `pods`/CREATE never
+# fires for an ephemeral container and fails *open*.
+#
+# ## Applying and scoping it
+#
+# Cluster-scoped and named, like its sibling, and opted into by a namespace
+# label so nothing needs templating against a random per-module namespace:
+#
+#     ns = namespace_factory(labels={"podbench.dev/strip-sys-ptrace": "enforce"})
+#     kubectl.apply(Path(__file__).parent / "apps" / "strip-sys-ptrace.yaml")
+#
+# Teardown belongs in a session-scoped fixture (names are fixed, so applying
+# twice is idempotent but deleting is not), and the `type/name` slashes are
+# load-bearing — `kubectl delete mutatingadmissionpolicybinding NAME
+# mutatingadmissionpolicy NAME` reads everything after the first word as names of
+# a *binding*, deletes the binding and leaves the policy on the cluster:
+#
+#     kubectl delete mutatingadmissionpolicybinding/podbench-strip-sys-ptrace \
+#                    mutatingadmissionpolicy/podbench-strip-sys-ptrace \
+#                    --ignore-not-found
+#
+# MutatingAdmissionPolicy is newer than the ValidatingAdmissionPolicy beside it,
+# so a cluster may serve one and not the other — and may serve it at an older
+# version than the `v1` below. Ask discovery for the version by name, and skip
+# rather than fail:
+#
+#     kubectl get --raw /apis/admissionregistration.k8s.io/v1
+#
+# `kubectl api-resources --api-group=admissionregistration.k8s.io` answers
+# without a version, so a cluster offering only v1alpha1/v1beta1 looks supported
+# there and then fails inside the fixture with `no matches for kind`.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: podbench-strip-sys-ptrace
+spec:
+  # Fail closed, like the denying sibling: an expression that errors must not
+  # silently leave the capability in place, because then the seat under test is
+  # an ordinary full-rung seat and every assertion downstream is vacuous.
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+      # pods/ephemeralcontainers, UPDATE. Not pods/CREATE — see the header.
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods/ephemeralcontainers"]
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >
+          [0, 1, 2, 3, 4, 5, 6, 7]
+            .filter(i, i < size(object.spec.ephemeralContainers) &&
+              has(object.spec.ephemeralContainers[i].securityContext) &&
+              has(object.spec.ephemeralContainers[i].securityContext.capabilities) &&
+              has(object.spec.ephemeralContainers[i].securityContext.capabilities.add) &&
+              ('SYS_PTRACE' in object.spec.ephemeralContainers[i].securityContext.capabilities.add))
+            .map(i, JSONPatch{
+              op: "remove",
+              path: "/spec/ephemeralContainers/" + string(i) +
+                    "/securityContext/capabilities/add"
+            })
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: podbench-strip-sys-ptrace
+spec:
+  policyName: podbench-strip-sys-ptrace
+  matchResources:
+    # The opt-in, deliberately a *different* label from the denying policy's, so
+    # a namespace can take one, the other, or both.
+    namespaceSelector:
+      matchLabels:
+        podbench.dev/strip-sys-ptrace: enforce

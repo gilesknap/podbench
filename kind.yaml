@@ -24,6 +24,13 @@
 #   CAP_SYS_PTRACE is doing real work — and forcing it to 0 would make the S3
 #   test pass for the wrong reason.
 #
+#   The one test that needs 0 — `tests/e2e/test_dls_ioc.py`, issue #89's capless
+#   seat that can ptrace anyway — gets a runner of its own instead, because a
+#   sysctl cannot be scoped any smaller than a kernel: `ci.yml`'s `e2e-dls` job
+#   calls `_e2e.yml` with `ptrace-scope: "0"` and that one module. On a cluster
+#   built from this file at the default of 1 the module skips, with the reason
+#   in the `-rs` output.
+#
 # * No Pod Security Admission configuration. S5 labels its own scratch
 #   namespace `pod-security.kubernetes.io/enforce=restricted`, which is how a
 #   real cluster does it and keeps the enforcement scoped to the one test that
