@@ -11,7 +11,7 @@ html_theme.sidebar_secondary.remove: true
 Where to start
 --------------
 
-* Never used it — [Installation](tutorials/installation.md), then
+* Never used it — [Setup](tutorials/setup.md), then
   [Your first session](tutorials/first-session.md).
 * Here to debug a crash — [Debug with gdb](how-to/debug-with-gdb.md).
 * Here to change code in the cluster — [Iterate on Python](how-to/iterate-on-python.md).
@@ -36,7 +36,7 @@ Documentation is split into [four categories](https://diataxis.fr), also accessi
 tutorials
 ```
 +++
-Tutorials for installation and typical usage. New users start here.
+Tutorials for setting up and typical usage. New users start here.
 :::
 
 :::{grid-item-card} {material-regular}`directions;2em`

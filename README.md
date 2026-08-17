@@ -140,7 +140,7 @@ Releases        | <https://github.com/gilesknap/podbench/releases>
 
 See <https://gilesknap.github.io/podbench> for the full documentation.
 
-* Tutorials — [installation](docs/tutorials/installation.md),
+* Tutorials — [setup](docs/tutorials/setup.md),
   [your first session](docs/tutorials/first-session.md)
 * How-to — [attach to a pod](docs/how-to/attach-to-a-pod.md),
   [debug with gdb](docs/how-to/debug-with-gdb.md),

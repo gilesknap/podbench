@@ -55,7 +55,7 @@ choice, and all three run the same code:
 | `uvx podbench@<version> <verb>` | pinned, so a session is reproducible and the image tag it picks is known in advance |
 | `uv tool install podbench` (or pipx, or pip) | for `podbench` permanently on `PATH` |
 
-See [Installation](../tutorials/installation.md) for the details, including how
+See [Setup](../tutorials/setup.md) for the details, including how
 to run it before the first PyPI release.
 
 The in-pod verbs are spelled the same way from a terminal in the seat:
