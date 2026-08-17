@@ -58,7 +58,7 @@ import typer
 from . import spec
 from .agent import PUBKEY_ENV
 from .cli import new_app, require_subcommand, run
-from .console import emit
+from .console import emit, paragraph
 from .kubectl import Kubectl, KubectlError, Runner, run_subprocess
 from .launcher import (
     DEFAULT_CLIENT_DIR,
@@ -1563,36 +1563,54 @@ def connection_summary(pod: DevPod, seat: SshSeat | None = None) -> str:
     are listed when there is one, and in this order: ssh is what Iterate mode is
     *for* — the editor lives in the cluster — and ``kubectl exec`` is what still
     works when ssh does not, which is the reason it is not dropped.
+
+    The facts are laid out in ``attach``'s column, and two of them borrow its
+    words as well: ``seat`` and ``target`` mean here exactly what they mean
+    there. A user meets this screen and ``attach``'s within a session of each
+    other, and a dev pod's sidecar being "the debug container" in one and the
+    seat in the other made them look like different things.
     """
     lines = [
         f"dev pod {pod.ref} is running (clone of {pod.origin}; "
         f"{pod.origin} itself is untouched)",
-        f"  target container : {pod.target_container} (idled with sleep infinity)",
-        f"  debug container  : {pod.sidecar}",
-        f"  workspace        : {DEFAULT_WORKSPACE} (emptyDir, also $HOME)",
-        f"  app port         : {pod.target_port} (readiness follows your process)",
+        _fact("target", f"{pod.target_container} (idled with sleep infinity)"),
+        _fact("seat", pod.sidecar),
+        _fact("workspace", f"{DEFAULT_WORKSPACE} (emptyDir, also $HOME)"),
+        _fact("port", f"{pod.target_port} (readiness follows your process)"),
     ]
     if pod.seat_identity is not None:
         uid, gid = pod.seat_identity
         lines.append(
-            f"  seat identity    : {SEAT_IDENTITY_VOLUME} projected over "
-            f"/etc/passwd and /etc/group, so the sidecar runs as {uid}:{gid} "
-            "(the app's own) with no SYS_PTRACE"
+            _fact(
+                "identity",
+                f"seat identity from {SEAT_IDENTITY_VOLUME}, projected over "
+                f"/etc/passwd and /etc/group, so the sidecar runs as {uid}:{gid} "
+                "(the app's own) with no SYS_PTRACE",
+            )
         )
     if pod.cutover is not None:
         lines.append(
-            f"  service          : {pod.cutover.service} cut over to this pod; "
-            "its selector is recorded for an exact restore"
+            _fact(
+                "service",
+                f"{pod.cutover.service} cut over to this pod; its selector is "
+                "recorded for an exact restore",
+            )
         )
     elif pod.take_traffic:
         lines.append(
-            "  service          : carrying the origin's labels, so traffic is "
-            "shared with the original pod"
+            _fact(
+                "service",
+                "carrying the origin's labels, so traffic is shared with the "
+                "original pod",
+            )
         )
     else:
         lines.append(
-            "  service          : none — this pod receives no traffic until you "
-            "pass --take-traffic or --cutover"
+            _fact(
+                "service",
+                "none — this pod receives no traffic until you pass "
+                "--take-traffic or --cutover",
+            )
         )
     if seat is not None:
         lines += ["", *seat.note.splitlines()]
@@ -1608,11 +1626,34 @@ def connection_summary(pod: DevPod, seat: SshSeat | None = None) -> str:
         "  podbench dev-bootstrap --repo <url> [--ref <ref>]",
         f"  podbench run --port {pod.target_port} -- <your command>",
         "",
-        "teardown (restores any borrowed Service selector, removes the pod, and "
-        "takes the ssh config with it):",
+        *paragraph(
+            "teardown (restores any borrowed Service selector, removes the pod, "
+            "and takes the ssh config with it):",
+            indent="  ",
+        ),
         f"  podbench dev --delete {pod.ref.name} -n {pod.ref.namespace}",
     ]
     return "\n".join(lines)
+
+
+_FACTS = 14
+"""Where a fact's value starts.
+
+Two columns wider than ``attach``'s because this report's longest label is, and
+what has to hold is the *gap*: :mod:`podbench.console` reads a cell as a label
+only when two spaces follow it, so a key that exactly filled the column would
+silently stop being one."""
+
+
+def _fact(key: str, value: str) -> str:
+    """One labelled fact, hung under its own value rather than under the label.
+
+    A one-word key on purpose: :mod:`podbench.console` reads the first cell of a
+    row as its label, and a two-word one (``debug container``) would have half of
+    it set as a heading and half as prose.
+    """
+    lead = f"  {key}".ljust(_FACTS)
+    return "\n".join(paragraph(value, first=lead, indent=" " * len(lead)))
 
 
 def _service_selector(kube: Kubectl, service: str) -> dict[str, str]:

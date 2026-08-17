@@ -28,7 +28,17 @@ import re
 from rich.console import Console
 from rich.text import Text
 
-__all__ = ["MAX_WIDTH", "MIN_WIDTH", "WARNING_LEAD", "console", "emit", "wrap_width"]
+__all__ = [
+    "MAX_WIDTH",
+    "MIN_WIDTH",
+    "WARNING_LEAD",
+    "console",
+    "emit",
+    "paragraph",
+    "rule",
+    "wrap",
+    "wrap_width",
+]
 
 MAX_WIDTH = 96
 """Widest a paragraph gets, however wide the terminal is.
@@ -52,6 +62,9 @@ it back with a prefix."""
 _FLOOR = 24
 """Floor for the width left to a deeply indented paragraph."""
 
+_SECTION = "bold cyan"
+"""What a heading is drawn in, wherever a heading is recognised."""
+
 WARNING_LEAD = "WARNING"
 """The word a warning line opens with, and the one span on it that is coloured.
 
@@ -60,20 +73,72 @@ prefix, and the callers that author warnings use the same constant, so the two
 cannot drift into a warning that is not highlighted.
 """
 
-_LABEL = re.compile(r"^(\s*)(\S+)(?= {2,}|$)")
-"""The first column of a row, when the row has columns.
+_SECTION_LINE = re.compile(r"^(\S+)$")
+"""A word alone on a line, flush left: ``ladder``, ``supports``, ``next:``.
 
-One rule for three shapes, because they are the same shape: a section on a line
-of its own (``ladder``), the key of a ``seat        demo/api[podbench-1]`` row,
-and the leading cell of a table (``podbench-1   Running   full   …``). The
-lookahead is what keeps it a label rather than merely a first word — two spaces
-mean a column was intended, one means an ordinary sentence, and colouring the
-word a sentence happens to open with says "heading" about a line that is not
-one.
+Flush left is load-bearing, not decoration. Wrapped prose regularly leaves a
+single word on its last line, and an indented one of those is a continuation —
+so the same shape two columns in means the opposite thing and must not be read
+as a heading.
 """
 
-_CHECKBOX = re.compile(r"^\s*(\[[x ]\])")
-"""The tick beside a feature under ``supports``."""
+_LABEL = re.compile(r"^(\s*)(\S+) {2,}(?=\S)")
+"""The key of a row that has a value: ``seat        demo/api[podbench-1]``, or
+the leading cell of a table (``podbench-1   running   full   …``).
+
+Two spaces *followed by something* is the whole rule. Two spaces mean a column
+was intended and one means an ordinary sentence, so colouring the word a
+sentence happens to open with would say "heading" about a line that is not one.
+"""
+
+_DIVIDER = re.compile(r"^([=\-_~])\1{2,}")
+"""A line :func:`rule` drew, recognised by what it is made of.
+
+Matched before anything else, because a divider is a single token at the end of
+its own line and :data:`_LABEL` would otherwise read the whole bar as a heading
+and set it in the heading colour, which is the loudest possible way to draw the
+quietest thing on the page.
+"""
+
+_TITLE = re.compile(r"[^=\-_~\s](?:.*[^=\-_~\s])?")
+"""What a divider carries in the middle of it, when it carries anything."""
+
+_SHOUT = re.compile(r"^[A-Z][A-Z0-9]*(?:[ -][A-Z0-9]+)*")
+"""A flush-left run of capitals, which in these reports is always a heading.
+
+``doctor`` shouts its sections (``THIS MACHINE``, ``CHECKS``, ``RBAC in …``) and
+its verdict where ``attach`` uses lower-case labels, and the two conventions were
+never going to be reconciled — ``VERDICT`` mirrors ``capreport``'s deliberately.
+The rule reads the shape instead: nothing in the prose starts a line in capitals,
+because the prose is wrapped and its continuations are indented.
+"""
+
+_SHOUTED = {"BLOCKERS": "bold red"}
+"""Headings whose colour is not the ordinary one.
+
+``BLOCKERS`` only ever appears on a run that has some, so the heading itself
+carries the verdict. Everything else is a section marker and takes the section
+colour.
+"""
+
+_STATUS = re.compile(r"^\s*(\[[^\]]{1,6}\])")
+"""The bracketed token a row opens with: ``attach``'s ``[x]``/``[ ]`` tick and
+``doctor``'s ``[ok]``/``[warn]``/``[FAIL]``, which are the same thing said twice.
+
+Bounded at six characters so a relayed ``[Errno 2] No such file`` from somebody
+else's stderr is prose, not a status this report is claiming."""
+
+_STATUSES = {
+    "x": "green",
+    "ok": "green",
+    " ": "yellow",
+    "!": "bold yellow",
+    "warn": "yellow",
+    "FAIL": "bold red",
+}
+"""What each status token is worth. An unrecognised one is left uncoloured, for
+:data:`_VERDICTS`' reason: a token this module has not been taught must not
+borrow the authority of one it has."""
 
 _COLUMN_WORD = re.compile(r"(?<=  )(\S+)(?= {2,}|$)")
 """A cell of a table, anywhere along the row.
@@ -135,6 +200,54 @@ def wrap_width(indent: int = 0) -> int:
     return max(_FLOOR, width - indent)
 
 
+def wrap(text: str, width: int | None = None) -> list[str]:
+    """Break ``text`` on whitespace at ``width``, the terminal's own by default.
+
+    Asked for per call rather than captured once: :func:`wrap_width` reads the
+    window, and a report built at import time would be wrapped for whatever the
+    terminal was when the process started.
+
+    >>> wrap("one two three four", width=9)
+    ['one two', 'three', 'four']
+    """
+    limit = wrap_width() if width is None else width
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > limit and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def paragraph(text: str, *, first: str = "", indent: str = "") -> list[str]:
+    """Wrap ``text`` with a hanging indent, so a wrapped line is not mistaken
+    for a second bullet.
+
+    >>> paragraph("one two three", first="- ", indent="  ")
+    ['- one two three']
+    """
+    wrapped = wrap(text, width=wrap_width(len(indent))) or [""]
+    return [first + wrapped[0], *(indent + line for line in wrapped[1:])]
+
+
+def rule(title: str = "", *, char: str = "=") -> str:
+    """A full-width divider, with ``title`` centred in it when there is one.
+
+    Drawn with :func:`wrap_width` rather than with rich's own ``Rule``, so the
+    banner lines up with the paragraphs under it: those are wrapped short of the
+    window by :data:`_GUTTER`, and a divider that ran to the true edge would be
+    the one thing on screen the report does not fit inside.
+    """
+    width = wrap_width()
+    return f" {title} ".center(width, char) if title else char * width
+
+
 def emit(text: str, *, stderr: bool = False) -> None:
     """Print an already-wrapped report, colouring the leaders in it.
 
@@ -157,17 +270,34 @@ def _styled(line: str) -> Text:
         # thing on the screen for no added meaning.
         styled.stylize("bold yellow", 0, len(WARNING_LEAD))
         return styled
-    label = _LABEL.match(line)
-    if label is not None:
+    if _DIVIDER.match(line) is not None:
+        styled.stylize("dim")
+        title = _TITLE.search(line)
+        if title is not None:
+            # `not dim` because styles layer rather than replace, and a banner
+            # whose title is dimmed with its own bar is a banner with no title.
+            styled.stylize(f"not dim {_SECTION}", *title.span())
+        return styled
+    shout = _SHOUT.match(line)
+    if shout is not None:
+        styled.stylize(_SHOUTED.get(shout.group(), _SECTION), *shout.span())
+    box = _STATUS.match(line)
+    if box is not None:
+        status = _STATUSES.get(box.group(1)[1:-1])
+        if status is not None:
+            styled.stylize(status, *box.span(1))
+    # Both arms only where no status token claimed the column: a row opening
+    # with one is a row whose first cell is a verdict, and reading it as a
+    # heading too would layer two styles over the same span for no added
+    # meaning.
+    elif (heading := _SECTION_LINE.match(line)) is not None:
+        styled.stylize(_SECTION, *heading.span(1))
+    elif (label := _LABEL.match(line)) is not None:
         # Flush left is a section of the report; indented is a row inside one,
         # and it is the difference between them that has to survive, not the
         # colour of either.
         flush = not label.group(1)
-        styled.stylize("bold cyan" if flush else "bold", *label.span(2))
-    box = _CHECKBOX.match(line)
-    if box is not None:
-        available = box.group(1) == "[x]"
-        styled.stylize("green" if available else "yellow", *box.span(1))
+        styled.stylize(_SECTION if flush else "bold", *label.span(2))
     for cell in _COLUMN_WORD.finditer(line):
         value = cell.group(1)
         # An all-caps cell is a column heading - the only place these reports

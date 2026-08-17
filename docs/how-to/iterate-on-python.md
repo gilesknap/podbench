@@ -27,12 +27,12 @@ The origin pod is never touched.
 $ podbench dev api-5f6c9b7d8-qz4tn -n demo --port 8080
 dev pod demo/api-5f6c9b7d8-qz4tn-podbench is running (clone of api-5f6c9b7d8-qz4tn;
 api-5f6c9b7d8-qz4tn itself is untouched)
-  target container : api (idled with sleep infinity)
-  debug container  : podbench
-  workspace        : /workspace (emptyDir, also $HOME)
-  app port         : 8080 (readiness follows your process)
-  service          : none — this pod receives no traffic until you pass
-                     --take-traffic or --cutover
+  target        api (idled with sleep infinity)
+  seat          podbench
+  workspace     /workspace (emptyDir, also $HOME)
+  port          8080 (readiness follows your process)
+  service       none — this pod receives no traffic until you pass
+                --take-traffic or --cutover
 
 ssh config written to ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-podbench.conf
 add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf

@@ -41,7 +41,7 @@ import typer
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
 from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
-from .console import WARNING_LEAD, emit, wrap_width
+from .console import WARNING_LEAD, emit, paragraph
 from .editor import EditorError, open_seat, resolve_editor
 from .kubectl import (
     EphemeralContainerError,
@@ -1455,6 +1455,9 @@ def _iterate_feature() -> Feature:
     )
 
 
+_TICK = " " * 6
+"""Where the note under a ``supports`` tick starts, and stays on a wrap."""
+
 _WARNING_HANG = len(WARNING_LEAD) + 2
 """Columns a warning's continuation lines are indented by, which is the width of
 the coloured leader plus its separator."""
@@ -1472,7 +1475,7 @@ def format_session(session: Session) -> str:
     for step in session.steps:
         mark = "landed " if step.admitted else "refused"
         lines.extend(
-            _paragraph(
+            paragraph(
                 step.detail,
                 first=f"  {step.rung.value:<9} {mark}  ",
                 indent=" " * 21,
@@ -1483,9 +1486,9 @@ def format_session(session: Session) -> str:
     for feature in features(session):
         lines.append(f"  [{'x' if feature.available else ' '}] {feature.name}")
         if feature.note:
-            lines.extend(f"      {line}" for line in _wrap(feature.note))
+            lines.extend(paragraph(feature.note, first=_TICK, indent=_TICK))
         if not feature.available and feature.reason:
-            lines.extend(f"      {line}" for line in _wrap(feature.reason))
+            lines.extend(paragraph(feature.reason, first=_TICK, indent=_TICK))
 
     report = session.report
     if report is not None:
@@ -1501,7 +1504,7 @@ def format_session(session: Session) -> str:
         if report.notes:
             lines.append("notes")
             for note in report.notes:
-                lines.extend(_paragraph(note, first="  - ", indent="    "))
+                lines.extend(paragraph(note, first="  - ", indent="    "))
 
     # One line each, hung under the word that is coloured, so the block reads as
     # a list of things to know rather than as an essay to skip. What a warning
@@ -1509,7 +1512,7 @@ def format_session(session: Session) -> str:
     # the how-to page carries the mechanism.
     for warning in session.warnings:
         lines.extend(
-            _paragraph(warning, first=f"{WARNING_LEAD}  ", indent=" " * _WARNING_HANG)
+            paragraph(warning, first=f"{WARNING_LEAD}  ", indent=" " * _WARNING_HANG)
         )
     return "\n".join(lines)
 
@@ -1518,36 +1521,6 @@ def _yama(scope: int | None) -> str:
     if scope is None:
         return "absent (no Yama LSM on this node - not the same as scope 0)"
     return str(scope)
-
-
-def _paragraph(text: str, *, first: str, indent: str) -> list[str]:
-    """Wrap ``text`` with a hanging indent, so a wrapped line is not mistaken
-    for a second bullet."""
-    wrapped = _wrap(text, width=wrap_width(len(indent)))
-    return [first + wrapped[0], *(indent + line for line in wrapped[1:])]
-
-
-def _wrap(text: str, width: int | None = None) -> list[str]:
-    """Break ``text`` on whitespace at ``width``, the terminal's own by default.
-
-    Asked for per call rather than captured once: :func:`wrap_width` reads the
-    window, and a report built at import time would be wrapped for whatever the
-    terminal was when the process started.
-    """
-    limit = wrap_width() if width is None else width
-    words = text.split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) > limit and current:
-            lines.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    return lines
 
 
 # -- ssh client wiring ------------------------------------------------------
@@ -1640,7 +1613,7 @@ def ssh_unavailable_note(session: Session) -> str:
     return "\n".join(
         [
             "no ssh config was written: this seat has no login identity.",
-            *(f"  {line}" for line in _wrap(detail)),
+            *paragraph(detail, first="  ", indent="  "),
             "  ways out:",
             "    - land a seat that registers one itself, with GID 0:",
             f"        podbench attach {seat.pod.name} "
@@ -1650,14 +1623,13 @@ def ssh_unavailable_note(session: Session) -> str:
             "    - run the target as a uid the debug image has an account for, or",
             "    - debug in a dev pod (`podbench dev`), whose seat is an ordinary",
             "      container and can be given files.",
-            *(
-                f"  {line}"
-                for line in _wrap(
-                    f"a {SEAT_IDENTITY_VOLUME!r} volume does not help here, "
-                    "declared or not: projecting a passwd file takes a subPath "
-                    "per file, and the API server forbids subPath on an "
-                    "ephemeral container."
-                )
+            *paragraph(
+                f"a {SEAT_IDENTITY_VOLUME!r} volume does not help here, "
+                "declared or not: projecting a passwd file takes a subPath per "
+                "file, and the API server forbids subPath on an ephemeral "
+                "container.",
+                first="  ",
+                indent="  ",
             ),
             "  the rest of the seat needs no ssh and works now:",
             f"    kubectl exec {target} -- podbench capreport",
@@ -2788,9 +2760,7 @@ def _open_editor(
         # list of steps, but several of them carry a ` - ` of their own, and a
         # wrapped line that begins with one under a bulleted list reads as the
         # next step. The indent cannot be forged that way.
-        report=lambda note: emit(
-            "\n".join(_paragraph(note, first="  ", indent="    "))
-        ),
+        report=lambda note: emit("\n".join(paragraph(note, first="  ", indent="    "))),
         editor=editor,
         provision=provision,
         runner=runner,
@@ -3015,7 +2985,7 @@ def _build_app(
                 print()
                 emit(
                     "\n".join(
-                        _paragraph(
+                        paragraph(
                             EDITOR_PROBE_REMINDER,
                             first=f"{WARNING_LEAD}  ",
                             indent=" " * _WARNING_HANG,
