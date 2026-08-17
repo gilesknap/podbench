@@ -82,9 +82,10 @@ the child's worktree even though the rewrite happened in another one. `--onto` r
 the branch's own commits. Force-push with `--force-with-lease`, never `--force`, so a
 surprise on the remote aborts rather than being clobbered.
 
-A parent that **merges** needs none of this: GitHub retargets the child's base to `main`,
-and the merge commit puts the parent's work in the child's merge base, so the child's diff
-stays its own. A *squash* merge is a rewrite, and takes the `--onto` above.
+A parent that **merges** needs none of this: the merge commit puts the parent's work in the
+child's merge base, so the child's diff stays its own once its base is `main` — see below
+for why that does not happen on its own. A *squash* merge is a rewrite, and takes the
+`--onto` above.
 
 ## A clean rebase is not a correct rebase
 
@@ -99,21 +100,51 @@ the parent corrected** and confirm no branch upstream of it says the old thing. 
 applies to any enumerated fact that exists in more than one file — an exit-code table, a
 capability list, a sample of command output.
 
-## Merge a child only once GitHub has retargeted its base
+## Merge a child only once its base actually says `main`
 
-GitHub retargets a stacked PR's base to `main` when its parent merges, but **not
-instantly**. Merge the child in the same breath as the parent and it merges into the
-*parent branch* instead, reporting `MERGED` and leaving `main` without it. On 2026-08-16
-that put `src/podbench/editor.py` nowhere near `main` while #61 read as merged, and the
-recovery was a fresh PR for the same commits.
+Merge the child in the same breath as the parent and it merges into the *parent branch*
+instead, reporting `MERGED` and leaving `main` without it. On 2026-08-16 that put
+`src/podbench/editor.py` nowhere near `main` while #61 read as merged, and the recovery
+was a fresh PR for the same commits.
 
-Between merges, read the child's base back and wait for it to say `main`:
+**The retarget is triggered by deleting the parent branch, not by merging it.** Merge with
+`--delete-branch=false` — which is the safe-looking option, and what you will reach for
+while a batch is in flight — and the child sits on a merged branch indefinitely; waiting
+for GitHub to notice is waiting for something that will not happen. Measured on 2026-08-16
+with #79 over #75.
+
+So read the base back, and if it has not moved, move it yourself:
 
 ```
 gh pr view <child> --json baseRefName,mergeStateStatus
+gh api -X PATCH repos/gilesknap/podbench/pulls/<child> -f base=main --jq '.base.ref'
 ```
 
-`UNKNOWN`/`UNKNOWN` means GitHub is still computing — that is not permission to proceed.
+`gh pr edit <child> --base main` is the obvious spelling and **fails on this repo** with
+the Projects-classic GraphQL deprecation error; the REST call above is the way through.
+`UNKNOWN`/`UNKNOWN` for `mergeStateStatus` means GitHub is still computing — that is not
+permission to proceed either.
+
+## An e2e failure on kind is not yet a regression
+
+`tests/e2e/test_s4_iterate.py::test_edit_relaunch_and_see_it_through_the_service` flakes in
+CI. It fails as
+
+```
+port 8080 is served by an unattributable process, not by our child (pid N).
+Either the relaunch lost the race or SO_REUSEPORT split the port between two processes.
+```
+
+which is `dev.py`'s ownership pre-flight losing a race with `ss`'s attribution just after
+the old listener dies. Seen on 2026-08-16 on a PR touching none of `dev.py`; the same test
+passed immediately against the k3s bench and the whole suite passed there.
+
+Before assuming a regression: run that test against the bench —
+`PODBENCH_E2E=1 PODBENCH_IMAGE=ghcr.io/gilesknap/podbench:main pytest tests/e2e/test_s4_iterate.py`
+— and check whether the diff goes anywhere near the failing area. Re-running the CI job is
+*not* available: `gh api -X POST .../actions/runs/<id>/rerun-failed-jobs` answers `403
+Resource not accessible by personal access token`, and `gh run rerun` says the workflow
+file may be broken. Force-push an amended, content-identical commit to retrigger instead.
 
 ## A branch image is a moving target, and the node caches it
 
