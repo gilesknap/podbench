@@ -187,6 +187,21 @@ def _require_live_attach(seat: Session) -> None:
         )
     report = seat.report
     assert report is not None
+    # An assertion, deliberately, where everything around it is a skip. The full
+    # rung asks for SYS_PTRACE *and* declares `allowPrivilegeEscalation: false`
+    # so that a Kyverno-style policy will admit it (issue #77), and the claim
+    # that those two coexist is reasoning rather than measurement everywhere
+    # except here: NoNewPrivs restricts privilege gained at `execve`, not the
+    # set the runtime grants at start. If that were ever wrong the seat would
+    # still land on this rung and merely lose its capability, which a skip would
+    # hide for as long as anyone cared to look.
+    assert report.cap_sys_ptrace, (
+        "the full rung landed but CAP_SYS_PTRACE is not effective (bounding: "
+        f"{report.cap_bounding_sys_ptrace}). The container asks for the "
+        "capability and declares allowPrivilegeEscalation: false — if those two "
+        "cannot coexist, that declaration has to come off the full rung and "
+        "issue #77's admission problem needs another answer"
+    )
     if report.verdict is not Verdict.LIVE_ATTACH:
         pytest.skip(
             f"the container has the capability but attach is denied on node "

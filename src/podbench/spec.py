@@ -344,6 +344,36 @@ def _seat_gid(context: dict[str, Any], gid_root: bool) -> dict[str, Any]:
     return context
 
 
+_NOT_PRIVILEGED = {
+    "privileged": False,
+    "allowPrivilegeEscalation": False,
+}
+"""Stated on every rung, including the full one, rather than left to default.
+
+Both fields default to false, so this changes nothing the kernel does — and it
+is the difference between an admitted seat and a refused one. A Kyverno
+``validate.pattern`` rule fails on an **absent** field unless the pattern wraps
+it in a conditional anchor, and a policy written as ``privileged: "false"``
+therefore rejects a container that never mentioned privilege at all. Measured at
+DLS on 2026-08-16 (issue #77):
+
+    block user privileged access to privileged directories: … rule failed at
+    path /spec/ephemeralContainers/1/securityContext/privileged/
+
+The message says the field "must not be set to true", which is exactly what
+sent the reader looking for where podbench set it. Saying what podbench means
+costs two keys and removes the whole class.
+
+``allowPrivilegeEscalation: false`` on the **full** rung is the one line here
+that is not obviously free, since that rung also asks for ``SYS_PTRACE``. It is
+admissible — only ``privileged: true`` and ``CAP_SYS_ADMIN`` conflict with it —
+and it does not withdraw the capability: ``NoNewPrivs`` restricts privilege
+*gained at* ``execve`` from setuid bits and file capabilities, not the set the
+runtime grants the container at start. ``tests/e2e/test_s3_gdb.py`` asserts the
+capability is still effective, because this repo measures rather than reasons.
+"""
+
+
 def _rung_security_context(
     rung: Rung,
     target_uid: int | None,
@@ -357,13 +387,17 @@ def _rung_security_context(
                 f"the full rung runs as root; it cannot also run as uid "
                 f"{target_uid}. Use Rung.DEGRADED for the target's own uid."
             )
-        return {"runAsUser": 0, "capabilities": {"add": ["SYS_PTRACE"]}}
+        return {
+            "runAsUser": 0,
+            "capabilities": {"add": ["SYS_PTRACE"]},
+            **_NOT_PRIVILEGED,
+        }
 
     restricted: dict[str, Any] = {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        **_NOT_PRIVILEGED,
     }
     if rung is Rung.SEAT:
         # Whatever the cluster will admit. The seat needs nothing from the

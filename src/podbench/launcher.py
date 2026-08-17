@@ -1032,13 +1032,24 @@ def _walk_ladder(
         try:
             kubectl.add_ephemeral_container(pod, spec)
         except KubectlError as error:
-            if not error.is_psa_ptrace_denial:
+            # Any policy engine, not only Pod Security Admission (issue #77). A
+            # denial is a verdict on *this rung*, which is the signal the ladder
+            # was built to act on; treating a Kyverno refusal as fatal ended the
+            # walk in a namespace whose next rung would have been admitted.
+            # Nothing is burnt by a refusal - the API server never stored the
+            # container - so the next rung reuses the same name.
+            if not error.is_admission_denial:
                 raise
+            refuser = (
+                "Pod Security Admission"
+                if error.is_psa_ptrace_denial
+                else "an admission webhook"
+            )
             steps.append(
                 LadderStep(
                     rung,
                     False,
-                    "Pod Security Admission refused it synchronously: "
+                    f"{refuser} refused it synchronously: "
                     f"{error.stderr.strip() or error.stdout.strip()}",
                 )
             )

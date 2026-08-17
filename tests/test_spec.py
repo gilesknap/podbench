@@ -157,6 +157,12 @@ def test_full_rung_is_root_plus_sys_ptrace() -> None:
     assert spec["securityContext"] == {
         "runAsUser": 0,
         "capabilities": {"add": ["SYS_PTRACE"]},
+        # Stated, not defaulted: a Kyverno pattern rule fails on an *absent*
+        # field, and this rung was refused at DLS for never mentioning privilege
+        # at all (issue #77). Neither withdraws SYS_PTRACE - NoNewPrivs
+        # restricts privilege gained at execve, not the set the runtime grants.
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
     }
     assert spec["targetContainerName"] == "app"
     # Not `sleep infinity`: nothing would ever write the sshd config, the
@@ -179,9 +185,10 @@ def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
     )
     assert spec["securityContext"] == {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
         "runAsGroup": 3000,
     }

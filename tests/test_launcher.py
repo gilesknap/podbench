@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import pytest
 
-from podbench.kubectl import CommandResult, Kubectl
+from podbench.kubectl import CommandResult, Kubectl, KubectlError
 from podbench.launcher import (
     RESIZE_WARNING,
     LauncherError,
@@ -67,6 +67,28 @@ PSA_REFUSAL = (
     'unrestricted capabilities (container "podbench-1" must not include '
     '"SYS_PTRACE" in securityContext.capabilities.add)'
 )
+KYVERNO_REFUSAL = (
+    'Error from server: admission webhook "validate.kyverno.svc-fail" denied '
+    "the request: \n\nresource Pod/hgv27681/bl01t-mo-sim-01-0 was blocked due "
+    "to the following policies\n\n"
+    "kp-validate-block-privileged-containers-standard:\n"
+    "  block privilege escalation: 'validation error: Privileged mode is "
+    "disallowed. rule block privilege escalation failed at path "
+    "/spec/ephemeralContainers/1/securityContext/allowPrivilegeEscalation/'"
+)
+"""Verbatim from a DLS namespace, 2026-08-16 (issue #77).
+
+Kept whole rather than trimmed to the fragment that is matched: the point of the
+test is that podbench recognises what a real policy engine really says, and a
+tidied copy would keep passing against a matcher that no longer works.
+"""
+
+WEBHOOK_UNREACHABLE = (
+    "Error from server (InternalError): failed calling webhook "
+    '"validate.kyverno.svc-fail": context deadline exceeded'
+)
+"""A webhook that did not answer, which is not a verdict about any rung."""
+
 KUBELET_REFUSAL = (
     "container has runAsNonRoot and image will run as root, or container's "
     "runAsUser breaks non-root policy"
@@ -175,6 +197,7 @@ class FakeCluster:
         *,
         others: Sequence[dict[str, Any]] = (),
         psa_denies_ptrace: bool = False,
+        admission_error: str | None = None,
         kubelet_refuses_root: bool = False,
         kubelet_refuses_root_image: bool = False,
         capreport: dict[str, Any] | None = None,
@@ -193,6 +216,7 @@ class FakeCluster:
         # name.
         self.others = [dict(other) for other in others]
         self.psa_denies_ptrace = psa_denies_ptrace
+        self.admission_error = admission_error
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
         self.capreport = capreport if capreport is not None else capreport_payload()
@@ -329,6 +353,8 @@ class FakeCluster:
         )
         if self.psa_denies_ptrace and "SYS_PTRACE" in added_caps:
             return _fail(PSA_REFUSAL, returncode=1)
+        if self.admission_error is not None and "SYS_PTRACE" in added_caps:
+            return _fail(self.admission_error, returncode=1)
 
         self._ephemeral_specs().append(spec)
         # The kubelet's two asynchronous refusals: a root container under the
@@ -439,6 +465,8 @@ def test_full_rung_lands_when_the_namespace_allows_it() -> None:
     assert security_contexts(cluster)[0] == {
         "runAsUser": 0,
         "capabilities": {"add": ["SYS_PTRACE"]},
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
     }
     env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
     assert env["PODBENCH_TARGET_CID"] == TARGET_CID
@@ -458,9 +486,10 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     assert session.uid == 1000
     assert security_contexts(cluster)[1] == {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
     }
     steps = {step.rung: step for step in session.steps}
@@ -1622,6 +1651,38 @@ def test_an_image_that_cannot_answer_still_gets_its_stanza(
     assert "not measured" in out
 
 
+def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
+    """Issue #77: a Kyverno refusal of the full rung ended the attach.
+
+    Every non-PSA admission engine took that path, in namespaces where the
+    degraded rung would have been admitted — which is the entire promise of a
+    ladder. A denial is a verdict about one rung, not about the attach.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), admission_error=KYVERNO_REFUSAL)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    # Nothing was stored, so the name the refused rung was submitted under is
+    # still free — the same accounting as a PSA refusal.
+    assert session.seat.container == "podbench-1"
+    steps = {step.rung: step for step in session.steps}
+    assert not steps[Rung.FULL].admitted
+    assert "an admission webhook refused it" in steps[Rung.FULL].detail
+    # The policy's own words, whole: they name the rule and the field, which is
+    # the only thing in the message a cluster admin can act on.
+    assert "kp-validate-block-privileged-containers-standard" in (
+        steps[Rung.FULL].detail
+    )
+
+
+def test_a_webhook_that_did_not_answer_is_still_an_error() -> None:
+    """ "Unreachable" is not "denied", and retrying lower rungs against a broken
+    webhook would turn one honest failure into three."""
+    cluster = FakeCluster(pod_document(uid=1000), admission_error=WEBHOOK_UNREACHABLE)
+    with pytest.raises(KubectlError, match="failed calling webhook"):
+        attach(talking_to(cluster), "target")
+
+
 def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     """Opt-in, and the only difference it makes to the spec is the group."""
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
@@ -1630,9 +1691,10 @@ def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     assert session.rung is Rung.DEGRADED
     assert security_contexts(cluster)[0] == {
         "capabilities": {"drop": ["ALL"]},
-        "allowPrivilegeEscalation": False,
         "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
+        "privileged": False,
+        "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
         "runAsGroup": 0,
     }
