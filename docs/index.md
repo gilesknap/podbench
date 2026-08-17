@@ -4,6 +4,8 @@ html_theme.sidebar_secondary.remove: true
 
 ```{include} ../README.md
 :end-before: <!-- README only content
+:relative-docs: docs/
+:relative-images:
 ```
 
 Where to start

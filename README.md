@@ -42,13 +42,15 @@ Two artefacts: a debug **container image** (`ghcr.io/gilesknap/podbench`) and a
 PyPI, uses your kubeconfig, and shells out to `kubectl` for everything it does
 to a cluster.
 
-| | Observe mode | Iterate mode |
-|---|---|---|
-| Command | `uvx podbench attach pod/foo` | `uvx podbench dev pod/foo` |
-| What it does | adds an ephemeral container to the **live** pod | authors a **sacrificial clone** with the app idled and podbench as a real sidecar |
-| Built for | distroless targets with no shell of their own; gdb against the running workload | edit → relaunch → see the change through the Service |
-| Resources | shares the workload's limits, **cannot reserve its own** | has its own cpu, memory and ephemeral-storage requests |
-| Risk to the workload | real — see below | none by default; the origin pod is never touched |
+| | Observe mode | Iterate mode | Hotfix mode |
+|---|---|---|---|
+| Command | `uvx podbench attach pod/foo` | `uvx podbench dev pod/foo` | `uvx podbench hotfix init pod/foo` |
+| What it does | adds an ephemeral container to the **live** pod | authors a **sacrificial clone** with the app idled and podbench as a real sidecar | puts the app's venv on a claim, so an edit survives the restart — and the restart *is* the relaunch |
+| Built for | distroless targets with no shell of their own; gdb against the running workload | edit → relaunch → see the change through the Service | an emergency fix that has to outlive the session, with provenance |
+| Resources | shares the workload's limits, **cannot reserve its own** | has its own cpu, memory and ephemeral-storage requests | a ReadWriteOnce claim, mounted at the same path on both sides |
+| Needs | nothing at deploy time | nothing at deploy time | **deploy-time chart cooperation**, and it is Python-only and single-replica-only |
+| Risk to the workload | real — see below | none by default; the origin pod is never touched | it **rolls the workload**: that is how the fix takes |
+| Explained in | [What `attach` does](docs/explanations/attach-flow.md) | [What `dev` does](docs/explanations/dev-flow.md) | [What `hotfix` does](docs/explanations/hotfix-flow.md) |
 
 ## Try it
 
@@ -82,9 +84,14 @@ then:  ssh podbench-demo-web-7d9f8c5b4-x2k9p
 ```
 
 Connect that alias with **Remote-SSH: Connect to Host…**, or let
-`attach --open` do it for you. For the inner loop, `podbench dev` authors the
-dev pod and `podbench run` relaunches the app inside it: measured end to end,
-**1.18 s** per edit → relaunch → verified-through-the-Service cycle.
+`attach --open` do it for you.
+
+The other two modes are a table row away. For the inner loop, `podbench dev`
+authors the dev pod and `podbench run` relaunches the app inside it: measured
+end to end, **1.18 s** per edit → relaunch → verified-through-the-Service
+cycle. When the fix has to survive the pod, `podbench hotfix` moves the venv
+onto a claim so a restart no longer restores the image's code, and records
+where the change came from.
 
 > **The PyPI name is not published yet**, so `uvx podbench` will not resolve
 > until the first release. Until then, run every command as
