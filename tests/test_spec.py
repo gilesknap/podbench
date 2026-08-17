@@ -421,7 +421,7 @@ def test_whole_volume_mounts_are_authored_unchanged() -> None:
 
     Handing a toolchain to a non-root seat that cannot apt-get is the whole
     point of ``--mount`` (report 3.19), and a refusal that swept up ordinary
-    mounts would take Patch mode with it.
+    mounts would take Hotfix mode with it.
     """
     mounts = [
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"},

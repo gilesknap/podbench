@@ -1,9 +1,14 @@
-# Installation
+# Setup
 
 podbench has two halves, and you install neither. The **launcher** runs on your
 machine straight from the index; the **image** is pulled by the cluster when you
 attach. Nothing is installed into the target pod, and no application chart has
 to change.
+
+So this page is not an installation. It is the four things that are still true
+without one: what you need on your machine, the single ssh line that outlives
+the command, which image the launcher will ask for, and what the cluster has to
+allow.
 
 ## What you need first
 
@@ -65,53 +70,15 @@ consequence worth knowing — an unpinned `uvx podbench` keeps using the cached
 version rather than checking PyPI for a newer one. Ask for `podbench@latest`, or
 pass `--refresh`, when you want the newest release.
 
-Three shapes are supported, and they run the same program:
+Pin it as `uvx podbench@1.0.0 <verb>` in anything that has to be reproducible —
+a script, a runbook, a shared incident channel.
 
-| Invocation | When |
-|---|---|
-| `uvx podbench <verb>` | the default. Nothing installed; the version is whatever uv has cached |
-| `uvx podbench@1.0.0 <verb>` | pinned and reproducible — a script, a runbook, a shared incident channel |
-| `uv tool install podbench` | you want `podbench` on `PATH` permanently, and will manage upgrades yourself |
-
-If you would rather install it, any of these will do. The first two put
-`podbench` on your `PATH`; the third does so only while its venv is activated:
-
-::::{tab-set}
-
-:::{tab-item} uv
-
-```
-$ uv tool install podbench
-```
-
-:::
-
-:::{tab-item} pipx
-
-```
-$ pipx install podbench
-```
-
-:::
-
-:::{tab-item} pip + venv
-
-```
-$ python3.11 -m venv ~/.venvs/podbench    # or any later 3.x
-$ source ~/.venvs/podbench/bin/activate
-$ python3 -m pip install podbench
-```
-
-This is the one route that does not fetch its own interpreter, so the venv has
-to be built with **3.11 or later** — pip refuses the wheel otherwise. And you
-must keep the venv activated, or symlink `podbench` onto your `PATH`.
-
-:::
-
-::::
-
-All three read the name from PyPI, so all three wait on the first release; until
-then use the `--from git+...` form above.
+If you would rather have `podbench` on your `PATH` and manage upgrades yourself,
+`uv tool install podbench` does that, as do `pipx install podbench` and a plain
+`pip install podbench` into a virtualenv you keep activated. They all run the
+same program and all read the same name from PyPI, so they wait on the first
+release too. Only the `pip` route does not fetch its own interpreter, so build
+that venv with **3.11 or later** — pip refuses the wheel otherwise.
 
 A release carries two spellings of its version: the wheel is PEP 440
 (`1.0.0b1`), while the git tag and the chart are SemVer (`1.0.0-beta.1`). The

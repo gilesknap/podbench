@@ -4,18 +4,21 @@ html_theme.sidebar_secondary.remove: true
 
 ```{include} ../README.md
 :end-before: <!-- README only content
+:relative-docs: docs/
+:relative-images:
 ```
 
 Where to start
 --------------
 
-* Never used it — [Installation](tutorials/installation.md), then
+* Never used it — [Setup](tutorials/setup.md), then
   [Your first session](tutorials/first-session.md).
 * Here to debug a crash — [Debug with gdb](how-to/debug-with-gdb.md).
 * Here to change code in the cluster — [Iterate on Python](how-to/iterate-on-python.md).
 * Here to decide whether to allow it — [Security model](explanations/security.md).
 * Looking for a flag — [Command-line reference](reference/cli.md).
 * Met a word you do not know — [Glossary](reference/glossary.md).
+* Wondering how finished it is — [What is proven, and what is not](explanations/status.md).
 
 How the documentation is structured
 -----------------------------------
@@ -33,7 +36,7 @@ Documentation is split into [four categories](https://diataxis.fr), also accessi
 tutorials
 ```
 +++
-Tutorials for installation and typical usage. New users start here.
+Tutorials for setting up and typical usage. New users start here.
 :::
 
 :::{grid-item-card} {material-regular}`directions;2em`

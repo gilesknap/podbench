@@ -58,6 +58,7 @@ from typing import Annotated, Any, Protocol, cast
 import typer
 
 from .cli import new_app, require_subcommand, run
+from .console import emit, paragraph
 from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
 from .launcher import CONTAINER_BASE, kubectl_for, running_seat
 from .model import (
@@ -1148,8 +1149,24 @@ def status_rows(
     return rows
 
 
+_FLAG = 10
+"""Where a row's pod name starts, which is ``doctor``'s column so the two tables
+scan alike — and the status is bracketed for the same reason, so that
+:mod:`podbench.console` colours it without either module saying what a colour
+is."""
+
+_ROW_INDENT = " " * 4
+"""Where a row's prose sits under it."""
+
+
 def format_status(rows: Sequence[HotfixRow]) -> str:
-    """The status report. Empty is a real and reassuring answer, so say it."""
+    """The status report. Empty is a real and reassuring answer, so say it.
+
+    Only the prose is wrapped. The row line itself is a set of columns held
+    apart by double spaces, and wrapping collapses whitespace — so a row put
+    through it would come back as a sentence, with the commit and the health
+    no longer under the headings the eye is running down.
+    """
     if not rows:
         return "no hotfixed pods in this namespace"
     lines: list[str] = []
@@ -1157,27 +1174,36 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
         manifest = row.manifest
         ahead = manifest.ahead if manifest is not None else 0
         commit = manifest.commit[:7] if manifest is not None else "unknown"
-        flag = " " if row.health.ok else "!"
+        flag = "[ok]" if row.health.ok else "[!]"
         lines.append(
-            f"{flag} {row.pod}  +{ahead} commit(s)  {commit}  "
+            f"  {flag}".ljust(_FLAG) + f"{row.pod}  +{ahead} commit(s)  {commit}  "
             f"{row.health.value} — {row.health.summary}"
         )
-        lines.append(f"    {row.detail}")
+        lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
         if manifest is not None:
             lines.append(
-                f"    base {manifest.base_commit[:7] or '?'} · "
+                f"{_ROW_INDENT}base {manifest.base_commit[:7] or '?'} · "
                 f"{manifest.author or 'unknown author'} · "
                 f"{manifest.timestamp or 'no timestamp'}"
             )
             for entry in manifest.commits:
-                lines.append(f"      {entry.short}  {entry.subject}")
+                # The sha goes in `first` rather than into the wrapped text, so
+                # the two spaces holding the column stay two spaces.
+                lead = f"{_ROW_INDENT}  {entry.short}  "
+                lines.extend(
+                    paragraph(entry.subject, first=lead, indent=" " * len(lead))
+                )
             if ahead > len(manifest.commits):
                 lines.append(
-                    f"      … and {ahead - len(manifest.commits)} more "
+                    f"{_ROW_INDENT}  … and {ahead - len(manifest.commits)} more "
                     "(the manifest keeps the most recent)"
                 )
         for note in row.notes:
-            lines.append(f"    note: {note}")
+            lines.extend(
+                paragraph(
+                    note, first=f"{_ROW_INDENT}note: ", indent=f"{_ROW_INDENT}      "
+                )
+            )
     return "\n".join(lines)
 
 
@@ -1772,8 +1798,7 @@ def _store_for(
 
 
 def _report(actions: Sequence[str]) -> int:
-    for action in actions:
-        print(action)
+    emit("\n".join(actions))
     return 0
 
 
@@ -1978,7 +2003,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         rows = status_rows(kube, probe=not no_probe, python=python)
-        print(format_status(rows))
+        emit(format_status(rows))
         raise typer.Exit(0 if all(row.health.ok for row in rows) else 1)
 
     @app.command(

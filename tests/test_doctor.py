@@ -180,6 +180,17 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def flowed(report: Report) -> str:
+    """``format_report`` with its wrapping undone, for asserting on phrases.
+
+    The report wraps to the terminal now, so a sentence it prints is not a
+    contiguous substring of what it printed. A test that cares *what* was said
+    collapses the whitespace and matches the sentence; the ones that care how it
+    is laid out live in ``tests/test_console.py``.
+    """
+    return " ".join(format_report(report).split())
+
+
 def statuses(report: Report) -> dict[str, Status]:
     """Every check and feature verdict by name, which is what a test asserts on."""
     return {check.name: check.status for check in report.checks} | {
@@ -342,7 +353,7 @@ def test_no_agent_and_no_key_does_not_promise_the_file_will_sign(home: Path) -> 
     report = diagnose(runner=machine, which=machine.which)
     assert statuses(report)["ssh identity"] is Status.FAIL
     assert statuses(report)["ssh agent"] is Status.WARN
-    assert "nothing left that could sign" in format_report(report)
+    assert "nothing left that could sign" in flowed(report)
 
 
 def test_an_agent_holding_the_identity_is_named_with_both_escapes(
@@ -354,7 +365,7 @@ def test_an_agent_holding_the_identity_is_named_with_both_escapes(
     wired(home)
     machine = FakeMachine(agent_keys=(SOMEONE_ELSES, MINE))
     report = diagnose(runner=machine, which=machine.which)
-    rendered = format_report(report)
+    rendered = flowed(report)
 
     assert statuses(report)["ssh agent"] is Status.WARN
     assert report.exit_code == 0
@@ -539,7 +550,7 @@ def test_a_listing_that_failed_is_not_read_as_an_agent_without_the_key(
     wired(home)
     machine = FakeMachine(agent_error=agent_error)
     report = diagnose(runner=machine, which=machine.which)
-    rendered = format_report(report)
+    rendered = flowed(report)
     assert statuses(report)["ssh agent"] is Status.WARN
     assert "not measured" in rendered
     assert agent_error[1] in rendered

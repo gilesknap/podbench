@@ -26,7 +26,7 @@ $ podbench --help
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
 │ dev            create or delete the dev pod                                                      │
-│ patch          durable in-place fixes on a claim-backed venv                                     │
+│ hotfix         durable in-place fixes on a claim-backed venv                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
 │ agent          prepare the container for ssh and idle as its PID 1                               │
@@ -42,7 +42,7 @@ $ podbench --help
 
 | Where it runs | Verbs |
 |---|---|
-| Your machine | `doctor`, `attach`, `ssh-config`, `status`, `list`, `dev`, `patch` |
+| Your machine | `doctor`, `attach`, `ssh-config`, `status`, `list`, `dev`, `hotfix` |
 | Inside the debug container | `agent`, `capreport`, `pids`, `dbg`, `debug-config`, `dev-bootstrap`, `run`, `stop` |
 
 Every verb below is written as `podbench <verb>`, which is the only spelling
@@ -55,7 +55,7 @@ choice, and all three run the same code:
 | `uvx podbench@<version> <verb>` | pinned, so a session is reproducible and the image tag it picks is known in advance |
 | `uv tool install podbench` (or pipx, or pip) | for `podbench` permanently on `PATH` |
 
-See [Installation](../tutorials/installation.md) for the details, including how
+See [Setup](../tutorials/setup.md) for the details, including how
 to run it before the first PyPI release.
 
 The in-pod verbs are spelled the same way from a terminal in the seat:
@@ -78,10 +78,10 @@ and so does `doctor`:
 
 `dev` takes `-n`/`--namespace`, `--context` and — because it writes an ssh
 config too — `--identity`, `--config-dir` and `--host-alias`. It does not take
-`--kubectl`: it shells out to `kubectl` on `PATH`. Under `patch` the same three —
+`--kubectl`: it shells out to `kubectl` on `PATH`. Under `hotfix` the same three —
 `-n`/`--namespace`, `--context` and `--kubectl` — sit on each **sub-verb**, not
-on `patch` itself, so it is `podbench patch status -n demo` and never
-`podbench patch -n demo status`. `patch` writes no ssh config, so nothing under
+on `hotfix` itself, so it is `podbench hotfix status -n demo` and never
+`podbench hotfix -n demo status`. `hotfix` writes no ssh config, so nothing under
 it takes `--config-dir`.
 
 podbench shells out to `kubectl` deliberately, so it inherits your kubeconfig,
@@ -189,7 +189,7 @@ RBAC in demo (kubectl auth can-i, as your kubeconfig's user)
           grant it with the chart's rbac.iterate=true, or the equivalent Role
   [warn]  resize         missing: patch pods/resize
           grant it with the chart's rbac.resize=true, or the equivalent Role
-  [ok]    patch          all 5 verbs allowed
+  [ok]    hotfix         all 5 verbs allowed
 ----------------------------------------------------------------------------
 VERDICT: 1 blocker before `podbench attach` can work (exit 1)
 BLOCKERS: ssh include
@@ -208,7 +208,7 @@ What it checks:
 | `config dir` | — | `~/.podbench/config.d` does not exist yet |
 | `ssh include` | `~/.ssh/config` does not include the generated stanzas | it includes them **below** a `Host`/`Match` block |
 | RBAC `attach` | any of its verbs is denied | kubectl could not answer |
-| RBAC `iterate`, `resize`, `patch` | — | any of its verbs is denied, or kubectl could not answer |
+| RBAC `iterate`, `resize`, `hotfix` | — | any of its verbs is denied, or kubectl could not answer |
 
 Notes:
 
@@ -277,11 +277,11 @@ Land a debug seat in a **live** pod, walking the capability ladder, and print
 what that seat can actually do.
 
 ```
-
- Usage: podbench attach [OPTIONS] [POD]
-
- add or reconnect a podbench container and print the report
-
+                                                                                                    
+ Usage: podbench attach [OPTIONS] [POD]                                                             
+                                                                                                    
+ add or reconnect a podbench container and print the report                                         
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
 │                   on a single pod lists the namespace and asks                                   │
@@ -294,7 +294,7 @@ what that seat can actually do.
 │ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
 │                                              seat, named by claim or by volume name. MOUNTPATH   │
 │                                              defaults to the application container's own, which  │
-│                                              Patch mode requires it to equal. Repeatable         │
+│                                              Hotfix mode requires it to equal. Repeatable        │
 │ --new                                        add a container even if one is running (its name is │
 │                                              permanent)                                          │
 │ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
@@ -312,8 +312,12 @@ what that seat can actually do.
 │                                              --seat-gid-root for the seat's /etc/passwd entry    │
 │ --no-probe                                   skip capreport; the report then says nothing was    │
 │                                              measured                                            │
-│ --resize                    MEMORY           raise the target's memory limit in place first,     │
-│                                              e.g. 6Gi                                            │
+│ --resize                    MEMORY           raise the target's memory in place first, as LIMIT  │
+│                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
+│                                              is raised too where a LimitRange bounds             │
+│                                              limit/request                                       │
+│ --resize-cpu                CPU              raise the target's cpu in place first, as LIMIT or  │
+│                                              REQUEST:LIMIT, e.g. 4 or 500m:4                     │
 │ --identity                  KEY              ssh key to authorise in the seat and name in the    │
 │                                              generated stanza                                    │
 │                                              [default: ~/.ssh/id_ed25519]                        │
@@ -359,17 +363,17 @@ Notes:
   ephemeral container, whose name is then burnt for the pod's lifetime.
 * `--target-uid` matters only for the degraded rung, which must match the
   target's UID exactly and never defaults to root.
-* `--mount` is how a seat reaches a Patch-mode claim. An ephemeral container may
+* `--mount` is how a seat reaches a Hotfix-mode claim. An ephemeral container may
   mount the volumes its pod **already declares** and may not introduce one —
   `spec.volumes` is immutable once the pod exists — so a name the pod does not
   carry is refused with that explanation rather than submitted. That immutability
-  is the whole reason Patch mode asks for the chart's cooperation at deploy time;
-  `podbench patch --print-values` emits the volume, the volumeMount and the
+  is the whole reason Hotfix mode asks for the chart's cooperation at deploy time;
+  `podbench hotfix --print-values` emits the volume, the volumeMount and the
   seeding initContainer that put it there.
   * The argument is a **claim** name or the pod's **volume** name; a claim is
     resolved to the volume entry that references it.
   * `MOUNTPATH` is optional and usually should be. Where the application
-    container mounts that volume, its mountPath is copied, because Patch mode
+    container mounts that volume, its mountPath is copied, because Hotfix mode
     only works when the claim resolves at the *same* path on both sides — the
     venv's `bin/python` and the checkout's editable install are absolute paths
     recorded on the volume. An explicit path that disagrees is honoured and
@@ -380,7 +384,7 @@ Notes:
     API server answers `Forbidden: cannot be set for an Ephemeral Container` and
     rejects the whole request — and dropping it silently would give the seat the
     volume root where the application sees one directory inside it, so every
-    path Patch mode recorded would resolve to the wrong thing. Deploy the claim
+    path Hotfix mode recorded would resolve to the wrong thing. Deploy the claim
     mounted whole over the venv path, or use `podbench dev`, whose seat is an
     ordinary container.
   * Mounts are fixed when a container is created, so `--mount` against a
@@ -421,9 +425,12 @@ Notes:
     volume, the `ssh seat` line explains that it cannot be projected into an
     ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
     the identity, the same line credits it.
-* `--resize` is opt-in and only partly proven; it prints a warning either way —
-  including that the raised limit is on the pod and not on its controller, so a
-  rollout reverts it — and needs `pods/resize` `patch`.
+* `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
+  `pods/resize` `patch`. An attach that used neither prints one line offering
+  them; one that used either prints what it cost — including that the raised
+  limit is on the pod and not on its controller, so a rollout reverts it.
+  Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
+  limit where a `LimitRange` bounds the ratio between them.
 * `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
   fallback from the identity volume: GID 0 lets the agent append its own
   `/etc/passwd` record (the image makes the file group-writable for it), at the
@@ -724,32 +731,32 @@ Notes:
   still needs a readable public key, so that what it prints is what `dev` would
   actually create.
 
-### `patch`
+### `hotfix`
 
 Durable in-place fixes: a venv on a ReadWriteOnce claim, every change a git
-commit, and a `status` that will not let a patched pod go unnoticed.
+commit, and a `status` that will not let a hotfixed pod go unnoticed.
 
 :::{warning}
-Patch mode has never been run against a cluster. It is unit-tested only.
+Hotfix mode has never been run against a cluster. It is unit-tested only.
 :::
 
 The seat must mount the claim at the application's own mountPath, since that is
-how `patch` reads `pyvenv.cfg` and runs `git` against the checkout. Land it that
+how `hotfix` reads `pyvenv.cfg` and runs `git` against the checkout. Land it that
 way with `attach --mount`:
 
 ```
 podbench attach myapp-0 --mount myapp-venv --new
 ```
 
-`--local` remains the alternative when `patch` is run from a terminal inside the
+`--local` remains the alternative when `hotfix` is run from a terminal inside the
 seat, where the claim is already in this process's own mount namespace.
 
 ```
 
- Usage: podbench patch [OPTIONS] COMMAND [ARGS]...
+ Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
  Durable in-place fixes: a venv on a claim, every change a commit, and a status command that will
- not let a patched pod go unnoticed.
+ not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --print-values              emit the helm values an application's chart needs, and exit          │
@@ -767,7 +774,7 @@ seat, where the claim is already in this process's own mount namespace.
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
 │ init         verify the seeded claim, clone the source, editable-install                         │
 │ apply        commit the change on the claim and roll the workload                                │
-│ status       every patched pod in the namespace, and its drift                                   │
+│ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -776,7 +783,7 @@ seat, where the claim is already in this process's own mount namespace.
 |---|---|
 | `init --repo URL --venv PATH TARGET` | verify the claim was seeded from the image's venv, clone the source onto it, editable-install, record the base commit |
 | `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest, annotate, roll the workload |
-| `status` | every patched pod in the namespace, its drift, and what is wrong with it |
+| `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
 | `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags:
@@ -793,14 +800,14 @@ Notes:
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.
-* `status` exits **1** when any pod needs attention, so "no unretired patches" is
+* `status` exits **1** when any pod needs attention, so "no unretired hotfixes" is
   a testable shutdown assertion.
 
 ```
-$ podbench patch --print-values --app myapp --venv-path /opt/venv
+$ podbench hotfix --print-values --app myapp --venv-path /opt/venv
 ```
 
-emits both halves of the chart wiring: `patchVenv` values for the podbench
+emits both halves of the chart wiring: `hotfixVenv` values for the podbench
 release, and the volume, volumeMount and seeding initContainer for the
 application's own chart.
 
@@ -965,12 +972,12 @@ so `launch.json`'s list and VS Code's own dropdown become the choice. Every
 flavour that does *not* apply gets a sentence naming the mechanism.
 
 ```
-
- Usage: podbench debug-config [OPTIONS] [PID]
-
- Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
- with the pid, the sysroot-prefixed program path and the mode's path mappings already filled in.
-
+                                                                                                    
+ Usage: podbench debug-config [OPTIONS] [PID]                                                       
+                                                                                                    
+ Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,  
+ with the pid, the sysroot-prefixed program path and the mode's path mappings already filled in.    
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   [PID]      <int>  pid to attach to; discovered from the container id if omitted                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -999,11 +1006,14 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │ --no-debuginfod                                     do not enable debuginfod (it needs           │
 │                                                     ca-certificates and network)                 │
 │ --lldb                                              shorthand for --flavour lldb                 │
-│ --provision                                         install debugpy into the target with uv when │
-│                                                     it cannot import one. Mutates the workload:  │
-│                                                     ~15 MB of shared ephemeral storage, needs    │
-│                                                     egress from the pod, and no restart survives │
-│                                                     it                                           │
+│ --provision                                         make the target debuggable: install debugpy  │
+│                                                     with uv when it cannot import one, then      │
+│                                                     start the server inside it so the emitted    │
+│                                                     configuration has something to connect to.   │
+│                                                     Mutates the workload: ~15 MB of shared       │
+│                                                     ephemeral storage, needs egress from the     │
+│                                                     pod, ptraces the app for a few seconds, and  │
+│                                                     no restart survives it                       │
 │ --provision-dest          PATH                      where --provision installs it, as the        │
 │                                                     *target* spells it, and the one extra path   │
 │                                                     searched for the target's copy. Point it at  │
@@ -1288,6 +1298,6 @@ stream.
 | Code | Meaning |
 |---|---|
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
-| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `patch status` found a pod needing attention; or `doctor` found something blocking an attach |
-| `2` | a launcher error, a `patch` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
+| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; or `doctor` found something blocking an attach |
+| `2` | a launcher error, a `hotfix` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
 | `0` / `10` / `15` / `20` | `capreport` only: the capability verdict |

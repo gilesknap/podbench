@@ -42,7 +42,6 @@ __all__ = [
     "ProbeKind",
     "probe_budgets",
     "probe_qualifier",
-    "probe_warning",
 ]
 
 DEFAULT_PERIOD_SECONDS = 10
@@ -73,26 +72,24 @@ class ProbeKind(enum.Enum):
         return f"{self.value}Probe"
 
     @property
-    def consequence(self) -> str:
-        """What happens at the end of the budget, and how visible it is."""
+    def effect(self) -> str:
+        """What the kubelet does at the end of the budget, in a few words.
+
+        Deliberately a clause and not a paragraph. This is read inside a single
+        line beside the deadline it belongs to, where the useful distinction is
+        which of the two happens and which one leaves no trace; the mechanism
+        behind each is in the module docstring and in
+        ``docs/how-to/attach-to-a-pod.md``.
+
+        >>> ProbeKind.READINESS.effect
+        'drops out of the Service, and leaves no trace afterwards'
+        """
         return {
             ProbeKind.READINESS: (
-                "the pod goes not-ready and stops taking Service traffic - its "
-                "EndpointSlice keeps the address and flips conditions.ready to "
-                "false. Quiet: the pod stays Running, the restart count does "
-                "not move, and it recovers within a probe period of continuing, "
-                "so afterwards nothing points at the debugger"
+                "drops out of the Service, and leaves no trace afterwards"
             ),
-            ProbeKind.LIVENESS: (
-                "the container is killed and restarted - and the seat, which "
-                "shares its namespaces, is killed with it. An ephemeral "
-                "container cannot be restarted, so that name is burnt and "
-                "coming back takes `attach --new`"
-            ),
-            ProbeKind.STARTUP: (
-                "the container is killed and restarted, as for liveness - a "
-                "startup probe that gives up is a start that failed"
-            ),
+            ProbeKind.LIVENESS: "restarts the container, killing the seat with it",
+            ProbeKind.STARTUP: "restarts the container, killing the seat with it",
         }[self]
 
 
@@ -167,16 +164,13 @@ class ProbeBudget:
         return f"{self.earliest}-{self.latest}s"
 
     @property
-    def mechanism(self) -> str:
-        """The numbers this budget came from, in the spec's own words.
+    def deadline(self) -> str:
+        """This probe as one clause of the qualifier line.
 
-        >>> ProbeBudget(ProbeKind.READINESS, 5, 1, 3, 2).mechanism
-        '3 failures x 5s period, 1s timeout'
+        >>> ProbeBudget(ProbeKind.LIVENESS, 10, 1, 3, 5).deadline
+        'liveness at 21-31s (restarts the container, killing the seat with it)'
         """
-        return (
-            f"{self.failure_threshold} failures x {self.period_seconds}s "
-            f"period, {self.timeout_seconds}s timeout"
-        )
+        return f"{self.kind.value} at {self.window} ({self.kind.effect})"
 
 
 def probe_budgets(
@@ -212,48 +206,23 @@ def probe_budgets(
     )
 
 
-def probe_warning(container: str, budgets: Sequence[ProbeBudget]) -> str | None:
-    """The WARNING text for a probed target, or ``None`` when it has none.
-
-    Silence is the right output for an unprobed pod: a warning that says
-    nothing is wrong teaches the reader to skip the block that one day will
-    say something is. The good news goes to :func:`probe_qualifier` instead,
-    which prints either way.
-    """
-    if not budgets:
-        return None
-    lines = [
-        f"a breakpoint on {container!r} is on a timer: it answers probes, and "
-        "a process stopped in a debugger does not - which the kubelet cannot "
-        "tell from a hang."
-    ]
-    lines.extend(f"  {_budget_line(budget)}" for budget in budgets)
-    lines.append(
-        "Probes cannot be changed on a running pod - a pod update may only "
-        "change image, activeDeadlineSeconds, tolerations and "
-        "terminationGracePeriodSeconds, and unlike resources they have no "
-        "resize-style subresource. So live attach here is a short-visit tool: "
-        "break, look, continue, or use logpoints, which never stop the "
-        "process. For an unlimited pause use `podbench dev`, which strips all "
-        "three probes."
-    )
-    if any(budget.initial_delay_seconds for budget in budgets):
-        lines.append(
-            "initialDelaySeconds is not in these numbers on purpose: it shifts "
-            "when probing begins after a start or a restart, and adds nothing "
-            "to a pause on a container that is already up."
-        )
-    return "\n".join(lines)
-
-
 def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
-    """One line qualifying what live attach means on this pod.
+    """Everything a pause on this pod costs, on the line the tick is on.
 
     A bare tick beside "live attach" says the same thing on a pod that will
     restart under you in twenty seconds as on one that will wait all afternoon,
-    and those are different products. The arithmetic stays in
-    :func:`probe_warning`; this is the qualifier on the tick.
+    and those are different products. This used to be a teaser for a nine-line
+    ``WARNING`` block carrying the arithmetic; the block is gone, because the
+    numbers are the only part of it that was about *this* pod and they fit
+    here. Every deadline in force is named, soonest first — the readiness one
+    arrives first and says least, and a reader who only sees it would take the
+    quiet consequence for the whole of it.
 
+    >>> budgets = (ProbeBudget(ProbeKind.READINESS, 5, 1, 3, 2),)
+    >>> print(probe_qualifier("app", budgets))  # doctest: +NORMALIZE_WHITESPACE
+    TIME-LIMITED: 'app' answers probes, so a pause has a deadline - readiness
+    at 11-16s (drops out of the Service, and leaves no trace afterwards).
+    Probes cannot be changed on a running pod; `podbench dev` strips all three
     """
     live = [budget for budget in budgets if budget.in_force]
     if not live:
@@ -268,35 +237,13 @@ def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
             "startup probe, so nothing removes it from a Service or restarts "
             "it while it is stopped"
         )
-    soonest = min(live, key=lambda budget: budget.earliest)
-    return (
-        f"TIME-LIMITED: {container!r} answers probes, so a pause has a "
-        f"deadline - the first is {soonest.kind.value} at {soonest.window}. "
-        "The WARNING below has the arithmetic and the way out"
+    deadlines = ", ".join(
+        budget.deadline for budget in sorted(live, key=lambda budget: budget.earliest)
     )
-
-
-def _budget_line(budget: ProbeBudget) -> str:
-    """One probe, deadline first.
-
-    Not a table: the warning block wraps on whitespace, so a column that
-    survived here would not survive the wrap. The number leads instead, which
-    is the field being compared anyway.
-    """
-    name = budget.kind.value
-    if budget.in_force:
-        return (
-            f"{name}, {budget.window} into a pause: {budget.kind.consequence}. "
-            f"{budget.mechanism}."
-        )
-    if budget.kind is ProbeKind.STARTUP:
-        return (
-            f"{name}: already satisfied, so it applies again only to the "
-            f"container a restart would bring up. {budget.mechanism}."
-        )
     return (
-        f"{name}: held off while the startup probe is still running, so it is "
-        f"not the deadline in effect yet. {budget.mechanism}."
+        f"TIME-LIMITED: {container!r} answers probes, so a pause has a deadline "
+        f"- {deadlines}. Probes cannot be changed on a running pod; `podbench "
+        "dev` strips all three"
     )
 
 
