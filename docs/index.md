@@ -16,6 +16,7 @@ Where to start
 * Here to decide whether to allow it — [Security model](explanations/security.md).
 * Looking for a flag — [Command-line reference](reference/cli.md).
 * Met a word you do not know — [Glossary](reference/glossary.md).
+* Wondering how finished it is — [What is proven, and what is not](explanations/status.md).
 
 How the documentation is structured
 -----------------------------------
