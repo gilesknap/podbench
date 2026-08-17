@@ -54,21 +54,39 @@ capabilities`` under ``restricted:latest``, ``non-default capabilities`` under
 ADMISSION_DENIAL_MARKERS = (
     ("violates PodSecurity",),
     ('admission webhook "', "denied the request"),
+    ("ValidatingAdmissionPolicy '", "denied request"),
 )
 """What a *synchronous policy refusal* looks like, whoever issued it.
 
-Each tuple is a set of fragments that must all appear. Two groups, because the
-two mechanisms word themselves nothing alike: Pod Security Admission is built in
-and says ``violates PodSecurity``, while every webhook — Kyverno, Gatekeeper,
+Each tuple is a set of fragments that must all appear. Three groups, because the
+three mechanisms word themselves nothing alike: Pod Security Admission is built
+in and says ``violates PodSecurity``; every webhook — Kyverno, Gatekeeper,
 anything else — is announced by the API server's own wrapper naming the webhook
-and the verdict.
+and the verdict; and a native ``ValidatingAdmissionPolicy`` names itself and its
+binding and says ``denied request`` — *not* ``denied the request``, so the
+webhook group does not cover it.
 
-Deliberately narrow on both counts. ``denied the request`` is required beside
-the webhook's name so that a webhook which *failed to answer* — unreachable,
-timed out, ``failed calling webhook`` — stays an error rather than being read as
-a policy verdict: retrying a lower rung against a broken webhook would replace
-one honest failure with three. And neither group matches an RBAC ``Forbidden``
-or a missing pod, which are not something a lesser rung can fix.
+The third group was measured, not guessed: with
+``tests/e2e/apps/deny-sys-ptrace.yaml`` bound to the namespace, an ``attach``
+against a root target ended the whole walk on the full rung's refusal rather
+than dropping to the seat rung. It is the same defect issue #77 fixed for
+Kyverno, in the one policy engine that needs no installing.
+
+Deliberately narrow on all three counts. ``denied the request`` is required
+beside the webhook's name so that a webhook which *failed to answer* —
+unreachable, timed out, ``failed calling webhook`` — stays an error rather than
+being read as a policy verdict: retrying a lower rung against a broken webhook
+would replace one honest failure with three. And none of the groups matches an
+RBAC ``Forbidden`` or a missing pod, which are not something a lesser rung can
+fix.
+
+The one case the third group over-reads is a ``ValidatingAdmissionPolicy`` whose
+CEL is *broken* under ``failurePolicy: Fail``: the API server reports that with
+the same wrapper, so the ladder will walk down past it. That is accepted rather
+than filtered, because the alternative — matching on the tail of the message —
+would break the moment upstream reworded an evaluation error, and a broken
+policy that refuses everything ends the walk with "no rung was admitted"
+anyway.
 """
 
 CREATE_CONTAINER_CONFIG_ERROR = "CreateContainerConfigError"
@@ -176,6 +194,11 @@ class KubectlError(RuntimeError):
         >>> kyverno = 'Error from server: admission webhook \\
         ... "validate.kyverno.svc-fail" denied the request: blocked'
         >>> KubectlError(CommandResult((), 1, "", kyverno)).is_admission_denial
+        True
+        >>> vap = 'Error from server (Forbidden): pods "app" is forbidden: \\
+        ... ValidatingAdmissionPolicy \\'deny-sys-ptrace\\' with binding \\
+        ... \\'deny-sys-ptrace\\' denied request: no SYS_PTRACE here'
+        >>> KubectlError(CommandResult((), 1, "", vap)).is_admission_denial
         True
         >>> unreachable = 'failed calling webhook "validate.kyverno.svc": \\
         ... context deadline exceeded'
