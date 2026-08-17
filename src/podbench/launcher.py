@@ -39,8 +39,9 @@ from typing import Annotated, Any, cast
 import typer
 
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
-from .budget import ProbeBudget, probe_budgets, probe_qualifier, probe_warning
+from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
+from .console import WARNING_LEAD, emit, wrap_width
 from .editor import EditorError, open_seat, resolve_editor
 from .kubectl import (
     EphemeralContainerError,
@@ -218,43 +219,44 @@ target's uid, so the agent registers one at start-up when it can (see
 the image names that account something else."""
 
 OOM_WARNING = (
-    "podbench shares this pod's memory and ephemeral-storage limits and cannot "
-    "reserve its own: an ephemeral container may not carry `resources` at all, "
-    "and the field is rejected outright (report 3.9). A vscode-server plus "
-    "extensions is a 1.1-1.3 GB working set, so attaching to a tightly limited "
-    "pod can OOM-kill the workload or get the whole pod evicted on "
-    "ephemeral-storage - and an OOM inside an ephemeral container is "
-    "unrecoverable, because it cannot be restarted."
+    "this seat shares the pod's memory and ephemeral-storage limits and cannot "
+    "reserve its own (report 3.9): a 1.1-1.3 GB VS Code session can OOM-kill "
+    "the workload or get the pod evicted, and an ephemeral container does not "
+    "come back. `podbench dev` for anything heavier than looking."
 )
+"""Why a seat can kill the pod it landed in, in one line.
+
+Every warning the report prints is one line by rule. The mechanism behind each
+- which is what the paragraphs these replaced were spending their length on -
+is in ``docs/how-to/attach-to-a-pod.md``, said once, where somebody reading
+about the mode will meet it; a terminal is where you find out *that* it applies
+to the pod in front of you.
+"""
 
 EDITOR_PROBE_REMINDER = (
-    "before the first breakpoint: this pod is probed, and the deadline printed "
-    "with the report above is what a pause spends. The liveness half restarts "
-    "the container and takes the seat with it; the readiness half is the quiet "
-    "one - the pod stops taking Service traffic and there is no trace of it "
-    "once the process continues."
+    "before the first breakpoint: this pod is probed, and the deadline under "
+    "`supports` above is what a pause spends."
 )
 """The last thing ``attach --open`` says, and the only thing it repeats.
 
-The numbers are :func:`podbench.budget.probe_warning`'s and stay there — a
+The numbers are :func:`podbench.budget.probe_qualifier`'s and stay there — a
 second copy is a second thing to keep true. What this adds is the timing: the
 report is several blocks up by the time the window opens, and the reader's
 attention is about to leave the terminal for a GUI.
 """
 
 RESIZE_WARNING = (
-    "--resize and --resize-cpu raise the target container's limits in place "
-    "(kubectl patch pod --subresource resize), and raise its requests with "
-    "them where a LimitRange bounds limit/request. They are opt-in for two "
-    "reasons (report R13). They are only partly proven: three pods, two of "
-    "them Deployment-managed - a ReplicaSet reconciles pod existence, not pod "
-    "spec, so it does not fight the resize - but one Kubernetes version, and "
-    "never against a ResourceQuota. And the raised limits live on the pod, "
-    "not on its controller: the template still asks for the old ones and "
-    "nothing reconciles the difference, so a rollout, a scale, an image bump "
-    "or an eviction regenerates the pod from it and silently reverts the "
-    "resize."
+    "--resize MEMORY and --resize-cpu CPU raise the target's limits in place "
+    "before the seat lands, which is the only headroom a live pod can be given; "
+    "opt-in, and only partly proven (report R13)."
 )
+"""Printed when neither resize flag was given, so it is an offer and not a
+caution.
+
+What R13 leaves unproven belongs on the other path and is printed there, by
+:func:`try_resize`: a caveat about a mutation is worth reading by the person who
+just made it, and worth skipping by the person who did not.
+"""
 
 _UNPINNED_UID = 65534
 """Stands in for "not root, but the image chooses which" when picking an sshd
@@ -955,12 +957,11 @@ def attach(
     warnings.append(OOM_WARNING)
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
-    # a caution about probed pods. It is stated before anyone sets a
-    # breakpoint, because the readiness half of it is invisible afterwards.
+    # a caution about probed pods. It is not a warning of its own, though: the
+    # deadline qualifies the "live attach" tick, and `probe_qualifier` states it
+    # on that line - a WARNING block repeating it was the longest thing this
+    # verb printed and the one most reliably skipped.
     budgets = probe_budgets(pod_json, session.workload)
-    probe_note = probe_warning(session.workload, budgets)
-    if probe_note is not None:
-        warnings.append(probe_note)
     # Not also a warning: `features` reports it under "supports", which is where
     # "what this seat can do and which mechanism decided" belongs, and
     # `ssh_unavailable_note` prints the way out in place of the stanza. A third
@@ -1454,6 +1455,11 @@ def _iterate_feature() -> Feature:
     )
 
 
+_WARNING_HANG = len(WARNING_LEAD) + 2
+"""Columns a warning's continuation lines are indented by, which is the width of
+the coloured leader plus its separator."""
+
+
 def format_session(session: Session) -> str:
     """The capability report, which is the product of an attach."""
     lines = [
@@ -1497,31 +1503,15 @@ def format_session(session: Session) -> str:
             for note in report.notes:
                 lines.extend(_paragraph(note, first="  - ", indent="    "))
 
+    # One line each, hung under the word that is coloured, so the block reads as
+    # a list of things to know rather than as an essay to skip. What a warning
+    # may no longer do is explain itself: it names the fact and the flag, and
+    # the how-to page carries the mechanism.
     for warning in session.warnings:
-        lines.append("WARNING")
-        lines.extend(f"  {line}" for line in _warning_lines(warning))
+        lines.extend(
+            _paragraph(warning, first=f"{WARNING_LEAD}  ", indent=" " * _WARNING_HANG)
+        )
     return "\n".join(lines)
-
-
-def _warning_lines(warning: str) -> list[str]:
-    """Wrap a warning, keeping any indented list it carries readable.
-
-    Most warnings are one paragraph and come out of here exactly as ``_wrap``
-    left them. The probe budget is the exception: it is one line per probe and
-    the numbers only compare down the column, so its newlines and its indent
-    have to survive - and an indented line's continuation is hung two further
-    columns so it cannot be misread as the next probe.
-    """
-    lines: list[str] = []
-    for raw in warning.split("\n"):
-        indent = len(raw) - len(raw.lstrip())
-        wrapped = _wrap(raw.strip(), width=max(24, 72 - indent))
-        if not wrapped:
-            continue
-        lines.append(" " * indent + wrapped[0])
-        hang = indent + 2 if indent else 0
-        lines.extend(" " * hang + line for line in wrapped[1:])
-    return lines
 
 
 def _yama(scope: int | None) -> str:
@@ -1533,17 +1523,24 @@ def _yama(scope: int | None) -> str:
 def _paragraph(text: str, *, first: str, indent: str) -> list[str]:
     """Wrap ``text`` with a hanging indent, so a wrapped line is not mistaken
     for a second bullet."""
-    wrapped = _wrap(text, width=max(24, 78 - len(indent)))
+    wrapped = _wrap(text, width=wrap_width(len(indent)))
     return [first + wrapped[0], *(indent + line for line in wrapped[1:])]
 
 
-def _wrap(text: str, width: int = 72) -> list[str]:
+def _wrap(text: str, width: int | None = None) -> list[str]:
+    """Break ``text`` on whitespace at ``width``, the terminal's own by default.
+
+    Asked for per call rather than captured once: :func:`wrap_width` reads the
+    window, and a report built at import time would be wrapped for whatever the
+    terminal was when the process started.
+    """
+    limit = wrap_width() if width is None else width
     words = text.split()
     lines: list[str] = []
     current = ""
     for word in words:
         candidate = f"{current} {word}".strip()
-        if len(candidate) > width and current:
+        if len(candidate) > limit and current:
             lines.append(current)
             current = word
         else:
@@ -2041,12 +2038,16 @@ def try_resize(
         [
             f"resized {container} to {asked}; restore it on detach.",
             *plan.notes,
-            "The raised limits live on this pod, not on any controller that "
-            "owns it: a rollout, a scale, an image bump or an eviction "
-            "regenerates the pod from an unchanged template and silently "
-            "reverts the resize. A GitOps controller does not itself revert "
-            "this - Argo CD reconciles the workload object, and the pod is not "
-            "one of its manifests - but the sync that rolls the workload does.",
+            "The raised limits live on this pod, not on the controller that "
+            "owns it, so a rollout, a scale, an image bump or an eviction "
+            "regenerates it from an unchanged template and silently reverts "
+            "the resize. A GitOps controller does not itself revert this - Argo "
+            "CD reconciles the workload object, and the pod is not one of its "
+            "manifests - but the sync that rolls the workload does. Only partly "
+            "proven (report R13): three pods, two of them Deployment-managed - "
+            "a ReplicaSet reconciles pod existence, not pod spec, so it does "
+            "not fight this - but one Kubernetes version, one LimitRange, and "
+            "never against a ResourceQuota.",
         ]
     )
 
@@ -2525,7 +2526,7 @@ def _read_line() -> str:
 
 def _say(message: str) -> None:
     """Resolution chatter goes to stderr, so stdout stays the report."""
-    print(message, file=sys.stderr)
+    emit(message, stderr=True)
 
 
 def _ready_containers(pod_json: Mapping[str, Any]) -> str:
@@ -2783,7 +2784,13 @@ def _open_editor(
         folder=seat_layout(session).home,
         # Wrapped like every other block this verb prints: two of these notes
         # are paragraphs rather than lines.
-        report=lambda note: print("\n".join(_paragraph(note, first="", indent="  "))),
+        # Hung two further columns rather than bulleted: --open's notes are a
+        # list of steps, but several of them carry a ` - ` of their own, and a
+        # wrapped line that begins with one under a bulleted list reads as the
+        # next step. The indent cannot be forged that way.
+        report=lambda note: emit(
+            "\n".join(_paragraph(note, first="  ", indent="    "))
+        ),
         editor=editor,
         provision=provision,
         runner=runner,
@@ -2980,9 +2987,9 @@ def _build_app(
             timeout=timeout,
         )
         session = replace(session, warnings=(*session.warnings, resize_note))
-        print(format_session(session))
+        emit(format_session(session))
         print()
-        wiring = _emit(
+        wiring = _wire(
             kube,
             session,
             identity=key_path,
@@ -2992,7 +2999,7 @@ def _build_app(
             print_config=print_config,
             opening=editor is not None,
         )
-        print(wiring.note)
+        emit(wiring.note)
         if editor is not None:
             print()
             _open_editor(
@@ -3006,8 +3013,15 @@ def _build_app(
                 # true, and the readiness half is the one with no trace
                 # afterwards.
                 print()
-                for line in _paragraph(EDITOR_PROBE_REMINDER, first="", indent="  "):
-                    print(line)
+                emit(
+                    "\n".join(
+                        _paragraph(
+                            EDITOR_PROBE_REMINDER,
+                            first=f"{WARNING_LEAD}  ",
+                            indent=" " * _WARNING_HANG,
+                        )
+                    )
+                )
         raise typer.Exit(0)
 
     @app.command(
@@ -3049,8 +3063,8 @@ def _build_app(
             # attach is in hand.
             ssh=probe_ssh_identity(kube, reference),
         )
-        print(
-            _emit(
+        emit(
+            _wire(
                 kube,
                 session,
                 identity=key_path,
@@ -3080,7 +3094,7 @@ def _build_app(
         # Read-only: the config dir is where the ssh alias for these seats is
         # recorded, and reporting one podbench cannot back up would be worse
         # than reporting none. Nothing here writes a stanza.
-        print(
+        emit(
             format_seats(
                 PodRef(kube.namespace, name), present, directory=client_dir(config_dir)
             )
@@ -3107,8 +3121,10 @@ def _build_app(
         # that ignored the config dir could only guess at the one fact it is
         # asked for.
         directory = client_dir(config_dir)
-        print(
-            "\n".join(
+        # A blank line between pods, because each block is three or four lines
+        # of its own and back-to-back they read as one pod with too many seats.
+        emit(
+            "\n\n".join(
                 format_seats(pod, present, directory=directory)
                 for pod, present in found
             )
@@ -3118,7 +3134,7 @@ def _build_app(
     return app
 
 
-def _emit(
+def _wire(
     kubectl: Kubectl,
     session: Session,
     *,

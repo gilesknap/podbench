@@ -86,19 +86,20 @@ again with one extra ``stat`` instead of a walk.
 """
 
 CAVEATS = (
-    "network egress from the pod is required: uv resolves and downloads the "
-    "wheel from an index, so a locked-down namespace refuses this",
-    "neither the install nor the injection survives a container restart - a "
-    "restart brings back the app image exactly as it was built",
-    "~15 MB of ephemeral storage, on a budget this seat shares with the "
-    "workload and cannot reserve (an ephemeral container may not carry "
-    "`resources`)",
+    "needs egress: uv downloads the wheel from an index",
+    "no container restart survives it, neither the install nor the injection",
+    "~15 MB of ephemeral storage, shared with the workload",
 )
 """What provisioning costs, printed with it rather than left to be discovered.
 
 All three were measured or are structural, and none of them announces itself:
 no egress looks like a resolver error, a restart looks like the debugger simply
 stopping, and ephemeral-storage eviction takes the *workload* with it.
+
+A clause each, because they are printed inline in a sentence the user is about
+to act on rather than read as a page. Why each one is true is the module
+docstring's job and ``docs/how-to/vscode-remote-ssh.md``'s; here the reader
+needs to recognise the failure when they hit it, which the noun alone does.
 """
 
 _UNKNOWN_VERSION = "'<X.Y>'"

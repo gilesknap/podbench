@@ -21,7 +21,6 @@ from podbench.budget import (
     ProbeKind,
     probe_budgets,
     probe_qualifier,
-    probe_warning,
 )
 
 APP = "app"
@@ -131,7 +130,8 @@ def test_a_satisfied_startup_probe_is_not_the_deadline() -> None:
     budgets = by_kind(probe_budgets(pod_document(DEMO_PROBES, started=True), APP))
     assert not budgets[ProbeKind.STARTUP].in_force
     assert budgets[ProbeKind.LIVENESS].in_force
-    assert "already satisfied" in (probe_warning(APP, tuple(budgets.values())) or "")
+    qualifier = probe_qualifier(APP, tuple(budgets.values()))
+    assert "startup" not in qualifier, "a probe that cannot fire is not a deadline"
 
 
 def test_a_running_startup_probe_holds_the_other_two_off() -> None:
@@ -158,21 +158,22 @@ def test_readiness_and_liveness_stand_alone_without_a_startup_probe() -> None:
     assert all(budget.in_force for budget in budgets)
 
 
-def test_the_warning_names_both_budgets_and_the_way_out() -> None:
-    budgets = probe_budgets(pod_document(DEMO_PROBES), APP)
-    warning = probe_warning(APP, budgets)
-    assert warning is not None
-    assert "11-16s" in warning
-    assert "21-31s" in warning
-    assert "stops taking Service traffic" in warning
-    assert "Quiet" in warning
-    assert "killed and restarted" in warning
-    # The seat is in the blast radius too, and its name does not come back.
-    assert "attach --new" in warning
-    assert "`podbench dev`" in warning
+def test_the_qualifier_names_every_budget_and_the_way_out() -> None:
+    """Both deadlines, not just the soonest.
+
+    The readiness one arrives first and is the quiet one, so a reader shown
+    only that would take "drops out of the Service" for the whole cost and
+    never learn that holding on restarts the container underneath them.
+    """
+    qualifier = probe_qualifier(APP, probe_budgets(pod_document(DEMO_PROBES), APP))
+    assert "readiness at 11-16s" in qualifier
+    assert "liveness at 21-31s" in qualifier
+    assert "drops out of the Service" in qualifier
+    # The seat is in the blast radius of the liveness half.
+    assert "killing the seat" in qualifier
     # The two facts that stop a reader looking for a knob that is not there.
-    assert "cannot be changed on a running pod" in warning
-    assert "subresource" in warning
+    assert "cannot be changed on a running pod" in qualifier
+    assert "`podbench dev`" in qualifier
 
 
 def test_an_unprobed_target_is_said_out_loud_and_not_warned_about() -> None:
@@ -180,27 +181,15 @@ def test_an_unprobed_target_is_said_out_loud_and_not_warned_about() -> None:
     the report has to say which one this pod is."""
     budgets = probe_budgets(pod_document(), APP)
     assert budgets == ()
-    assert probe_warning(APP, budgets) is None
     qualifier = probe_qualifier(APP, budgets)
     assert qualifier.startswith("no deadline")
     assert "no readiness, liveness or startup probe" in qualifier
 
 
-def test_the_qualifier_quotes_the_soonest_deadline() -> None:
-    budgets = probe_budgets(pod_document(DEMO_PROBES), APP)
-    qualifier = probe_qualifier(APP, budgets)
-    assert "readiness at 11-16s" in qualifier
+def test_the_qualifier_leads_with_the_soonest_deadline() -> None:
+    qualifier = probe_qualifier(APP, probe_budgets(pod_document(DEMO_PROBES), APP))
+    assert qualifier.index("readiness at") < qualifier.index("liveness at")
 
 
 def test_a_container_the_pod_does_not_have_has_no_budget() -> None:
     assert probe_budgets(pod_document(DEMO_PROBES), "sidecar") == ()
-
-
-def test_initial_delay_is_named_only_when_the_spec_states_one() -> None:
-    with_delay = probe_warning(APP, probe_budgets(pod_document(DEMO_PROBES), APP))
-    without = probe_warning(
-        APP,
-        probe_budgets(pod_document({"livenessProbe": {"periodSeconds": 10}}), APP),
-    )
-    assert with_delay is not None and "initialDelaySeconds" in with_delay
-    assert without is not None and "initialDelaySeconds" not in without

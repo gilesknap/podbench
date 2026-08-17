@@ -1268,12 +1268,13 @@ def test_a_probed_target_is_given_its_deadline_before_it_costs_anything() -> Non
     ]
     text = format_session(session)
     assert "TIME-LIMITED" in text, "a bare [x] means two different things"
+    # Both deadlines, on the line the tick is on. There is no WARNING block
+    # holding the arithmetic any more: it was the longest thing this verb
+    # printed, and everything in it that was about *this* pod is these numbers.
     assert "readiness at 11-16s" in text
+    assert "liveness at 21-31s" in text
     assert "`podbench dev`" in text
-    # One line per probe, indented under the warning: the wrap must not run
-    # them into a paragraph where the two numbers no longer compare.
-    assert "    readiness, 11-16s into a pause:" in text
-    assert "    liveness, 21-31s into a pause:" in text
+    assert "WARNING" not in text.split("supports")[1].split("measured")[0]
 
 
 def test_an_unprobed_target_is_told_so_rather_than_left_to_infer_it() -> None:
@@ -2547,12 +2548,19 @@ def test_the_resize_warning_keeps_the_quota_caveats_it_has_not_narrowed() -> Non
 
     A `LimitRange` and a `ResourceQuota` are still untested — the namespace that
     was measured had neither — so narrowing the controller half of the warning
-    must not quietly drop the half that still stands.
+    must not quietly drop the half that still stands. It is stated on the path
+    that took the resize, which is where somebody has just mutated a live pod;
+    the line the *other* path prints is an offer of the flag.
     """
-    assert "LimitRange" in RESIZE_WARNING
-    assert "ResourceQuota" in RESIZE_WARNING
+    cluster = FakeCluster(pod_document(uid=1000))
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+    assert "LimitRange" in note
+    assert "ResourceQuota" in note
+    assert "partly proven" in note
+    assert "ReplicaSet" in note
+    # …and the line an attach that did not resize prints is an offer, not this.
     assert "partly proven" in RESIZE_WARNING
-    assert "ReplicaSet" in RESIZE_WARNING
+    assert "ResourceQuota" not in RESIZE_WARNING
 
 
 def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
@@ -2575,9 +2583,8 @@ def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
     assert code == 0
     # The report wraps warnings, so match words rather than phrases.
     out = capsys.readouterr().out
-    assert "LimitRange" in out
-    assert "ResourceQuota" in out
-    assert "reverts" in out
+    assert "OOM-kill" in out, "the limits it cannot reserve are the point"
+    assert "--resize" in out, "and the one flag that buys headroom on a live pod"
 
 
 def test_current_namespace_falls_back_to_default() -> None:
