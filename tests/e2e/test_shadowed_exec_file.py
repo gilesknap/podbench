@@ -70,6 +70,19 @@ BFD_COMPLAINTS = (
 """Every phrasing #90 was reported with. Matched as text because ``gdb -batch``
 exits 0 whether the symbol file loaded or not."""
 
+STAGING_FAILED = "copying the target's aside failed"
+"""podbench's own note when :func:`podbench.execfile.stage_exec_file` raises.
+
+Checked *before* :data:`BFD_COMPLAINTS`, and it is not decoration. ``image/bin/
+gdb-podbench`` captures only the stdout of its ``podbench dbg
+--print-exec-file`` call, so that note lands on gdb's stderr, and
+:func:`_in_seat` merges both streams. The note quotes ``.gnu.version_r invalid
+entry`` verbatim — it is telling the user what to expect — so it matches the
+``invalid entry`` phrase below and would report a failed *copy* as gdb reading
+the seat's binary. Same red test, wrong cause, and the fix would be looked for
+in the wrong module.
+"""
+
 
 @pytest.fixture(scope="module")
 def target(kubectl: KubectlCli, apps_dir: Path) -> str:
@@ -145,6 +158,21 @@ def _in_seat(
         timeout=timeout,
     )
     return f"{result.stdout}\n{result.stderr}"
+
+
+def _assert_read_the_targets_binary(output: str, detail: str) -> None:
+    """No BFD complaint in ``output``, with the two causes kept apart.
+
+    ``detail`` describes the #90 failure for the caller's argv; the staging
+    failure gets its own sentence, because it is a different module's bug.
+    """
+    assert STAGING_FAILED not in output, (
+        "gdb was never handed a staged binary — `stage_exec_file` could not "
+        "copy the target's aside, so this run says nothing about #90 and the "
+        f"BFD complaints below are that copy's fault, not gdb's:\n{output}"
+    )
+    for complaint in BFD_COMPLAINTS:
+        assert complaint not in output, f"{detail}\n{output}"
 
 
 def _require_live_attach(seat: Session) -> None:
@@ -252,12 +280,12 @@ def test_dbgs_own_sequence_resolves_the_targets_symbols(
         f"gdb -q -batch {commands} -ex 'info functions ^{SYMBOL}$' -ex detach",
     )
 
-    for complaint in BFD_COMPLAINTS:
-        assert complaint not in output, (
-            f"gdb read the wrong file for pid {app_pid} — issue #90. It "
-            f"canonicalises /proc/{app_pid}/root away and opens this seat's own "
-            f"binary of the same name:\n{output}"
-        )
+    _assert_read_the_targets_binary(
+        output,
+        f"gdb read the wrong file for pid {app_pid} — issue #90. It "
+        f"canonicalises /proc/{app_pid}/root away and opens this seat's own "
+        "binary of the same name:",
+    )
     assert re.search(rf"^0x[0-9a-f]+\s+{SYMBOL}$", output, re.MULTILINE), (
         f"gdb resolved no {SYMBOL}, so it has no symbols for the main "
         f"executable and every user frame comes back as ?? ():\n{output}"
@@ -285,11 +313,11 @@ def test_a_third_party_gdb_pid_attach_resolves_them_too(
         f"{app_pid} --batch --eval-command='info functions ^{SYMBOL}$'",
     )
 
-    for complaint in BFD_COMPLAINTS:
-        assert complaint not in output, (
-            "a third-party `gdb --pid` still reads this seat's binary; the "
-            f"wrapper is not supplying an exec file:\n{output}"
-        )
+    _assert_read_the_targets_binary(
+        output,
+        "a third-party `gdb --pid` still reads this seat's binary; the "
+        "wrapper is not supplying an exec file:",
+    )
     assert re.search(rf"^0x[0-9a-f]+\s+{SYMBOL}$", output, re.MULTILINE), (
         f"debugpy's injector would find no {SYMBOL} to call through:\n{output}"
     )

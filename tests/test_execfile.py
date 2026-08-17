@@ -159,6 +159,11 @@ def test_a_failed_copy_falls_back_and_says_which_file_gdb_will_read(
     assert path == f"/proc/{TARGET_PID}/root{EXE}"
     assert len(notes) == 1 and EXE in notes[0]
     assert "#90" in notes[0]
+    # The phrase `tests/e2e/test_shadowed_exec_file.py` matches on to tell a
+    # failed copy from gdb reading the seat's binary. The note quotes BFD's own
+    # `.gnu.version_r invalid entry`, so without something else to key on the
+    # two causes are one string and the e2e failure names the wrong module.
+    assert "copying the target's aside failed" in notes[0]
 
 
 def test_the_deleted_marker_never_reaches_a_path(tmp_path: Path) -> None:
