@@ -35,6 +35,7 @@ import typer
 
 from . import __version__
 from .cli import new_app, run
+from .console import emit, paragraph, rule
 from .kubectl import CommandResult, Kubectl, Runner, run_subprocess
 from .launcher import (
     CONFIG_D,
@@ -935,17 +936,22 @@ def diagnose(
 
 # -- reporting --------------------------------------------------------------
 
-_WIDTH = 76
-
 
 def format_report(report: Report) -> str:
     """The human report. One line per check, and the verdict last.
 
     Shaped like ``capreport``'s for the same reason it is: the facts first so a
     reader can see what was measured, then a verdict that names the blockers
-    rather than summarising them away.
+    rather than summarising them away. Which is also why the sections shout
+    where ``attach``'s are lower-case — :mod:`podbench.console` recognises both
+    and colours them the same, so the two conventions cost nothing to keep.
+
+    Every hint is wrapped. This is the first thing a new user runs and the
+    hints are the half of it that tells them what to do, and until they were
+    wrapped the longest of them — the one that says why podbench shells out to
+    kubectl — ran off the side of the terminal it was explaining.
     """
-    lines = [" podbench doctor ".center(_WIDTH, "=")]
+    lines = [rule("podbench doctor")]
     lines.append("THIS MACHINE")
     lines.append(_fact("launcher", report.version))
     lines.append(_fact("image", report.image))
@@ -954,55 +960,85 @@ def format_report(report: Report) -> str:
 
     lines.append("CHECKS")
     for check in report.checks:
-        lines.append(_row(check.status, check.name, check.detail))
+        lines.extend(_row(check.status, check.name, check.detail))
         if check.fixed is not None:
-            lines.append(_note(f"fixed: {check.fixed}"))
+            lines.extend(_note(f"fixed: {check.fixed}"))
         if check.status is not Status.OK and check.hint is not None:
-            lines.extend(_note(part) for part in check.hint.splitlines())
+            # Split first: a hint that carries its own newlines is a hint whose
+            # lines are a list (the Include line to paste, then the verb that
+            # pastes it), and re-flowing those into one paragraph would put a
+            # command in the middle of a sentence.
+            for part in check.hint.splitlines():
+                lines.extend(_note(part))
 
     where = report.namespace or "this namespace"
     lines.append(f"RBAC in {where} (kubectl auth can-i, as your kubeconfig's user)")
     for verdict in report.verdicts:
-        lines.append(_row(verdict.status, verdict.feature.name, verdict.detail))
+        lines.extend(_row(verdict.status, verdict.feature.name, verdict.detail))
         if verdict.missing:
-            lines.append(
+            lines.extend(
                 _note(
                     "grant it with the chart's rbac."
                     f"{verdict.feature.chart_flag}=true, or the equivalent Role"
                 )
             )
 
-    lines.append("-" * _WIDTH)
+    lines.append(rule(char="-"))
     if report.blockers:
         count = len(report.blockers)
         lines.append(
             f"VERDICT: {count} blocker{'' if count == 1 else 's'} before "
             f"`podbench attach` can work (exit {report.exit_code})"
         )
-        lines.append("BLOCKERS: " + ", ".join(report.blockers))
+        lines.extend(paragraph(", ".join(report.blockers), first="BLOCKERS: "))
     else:
         lines.append(
             "VERDICT: nothing blocks `podbench attach` from this machine "
             f"(exit {report.exit_code})"
         )
-    lines.append("=" * _WIDTH)
+    lines.append(rule())
     return "\n".join(lines)
 
 
 _INDENT = 10
 """Where a row's name starts, and so where its follow-up lines are indented to."""
 
+_NAMES = 14
+"""Width of the name column, which is also the hang of a detail that wraps."""
+
 
 def _fact(key: str, value: str) -> str:
-    return f"  {key:<14} {value}"
+    return f"  {key:<{_NAMES}} {value}"
 
 
-def _row(status: Status, name: str, detail: str) -> str:
-    return f"  [{status.value}]".ljust(_INDENT) + f"{name:<14} {detail}"
+def _row(status: Status, name: str, detail: str) -> list[str]:
+    """One check: its status, its name, and what was measured.
+
+    The detail hangs under itself rather than under the name, so a wrapped one
+    cannot be read as the next check's — the status column is the thing the eye
+    is running down, and it must stay empty for exactly one row.
+    """
+    lead = f"  [{status.value}]".ljust(_INDENT) + f"{name:<{_NAMES}} "
+    return paragraph(detail, first=lead, indent=" " * len(lead))
 
 
-def _note(text: str) -> str:
-    return " " * _INDENT + text
+def _note(text: str) -> list[str]:
+    """A hint line: as written where it fits, re-flowed only where it must.
+
+    Several of these are ``do this:  <command>`` offers, and the two spaces
+    before the command are what marks it as one. Such a line is printed exactly
+    as its check wrote it however long it is: wrapping collapses whitespace and
+    breaks on spaces, and both of those turn the one line here that exists to be
+    *pasted* — the ssh ``Include`` — into two that cannot be.
+
+    Everything else is prose and wraps, which is the half of this report that
+    tells a new user what to do and, until it wrapped, the half that ran off the
+    side of the terminal it was explaining.
+    """
+    indent = " " * _INDENT
+    if "  " in text.strip():
+        return [indent + text]
+    return paragraph(text, first=indent, indent=" " * (_INDENT + 2))
 
 
 # -- CLI --------------------------------------------------------------------
@@ -1076,7 +1112,7 @@ def main(
             runner=runner if runner is not None else run_subprocess,
             which=which if which is not None else shutil.which,
         )
-        print(format_report(report))
+        emit(format_report(report))
         raise typer.Exit(report.exit_code)
 
     return run(app, args, prog="podbench doctor")
