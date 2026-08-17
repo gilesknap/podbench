@@ -56,8 +56,10 @@ __all__ = [
     "dev_pod_spec",
     "dev_seat_identity",
     "devpod_selector",
+    "DEFAULT_PULL_POLICY",
+    "PULL_POLICIES",
     "ephemeral_container_spec",
-    "pull_policy",
+    "moves",
     "runs_as_non_root",
     "seat_identity_volume_mounts",
     "service_selector_patch",
@@ -262,49 +264,60 @@ _IMMUTABLE_TAG = re.compile(r"^\d+\.\d+\.\d+([.-]?(a|b|rc|alpha|beta)\.?\d+)?$")
 
 Everything else this project publishes is *mutable* — ``main`` moves on every
 default-branch push, and a branch tag (``0.2.0-beta.2-my-branch``) is overwritten
-on every push to that branch. Deliberately a whitelist: an unrecognised tag is
-treated as mutable, because the cost of being wrong that way is one manifest
-request and the cost of being wrong the other way is silently debugging last
-hour's code.
+on every push to that branch.
 """
 
+DEFAULT_PULL_POLICY = "IfNotPresent"
+"""What a seat asks for unless the caller says otherwise, and it cannot change.
 
-def pull_policy(image: str) -> str:
-    """``Always`` for a tag that moves, ``IfNotPresent`` for one that cannot.
+``Always`` is the obvious answer for a tag that moves, and it is wrong: it is
+the only policy that *requires* a registry round trip, so it breaks every image
+that was put on the node rather than pulled to it — ``kind load``, ``ctr
+import``, an air-gapped mirror. Measured, by breaking the e2e suite with it:
+kind side-loads ``docker.io/library/podbench:e2e``, and the kubelet answered
+``pull access denied, repository does not exist``.
 
-    ``IfNotPresent`` everywhere was a silent trap for the one workflow that
-    matters most during development: push a fix, re-attach with the same branch
-    tag, and a node that pulled that tag an hour ago never asks the registry
-    again. The seat comes up carrying the old code and says nothing — and since
-    the launcher and the image are two halves of one release, "which half am I
-    running" is the last question anyone thinks to ask.
+The kubelet offers no third option — "re-check if you can, carry on if you
+cannot" is not a policy it has — so the choice belongs to whoever knows where
+their image came from. :func:`moves` is how podbench raises the question at the
+moment it matters instead of guessing at the answer.
+"""
 
-    ``Always`` is not a re-download: the kubelet checks the manifest and reuses
-    the cached layers when the digest matches. What it does cost is a registry
-    round trip the container start now depends on, which is why an immutable
-    reference keeps ``IfNotPresent`` — there is nothing to re-check, and a seat
-    that could have started offline should.
+PULL_POLICIES = ("IfNotPresent", "Always", "Never")
+"""What ``--pull`` accepts, in the kubelet's own spelling."""
 
-    >>> pull_policy("ghcr.io/gilesknap/podbench:0.2.0")
-    'IfNotPresent'
-    >>> pull_policy("ghcr.io/gilesknap/podbench:0.2.0-beta.1")
-    'IfNotPresent'
-    >>> pull_policy("ghcr.io/gilesknap/podbench@sha256:" + "0" * 64)
-    'IfNotPresent'
-    >>> pull_policy("ghcr.io/gilesknap/podbench:main")
-    'Always'
-    >>> pull_policy("ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch")
-    'Always'
+
+def moves(image: str) -> bool:
+    """Whether this reference can point somewhere else tomorrow.
+
+    Not a policy — a *warning* condition. A seat started from a moving tag on a
+    node that already has a copy is serving whatever was published when that
+    copy was pulled, and since the launcher and the image are two halves of one
+    release, "which half am I running" is the last question anyone thinks to
+    ask. It cost a round of confused debugging on a branch image, where the
+    launcher had the fix and the seat did not.
+
+    >>> moves("ghcr.io/gilesknap/podbench:0.2.0")
+    False
+    >>> moves("ghcr.io/gilesknap/podbench:0.2.0-beta.1")
+    False
+    >>> moves("ghcr.io/gilesknap/podbench@sha256:" + "0" * 64)
+    False
+    >>> moves("ghcr.io/gilesknap/podbench:main")
+    True
+    >>> moves("ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch")
+    True
     """
-    # A digest names one manifest for all time, so there is nothing to re-check
-    # — and the `@` beats the `:` in a reference that carries both.
-    if "@" in image.rsplit("/", 1)[-1]:
-        return "IfNotPresent"
-    _, separator, tag = image.rsplit("/", 1)[-1].partition(":")
+    reference = image.rsplit("/", 1)[-1]
+    # A digest names one manifest for all time — and the `@` beats the `:` in a
+    # reference that carries both.
+    if "@" in reference:
+        return False
+    _, separator, tag = reference.partition(":")
     # No tag at all means `:latest`, which moves by definition.
     if not separator:
-        return "Always"
-    return "IfNotPresent" if _IMMUTABLE_TAG.match(tag) else "Always"
+        return True
+    return not _IMMUTABLE_TAG.match(tag)
 
 
 def ephemeral_container_spec(
@@ -320,6 +333,7 @@ def ephemeral_container_spec(
     env: Mapping[str, str] | None = None,
     volume_mounts: Sequence[Mapping[str, Any]] | None = None,
     seat_gid_root: bool = False,
+    pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
     """Author one ephemeral container for a rung of the capability ladder.
 
@@ -350,7 +364,7 @@ def ephemeral_container_spec(
     spec: dict[str, Any] = {
         "name": name,
         "image": image,
-        "imagePullPolicy": pull_policy(image),
+        "imagePullPolicy": pull_policy,
         "command": list(command),
         "terminationMessagePolicy": "File",
         "securityContext": _rung_security_context(
@@ -760,6 +774,7 @@ def _sidecar(
     env: Mapping[str, str] | None,
     identity: tuple[int, int] | None = None,
     seat_home: bool = False,
+    pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
     if identity is not None:
         # The identity wins over the capability, and cannot be reconciled with
@@ -806,7 +821,7 @@ def _sidecar(
     return {
         "name": name,
         "image": image,
-        "imagePullPolicy": pull_policy(image),
+        "imagePullPolicy": pull_policy,
         # The sidecar is this pod's ssh endpoint too, so it runs the agent for
         # the same reason the ephemeral container does: nothing writes the sshd
         # config, the authorized keys or the host key otherwise.

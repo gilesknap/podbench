@@ -288,6 +288,13 @@ Useful flags:
   running. One name over all of them meant the newest seat's stanza overwrote the
   previous one's, while `ControlMaster` kept every `ssh` — and every VS Code
   window — on the connection already open to the *older* seat.
+* `--pull always` — re-check the registry for the seat's image. The default is
+  `IfNotPresent`, which is what lets a side-loaded image work at all (`kind
+  load`, `ctr import`, an air-gapped mirror) — `Always` is the one policy that
+  *requires* a reachable registry. Use it when you are iterating on a tag that
+  moves, such as `main` or a branch image: a node that already has a copy will
+  otherwise serve it, and a seat older than the launcher that started it has no
+  symptom at all. `attach` names the tag in its report when this applies.
 * `--ssh-user` — the login name. `root` on the full rung; on a degraded rung
   sshd resolves the name through NSS, so the image needs an account for that
   UID and you may need to say which.

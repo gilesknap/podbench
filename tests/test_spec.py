@@ -29,6 +29,7 @@ from podbench.spec import (
     dev_seat_identity,
     ephemeral_container_spec,
     gitops_owner,
+    moves,
     runs_as_non_root,
     seat_identity_volume_mounts,
     service_selector_patch,
@@ -174,30 +175,51 @@ def test_full_rung_is_root_plus_sys_ptrace() -> None:
     assert "resources" not in spec
 
 
-def test_a_moving_tag_is_pulled_every_time() -> None:
-    """A branch image is overwritten on every push, and IfNotPresent hides that.
+def test_the_pull_policy_defaults_to_working_offline() -> None:
+    """`Always` is the only policy that *requires* a registry, so it cannot be
+    the default: it breaks every image put on the node rather than pulled to it.
 
-    The seat and the launcher are two halves of one release, so a node serving
-    an hour-old copy of a tag that has moved produces a session where half the
-    fixes are present — and nothing says so.
+    Measured by breaking the e2e suite with it — kind side-loads
+    `docker.io/library/podbench:e2e` and the kubelet answered `pull access
+    denied`. Asserted for a *moving* tag, since that is the one a cleverer
+    default would have reached for.
     """
     spec = ephemeral_container_spec(
         name="podbench-1",
         image="ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch",
         rung=Rung.FULL,
     )
+    assert spec["imagePullPolicy"] == "IfNotPresent"
+
+
+def test_the_pull_policy_is_the_callers_to_set() -> None:
+    """Whoever knows where the image came from decides; podbench asks."""
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="ghcr.io/gilesknap/podbench:main",
+        rung=Rung.FULL,
+        pull_policy="Always",
+    )
     assert spec["imagePullPolicy"] == "Always"
 
 
-def test_a_released_tag_can_still_start_without_a_registry() -> None:
-    """CI publishes a version tag once and never moves it, so there is nothing
-    to re-check — and a seat that could have started offline should."""
-    spec = ephemeral_container_spec(
-        name="podbench-1",
-        image="ghcr.io/gilesknap/podbench:0.2.0-beta.1",
-        rung=Rung.FULL,
-    )
-    assert spec["imagePullPolicy"] == "IfNotPresent"
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("ghcr.io/gilesknap/podbench:0.2.0", False),
+        ("ghcr.io/gilesknap/podbench:0.2.0-beta.1", False),
+        ("ghcr.io/gilesknap/podbench@sha256:" + "0" * 64, False),
+        ("ghcr.io/gilesknap/podbench:main", True),
+        ("ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch", True),
+        ("docker.io/library/podbench:e2e", True),
+        ("ghcr.io/gilesknap/podbench", True),
+    ],
+)
+def test_which_references_can_point_somewhere_else_tomorrow(
+    image: str, expected: bool
+) -> None:
+    """A warning condition, not a policy: it decides what podbench *says*."""
+    assert moves(image) is expected
 
 
 def test_degraded_rung_matches_the_restricted_psa_shape() -> None:

@@ -2093,6 +2093,44 @@ def test_the_stanza_generator_is_shared_and_takes_a_measured_login_name(
     )
 
 
+def test_a_side_loaded_image_is_not_asked_for_from_a_registry() -> None:
+    """The e2e regression, pinned. `kind load` puts an image on the node without
+    pulling it, so `Always` — the one policy that *requires* a registry — turns
+    a working cluster into `pull access denied, repository does not exist`.
+
+    Asserted through `attach` rather than on the spec author alone, because the
+    default is the whole point: nothing on this path may reach for `Always` on
+    the strength of the tag looking like a development one.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    attach(talking_to(cluster), "target", image="docker.io/library/podbench:e2e")
+
+    assert cluster.added[0]["imagePullPolicy"] == "IfNotPresent"
+
+
+def test_a_moving_tag_is_named_in_the_report_rather_than_guessed_about() -> None:
+    """No symptom is the problem: the seat starts, and is simply older."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target", image="ghcr.io/x/podbench:main")
+
+    assert any("a tag that moves" in note for note in session.warnings)
+    assert any("--pull always" in note for note in session.warnings)
+
+
+def test_asking_for_always_says_nothing_about_staleness() -> None:
+    """The warning is about the policy that cannot notice, not about the tag."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(
+        talking_to(cluster),
+        "target",
+        image="ghcr.io/x/podbench:main",
+        pull_policy="Always",
+    )
+
+    assert cluster.added[0]["imagePullPolicy"] == "Always"
+    assert not any("a tag that moves" in note for note in session.warnings)
+
+
 def test_two_seats_on_one_pod_get_two_aliases_and_two_stanzas() -> None:
     """Issue #93. An ephemeral container is never removed, so `--new` leaves the
     old seat *running* — and one alias over both was wrong twice.

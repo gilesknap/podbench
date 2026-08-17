@@ -78,9 +78,12 @@ from .resize import (
 )
 from .spec import (
     AGENT_COMMAND,
+    DEFAULT_PULL_POLICY,
+    PULL_POLICIES,
     InvalidSpecError,
     container_id,
     ephemeral_container_spec,
+    moves,
     runs_as_non_root,
     target_uid_gid,
 )
@@ -853,6 +856,7 @@ def attach(
     force_new: bool = False,
     seat_gid_root: bool = False,
     seat_identity: bool = True,
+    pull_policy: str = DEFAULT_PULL_POLICY,
     probe: bool = True,
     timeout: float = 120.0,
     poll_interval: float = 0.5,
@@ -950,10 +954,16 @@ def attach(
             target_uid=target_uid,
             volume_mounts=volume_mounts,
             seat_gid_root=seat_gid_root,
+            pull_policy=pull_policy,
             timeout=timeout,
             poll_interval=poll_interval,
         )
 
+    # Before the OOM warning, because it is about which *code* is running and
+    # every other line in the report is only true of the version that is.
+    stale = moving_tag_note(image, pull_policy)
+    if stale is not None:
+        warnings.append(stale)
     warnings.append(OOM_WARNING)
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
@@ -995,6 +1005,7 @@ def _walk_ladder(
     target_uid: int | None,
     volume_mounts: Sequence[Mapping[str, Any]],
     seat_gid_root: bool,
+    pull_policy: str,
     timeout: float,
     poll_interval: float,
 ) -> Session:
@@ -1025,6 +1036,7 @@ def _walk_ladder(
                 ),
                 volume_mounts=volume_mounts,
                 seat_gid_root=seat_gid_root,
+                pull_policy=pull_policy,
             )
         except InvalidSpecError as error:
             # Refused before the cluster saw it, so no container name is burnt.
@@ -1680,6 +1692,55 @@ def ssh_unavailable_note(session: Session) -> str:
             f"    kubectl exec {target} -- podbench pids",
             f"    kubectl exec -it {target} -- bash",
         ]
+    )
+
+
+def _pull_policy(value: str) -> str:
+    """``--pull`` in the kubelet's own casing, or a refusal naming the three.
+
+    Case-insensitive because the flag is typed by hand and ``always`` is what
+    anybody types; the API server takes only ``Always``, and would reject the
+    whole request over the capital.
+
+    >>> _pull_policy("always")
+    'Always'
+    """
+    for policy in PULL_POLICIES:
+        if value.lower() == policy.lower():
+            return policy
+    raise typer.BadParameter(
+        f"--pull {value!r} is not one of {', '.join(PULL_POLICIES)}"
+    )
+
+
+def moving_tag_note(image: str, policy: str) -> str | None:
+    """Warn when the seat's image can have changed under a name that has not.
+
+    Only where the policy would *not* re-check, since that is the case with no
+    symptom: the seat comes up, the launcher carries today's code and the seat
+    carries whatever the node cached, and nothing anywhere says the two are
+    different versions. Measured while testing a branch image — the target
+    selection was fixed in the launcher and absent from the seat, which read as
+    the fix not working.
+
+    >>> print(moving_tag_note("ghcr.io/x/podbench:main", "IfNotPresent"))
+    `main` is a tag that moves, and this node may already have a copy: a seat
+      started from it can be older than this launcher, with no sign of it.
+      `--pull always` re-checks (it needs a reachable registry, so not on a
+      side-loaded image).
+    >>> moving_tag_note("ghcr.io/x/podbench:0.2.0", "IfNotPresent") is None
+    True
+    >>> moving_tag_note("ghcr.io/x/podbench:main", "Always") is None
+    True
+    """
+    if policy == "Always" or not moves(image):
+        return None
+    tag = image.rsplit("/", 1)[-1].partition(":")[2] or "latest"
+    return (
+        f"`{tag}` is a tag that moves, and this node may already have a copy: a "
+        "seat\n  started from it can be older than this launcher, with no sign "
+        "of it.\n  `--pull always` re-checks (it needs a reachable registry, so "
+        "not on a\n  side-loaded image)."
     )
 
 
@@ -2975,6 +3036,19 @@ def _build_app(
                 help="skip capreport; the report then says nothing was measured",
             ),
         ] = False,
+        pull: Annotated[
+            str,
+            typer.Option(
+                "--pull",
+                metavar="POLICY",
+                help="imagePullPolicy for the seat: IfNotPresent (default), "
+                "Always or Never. Use Always when iterating on a tag that "
+                "moves - `main`, or a branch image - since a node that already "
+                "has a copy will otherwise serve it. It cannot be the default: "
+                "Always is the one policy that needs a registry, so it breaks "
+                "an image side-loaded with `kind load` or `ctr import`",
+            ),
+        ] = DEFAULT_PULL_POLICY,
         resize: Annotated[
             str | None,
             typer.Option(
@@ -3071,6 +3145,7 @@ def _build_app(
             force_new=force_new,
             seat_gid_root=seat_gid_root,
             seat_identity=not no_seat_identity,
+            pull_policy=_pull_policy(pull),
             probe=not no_probe,
             timeout=timeout,
         )
