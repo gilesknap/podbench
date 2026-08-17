@@ -27,6 +27,7 @@ from podbench.launcher import (
     attach,
     capability_report_from_json,
     current_namespace,
+    default_host_alias,
     emit_ssh_config,
     features,
     forget_known_hosts,
@@ -1387,9 +1388,11 @@ def test_attach_writes_an_includeable_stanza_and_a_known_hosts_entry(
     )
     assert code == 0
 
-    stanza = (tmp_path / "cfg" / "config.d" / "demo-target.conf").read_text()
-    assert "Host podbench-demo-target" in stanza
-    assert f"HostKeyAlias podbench-{POD_UID}" in stanza
+    stanza = (tmp_path / "cfg" / "config.d" / "demo-target-1.conf").read_text()
+    assert "Host podbench-demo-target-1" in stanza
+    # Seat-qualified too: two live seats mint two host keys, and one alias
+    # over both is a host-key mismatch on the second (issue #93).
+    assert f"HostKeyAlias podbench-{POD_UID}-1" in stanza
     assert "StrictHostKeyChecking yes" in stanza
     # The ProxyCommand shape is the whole transport: -i, -e and a quiet log
     # level, no -t, no redirection (report 4.1).
@@ -1399,7 +1402,7 @@ def test_attach_writes_an_includeable_stanza_and_a_known_hosts_entry(
     ) in stanza
 
     known_hosts = (tmp_path / "cfg" / "known_hosts").read_text()
-    assert known_hosts.startswith(f"podbench-{POD_UID} ssh-ed25519 ")
+    assert known_hosts.startswith(f"podbench-{POD_UID}-1 ssh-ed25519 ")
     assert "Include" in capsys.readouterr().out
 
 
@@ -1773,7 +1776,7 @@ def test_open_configures_the_seats_home_and_opens_that(
     assert editor[-1] == (
         "/usr/bin/code",
         "--remote",
-        "ssh-remote+podbench-demo-target",
+        "ssh-remote+podbench-demo-target-1",
         "/root",
     )
     # The flavour's extensions, installed in the remote window and nowhere else.
@@ -2079,13 +2082,43 @@ def test_the_stanza_generator_is_shared_and_takes_a_measured_login_name(
         user="somebody-else",
     )
 
-    assert seat.alias == "podbench-demo-target"
+    assert seat.alias == "podbench-demo-target-1"
     assert seat.path is not None
     stanza = seat.path.read_text()
     assert "User somebody-else" in stanza
     assert "ProxyCommand" in stanza
     assert f"then:  ssh {seat.alias}" in seat.note
-    assert seat.path == ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"))
+    assert seat.path == ssh_config_path(
+        tmp_path / "cfg", PodRef("demo", "target"), "podbench-1"
+    )
+
+
+def test_two_seats_on_one_pod_get_two_aliases_and_two_stanzas() -> None:
+    """Issue #93. An ephemeral container is never removed, so `--new` leaves the
+    old seat *running* — and one alias over both was wrong twice.
+
+    The stanza is one file per name, so the second seat overwrote the first
+    rather than joining it; and the stanza sets `ControlMaster auto`, whose
+    multiplexing key is the host as typed, so every ssh kept riding the
+    connection already open to the old seat. Measured at DLS: `--open` wrote
+    launch.json into podbench-2 while VS Code read podbench-1's copy.
+    """
+    first = default_host_alias(PodRef("demo", "target"), "podbench-1")
+    second = default_host_alias(PodRef("demo", "target"), "podbench-2")
+    assert first != second
+    assert (first, second) == ("podbench-demo-target-1", "podbench-demo-target-2")
+
+    directory = Path("/h/.podbench")
+    assert ssh_config_path(directory, PodRef("demo", "target"), "podbench-1") != (
+        ssh_config_path(directory, PodRef("demo", "target"), "podbench-2")
+    )
+
+
+def test_a_dev_pods_sole_sidecar_keeps_the_unqualified_name() -> None:
+    """A dev pod has exactly one seat, named `podbench`, so there is nothing to
+    disambiguate — and qualifying it would rename every existing dev alias and
+    orphan the stanza that goes with it."""
+    assert default_host_alias(PodRef("demo", "dev"), "podbench") == "podbench-demo-dev"
 
 
 def test_forgetting_a_seat_takes_its_stanza_and_its_pinned_key(
@@ -2418,9 +2451,9 @@ def seated_cluster() -> FakeCluster:
     )
 
 
-def written_stanza(directory: Path, alias: str) -> Path:
-    """The stanza ``attach`` would have left for ``demo/target``, under ``alias``."""
-    path = ssh_config_path(directory, PodRef("demo", "target"))
+def written_stanza(directory: Path, alias: str, seat: str = "podbench-1") -> Path:
+    """The stanza ``attach`` would have left for one seat, under ``alias``."""
+    path = ssh_config_path(directory, PodRef("demo", "target"), seat)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(f"Host {alias}\n    HostName target\n    User root\n")
     return path
@@ -2537,7 +2570,7 @@ def test_an_unreadable_config_dir_costs_the_alias_not_the_listing(
 def test_a_stanza_with_no_host_line_is_reported_as_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"))
+    path = ssh_config_path(tmp_path / "cfg", PodRef("demo", "target"), "podbench-1")
     path.parent.mkdir(parents=True)
     path.write_text("    User root\n")
     assert (

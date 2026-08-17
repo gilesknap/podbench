@@ -166,10 +166,10 @@ which of the target's `/proc` paths actually opened. Read it rather than the box
 The last lines of the attach output tell you the alias:
 
 ```
-ssh config written to ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn.conf
+ssh config written to ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
 add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
 or let podbench check and add it:  podbench doctor --fix
-then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
+then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 ```
 
 If you have not added the `Include` line yet, run `uvx podbench doctor --fix`
@@ -177,7 +177,7 @@ now — it adds the line above any `Host *` block, which is where it has to be
 (see [Installation](installation.md)). Then:
 
 ```
-$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
+$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 1    0    yes     87d20e23a1b4   python  python -m http.server 8080
@@ -241,7 +241,7 @@ $ kubectl delete namespace podbench-demo
 Also drop the generated stanza if you want a tidy config directory:
 
 ```
-$ rm ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn.conf
+$ rm ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
 ```
 
 ## Where next

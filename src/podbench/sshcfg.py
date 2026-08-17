@@ -273,14 +273,25 @@ class HostKeyBinding:
         )
 
 
-def host_key_alias(pod_uid: str) -> str:
-    """The ``HostKeyAlias`` for a pod.
+def host_key_alias(pod_uid: str, seat: str | None = None) -> str:
+    """The ``HostKeyAlias`` for one seat.
 
     Pod UIDs are unique for all time, so a recreated pod cannot inherit the
     trust of its predecessor — which is the correct behaviour, since its
     ephemeral container really is a different machine.
+
+    The *seat* is in it for the same reason one step down. Every seat mints its
+    own host key, and a pod can carry several at once, so an alias naming only
+    the pod pins one key under a name two live containers share — and the second
+    one then arrives as a host-key mismatch, which is the loudest and most
+    misleading failure ssh has. Two names, two entries, no warning.
+
+    >>> host_key_alias("2f1c-..", "podbench-2")
+    'podbench-2f1c-..-podbench-2'
+    >>> host_key_alias("2f1c-..")
+    'podbench-2f1c-..'
     """
-    return f"podbench-{pod_uid}"
+    return f"podbench-{pod_uid}" + (f"-{seat}" if seat else "")
 
 
 def known_hosts_entry(binding: HostKeyBinding) -> str:

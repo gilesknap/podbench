@@ -123,6 +123,8 @@ __all__ = [
     "current_namespace",
     "declared_volumes",
     "default_host_alias",
+    "seat_label",
+    "seat_suffix",
     "emit_ssh_config",
     "features",
     "forget_known_hosts",
@@ -1681,9 +1683,76 @@ def ssh_unavailable_note(session: Session) -> str:
     )
 
 
-def default_host_alias(pod: PodRef) -> str:
-    """A stable ssh ``Host`` name for a pod."""
-    return f"podbench-{pod.namespace}-{pod.name}"
+def seat_suffix(seat: str | None) -> str:
+    """``podbench-2`` as the ``-2`` that goes on the end of a name.
+
+    The container base is stripped because it is already the prefix of every
+    alias and every stanza filename podbench writes; carrying it twice gives
+    ``podbench-demo-api-podbench-2``, which nobody would type.
+
+    A seat named exactly ``podbench`` gets no suffix at all. That is a ``dev``
+    pod's sidecar, and a dev pod has exactly one — there is nothing to
+    disambiguate, and giving it one would rename every existing dev alias and
+    orphan its stanza.
+
+    >>> seat_suffix("podbench-2")
+    '-2'
+    >>> seat_suffix("podbench")
+    ''
+    >>> seat_suffix("devseat")
+    '-devseat'
+    >>> seat_suffix(None)
+    ''
+    """
+    if not seat or seat == CONTAINER_BASE:
+        return ""
+    prefix = f"{CONTAINER_BASE}-"
+    return f"-{seat[len(prefix) :] if seat.startswith(prefix) else seat}"
+
+
+def seat_label(seat: str | None) -> str | None:
+    """``podbench-2`` as the bare ``2`` a name is qualified by, or ``None``.
+
+    The same rule as :func:`seat_suffix` without the separator, for the one
+    caller that needs the word rather than the fragment.
+
+    >>> seat_label("podbench-2"), seat_label("podbench"), seat_label(None)
+    ('2', None, None)
+    """
+    return seat_suffix(seat).lstrip("-") or None
+
+
+def default_host_alias(pod: PodRef, seat: str | None = None) -> str:
+    """The ssh ``Host`` name for one *seat*, not for a pod.
+
+    A pod can carry several seats at once - an ephemeral container is never
+    removed, so every ``attach --new`` adds one and the old ones keep running -
+    and before issue #93 they all answered to the same name. The consequences
+    were both silent:
+
+    * the stanza is one file per pod, so landing a second seat **overwrote** the
+      first one's ProxyCommand rather than adding to it;
+    * the stanza sets ``ControlMaster auto`` with ``ControlPersist``, and the
+      multiplexing key includes the host *as typed*. So even with the file
+      rewritten, every ``ssh`` - VS Code's included - kept riding the connection
+      already open to the **old** seat. Measured at DLS: ``--open`` wrote
+      ``launch.json`` into ``podbench-2`` over ``kubectl exec`` while the editor
+      read ``podbench-1``'s copy, and the debugger silently used the previous
+      image's answer.
+
+    Naming the seat fixes both, and is honest besides: a new seat is a different
+    container with an empty ``~/.vscode-server``, so an editor treating it as
+    the machine it already knows is wrong about the one thing it caches most.
+
+    ``seat`` is optional because ``ssh-config`` and ``doctor`` describe the
+    spelling before any seat is known.
+
+    >>> default_host_alias(PodRef("demo", "api-7f9"), "podbench-2")
+    'podbench-demo-api-7f9-2'
+    >>> default_host_alias(PodRef("demo", "api-7f9"))
+    'podbench-demo-api-7f9'
+    """
+    return f"podbench-{pod.namespace}-{pod.name}{seat_suffix(seat)}"
 
 
 def write_known_hosts(binding: HostKeyBinding, path: Path) -> Path:
@@ -1754,15 +1823,22 @@ def write_ssh_config(stanza: str, path: Path) -> Path:
     return path
 
 
-def ssh_config_path(directory: Path, pod: PodRef) -> Path:
-    """The file :func:`write_ssh_config` writes for ``pod``.
+def ssh_config_path(directory: Path, pod: PodRef, seat: str | None = None) -> Path:
+    """The file :func:`write_ssh_config` writes for one seat.
 
-    One place, because two commands now have to agree on it: ``attach`` and
-    ``dev`` write it, and ``dev --delete`` removes it. A teardown that guessed
-    the name would silently leave a stanza behind pointing at a pod that no
-    longer exists.
+    One place, because three commands now have to agree on it: ``attach`` and
+    ``dev`` write it, ``dev --delete`` removes it, and ``list``/``status`` read
+    the alias back out of it. A teardown that guessed the name would silently
+    leave a stanza behind pointing at a pod that no longer exists.
+
+    Per *seat* rather than per pod, for :func:`default_host_alias`'s reason: two
+    seats on one pod both being written here meant the second silently replaced
+    the first, and the first was still running.
+
+    >>> ssh_config_path(Path("/h/.podbench"), PodRef("demo", "api"), "podbench-2").name
+    'demo-api-2.conf'
     """
-    return directory / CONFIG_D / f"{pod.namespace}-{pod.name}.conf"
+    return directory / CONFIG_D / f"{pod.namespace}-{pod.name}{seat_suffix(seat)}.conf"
 
 
 def ssh_include_line(directory: Path) -> str:
@@ -1792,16 +1868,20 @@ def ssh_include_line(directory: Path) -> str:
 
 
 def forget_ssh_config(
-    pod: PodRef, *, directory: Path, alias: str | None = None
+    pod: PodRef,
+    *,
+    directory: Path,
+    alias: str | None = None,
+    seat: str | None = None,
 ) -> list[str]:
-    """Remove the client wiring podbench wrote for ``pod``; say what went.
+    """Remove the client wiring podbench wrote for ``seat``; say what went.
 
     Only ever called for a seat that cannot come back — a deleted dev pod. An
     ``attach`` seat is reconnectable for the pod's lifetime, so its stanza is
     regenerated rather than removed.
     """
     removed: list[str] = []
-    path = ssh_config_path(directory, pod)
+    path = ssh_config_path(directory, pod, seat)
     if path.is_file():
         path.unlink()
         removed.append(f"removed {path}")
@@ -1913,7 +1993,7 @@ def emit_ssh_config(
     # man-in-the-middle warning (report R9/R10).
     binding = HostKeyBinding(
         policy=HostKeyPolicy.PER_ATTACH,
-        alias=host_key_alias(pod_uid),
+        alias=host_key_alias(pod_uid, seat_label(session.seat.container)),
         known_hosts=str(known_hosts),
         public_key=public_key,
     )
@@ -1926,7 +2006,7 @@ def emit_ssh_config(
     else:
         write_known_hosts(binding, known_hosts)
 
-    alias = host_alias or default_host_alias(session.pod)
+    alias = host_alias or default_host_alias(session.pod, session.seat.container)
     # The seat's own answer beats the rung's prediction of it, and they come
     # apart on the shape that made this a measurement in the first place: a root
     # seat whose `capabilities.add` a mutating webhook stripped reads back as
@@ -1948,7 +2028,9 @@ def emit_ssh_config(
     )
     if print_config:
         return SshSeat("\n".join([*notes, stanza]), alias=alias)
-    path = write_ssh_config(stanza, ssh_config_path(directory, session.pod))
+    path = write_ssh_config(
+        stanza, ssh_config_path(directory, session.pod, session.seat.container)
+    )
     return SshSeat(
         "\n".join(
             [
@@ -2182,7 +2264,7 @@ def host_alias_in(stanza: str) -> str | None:
     return None
 
 
-def ssh_connect_line(directory: Path, pod: PodRef) -> str:
+def ssh_connect_line(directory: Path, pod: PodRef, seat: str | None = None) -> str:
     """What to type to sit in ``pod``'s seat — read from disk, never derived.
 
     :func:`default_host_alias` is a pure function of the :class:`PodRef` and so
@@ -2194,7 +2276,7 @@ def ssh_connect_line(directory: Path, pod: PodRef) -> str:
     that names none, so every case that cannot produce a real alias says which
     file it looked in instead.
     """
-    path = ssh_config_path(directory, pod)
+    path = ssh_config_path(directory, pod, seat)
     try:
         stanza = path.read_text()
     except FileNotFoundError:
@@ -2236,9 +2318,11 @@ def format_seats(pod: PodRef, present: Sequence[SeatInfo], *, directory: Path) -
             f"{seat.rung.description}"
         )
         lines.append(f"  {'':<12} {seat.detail}")
-    if any(seat.running for seat in present):
-        lines.append(ssh_connect_line(directory, pod))
-    else:
+        # Per seat, because the alias now names one: a pod carrying two live
+        # seats has two of them, and a single line would have to pick.
+        if seat.running:
+            lines.append(ssh_connect_line(directory, pod, seat.name))
+    if not any(seat.running for seat in present):
         lines.append(
             f"  nothing to ssh to here: podbench attach -n {pod.namespace} "
             f"{pod.name} lands the next seat"

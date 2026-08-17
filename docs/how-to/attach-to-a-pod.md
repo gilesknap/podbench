@@ -282,7 +282,12 @@ touching the pod. `--print-config` writes it to stdout instead of to
 Useful flags:
 
 * `--host-alias myseat` — the ssh `Host` name. Defaults to
-  `podbench-<namespace>-<pod>`.
+  `podbench-<namespace>-<pod>-<n>`, where `<n>` is the seat's number. The seat is
+  in the name because a pod can carry several at once — an ephemeral container is
+  never removed, so every `attach --new` adds one and the earlier ones keep
+  running. One name over all of them meant the newest seat's stanza overwrote the
+  previous one's, while `ControlMaster` kept every `ssh` — and every VS Code
+  window — on the connection already open to the *older* seat.
 * `--ssh-user` — the login name. `root` on the full rung; on a degraded rung
   sshd resolves the name through NSS, so the image needs an account for that
   UID and you may need to say which.
