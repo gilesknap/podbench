@@ -1558,6 +1558,37 @@ def test_the_login_name_is_the_one_the_seat_answered_not_the_rung_default(
     assert "User root" in capsys.readouterr().out
 
 
+def test_a_stripped_root_seat_is_not_described_as_running_at_the_targets_uid() -> None:
+    """The rung line's half of #89, which the verdict column's fix left behind.
+
+    ``rung_of_spec`` reads a pinned ``runAsUser`` and no added capability as
+    :attr:`Rung.DEGRADED`, which is true of a seat authored at that rung *and*
+    of a full-rung seat a mutating policy took the capability from. Only the
+    first is at the target's uid — this one is root against a uid-1000 target —
+    so a rung description naming the target's UID tells a reconnecting user
+    their seat is running as somebody it is not.
+
+    The target is uid 1000 here rather than the root one
+    :func:`stripped_root_seat` builds, because against a root target "the
+    target's UID" happens to be true and the claim cannot be caught.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 0}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        login_user="root",
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    assert session.uid == 0, "the seat admission left behind is root"
+    text = format_session(session)
+    assert "degraded - a pinned UID, all capabilities dropped" in text
+    assert "the target's UID" not in text
+
+
 def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

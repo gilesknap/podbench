@@ -136,7 +136,7 @@ Nothing to do — that is the normal path. podbench catches the refusal and fall
 to the next rung automatically, and still exits `0`:
 
 ```
-rung        degraded - the target's UID, all capabilities dropped
+rung        degraded - a pinned UID, all capabilities dropped
 ladder
   full      refused  Pod Security Admission: must not include "SYS_PTRACE" in
                      securityContext.capabilities.add

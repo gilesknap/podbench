@@ -534,7 +534,7 @@ class Rung(enum.Enum):
 
     @property
     def description(self) -> str:
-        """What this rung *asked the cluster for*, for a rung column.
+        """The *securityContext* this rung reads as, for a rung column.
 
         Not what the seat turned out to be able to do, which these lines used
         to end in — "(live attach)", "(read-only inspection)", "(editor only)".
@@ -546,12 +546,20 @@ class Rung(enum.Enum):
         printed the parenthetical in a verdict column and so called that seat
         read-only, contradicting the probe it had just run.
 
+        The same stripped seat is why :attr:`DEGRADED` says "a pinned UID"
+        rather than "the target's UID". A reconnect derives the rung from the
+        spec (:func:`podbench.launcher.rung_of_spec`), which sees a pinned
+        ``runAsUser`` and no added capability — true of a seat authored at this
+        rung *and* of a full-rung seat with its capability taken away. Only the
+        first is at the target's uid; naming it here would tell the second's
+        user that their root seat is running as somebody it is not.
+
         A verdict is measured: :func:`measured_verdict`, or :data:`NOT_PROBED`
         where nothing measured one.
         """
         return {
             Rung.FULL: "root plus CAP_SYS_PTRACE",
-            Rung.DEGRADED: "the target's UID, all capabilities dropped",
+            Rung.DEGRADED: "a pinned UID, all capabilities dropped",
             Rung.SEAT: "all capabilities dropped, no UID insisted on",
         }[self]
 
