@@ -137,26 +137,23 @@ and 127 belong to ``sh``.
 """
 
 _PROVISION_NOTICE = (
-    "--provision: the seat will make the target debuggable - installing debugpy "
-    "into it if it cannot import one, then starting the server so the emitted "
-    "configuration has something to connect to. Starting it ptraces the app, "
-    "which stops answering probes until the attach returns (a few seconds; the "
-    "deadlines printed with the report above are the budget). " + "; ".join(CAVEATS)
+    "--provision: installing debugpy into the target and starting its server, "
+    "which ptraces the app for a few seconds (deadline under `supports` above). "
+    + "; ".join(CAVEATS)
 )
 """Said before the exec, not after: the install is a uv resolve and download.
 
 The costs are :data:`podbench.provision.CAVEATS` itself rather than a retelling,
 so the sentence the laptop prints cannot drift from the one the seat prints. The
-probe deadlines are *pointed at* rather than repeated, for the reason the
-vscode-in-a-seat skill gives: :mod:`podbench.budget` computes them from the pod
-spec and ``attach`` has already printed them, and a second hand-written copy is
+probe deadline is *pointed at* rather than repeated, for the reason the
+vscode-in-a-seat skill gives: :mod:`podbench.budget` computes it from the pod
+spec and ``attach`` has already printed it, and a second hand-written copy is
 a second thing to keep true.
 """
 
 _PROVISION_REMEDY = (
-    "re-run with `--open --provision` to install it from the seat first. That "
-    "is opt-in because it mutates the workload - see the costs the seat named "
-    "above - and it is undone by any restart of the target container."
+    "re-run with `--open --provision` to install it from the seat first - "
+    "opt-in, because it mutates the workload with the costs named above."
 )
 """The pass-through, offered only where the seat itself named the flag.
 
@@ -166,12 +163,9 @@ read and not reached.
 """
 
 _RELOAD_NOTE = (
-    "if a VS Code window was already connected to this alias, reload it now "
-    "(Command Palette -> Developer: Reload Window). --install-extension only "
-    "unpacks into the seat's ~/.vscode-server; the extension host that window "
-    "started does not pick that up, so the debug adapter stays unregistered "
-    "and its launch.json entry cannot run. A window this command opens for the "
-    "first time is fine - the install has already happened by then."
+    "a window already connected to this alias needs Command Palette -> "
+    "Developer: Reload Window, or the debug adapter stays unregistered; one "
+    "this command opens for the first time does not."
 )
 """The step a *second* ``--open`` needs and a first one does not.
 
@@ -188,13 +182,14 @@ the argv.
 """
 
 _STORAGE_NOTE = (
-    "these unpack into the seat's ~/.vscode-server, which in Observe mode is on "
-    "the workload's ephemeral-storage budget - an ephemeral container may not "
-    "declare resources of its own (report 3.9), and a server plus one extension "
-    "measured 1215 MiB live. VS Code resolves each one's dependencies too, so "
-    "ms-python.python brings Pylance and vscode-python-envs with it, measured "
-    "in spike s2"
+    "1215 MiB measured, on the workload's ephemeral-storage budget in Observe mode"
 )
+"""The size of what the install line is about to do, as a parenthesis.
+
+The number is the whole point of saying it — it is the one that decides whether
+this pod can afford a seat — and the mechanism behind it is already the report's
+OOM warning a few blocks up, so repeating it here would be the third telling.
+"""
 
 
 DEFAULT_SSH = "ssh"
@@ -396,6 +391,8 @@ def open_seat(
     # seat no editor can reach.
     check_reachable(alias, ssh=ssh, runner=run)
     report(f"`ssh {alias}` reaches the seat, so Remote-SSH will too")
+    # Everything from here is one line each: --open is a sequence of steps, and
+    # a step that explains itself in a paragraph buries the one that failed.
     configurations = _configurations(kubectl, seat, report, provision=provision)
     extensions = extensions_for(configurations)
 
@@ -423,9 +420,8 @@ def open_seat(
     authority = remote_authority(alias)
     if extensions:
         report(
-            f"installing {', '.join(extensions)} in SSH: {alias} - the first "
-            f"one bootstraps vscode-server in the seat, so this is a download "
-            f"and not just a copy ({_STORAGE_NOTE})"
+            f"installing {', '.join(extensions)} in SSH: {alias}; the first "
+            f"bootstraps vscode-server, so this is a download ({_STORAGE_NOTE})"
         )
     # Whether anything actually landed, not whether anything was asked for: the
     # reload note asserts that `--install-extension` unpacked something into the
@@ -459,10 +455,9 @@ def open_seat(
     # the preflight has already removed every cause that lives outside VS Code,
     # so what is left to say is small and specific.
     report(
-        "if that window says 'could not establish connection', the local VS "
-        "Code has no Remote - SSH extension (ms-vscode-remote.remote-ssh): ssh "
-        f"itself reached {alias} a moment ago, from this terminal, with the "
-        "same config the window reads."
+        "if it says 'could not establish connection', the local VS Code has no "
+        "Remote-SSH extension (ms-vscode-remote.remote-ssh); ssh itself reached "
+        f"{alias} a moment ago with the same config."
     )
 
 

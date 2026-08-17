@@ -58,6 +58,7 @@ import typer
 from . import spec
 from .agent import PUBKEY_ENV
 from .cli import new_app, require_subcommand, run
+from .console import emit
 from .kubectl import Kubectl, KubectlError, Runner, run_subprocess
 from .launcher import (
     DEFAULT_CLIENT_DIR,
@@ -1643,7 +1644,7 @@ def _containers(pod_json: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _say(message: str) -> None:
     """Progress goes to stderr so stdout stays parseable."""
-    print(message, file=sys.stderr)
+    emit(message, stderr=True)
 
 
 # -- CLI -------------------------------------------------------------------
@@ -1873,7 +1874,7 @@ def _build_app() -> typer.Typer:
             config_dir=config_dir,
             host_alias=host_alias,
         )
-        print(connection_summary(created, seat))
+        emit(connection_summary(created, seat))
         raise typer.Exit(0)
 
     @app.command(

@@ -425,9 +425,10 @@ Notes:
     volume, the `ssh seat` line explains that it cannot be projected into an
     ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
     the identity, the same line credits it.
-* `--resize` and `--resize-cpu` are opt-in and only partly proven; they print a
-  warning either way — including that the raised limit is on the pod and not on
-  its controller, so a rollout reverts it — and need `pods/resize` `patch`.
+* `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
+  `pods/resize` `patch`. An attach that used neither prints one line offering
+  them; one that used either prints what it cost — including that the raised
+  limit is on the pod and not on its controller, so a rollout reverts it.
   Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
   limit where a `LimitRange` bounds the ratio between them.
 * `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
