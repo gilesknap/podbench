@@ -277,11 +277,11 @@ Land a debug seat in a **live** pod, walking the capability ladder, and print
 what that seat can actually do.
 
 ```
-
- Usage: podbench attach [OPTIONS] [POD]
-
- add or reconnect a podbench container and print the report
-
+                                                                                                    
+ Usage: podbench attach [OPTIONS] [POD]                                                             
+                                                                                                    
+ add or reconnect a podbench container and print the report                                         
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
 │                   on a single pod lists the namespace and asks                                   │
@@ -312,8 +312,12 @@ what that seat can actually do.
 │                                              --seat-gid-root for the seat's /etc/passwd entry    │
 │ --no-probe                                   skip capreport; the report then says nothing was    │
 │                                              measured                                            │
-│ --resize                    MEMORY           raise the target's memory limit in place first,     │
-│                                              e.g. 6Gi                                            │
+│ --resize                    MEMORY           raise the target's memory in place first, as LIMIT  │
+│                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
+│                                              is raised too where a LimitRange bounds             │
+│                                              limit/request                                       │
+│ --resize-cpu                CPU              raise the target's cpu in place first, as LIMIT or  │
+│                                              REQUEST:LIMIT, e.g. 4 or 500m:4                     │
 │ --identity                  KEY              ssh key to authorise in the seat and name in the    │
 │                                              generated stanza                                    │
 │                                              [default: ~/.ssh/id_ed25519]                        │
@@ -421,9 +425,11 @@ Notes:
     volume, the `ssh seat` line explains that it cannot be projected into an
     ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
     the identity, the same line credits it.
-* `--resize` is opt-in and only partly proven; it prints a warning either way —
-  including that the raised limit is on the pod and not on its controller, so a
-  rollout reverts it — and needs `pods/resize` `patch`.
+* `--resize` and `--resize-cpu` are opt-in and only partly proven; they print a
+  warning either way — including that the raised limit is on the pod and not on
+  its controller, so a rollout reverts it — and need `pods/resize` `patch`.
+  Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
+  limit where a `LimitRange` bounds the ratio between them.
 * `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
   fallback from the identity volume: GID 0 lets the agent append its own
   `/etc/passwd` record (the image makes the file group-writable for it), at the
@@ -965,12 +971,12 @@ so `launch.json`'s list and VS Code's own dropdown become the choice. Every
 flavour that does *not* apply gets a sentence naming the mechanism.
 
 ```
-
- Usage: podbench debug-config [OPTIONS] [PID]
-
- Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
- with the pid, the sysroot-prefixed program path and the mode's path mappings already filled in.
-
+                                                                                                    
+ Usage: podbench debug-config [OPTIONS] [PID]                                                       
+                                                                                                    
+ Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,  
+ with the pid, the sysroot-prefixed program path and the mode's path mappings already filled in.    
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   [PID]      <int>  pid to attach to; discovered from the container id if omitted                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -999,11 +1005,14 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │ --no-debuginfod                                     do not enable debuginfod (it needs           │
 │                                                     ca-certificates and network)                 │
 │ --lldb                                              shorthand for --flavour lldb                 │
-│ --provision                                         install debugpy into the target with uv when │
-│                                                     it cannot import one. Mutates the workload:  │
-│                                                     ~15 MB of shared ephemeral storage, needs    │
-│                                                     egress from the pod, and no restart survives │
-│                                                     it                                           │
+│ --provision                                         make the target debuggable: install debugpy  │
+│                                                     with uv when it cannot import one, then      │
+│                                                     start the server inside it so the emitted    │
+│                                                     configuration has something to connect to.   │
+│                                                     Mutates the workload: ~15 MB of shared       │
+│                                                     ephemeral storage, needs egress from the     │
+│                                                     pod, ptraces the app for a few seconds, and  │
+│                                                     no restart survives it                       │
 │ --provision-dest          PATH                      where --provision installs it, as the        │
 │                                                     *target* spells it, and the one extra path   │
 │                                                     searched for the target's copy. Point it at  │
