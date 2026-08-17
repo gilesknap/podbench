@@ -1,0 +1,69 @@
+# A target that runs as a non-zero uid *and* a non-zero gid.
+#
+# The shape read off `b01-1-beamline/bl01c-di-dcam-04-0` at Diamond on
+# 2026-08-17: `{"runAsGroup":36070,"runAsUser":36070}`, and — the part that
+# matters as much as the numbers — **no `runAsNonRoot`**. Python and C++ IOCs of
+# this shape are the normal case in that namespace.
+#
+# ## What it is for
+#
+# Issue #102: a seat on the degraded rung runs as the target's uid *and gid*, and
+# the image's `/etc/passwd` is writable only by GID 0, so on this target the
+# agent could not register the NSS record sshd resolves a login name through and
+# the seat landed with **no ssh at all**. The numbers are chosen to be above
+# libnss-extrausers' compiled-in floors (`MINUID`/`MINGID` 500), because that is
+# what the field target does; `test_nonroot_gid_identity.py` probes below them
+# separately.
+#
+# ## Two things about it that look arbitrary
+#
+# **No `runAsNonRoot: true`.** With it, `spec.rung_of_spec` refuses the full rung
+# before the API server ever sees it and burns no container name — which is a
+# different code path (report 3.18) and not the one this fixture exists to
+# exercise. Without it podbench *asks* for the full rung, an admission policy
+# refuses it, and the ladder walks down to `degraded`. That walk is the whole
+# setup: **on an unrestricted cluster the full rung lands, the seat is root,
+# `/etc/passwd` is writable anyway and #102 cannot appear at all.** Bind
+# `deny-sys-ptrace.yaml` with this, or the test asserts nothing.
+#
+# **The app is not PID 1.** `sh -c` without `exec` leaves python as a child, so
+# the wrapper chain `podbench pids` ranks by depth is present, as it is on the
+# real IOCs. Nothing here depends on it, but a fixture that quietly flattened the
+# process tree would make this the one target where pid selection is trivial.
+#
+# Deliberately **not** `hostNetwork`, unlike `dls-ioc.yaml`: nothing here needs
+# Channel Access, and a hostNetwork pod owns the node's port space, so two of
+# them clash (issue #87). This one can share a node with anything.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nonroot-gid-target
+  labels:
+    app: nonroot-gid-target
+spec:
+  # Nothing restarts it and nothing should: a seat is an ephemeral container,
+  # and a restart takes the container the seat is attached to with it.
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 36070
+    runAsGroup: 36070
+  containers:
+    - name: app
+      image: python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - |
+          python -c '
+          import time
+          print("nonroot-gid-target up", flush=True)
+          while True:
+              time.sleep(5)
+          '
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
