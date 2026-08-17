@@ -237,9 +237,11 @@ def validate_ephemeral_volume_mounts(
     the ``subPath`` mounts a directory over the mountPath, which for
     ``/etc/passwd`` means replacing the file with a directory, and for ``/etc``
     means losing ``nsswitch.conf`` and with it the lookup the identity exists to
-    satisfy. A live-pod seat gets its NSS identity from ``--seat-gid-root``
-    instead: with ``runAsGroup: 0`` the agent appends its own record to the
-    image's group-writable ``/etc/passwd``.
+    satisfy. A live-pod seat gets its NSS identity by writing one instead: the
+    agent appends its own record to :data:`podbench.agent.SEAT_NSS_PATH`, an
+    ``extrausers`` database the image ships world-writable, so the seat needs no
+    file projected into it and, where that database will serve its uid and gid,
+    no gid in particular (#102).
     """
     for index, entry in enumerate(volume_mounts):
         for field in _SUBPATH_FIELDS:
@@ -253,9 +255,10 @@ def validate_ephemeral_volume_mounts(
                 f"refuses the request with `volumeMounts[{index}].{field}: "
                 "Forbidden: cannot be set for an Ephemeral Container`, so the "
                 "seat never lands. Mount the whole volume at a path of its own, "
-                "or - if this was an identity file for the seat's uid - land "
-                "the seat with --seat-gid-root, which lets the agent register "
-                "its own /etc/passwd record instead."
+                "or - if this was an identity file for the seat's uid - drop it: "
+                "the agent registers its own NSS record at start-up, for the uid "
+                "and gid the seat turned out to run as, and needs nothing "
+                "mounted for it."
             )
 
 
@@ -356,10 +359,11 @@ def ephemeral_container_spec(
     :func:`validate_ephemeral_volume_mounts`.
 
     ``seat_gid_root`` pins ``runAsGroup: 0`` on the non-root rungs, which is
-    what lets the agent register an ``/etc/passwd`` entry for the target's uid
-    and so is the difference between a seat with ssh and one reachable only by
-    ``kubectl exec``. It is opt-in: see :func:`_rung_security_context` for why
-    the target's own gid stays the default.
+    what lets the agent write ``/etc/passwd``. It stopped being the difference
+    between a seat with ssh and one reachable only by ``kubectl exec`` in #102 -
+    the agent registers its record in :data:`podbench.agent.SEAT_NSS_PATH`
+    instead, whatever gid the seat carries - and against a non-zero-gid target it
+    now costs more than it buys. See :func:`_seat_gid`.
     """
     spec: dict[str, Any] = {
         "name": name,
@@ -398,12 +402,25 @@ def ephemeral_container_spec(
 def _seat_gid(context: dict[str, Any], gid_root: bool) -> dict[str, Any]:
     """Apply the opt-in ``runAsGroup: 0`` override to a non-root rung.
 
-    GID 0 is how a container running as an arbitrary uid registers itself in
+    GID 0 *was* how a container running as an arbitrary uid registered itself in
     NSS: the debug image makes ``/etc/passwd`` group-writable (OpenShift's
     convention) and the agent appends a record for whatever uid it turned out to
-    be, without which sshd refuses every login. Pod Security Admission does not
-    constrain ``runAsGroup`` at any level, so this is admissible wherever the
-    rung itself is - measured on a ``restricted`` namespace, uid 1000 / gid 0.
+    be. Since #102 that is the fallback, not the route - the record goes to
+    :data:`podbench.agent.SEAT_NSS_PATH`, which the image ships world-writable,
+    so a seat that database will serve needs no gid pinned to get a login.
+
+    The flag stays because the fallback stays reachable, and for more seats than
+    an old image: ``extrausers`` ignores a record whose uid or gid is under its
+    compiled-in floor of 500, so a target running as a low-numbered system uid
+    needs the old route as much as an image whose ``nsswitch.conf`` never named
+    the database (:func:`podbench.agent.extrausers_serves`). Pod Security
+    Admission does not constrain
+    ``runAsGroup`` at any level, so it remains admissible wherever the rung
+    itself is - measured on a ``restricted`` namespace, uid 1000 / gid 0. What it
+    costs is not admission but the debugger: ``__ptrace_may_access`` compares the
+    gid as well as the uid, and a mismatch denies in both directions (measured on
+    #98), so pinning group 0 against a target in group 36070 leaves a seat that
+    can log in and cannot trace.
     """
     if gid_root:
         context["runAsGroup"] = 0
@@ -482,8 +499,9 @@ def _rung_security_context(
         # The gid is dropped alongside the uid rather than on its own merit. It
         # is admissible by itself — restricted PSS does not constrain
         # runAsGroup — but inheriting the target's group while deliberately not
-        # inheriting its user describes a process that does not exist, and the
-        # /proc reads a shared gid might buy are gated on the uid anyway.
+        # inheriting its user describes a process that does not exist, and this
+        # rung claims no /proc access to lose: the credential check wants both
+        # halves to match (#98), and the uid half is already gone.
         if target_uid and target_gid is not None:
             restricted["runAsGroup"] = target_gid
         return _seat_gid(restricted, seat_gid_root)
@@ -502,13 +520,14 @@ def _rung_security_context(
             "namespace admits SYS_PTRACE, otherwise Rung.SEAT."
         )
     restricted["runAsUser"] = target_uid
-    # The target's own gid stays the default even though it is exactly what
-    # stops the seat registering an /etc/passwd entry for itself, and so costs
-    # this rung its ssh transport. Two reasons to leave it: the target's gid is
-    # what buys the group-gated reads under its sysroot that this rung exists
-    # for, and quietly running a debug seat as the *root group* is a privilege
-    # change that belongs to the person attaching. `seat_gid_root` makes it one
-    # flag away rather than unavailable.
+    # The target's own gid is the default and is worth defending, because it used
+    # to look like a cost: it is what stops the seat writing /etc/passwd, and
+    # until #102 that read as "this rung has no ssh". The gid was still right and
+    # the append was wrong — ptrace compares the gid as well as the uid, so a seat
+    # in another group can log in and not trace (measured, #98) — and the seat now
+    # registers its record somewhere a non-zero gid can write. `seat_gid_root`
+    # keeps the old route one flag away for the seats that database will not
+    # serve: an image without it, or a target under its uid/gid floors.
     if target_gid is not None:
         restricted["runAsGroup"] = target_gid
     return _seat_gid(restricted, seat_gid_root)
@@ -615,8 +634,10 @@ def dev_pod_spec(
     mounts it as ``/etc/passwd`` and ``/etc/group``. The sidecar then runs as the
     uid that identity names rather than as root — see :func:`dev_seat_identity`
     — and gives up ``SYS_PTRACE`` with the root it no longer has. That trade is
-    the point of the volume: nothing is written at runtime, the seat needs no
-    GID 0, and the pod is admissible under the restricted Pod Security Standard,
+    the point of the volume: the identity is declared rather than written, so
+    nothing has to be registered at start-up and nothing in the seat is writable
+    that need not be, and the pod is admissible under the restricted Pod Security
+    Standard,
     which refuses the root sidecar outright. A declared
     :data:`podbench.model.SEAT_HOME_VOLUME` is mounted with it, at the path the
     identity's own passwd record names.

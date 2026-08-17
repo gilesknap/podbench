@@ -139,14 +139,16 @@ why this volume serves one kind of seat and not the other:
 
 * in an **ordinary** container - a ``podbench dev`` sidecar - it is legal, so
   the two files land and NSS resolves the seat's uid with nothing written at
-  runtime and no GID 0 needed;
+  runtime and nothing in the seat left writable for it;
 * in an **ephemeral** container - every ``attach`` seat - it is forbidden, and
   refused for the *whole* request: ``spec.ephemeralContainers[0].
   volumeMounts[0].subPath: Forbidden: cannot be set for an Ephemeral
   Container``. So the seat does not land at all, and there is no whole-volume
   alternative either - a directory mount over ``/etc/passwd`` replaces the file,
-  and over ``/etc`` it takes ``nsswitch.conf`` with it. Such a seat registers
-  its own record instead, which is what ``attach --seat-gid-root`` is for.
+  and over ``/etc`` it takes ``nsswitch.conf`` with it. Such a seat registers its
+  own record instead, in :data:`podbench.agent.SEAT_NSS_PATH` - not in
+  ``/etc/passwd``, which is writable only by GID 0 and so was out of reach of the
+  degraded rung's own gid (#102).
 
 Both statements are checked against a rendered chart in
 ``tests/test_chart_contract.py``; the refusal is

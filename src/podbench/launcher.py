@@ -38,7 +38,7 @@ from typing import Annotated, Any, cast
 
 import typer
 
-from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV
+from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV, SEAT_NSS_PATH
 from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
 from .console import WARNING_LEAD, emit, paragraph
@@ -486,9 +486,11 @@ def seat_identity_mounts(
     authoring it here does not degrade the attach, it destroys it. The home
     volume is kept because it is subject to no such rule and is worth having on
     its own: it moves everything the seat writes off the workload's
-    ephemeral-storage budget. A live-pod seat gets its NSS identity from
-    ``--seat-gid-root`` instead, and :func:`features` says so where the user is
-    looking.
+    ephemeral-storage budget. A live-pod seat gets its NSS identity by
+    registering its own record in :data:`podbench.agent.SEAT_NSS_PATH`, which
+    asks nothing of the pod at all — the file is in the image, and world-writable
+    there precisely so that a seat running as the target's uid *and gid* can
+    append to it (#102). :func:`features` says so where the user is looking.
 
     Absence is not an error: a bare ``attach`` against a pod that knows nothing
     about podbench must still land a seat and degrade honestly, which is the
@@ -879,8 +881,16 @@ def attach(
     :func:`resolve_mounts` for why podbench cannot simply add the volume.
 
     ``seat_gid_root`` lands the non-root rungs with ``runAsGroup: 0``, which is
-    what allows the seat to give itself the NSS identity sshd insists on. Opt-in
-    because it changes the seat's group, not because a cluster would refuse it.
+    what lets a seat append to ``/etc/passwd``. It is no longer how a seat gets
+    its login: since #102 the agent registers its own record in
+    :data:`podbench.agent.SEAT_NSS_PATH` wherever that database will serve it,
+    which needs no particular gid. What is left for the flag is a seat that
+    database refuses - an image whose NSS does not consult it, or a uid or gid
+    under its floors, which includes every low-numbered system uid. It is opt-in
+    because of what it costs, not because a cluster would refuse it — pinning
+    group 0 breaks the gid half of the credential match ptrace makes against a
+    target whose gid is not 0, so on such a target it buys ssh and takes the
+    debugger (measured, #98).
 
     ``seat_identity`` mounts the pod's home volume when it has one
     (:func:`seat_identity_mounts`). It is on by default and has no effect on a
@@ -892,7 +902,9 @@ def attach(
     The pod's identity volume is *never* mounted here, however deliberately it
     was declared: it takes a ``subPath`` per file and an ephemeral container may
     not have one. Where the pod declares it, the capability report says so and
-    names ``--seat-gid-root`` as the live-pod route to the same identity.
+    names the seat's own registration as the live-pod route to the same identity,
+    so that a pod prepared for podbench does not read as one whose preparation
+    failed.
 
     The seat is always asked whether it has that identity, ``probe`` or not:
     ``probe`` governs the capability report, while this decides whether an ssh
@@ -1437,12 +1449,25 @@ def _identity_note(session: Session, *, usable: bool) -> str:
     podbench, so a seat with no login on it looks like the preparation failed.
     It did not: ``attach`` cannot project a file into an ephemeral container at
     all, and this line is where that is said - beside the feature it decides,
-    with the flag that does work on a live pod.
+    with the mechanism that does work on a live pod.
 
     ``usable`` decides how much of that to say. A seat that already has its
-    login needs the fact and not the remedy: printing "re-attach with
-    --seat-gid-root" under a ticked box would read as an instruction to fix
-    something that is working.
+    login needs the fact and not the remedy: printing a re-attach command under
+    a ticked box would read as an instruction to fix something that is working.
+
+    That branch says the seat *has* a login and not that it registered one, which
+    is the only thing the launcher knows: all it asked for was a name
+    (``--print-login-user``), and a seat whose uid the image already has an
+    account for - root on the full rung, ``nobody`` on a hardened workload -
+    resolves it and appends nothing. Claiming a record in
+    :data:`podbench.agent.SEAT_NSS_PATH` sent readers to ``cat`` an empty file.
+
+    Neither branch names a flag. The route on a live pod is the seat's own
+    record and it needs none, and where that route failed the reason - with
+    ``--seat-gid-root`` in it, for an image predating the database - is
+    :data:`podbench.agent.NSS_WAY_OUT`, printed immediately under this line as
+    the feature's reason. Saying it twice is the paragraph-length warning the
+    report was cut back from.
     """
     if session.identity_mounted:
         return (
@@ -1461,17 +1486,17 @@ def _identity_note(session: Session, *, usable: bool) -> str:
     )
     if usable:
         return (
-            f"{cannot}. This seat's login came from somewhere else, so nothing "
-            "here needs fixing: a seat landed with --seat-gid-root registers "
-            "its own record. The volume is for a seat that is an ordinary "
-            "container, which is what `podbench dev` authors"
+            f"{cannot}. Nothing here needs fixing: this seat has a login "
+            f"already - a live-pod seat that needs one registers its own record "
+            f"in {SEAT_NSS_PATH}, and needs neither the volume nor a flag to. "
+            "The volume is for a seat that is an ordinary container, which is "
+            "what `podbench dev` authors"
         )
     return (
-        f"{cannot}. On a live pod the seat registers its own record instead: "
-        "re-attach with --new --seat-gid-root, which runs it with runAsGroup: "
-        f"0 against the image's group-writable {PASSWD_PATH}. The volume is "
-        "for a seat that is an ordinary container, which is what `podbench "
-        "dev` authors"
+        f"{cannot}. On a live pod the seat registers its own record instead, in "
+        f"{SEAT_NSS_PATH}, which asks nothing of the pod - why this seat has no "
+        "login even so is the line below. The volume is for a seat that is an "
+        "ordinary container, which is what `podbench dev` authors"
     )
 
 
@@ -1645,11 +1670,23 @@ def ssh_unavailable_note(session: Session) -> str:
             "no ssh config was written: this seat has no login identity.",
             *paragraph(detail, first="  ", indent="  "),
             "  ways out:",
-            "    - land a seat that registers one itself, with GID 0:",
+            "    - a seat normally registers its own record in",
+            f"      {SEAT_NSS_PATH}; the line above is why this",
+            "      one did not, and only one of the two reasons it can give is",
+            "      fixable from here. A uid or gid under that database's floors",
+            "      is not: take the gid 0 route below. An image that has no such",
+            "      database is - the launcher names the image, so upgrade it with",
+            "      `uvx podbench@latest`, or point --image at a tag that has one.",
+            "      Note that --pull always changes nothing unless your tag moves",
+            "      (main, a branch image), and --new burns another container name",
+            "      on this pod for good - so re-running this attach unchanged",
+            "      costs a name and fixes nothing",
+            f"    - or take {PASSWD_PATH}, which needs gid 0:",
             f"        podbench attach {seat.pod.name} "
             f"-n {seat.pod.namespace} --new --seat-gid-root",
-            f"      the image makes {PASSWD_PATH} group-writable, so a seat with gid 0",
-            "      appends its own record. This is the route on a live pod, or",
+            "      it pins runAsGroup: 0, so the seat's gid stops matching a target",
+            "      whose gid is not 0 - and ptrace checks that match, so this buys",
+            "      ssh and takes the debugger, or",
             "    - run the target as a uid the debug image has an account for, or",
             "    - debug in a dev pod (`podbench dev`), whose seat is an ordinary",
             "      container and can be given files.",
@@ -3095,10 +3132,15 @@ def _build_app(
             bool,
             typer.Option(
                 "--seat-gid-root",
-                help="land the seat with runAsGroup: 0 so it can register an "
-                "/etc/passwd entry for the target's uid, which is what sshd "
-                "needs to let anyone log in, and the only way to get one on a "
-                "live pod. Off by default: it drops the target's own group",
+                help=f"land the seat with runAsGroup: 0 so it can register an "
+                f"{PASSWD_PATH} entry for the target's uid. Rarely needed: the "
+                f"seat registers its own record in {SEAT_NSS_PATH} without it, "
+                "and what is left for this flag is a seat that database will "
+                "not serve - an image whose NSS does not consult it, or a uid "
+                "or gid below 500. It drops the target's own group, and a seat "
+                "whose gid no longer matches the target's cannot ptrace it - on "
+                "a target whose gid is not 0 this buys ssh and takes the "
+                "debugger",
             ),
         ] = False,
         no_seat_identity: Annotated[
@@ -3110,8 +3152,8 @@ def _build_app(
                 "keeps everything the seat writes off the workload's "
                 "ephemeral-storage budget. The podbench-identity volume is "
                 "never mounted by attach: it needs a subPath per file, which an "
-                "ephemeral container may not have - use --seat-gid-root for the "
-                "seat's /etc/passwd entry",
+                "ephemeral container may not have - a live-pod seat registers "
+                "its own NSS record instead, and needs no volume for it",
             ),
         ] = False,
         no_probe: Annotated[

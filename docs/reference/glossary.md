@@ -113,8 +113,15 @@ seat
 seat identity
   Whether {term}`sshd` inside a seat can resolve a login name for the uid the seat
   runs as. Without one, ssh is refused before a key is even looked at — see
-  {term}`NSS`. A live-pod seat gets one with `--seat-gid-root`; a `dev` sidecar can be
-  given a projected `/etc/passwd` file instead.
+  {term}`NSS`. A seat whose uid the image already has an account for has one
+  already; otherwise a live-pod seat writes its own record into
+  `/var/lib/extrausers/passwd`, which the image ships world-writable so that a seat
+  running as the target's uid *and gid* can, needing no flag and no cooperation from
+  the pod. A `dev` sidecar is given a projected `/etc/passwd` file instead and writes
+  nothing. `--seat-gid-root` is the older route, over the group-writable
+  `/etc/passwd`, and is still the only one for a seat that database will not serve —
+  it ignores records below uid or gid 500 — at the cost of the {term}`ptrace`
+  credential match against a target whose gid is not 0.
 
 sidecar
   An ordinary container added beside the application in a {term}`dev pod`. Unlike an
@@ -409,7 +416,10 @@ PID 1
 ptrace
   The system call debuggers use to attach to and inspect a running process. Whether it
   is permitted is the single question the {term}`capability ladder` and
-  {term}`capreport` exist to answer.
+  {term}`capreport` exist to answer. Without {term}`CAP_SYS_PTRACE` the kernel compares
+  credentials, and it compares the **gid** as well as the uid — a mismatch denies in
+  both directions, measured — which is why a seat runs as the target's group and why
+  `--seat-gid-root`, which replaces it with group 0, costs the debugger.
 
 reaping
   Collecting the exit status of terminated child processes so they do not accumulate

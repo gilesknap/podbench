@@ -36,15 +36,34 @@ spec.ephemeralContainers[0].volumeMounts[0].subPath:
   Forbidden: cannot be set for an Ephemeral Container
 ```
 
-The API server refuses the whole request. There is no workaround: mounting the volume
-somewhere else does not help, because NSS reads `/etc/passwd` and nothing else.
+The API server refuses the whole request, and mounting the volume somewhere else does
+not rescue it: a whole-volume mount reaches no path NSS consults without destroying it
+— over `/etc/passwd` it replaces the file with a directory, and over `/etc` it takes
+`nsswitch.conf` with it, which is the lookup the identity existed to satisfy.
 
 This is why the seat's identity has two mechanisms, split by container kind:
 
 | | mechanism |
 |---|---|
-| `attach` (ephemeral) | the agent registers its own passwd record, against the image's group-writable `/etc/passwd`, under `--seat-gid-root` |
-| `podbench dev` (ordinary pod) | the projected identity from the chart's `seatIdentity`, mounted with `subPath` — better, since nothing is written and no group 0 is needed |
+| `attach` (ephemeral) | the agent registers a passwd record for its own uid at start-up, in `/var/lib/extrausers/passwd` — a second NSS source the image installs `libnss-extrausers` for and ships mode 0666, so a seat carrying the target's uid *and* gid can append to it unprivileged |
+| `podbench dev` (ordinary pod) | the projected identity from the chart's `seatIdentity`, mounted with `subPath` — better, since the identity is declared rather than written and nothing in the seat has to be writable |
+
+The image's group-writable `/etc/passwd` is the *fallback*, reached by `--seat-gid-root`
+and by any seat `extrausers` will not serve, and it is not free: `__ptrace_may_access`
+compares the gid as well as the uid, so pinning `runAsGroup: 0` against a target whose
+gid is not 0 buys ssh and takes the debugger (#102, measured — it is how one seat was
+sent round the loop twice). Do not "fix" a seat with no login by reaching for that flag.
+
+**`extrausers` has floors and they are compiled in.** `MINUID 500`, `MINGID 500`, with
+gid 100 exempted (`s_config.h`, Debian 0.6-4.1), and a record below them is ignored by
+`getpwnam` as well as `getpwuid` — the append succeeds, the line is in the file, and
+nothing resolves. So the append target is chosen on the seat's uid and gid
+(`agent.extrausers_serves`) and never on the file's mode. A prototype of #102 skipped
+that check, and would have taken ssh away from the commonest shape there is: a target
+that sets `runAsUser` and no `runAsGroup` leaves `target_uid_gid` returning a gid of
+`None`, so the seat pins no group and runs with the image's **gid 0**. Also from every
+`--seat-gid-root` seat, and from every target on a low-numbered system uid (grafana
+472, nginx-unprivileged 101).
 
 `spec.validate_ephemeral_volume_mounts` enforces it at the authoring layer so it cannot
 recur.

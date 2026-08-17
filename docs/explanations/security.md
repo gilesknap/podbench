@@ -248,19 +248,15 @@ automatically and prints why.
 * **The target's filesystem is never written.** `readOnlyRootFilesystem` is
   common in production and podbench does not depend on writing into the target.
   `/proc/<pid>/root` is a read path in every standard workflow.
-* **An ssh-able seat on a live pod runs with `runAsGroup: 0`**, and that is a
-  deliberate opt-in (`attach --seat-gid-root`). The degraded rung runs as the
-  *target's* uid, discovered at attach time, and sshd will not authenticate a
-  user NSS cannot resolve; the debug image makes its own `/etc/passwd`
-  group-writable so the agent can append a record for that uid, which needs GID
-  0. Projecting the file instead — a ConfigMap over `/etc/passwd` — is not
-  available here: a `volumeMount` on an *ephemeral* container may not carry a
-  `subPath`, and the API server refuses the whole request if one does. So the
-  choice on a live pod is a seat in group 0 or a seat reachable only by
-  `kubectl exec`. Group 0 is a group, not a capability: it grants nothing in the
-  target container, whose files it does not own, and `restricted` PSA admits it
-  (measured: uid 1000 / gid 0). `podbench dev`'s seat is an ordinary container
-  and takes the projected identity instead, needing no group change.
+* **An ssh-able seat on a live pod runs as the target's own uid and gid**, and
+  changes no identity to get there. sshd will not authenticate a user NSS cannot
+  resolve, and no account for a uid discovered at attach time can be pre-baked
+  into an image, so the seat writes its own record — normally into an NSS
+  database of its own rather than into `/etc/passwd`, which it leaves as the image
+  built it. That is the subject of the next section, because the
+  file it writes to is world-writable and a reviewer should see the argument
+  rather than the mode. `podbench dev`'s seat is an ordinary container and takes
+  a *projected* identity instead, writing nothing at all.
 * **Ephemeral containers are an audit trail.** They cannot be removed, so an
   attach is permanently visible in the pod spec, with the image, the
   securityContext and the container name. `podbench list` reads the same
@@ -281,6 +277,94 @@ automatically and prints why.
   podbench cannot reserve resources on a live pod, so the plausible incident is
   an OOM-killed or evicted workload, not a data breach. See the footgun section
   on the front page.
+
+### The seat's login, and the world-writable file that provides it
+
+This is the one mode bit in podbench that looks wrong at a glance, so here is the
+whole of it.
+
+The degraded rung runs the seat as the target's uid **and** gid — 36070, say,
+discovered from the target's `securityContext` at attach time. sshd resolves the
+login name a client offers through NSS *before* it looks at any key, and
+`ssh-keygen` calls `getpwuid()` whatever it is asked to do, so a seat with no NSS
+record for its own uid has no ssh at all. Nothing can be pre-baked: the uid is
+not known until the attach.
+
+So the seat registers a record for itself, and where it registers it is the
+question:
+
+* `/etc/passwd` **is not modified**. It stays as the image built it: root-owned,
+  group `root`, and mode 664 — `chmod g=u` makes it group-writable deliberately,
+  in the OpenShift convention. Only a seat in group 0 can use that, and a seat in
+  group 0 is no longer the target's group, which is a credential `ptrace`
+  compares: pinning
+  `runAsGroup: 0` buys the transport and loses the debugger (measured, issue
+  #98). That route survives as `attach --seat-gid-root` for images that need it
+  and is not the default.
+* Instead the image installs `libnss-extrausers`, points the `passwd` line of
+  `/etc/nsswitch.conf` at it, and ships `/var/lib/extrausers/passwd` **empty and
+  mode 0666**. The agent appends one line — `podbench:x:<uid>:<gid>:…` — and NSS
+  resolves the uid with no capability, no gid and no change to the workload's
+  manifest. Not for every seat: this NSS source has floors compiled in (uid and
+  gid 500, gid 100 exempted) and ignores a record below them, for `getpwnam` as
+  well as `getpwuid`. A seat under a floor takes `/etc/passwd` instead, and the
+  commonest one can write it — a target that sets `runAsUser` and no
+  `runAsGroup` leaves the seat pinning no group, so it runs with the image's gid
+  0. `agent.extrausers_serves` decides which file, and the mode never enters
+  into it.
+
+Why a world-writable file is not a privilege boundary here:
+
+* **The only writer is the seat's own uid, which is already the seat.** The file
+  is in the seat container's own read-write layer, in the debug image, not in the
+  target's filesystem and not on any volume. Anyone who can write it can already
+  write the seat's `$HOME`, its `authorized_keys` and its sshd config — it is the
+  same identity, reached through the same ssh session or the same
+  `kubectl exec`, and both are gated by RBAC on `pods/exec` before any of this.
+  A process in the *target* container cannot reach it at all: the seat has its own
+  mount namespace, and traversing `/proc/<seat-pid>/root` is gated by the same
+  `ptrace_may_access` check the debugger is subject to.
+* **The sshd that reads it cannot act on a privileged record.** On every rung
+  whose seat is not root — `degraded` and `seat` — sshd runs *as the seat's own uid*
+  (`SshdLayout.for_uid(n)` with `run_as_root=False`): no privilege separation, no
+  `setuid`. A record claiming uid 0 does not produce a root session, because the
+  process serving it holds no privilege to hand over — it can only serve the uid
+  it already is.
+* **Setuid binaries are inert.** Every rung sets
+  `allowPrivilegeEscalation: false`, so `NoNewPrivs` is on for the whole
+  container: `su` and friends cannot change uid from any passwd record, however
+  written.
+* **Nothing else consults the file.** It exists for this and is otherwise empty,
+  so a forged record is a forged answer to a question only the seat's own NSS
+  asks. `/etc/passwd`, which the rest of the image does read, is left byte-for-byte
+  as the image built it.
+
+The **full** rung is the exception to the second bullet and has to be argued
+separately, because it ships today: it is `runAsUser: 0`, so
+`SshdLayout.for_uid(0)` gives it `run_as_root=True` — privilege separation on,
+and sshd `setuid`-ing into the session from whatever NSS answers with. The reason
+0666 is still not an escalation there is that a root seat has no unprivileged
+principal to forge with: every process in it, the `kubectl exec` that carries the
+ssh transport included, is already uid 0, and writing a passwd record buys
+nothing over writing `/root/.ssh/authorized_keys`. Nor does a root seat ever
+append: `getpwuid(0)` resolves to `root` from the image's own `/etc/passwd` and
+the registration step returns early.
+
+That argument holds by a property of the rung rather than by construction, so the
+agent closes the gap instead of resting on it: on a root seat the start-up path
+takes group and other write off the database (`agent.restrict_seat_nss_database`,
+the `nss-db-mode` step). An ephemeral container has its own copy of the image's
+layers, so narrowing a root seat's database leaves a degraded seat in the same pod
+its 0666.
+
+The combination that *would* be an escalation, stated so it is not discovered
+later: **a root sshd that `setuid`s into a non-root session** — one container
+holding both an unprivileged writer of this file and a privileged reader of it.
+That is the shape issue #98 proposes, and it is the one thing neither argument
+above covers. #98 and this mode must not both ship as they stand; whichever lands
+second has to close the other off, either by giving the database an owner and
+losing group/other write on that rung too, or by keeping the root sshd from
+resolving out of it. The image says so beside the `chmod`.
 
 ## Unproven areas
 

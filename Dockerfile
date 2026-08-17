@@ -82,6 +82,10 @@ FROM debian:bookworm-slim AS runtime
 #   ca-certificates  MANDATORY: without it libdebuginfod fails the TLS
 #               handshake *silently* and every library reports "missing
 #               debugging information" (report 4.3).
+#   identity    libnss-extrausers, the NSS source a seat appends its own passwd
+#               record to. It is what lets a seat running as an arbitrary uid
+#               *and* gid be resolved by sshd without writing to /etc/passwd -
+#               see the nsswitch.conf line below and issue #102.
 #   debugging   gdb/gdbserver/binutils/elfutils/debuginfod(-find); binutils and
 #               eu-readelf are what diagnose a build-id miss.
 #   inspection  procps/lsof/strace/less, and iproute2 for `ss`, which is how the
@@ -94,6 +98,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     openssh-sftp-server \
     openssh-client \
+    libnss-extrausers \
     gdb \
     gdbserver \
     binutils \
@@ -131,21 +136,66 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (report R9 - host key identity is still an open design question).
 RUN mkdir -p /run/sshd /etc/podbench
 
-# The seat's uid is the *target's* uid, discovered at attach time from a pod
-# podbench did not build, so no account for it can be baked in here. sshd
+# The seat's uid *and gid* are the target's, discovered at attach time from a
+# pod podbench did not build, so no account for them can be baked in here. sshd
 # resolves the login name through NSS before it looks at a key, and ssh-keygen
-# calls getpwuid() unconditionally - it dies with "No user exists for uid 1000"
-# and a -C comment does not help. The convention for containers that run as an
-# arbitrary uid is OpenShift's: leave /etc/passwd group-writable by GID 0 and
-# let the entrypoint append its own record (podbench agent's ensure_passwd_entry
-# does). It buys nothing unless the seat is landed with GID 0, which is what
-# `podbench attach --seat-gid-root` asks for; with any other gid the file is
-# unwritable, the agent says so and the seat lands without ssh.
+# calls getpwuid() unconditionally - it dies with "No user exists for uid 36070"
+# and a -C comment does not help. So the seat appends a record for itself at
+# start-up (podbench agent's ensure_passwd_entry), and the default route for
+# that is libnss-extrausers: nsswitch.conf is pointed at
+# /var/lib/extrausers/passwd after files, and that file is world-writable, so
+# the append needs no capability, no particular gid and no edit to the
+# workload's manifest.
 #
-# This grants no privilege on its own: gid 0 is a group, not root, and every
-# other permission in the image is unchanged. /etc/group gets the same treatment
-# so an image change that starts needing a group record is not a second fix.
+# It is not unconditional: this NSS source has floors compiled into it (MINUID
+# 500, MINGID 500, with gid 100 exempted - s_config.h, 0.6-4.1) and silently
+# ignores any record below them, for getpwnam as well as getpwuid. A seat under
+# a floor takes /etc/passwd instead, and can write it: the commonest of them is a
+# target that sets runAsUser and no runAsGroup, so the seat pins no group and
+# runs with this image's gid 0, and --seat-gid-root asks for gid 0 outright.
+# agent.extrausers_serves is where that is decided and argued.
+#
+# The alternative it replaces as the default is why this exists at all. The
+# convention for containers running as an arbitrary uid is OpenShift's -
+# /etc/passwd group-writable by GID 0, appended to by the entrypoint - and it
+# buys nothing unless the seat carries gid 0, which is what
+# `podbench attach --seat-gid-root` asks for. Against a target whose gid is not
+# 0 (36070 at Diamond) that flag pins runAsGroup: 0 and so destroys the
+# credential match ptrace needs, taking the debugger with it: the documented way
+# out of "no ssh" cost the thing the seat is for (issue #102, measured on a k3s
+# bed).
+#
+# `chmod g=u` therefore stays. This change *adds* a route: /etc/passwd is still
+# the file a `podbench dev` sidecar projects its identity over, and still the
+# one `--seat-gid-root` writes when extrausers is absent or not consulted.
+# gid 0 grants no privilege on its own - it is a group, not root - and
+# /etc/group gets the same treatment so an image change that starts needing a
+# group record is not a second fix.
+#
+# Mode 0666 on the record file is not an escalation, and the reason is different
+# on each rung, so both are stated. On `degraded` and `seat` sshd runs as the
+# seat's own uid (SshdLayout.for_uid(n), run_as_root=False): it skips privilege
+# separation and never setuids out of a passwd record, so a forged record buys
+# its author the uid it already had, and NoNewPrivs has already made every
+# setuid binary in the seat inert. On `full` sshd *is* root - that rung ships
+# today, and pretending otherwise is how this comment was wrong once - and there
+# the reason is that a root seat has no unprivileged principal: every process in
+# it, the kubectl exec carrying ssh included, is already uid 0. Because that is
+# an accident of the rung rather than an enforced property, the agent enforces
+# it anyway and takes group/other write off this file on a root seat
+# (agent.restrict_seat_nss_database).
+#
+# What must not ship is the combination in between, which is #98's shape: a root
+# sshd that setuids into a *non-root* session, i.e. one container holding both an
+# unprivileged writer of this file and a privileged reader of it. Whichever of
+# the two lands second has to close the other off - either the database gains an
+# owner and loses group/other write on that rung too, or the root sshd is not
+# allowed to resolve from it.
 RUN chmod g=u /etc/passwd /etc/group
+RUN sed -i 's/^passwd:.*/passwd:         files extrausers/' /etc/nsswitch.conf \
+    && mkdir -p /var/lib/extrausers \
+    && touch /var/lib/extrausers/passwd \
+    && chmod 0666 /var/lib/extrausers/passwd
 
 # Symbols, but never sources, on Debian targets: S3 got a fully symbolised
 # glibc + coreutils backtrace for 4.7 MB of client cache, and every source fetch

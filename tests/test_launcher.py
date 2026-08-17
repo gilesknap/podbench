@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import pytest
 
+from podbench.agent import SEAT_NSS_PATH
 from podbench.kubectl import CommandResult, Kubectl, KubectlError
 from podbench.launcher import (
     RESIZE_WARNING,
@@ -105,6 +106,15 @@ NO_LOGIN_USER = (
     "through NSS before it will look at a key, so ssh into this seat cannot "
     "work."
 )
+"""The agent's registration refusal, abridged, as `--print-login-user` relays it.
+
+Deliberately the *fallback* shape: an image with no ``extrausers`` database, where
+the only writable passwd file is ``/etc/passwd`` and a seat carrying the target's
+gid cannot write it (#102). That is the seat the launcher still has to explain,
+because a seat on the current image registers itself and has a login — and the
+launcher does not parse any of this, it relays it, so the shape it arrives in is
+the agent's business and tests/test_agent.py's.
+"""
 
 
 def pod_document(
@@ -979,7 +989,14 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     A pod that declares ``podbench-identity`` is one somebody prepared for
     podbench, so silence here reads as "the preparation failed". It did not: the
     projection is impossible for an ephemeral container, and the live-pod route
-    to the same identity is ``--seat-gid-root``.
+    to the same identity is the seat's own record in
+    :data:`podbench.agent.SEAT_NSS_PATH`, which asks nothing of the pod.
+
+    That route needs no flag, so the note names none. ``--seat-gid-root`` is the
+    fallback for an image predating the database and it costs the ptrace gid
+    match (#102), which is a price the *reason* line below states — offering it
+    here, on the line about a volume, would be the second half of the trap issue
+    #102 walked into.
     """
     cluster = FakeCluster(identity_pod(), login_user=None)
     session = attach(talking_to(cluster), "target")
@@ -988,11 +1005,17 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     assert not ssh_seat.available
     assert SEAT_IDENTITY_VOLUME in ssh_seat.note
     assert "subPath" in ssh_seat.note
-    assert "--seat-gid-root" in ssh_seat.note
+    assert SEAT_NSS_PATH in ssh_seat.note, "the route that does work on a live pod"
+    assert "--seat-gid-root" not in ssh_seat.note
 
     text = format_session(session)
     assert SEAT_IDENTITY_VOLUME in text
-    assert "--seat-gid-root" in text
+    assert SEAT_NSS_PATH in text
+    # The flag is not in the report at all now. Where it survives is the agent's
+    # own reason - NSS_WAY_OUT, relayed verbatim, and abridged by this fake -
+    # and the ways-out block `main` prints under the missing stanza, which
+    # test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza asserts.
+    assert "--seat-gid-root" not in text
 
     # …and a pod without the volume says nothing of the sort.
     plain = attach(talking_to(FakeCluster(pod_document(uid=1000))), "target")
@@ -1002,9 +1025,16 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
 def test_a_seat_that_already_has_a_login_is_not_told_to_re_attach() -> None:
     """The same fact, without a remedy under a ticked box.
 
-    ``--seat-gid-root`` printed beside a working ssh seat reads as an
+    A re-attach command printed beside a working ssh seat reads as an
     instruction to fix something that is not broken - and the seat cannot pick
-    the volume up on a re-attach anyway.
+    the volume up on a re-attach anyway. What it says instead is that this seat
+    has a login, and where a seat that needs one gets it.
+
+    Not that this seat *registered* one, which the launcher has no way of
+    knowing: all it asked for was a login name, and a seat whose uid the image
+    already has an account for - root on the full rung, ``nobody`` on a hardened
+    workload - resolves it and appends nothing. The stronger claim sent readers
+    to ``cat`` an empty file.
     """
     cluster = FakeCluster(identity_pod())
     session = attach(talking_to(cluster), "target")
@@ -1012,7 +1042,10 @@ def test_a_seat_that_already_has_a_login_is_not_told_to_re_attach() -> None:
     ssh_seat = features(session)[-2]
     assert ssh_seat.available
     assert SEAT_IDENTITY_VOLUME in ssh_seat.note
+    assert SEAT_NSS_PATH in ssh_seat.note
     assert "re-attach" not in ssh_seat.note
+    assert "--seat-gid-root" not in ssh_seat.note
+    assert "this seat registered" not in ssh_seat.note
 
 
 def test_a_seat_that_does_carry_the_identity_is_still_credited_with_it() -> None:
@@ -1626,6 +1659,14 @@ def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
     # Named mechanism, then the way out, then what does work today.
     assert "not writable" in out
     assert "--seat-gid-root" in out
+    # Every remedy offered has to be able to work. A released launcher computes
+    # its image tag from its own version, so `--new --pull always` re-pulls the
+    # identical tag and lands the identical seat - having burnt a second
+    # ephemeral container name on the pod for good. What can produce a newer
+    # image is a newer launcher or a named tag, so those are what is offered.
+    assert "--new --pull always" not in out
+    assert "uvx podbench@latest" in out
+    assert "--image" in out
     # Spelled as the verb: the image ships no per-subcommand aliases (#47), so
     # a hint the user pastes has to name the one program that is on PATH.
     assert "kubectl exec -n demo target -c podbench-1 -- podbench capreport" in out

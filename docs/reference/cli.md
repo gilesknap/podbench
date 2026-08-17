@@ -298,20 +298,35 @@ what that seat can actually do.
 │ --new                                        add a container even if one is running (its name is │
 │                                              permanent)                                          │
 │ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
-│                                              an /etc/passwd entry for the target's uid, which is │
-│                                              what sshd needs to let anyone log in, and the only  │
-│                                              way to get one on a live pod. Off by default: it    │
-│                                              drops the target's own group                        │
+│                                              an /etc/passwd entry for the target's uid. Rarely   │
+│                                              needed: the seat registers its own record in        │
+│                                              /var/lib/extrausers/passwd without it, and what is  │
+│                                              left for this flag is a seat that database will not │
+│                                              serve - an image whose NSS does not consult it, or  │
+│                                              a uid or gid below 500. It drops the target's own   │
+│                                              group, and a seat whose gid no longer matches the   │
+│                                              target's cannot ptrace it - on a target whose gid   │
+│                                              is not 0 this buys ssh and takes the debugger       │
 │ --no-seat-identity                           do not mount the pod's podbench-home volume, which  │
 │                                              is otherwise mounted by convention when the pod     │
 │                                              declares it and keeps everything the seat writes    │
 │                                              off the workload's ephemeral-storage budget. The    │
 │                                              podbench-identity volume is never mounted by        │
 │                                              attach: it needs a subPath per file, which an       │
-│                                              ephemeral container may not have - use              │
-│                                              --seat-gid-root for the seat's /etc/passwd entry    │
+│                                              ephemeral container may not have - a live-pod seat  │
+│                                              registers its own NSS record instead, and needs no  │
+│                                              volume for it                                       │
 │ --no-probe                                   skip capreport; the report then says nothing was    │
 │                                              measured                                            │
+│ --pull                      POLICY           imagePullPolicy for the seat: IfNotPresent          │
+│                                              (default), Always or Never. Use Always when         │
+│                                              iterating on a tag that moves - `main`, or a branch │
+│                                              image - since a node that already has a copy will   │
+│                                              otherwise serve it. It cannot be the default:       │
+│                                              Always is the one policy that needs a registry, so  │
+│                                              it breaks an image side-loaded with `kind load` or  │
+│                                              `ctr import`                                        │
+│                                              [default: IfNotPresent]                             │
 │ --resize                    MEMORY           raise the target's memory in place first, as LIMIT  │
 │                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
 │                                              is raised too where a LimitRange bounds             │
@@ -411,32 +426,42 @@ Notes:
   at all. Mounting the volume whole is not an alternative either; a directory
   mount replaces the path, and over `/etc` it would take `nsswitch.conf` with it
   — the very lookup the identity exists to satisfy.
-  * **On a live pod, `--seat-gid-root` is the route to the same identity.** The
-    debug image makes `/etc/passwd` group-writable (OpenShift's convention) and
-    the agent appends a record for whatever uid the seat turned out to run as,
-    which needs `runAsGroup: 0` and nothing else. Verified against a
-    PSA-`restricted` pod: `attach --no-seat-identity --seat-gid-root` landed the
-    degraded rung and ssh logged in as `uid=1000(podbench)`.
+  * **On a live pod the seat writes its own record, and needs no volume and no
+    flag to.** The image installs `libnss-extrausers`, points `nsswitch.conf`'s
+    `passwd` line at it and ships `/var/lib/extrausers/passwd` world-writable, so
+    the agent appends a record for the uid *and gid* the seat turned out to run
+    as. That is the whole mechanism: no capability, no `runAsGroup`, nothing in
+    the workload's manifest. The exception is a seat under that database's
+    compiled-in floors — it ignores a record whose uid or gid is below 500, gid
+    100 excepted — which falls back to `/etc/passwd` and so to
+    `--seat-gid-root`.
   * The volume is for a seat that is an **ordinary** container, which is what
     `podbench dev` authors — `subPath` is legal there and nothing is written at
     runtime. (The dev sidecar does not mount it yet; see the follow-up note in
     `Charts/podbench/values.yaml`.)
   * The capability report says so where it matters: when the pod declares the
     volume, the `ssh seat` line explains that it cannot be projected into an
-    ephemeral container and names `--seat-gid-root`. Where a seat *does* carry
-    the identity, the same line credits it.
+    ephemeral container and names the seat's own record as the route instead, so
+    that a pod somebody prepared for podbench does not read as one whose
+    preparation failed. Where a seat *does* carry the identity, the same line
+    credits it.
 * `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
   `pods/resize` `patch`. An attach that used neither prints one line offering
   them; one that used either prints what it cost — including that the raised
   limit is on the pod and not on its controller, so a rollout reverts it.
   Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
   limit where a `LimitRange` bounds the ratio between them.
-* `--seat-gid-root` is **the** way to an ssh-able seat on a live pod, not a
-  fallback from the identity volume: GID 0 lets the agent append its own
-  `/etc/passwd` record (the image makes the file group-writable for it), at the
-  cost of the target's own group. It is opt-in for that cost, not because a
-  cluster would refuse it — the restricted Pod Security Standard does not
-  constrain `runAsGroup`.
+* `--seat-gid-root` is a **fallback**, and one worth understanding before using.
+  GID 0 lets the agent append to the image's group-writable `/etc/passwd`, which
+  is what a seat had to do before `libnss-extrausers` shipped (issue #102) and
+  what it still does when that database will not serve it — an image whose NSS
+  does not consult it, or a uid or gid below its floor of 500. The cost is the
+  target's own group, and that group is not decoration: the kernel
+  compares the gid as well as the uid when a process without `CAP_SYS_PTRACE`
+  ptraces another, and a mismatch denies in both directions (measured, issue
+  #98). So against a target whose gid is not 0 — 36070 at Diamond — the flag buys
+  ssh and takes the debugger. Admission is not what makes it opt-in: the
+  restricted Pod Security Standard does not constrain `runAsGroup` at all.
 * **`--open`** takes the seat from "landed" to "bound breakpoint" in one
   command. It needs `code` on your PATH, and the local VS Code needs the
   **Remote - SSH** extension; both are checked at the point of use and named in
@@ -1284,12 +1309,16 @@ worth knowing by name:
 * **nss-identity** is a no-op when NSS already resolves the seat's uid — what a
   mounted `podbench-identity` achieves for an ordinary container, and it stays a
   no-op even though the projected `/etc/passwd` is read-only. In an ephemeral
-  seat, which cannot be given that file at all, it appends one instead, and that
-  needs GID 0 (`attach --seat-gid-root`).
+  seat, which cannot be given that file at all, it appends a record to
+  `/var/lib/extrausers/passwd` instead, which needs no particular gid — or to
+  `/etc/passwd`, for the seats that database will not serve. It is allowed to
+  fail: the agent records the reason and idles, because a container that exits
+  burns its name.
 
 `--print-login-user` is how the launcher decides whether an ssh stanza is worth
-writing: the name on stdout, or exit 1 with the mechanism and the way out on
-stderr. It is a pure read and ensures nothing, so it reports the state sshd will
+writing: the name on stdout, or exit 1 with the mechanism and, on stderr, either
+the way out or the `kubectl logs` command that shows why the registration step
+failed. It is a pure read and ensures nothing, so it reports the state sshd will
 actually find.
 
 `--self-check` includes the fd-2 tripwire — a `kubectl exec` round trip with a

@@ -107,10 +107,10 @@ hotfixVenv:
 # * `podbench attach` authors an *ephemeral* container, where subPath is
 #   forbidden outright — the API server refuses the whole request with
 #   `Forbidden: cannot be set for an Ephemeral Container`. A live-pod seat
-#   therefore gets its identity the other way: `attach --new --seat-gid-root`
-#   runs it with runAsGroup: 0 and the agent appends its own record to the
-#   image's group-writable /etc/passwd. Declaring the volume does not help an
-#   attach, and podbench will not mount it into one.
+#   therefore writes its own record instead, at start-up, into an NSS database
+#   the debug image ships for the purpose — no flag, and nothing asked of this
+#   chart (issue #102). Declaring the volume does not help an attach, and
+#   podbench will not mount it into one.
 #
 # This chart emits the ConfigMap. It cannot put it into anybody's pod — the
 # application's own chart must declare the volume, the same cooperation

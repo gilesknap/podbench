@@ -28,34 +28,92 @@ UNKNOWN_UID = 4242
 """A uid the fake NSS database has no record of — the shape of the degraded
 rung, where the seat runs as a target uid no image could have an account for."""
 
+REAL_SEAT_NSS_PATH = agent.SEAT_NSS_PATH
+"""The database the *image* ships, captured before :class:`FakePasswd` repoints
+the constant at a temporary file. :data:`podbench.agent.NSS_WAY_OUT` is built at
+import time and quotes this literal, so a test about that text has to compare
+against the real value rather than the patched one."""
+
+DIAMOND_UID = 36070
+"""The uid *and gid* of ``bl01c-di-dcam-04-0``, the workload issue #102 was
+found on. Its gid is what mattered: it is not 0, so the seat that carries it
+cannot write ``/etc/passwd``, and it is the target's, so it cannot be swapped
+for 0 without breaking the credential match ptrace makes."""
+
 
 class FakePasswd:
-    """A stand-in for the NSS ``files`` database: the file *and* ``getpwuid``.
+    """A stand-in for the NSS passwd sources: both files *and* ``getpwuid``.
 
-    Both halves are faked because a test that asked the real platform would
+    Every half is faked because a test that asked the real platform would
     pass or fail on whichever uid the suite happens to run as, and the bug under
     test is exactly "this uid has no entry". Seeded with a record for the
     running uid, so the default state of every test is "identity already
     resolves" and a test that wants the broken case asks for an unknown uid
     explicitly.
+
+    Two files, because the image consults two: ``nsswitch.conf``'s ``passwd``
+    line is ``files extrausers``, so ``getpwuid`` answers from ``/etc/passwd``
+    and then from :data:`podbench.agent.SEAT_NSS_PATH`, and only the second is
+    writable by a seat whose gid is not 0 (issue #102). ``extrausers=False``
+    models an image built before that database existed, where the fallback puts
+    the record back in ``/etc/passwd``; both paths are patched, so nothing here
+    depends on whether the machine running pytest happens to have
+    ``/var/lib/extrausers/passwd``.
+
+    The second file is **not** a second ``files``, and modelling it as one is
+    what let the first version of this change ship a database that took records
+    it would never serve: libnss-extrausers has compiled-in floors and drops any
+    record whose uid or gid is below them, silently and for every lookup. So
+    :meth:`_records` applies them to ``nss_path`` and not to ``path``, which is
+    the difference the fake exists to hold.
     """
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(
+        self, directory: Path, *, extrausers: bool = True, seeded: bool = True
+    ) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        self.path = directory / "etc-passwd"
+        self.nss_path = directory / "extrausers-passwd"
         # The home field is not decoration: the agent writes VS Code's machine
         # settings into the home the *passwd record* names, so a real one here
         # would put a unit test's writes in the developer's own ~.
-        self.home = path.parent / "seat-home"
-        path.write_text(
+        self.home = directory / "seat-home"
+        self.path.write_text(
             f"someone:x:{os.geteuid()}:{os.getegid()}::{self.home}:/bin/sh\n"
+            if seeded
+            else ""
         )
+        if extrausers:
+            self.enable_extrausers()
+
+    def enable_extrausers(self) -> None:
+        """Create the database the image ships, at the mode the image gives it.
+
+        0666 is the point of it: the seat that appends its own record runs as the
+        target's uid *and* gid, so any mode that asked for an owner or a group
+        would be the ``/etc/passwd`` problem again.
+        """
+        self.nss_path.write_text("")
+        self.nss_path.chmod(0o666)
+
+    @staticmethod
+    def _parse(path: Path) -> list[list[str]]:
+        if not path.is_file():
+            return []
+        return [
+            line.split(":") for line in path.read_text().splitlines() if line.strip()
+        ]
 
     def _records(self) -> list[list[str]]:
-        return [
-            line.split(":")
-            for line in self.path.read_text().splitlines()
-            if line.strip()
-        ]
+        # In nsswitch order: files first, then extrausers, so a name present in
+        # both resolves the way the image's getpwnam would resolve it.
+        served: list[list[str]] = []
+        for fields in self._parse(self.nss_path):
+            if len(fields) > 3 and agent.extrausers_serves(
+                int(fields[2]), int(fields[3])
+            ):
+                served.append(fields)
+        return self._parse(self.path) + served
 
     def name_for(self, uid: int | None = None) -> str | None:
         wanted = os.geteuid() if uid is None else uid
@@ -79,6 +137,10 @@ class FakePasswd:
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(agent, "PASSWD_PATH", str(self.path))
+        # Both, or the suite's answer would depend on the machine: registration
+        # prefers SEAT_NSS_PATH whenever that file exists and is writable, and in
+        # the podbench image itself it does.
+        monkeypatch.setattr(agent, "SEAT_NSS_PATH", str(self.nss_path))
         monkeypatch.setattr(agent, "login_name", self.name_for)
         monkeypatch.setattr(agent, "_uid_named", self.uid_for)
         monkeypatch.setattr(agent, "_home_for_uid", self.home_for)
@@ -100,11 +162,33 @@ def make_unwritable(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setattr(agent.os, "access", denied)
 
 
+def deny_writes_to(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Model "this one file is not writable", leaving the others alone.
+
+    :func:`make_unwritable` denies every ``os.access`` call, which cannot express
+    the shape issue #102 is about: a seat carrying the target's gid can write
+    ``extrausers`` and *not* ``/etc/passwd``, and a test that denied both would
+    pass whichever file the agent chose. The mode is set for the same reason
+    :func:`make_unwritable` does not rely on it — the suite may run as root,
+    whose writes ignore modes (CAP_DAC_OVERRIDE) — so the real ``os.access``
+    still answers for every path but this one.
+    """
+    if path.exists():
+        path.chmod(0o444)
+    real_access = os.access
+    denied = str(path)
+
+    def access(path: str | os.PathLike[str], mode: int) -> bool:
+        return False if str(path) == denied else real_access(path, mode)
+
+    monkeypatch.setattr(agent.os, "access", access)
+
+
 @pytest.fixture(autouse=True)
 def passwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakePasswd:
-    """Autouse: the agent registers itself in ``/etc/passwd``, and a unit test
-    must never write to the real one."""
-    fake = FakePasswd(tmp_path / "etc-passwd")
+    """Autouse: the agent registers itself in a passwd database, and a unit test
+    must never write to one of the machine's own."""
+    fake = FakePasswd(tmp_path)
     fake.install(monkeypatch)
     return fake
 
@@ -190,7 +274,10 @@ def test_ensure_all_is_idempotent(tmp_path: Path, env: dict[str, str]) -> None:
 
     first = agent.ensure_all(layout, env=env, runner=runner)
     assert first.failures == ()
-    assert len(first.changes) == 6
+    # home-dir, privsep-dir, nss-db-mode, host-key, authorized-keys,
+    # sshd-config, vscode-settings. nss-identity is not among them: the fake
+    # database already has a record for the uid the suite runs as.
+    assert len(first.changes) == 7
     assert first.changes[0] == f"prepared {layout.home}"
     before = {
         path: Path(path).read_text()
@@ -289,23 +376,182 @@ def test_a_uid_with_no_nss_entry_registers_one(
 ) -> None:
     """The degraded rung's uid comes from the target, so no image can pre-bake it."""
     layout = make_layout(tmp_path, root=False)
-    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=0) is True
+    gid = UNKNOWN_UID
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=gid) is True
 
     assert passwd.name_for(UNKNOWN_UID) == SEAT_USER
-    entry = passwd.path.read_text().splitlines()[-1]
-    assert entry == f"{SEAT_USER}:x:{UNKNOWN_UID}:0:{SEAT_USER}:{layout.home}:/bin/bash"
+    entry = passwd.nss_path.read_text().splitlines()[-1]
+    expected = f"{SEAT_USER}:x:{UNKNOWN_UID}:{gid}:{SEAT_USER}:{layout.home}:/bin/bash"
+    assert entry == expected
     # Idempotent like every other ensure step: a second attach adds nothing.
-    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=0) is False
-    assert len(passwd.path.read_text().splitlines()) == 2
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=gid) is False
+    assert len(passwd.nss_path.read_text().splitlines()) == 1
 
 
-def test_registration_is_skipped_with_a_reason_when_passwd_is_read_only(
+def test_a_seat_the_extrausers_floors_reject_takes_etc_passwd_instead(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """The blocker a prototype of this change shipped, as a test.
+
+    libnss-extrausers has floors compiled into it — ``MINUID 500``,
+    ``MINGID 500``, gid 100 exempted — and ignores a record below them for
+    ``getpwnam`` as well as ``getpwuid``. A seat picked by the file's mode alone
+    would write ``podbench:x:1000:0:…`` into a database that will never answer
+    for it, get "NSS still does not resolve" and land with no ssh, where before
+    #102 the same seat appended to ``/etc/passwd`` and logged in.
+
+    gid 0 is the case that matters, not a curiosity. A target that sets
+    ``runAsUser`` and no ``runAsGroup`` — the default shape of a hardened
+    workload — gives :func:`podbench.spec.target_uid_gid` a gid of ``None``, so
+    the seat pins no group and runs with the image's gid 0; and that is also
+    exactly what ``--seat-gid-root`` asks for. Both can write ``/etc/passwd``,
+    which has no floor.
+    """
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=1000, gid=0) is True
+
+    assert passwd.path.read_text().splitlines()[-1].startswith(f"{SEAT_USER}:x:1000:0:")
+    assert passwd.nss_path.read_text() == "", "the floors leave the database alone"
+    assert passwd.name_for(1000) == SEAT_USER
+
+    # A uid under the floor is rejected too, whatever its gid, because the
+    # lookup short-circuits before the file is opened.
+    assert agent.extrausers_serves(472, 472) is False
+    assert agent.extrausers_serves(1000, 100) is True, "gid 100 is `users`"
+
+
+def test_a_seat_carrying_the_targets_gid_registers_its_own_record(
     tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The normal degraded rung: uid from the target, gid from the target too.
+    """Issue #102, as a test, and the reason this mechanism exists.
 
-    ``/etc/passwd`` is then unwritable, and the honest answer is to name the
-    mechanism and the way out rather than to invent an identity.
+    ``bl01c-di-dcam-04-0`` at Diamond runs as uid 36070 / gid 36070, and the
+    degraded rung carries *both* — the gid deliberately, because ptrace compares
+    it as well as the uid. ``/etc/passwd`` in the image is writable by GID 0 and
+    nothing else, so the append this seat needs went to a file it had no write
+    permission on, ``ssh-keygen`` died with "No user exists for uid 36070", and
+    the seat landed with no ssh at all. The documented way out
+    (``--seat-gid-root``) pins ``runAsGroup: 0`` and so pays for ssh with the
+    debugger.
+
+    So ``/etc/passwd`` is denied here on purpose: this test fails the moment
+    registration goes back to a file only GID 0 can write.
+    """
+    deny_writes_to(monkeypatch, passwd.path)
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=DIAMOND_UID, gid=DIAMOND_UID) is True
+
+    assert passwd.name_for(DIAMOND_UID) == SEAT_USER
+    entry = passwd.nss_path.read_text().splitlines()[-1]
+    assert entry.split(":")[3] == str(DIAMOND_UID), "the target's gid is kept"
+    # …and the check reached over `kubectl exec` seconds later agrees, because it
+    # re-derives the answer from NSS rather than remembering this call.
+    check = agent.nss_identity_check(uid=DIAMOND_UID, gid=DIAMOND_UID)
+    assert check.ok
+    assert SEAT_USER in check.detail
+
+
+def test_the_record_goes_to_extrausers_and_etc_passwd_is_left_as_it_is(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """The file the seat writes is not the file sshd's ``files`` source reads.
+
+    ``/etc/passwd`` staying byte-for-byte as the image built it is half the
+    argument that this is not an escalation: the seat adds a record to a database
+    of its own, and the accounts the image ships keep their modes and their
+    contents. It is also what keeps a ``podbench dev`` sidecar working, which
+    gets its identity *projected* over ``/etc/passwd`` and would find a
+    self-registered record there shadowed by the projection.
+    """
+    before = passwd.path.read_bytes()
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID) is True
+
+    assert passwd.nss_path.read_text() == agent.passwd_line(
+        uid=UNKNOWN_UID, gid=UNKNOWN_UID, home=layout.home
+    )
+    assert passwd.path.read_bytes() == before, "/etc/passwd was not touched"
+
+
+def test_a_reconnect_leaves_the_record_a_previous_attach_wrote(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """An ephemeral container cannot be restarted, so re-running the agent is
+    the normal reconnection path — and the seat's database is a file that only
+    ever grows.
+
+    The record here was written by an earlier attach rather than by this test's
+    first call, which is what makes the early return the thing under test: NSS
+    resolves the uid from ``extrausers``, so registration answers "nothing to
+    do" without reading the file at all.
+    """
+    with passwd.nss_path.open("a") as handle:
+        handle.write(agent.passwd_line(uid=UNKNOWN_UID, gid=UNKNOWN_UID, home="/tmp"))
+    before = passwd.nss_path.read_bytes()
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID) is False
+    assert passwd.nss_path.read_bytes() == before, "a second attach appends nothing"
+
+
+def test_registration_falls_back_to_etc_passwd_without_an_extrausers_database(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """An image built before #102, where the GID 0 route is the only one there is.
+
+    The launcher will happily attach a seat from an older tag, and the honest
+    thing for that seat to do is take the route its image has rather than refuse
+    over the absence of a file the reader has never heard of. So the append goes
+    back to ``/etc/passwd``.
+
+    The gid here clears ``extrausers``' floors on purpose, so that the file's
+    absence is the only reason the fallback was taken — with gid 0 the test would
+    have passed whether the absence was noticed or not.
+    """
+    passwd.nss_path.unlink()
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID) is True
+
+    assert passwd.path.read_text().splitlines()[-1].startswith(f"{SEAT_USER}:x:")
+    assert not passwd.nss_path.exists(), "the fallback creates no database"
+
+
+def test_an_unwritable_extrausers_database_does_not_mask_the_etc_passwd_route(
+    tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existence is not enough: the file has to be writable to be chosen.
+
+    An image that created the database 0644 — or one where a read-only mount
+    landed on it — would otherwise turn a seat that could still have written
+    ``/etc/passwd`` into a refusal, and the refusal would name a file whose mode
+    the user cannot change from inside the seat.
+
+    The credentials here clear ``extrausers``' floors, so the mode is the only
+    thing that can have sent the append elsewhere.
+    """
+    deny_writes_to(monkeypatch, passwd.nss_path)
+    layout = make_layout(tmp_path, root=False)
+
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID) is True
+
+    assert passwd.path.read_text().splitlines()[-1].startswith(f"{SEAT_USER}:x:")
+    assert passwd.nss_path.read_text() == "", "the unwritable database is left alone"
+
+
+def test_registration_is_skipped_with_a_reason_when_neither_database_is_writable(
+    tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seat that still has no way out: an old image *and* a non-zero gid.
+
+    With ``extrausers`` unwritable the append target is ``/etc/passwd``, and with
+    the target's gid the seat cannot write that either. The honest answer is to
+    name the mechanism and the way out rather than to invent an identity — and to
+    name the file that was *actually* tried, since a reader asked to check a
+    mode has to be told which mode.
     """
     make_unwritable(monkeypatch, passwd.path)
     layout = make_layout(tmp_path, root=False)
@@ -314,9 +560,160 @@ def test_registration_is_skipped_with_a_reason_when_passwd_is_read_only(
 
     message = str(raised.value)
     assert "not writable" in message
+    assert f"{passwd.path} is not writable" in message, "the path actually tried"
+    assert str(passwd.nss_path) not in message, "not the one it fell back from"
     assert "--seat-gid-root" in message, "the way out has to be in the message"
     assert "kubectl exec" in message
     assert passwd.name_for(UNKNOWN_UID) is None
+
+
+def test_a_database_nsswitch_does_not_consult_says_so_and_names_it(
+    tmp_path: Path, passwd: FakePasswd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure a replaced ``nsswitch.conf`` produces, which looks like nothing.
+
+    The database is there and writable, the append succeeds, and ``getpwuid``
+    still answers nothing — the ``passwd`` line does not name ``extrausers``,
+    because an image was hand-built or a volume landed on ``/etc``. Both attempts
+    have to name the file they wrote, since the file's *presence* and the missing
+    nsswitch line are the diagnosis together and either alone reads as a podbench
+    bug. And the second attempt must refuse rather than append again: an
+    ephemeral container is re-entered, not restarted, so a database that grows a
+    copy per reconnect is how this ends up unreadable.
+    """
+    layout = make_layout(tmp_path, root=False)
+
+    # NSS is blind to the file in *both* directions, which is what "nsswitch does
+    # not consult it" means: neither getpwuid nor the getpwnam that guards against
+    # shadowing a name can see what is in there.
+    def unresolvable(uid: int | None = None) -> str | None:
+        return None
+
+    def unnamed(_user: str) -> int | None:
+        return None
+
+    monkeypatch.setattr(agent, "login_name", unresolvable)
+    monkeypatch.setattr(agent, "_uid_named", unnamed)
+
+    with pytest.raises(RuntimeError) as first:
+        agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID)
+    assert f"to {passwd.nss_path} and NSS still does not resolve" in str(first.value)
+
+    with pytest.raises(RuntimeError) as second:
+        agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID)
+    message = str(second.value)
+    assert f"does not appear to answer passwd lookups from {passwd.nss_path}" in message
+    # And it does not pin the blame on nsswitch.conf, which is one of two
+    # possible causes and was the wrong one for a seat under the extrausers
+    # floors: that reader was sent to inspect a line that was correct.
+    assert "nsswitch.conf does not" not in message
+    assert len(passwd.nss_path.read_text().splitlines()) == 1, "no second copy"
+
+
+def test_the_check_on_a_writable_database_blames_the_step_not_the_gid(
+    passwd: FakePasswd,
+) -> None:
+    """What ``--self-check`` reports for the #102 seat once the file is writable.
+
+    Before this, a uid with no entry and a non-zero gid meant "``/etc/passwd`` is
+    not writable by uid 36070 / gid 36070" and a flag to re-attach with. Now the
+    database *is* writable at that gid, so an unresolved uid can only be the
+    registration step having failed for some other reason: the check says so and
+    sends the reader to the start-up output, because telling them to re-attach
+    with ``--seat-gid-root`` would cost them the debugger for nothing.
+
+    Which makes this the branch the launcher relays most often, and it is the one
+    branch that cannot state the reason — that was raised inside the seat minutes
+    earlier. So it has to name the command that shows it. Nothing else in the
+    launcher relays the agent's stderr, and ``--print-login-user`` is documented
+    as giving the way out, so "look in the start-up output" on its own is a
+    round trip spent working out how.
+    """
+    check = agent.nss_identity_check(uid=DIAMOND_UID, gid=DIAMOND_UID)
+
+    assert not check.ok
+    assert check.name == "nss-identity"
+    assert f"{passwd.nss_path} is writable" in check.detail
+    assert "kubectl logs" in check.detail, "the reason is in a log this names"
+    assert "--seat-gid-root" not in check.detail
+
+
+def test_the_start_up_step_names_the_database_the_record_went_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
+) -> None:
+    """The one line the user sees about registration, on the seat's stdout.
+
+    ``ensure_all`` reports what it changed, and this step's line has to name the
+    file the record went to rather than a hardcoded one: the two routes fail in
+    different places, and a start-up log naming ``/etc/passwd`` for a record that
+    landed in ``extrausers`` would send the next reader to check the mode of a
+    file that had nothing to do with it.
+
+    ``ensure_all`` takes the uid and gid from the platform, so they are faked
+    here rather than inherited from whoever ran pytest: the append target now
+    depends on them (``extrausers`` ignores records under uid or gid 500), and a
+    suite running as root would otherwise assert the fallback and a suite running
+    as 1000:1000 the database, on the same code.
+    """
+    monkeypatch.setattr(agent.os, "geteuid", lambda: DIAMOND_UID)
+    monkeypatch.setattr(agent.os, "getegid", lambda: DIAMOND_UID)
+    # Unseeded, or the running uid resolves already and the step is a no-op.
+    image = FakePasswd(tmp_path / "image", seeded=False)
+    image.install(monkeypatch)
+    layout = make_layout(tmp_path, root=False)
+
+    report = agent.ensure_all(layout, env=env, runner=FakeRunner())
+
+    assert report.ok
+    registered = [change for change in report.changes if "registered uid" in change]
+    assert registered == [
+        f"registered uid {DIAMOND_UID} as {SEAT_USER!r} in {image.nss_path}"
+    ]
+
+
+def test_a_root_seat_takes_the_world_writable_bit_off_its_own_database(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """Mode 0666 is safe for two different reasons, and one of them is enforced.
+
+    On the non-root rungs sshd runs as the seat's own uid, so a forged record
+    buys its author the uid it already had. On the ``full`` rung sshd *is* root
+    (``for_uid(0)`` returns ``run_as_root=True``) and the reason is different: a
+    root seat has no unprivileged principal to forge with, since every process in
+    it — the ``kubectl exec`` carrying ssh included — is already uid 0. That is a
+    property of the rung rather than something enforced, and the security page
+    used to describe a root sshd as unshipped work while ``Rung.FULL`` was
+    shipping one, so the agent closes the bit instead of resting on the argument.
+
+    A root seat has no use for the write bit: ``getpwuid(0)`` resolves from the
+    image's own ``/etc/passwd`` and registration returns early.
+    """
+    root = make_layout(tmp_path / "root")
+    assert agent.restrict_seat_nss_database(root) is True
+    assert passwd.nss_path.stat().st_mode & 0o777 == 0o644
+    # Idempotent: a reconnect re-runs every step against a container it cannot
+    # restart, and a second pass has nothing left to narrow.
+    assert agent.restrict_seat_nss_database(root) is False
+
+    # And a degraded seat keeps 0666, which is the mode it needs: it appends as
+    # the target's uid *and* gid, so an owner or a group would be no better than
+    # the /etc/passwd this route exists to avoid.
+    passwd.enable_extrausers()
+    assert agent.restrict_seat_nss_database(make_layout(tmp_path, root=False)) is False
+    assert passwd.nss_path.stat().st_mode & 0o777 == 0o666
+
+
+def test_a_root_seat_on_an_image_without_the_database_is_not_a_failure(
+    tmp_path: Path, passwd: FakePasswd
+) -> None:
+    """Nothing to narrow is success, not a step that could not do its job.
+
+    An image built before #102 has no such file, and a root seat there is exactly
+    as safe as one on a current image. Recording a failure would put a line under
+    a seat whose ssh is working and whose database does not exist.
+    """
+    passwd.nss_path.unlink()
+    assert agent.restrict_seat_nss_database(make_layout(tmp_path / "root")) is False
 
 
 def test_a_mounted_identity_is_used_as_it_stands_and_is_not_a_failure(
@@ -339,6 +736,10 @@ def test_a_mounted_identity_is_used_as_it_stands_and_is_not_a_failure(
 
     assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=UNKNOWN_UID) is False
     assert len(passwd.path.read_text().splitlines()) == 2, "nothing was appended"
+    # Not into the seat's own database either: a projected record is the identity
+    # already, and a second one for the same name would be the record sshd never
+    # reaches (files is consulted first).
+    assert passwd.nss_path.read_text() == ""
 
     check = agent.nss_identity_check(uid=UNKNOWN_UID, gid=UNKNOWN_UID)
     assert check.ok
@@ -353,9 +754,11 @@ def test_the_way_out_is_the_one_the_container_reading_it_can_take() -> None:
     It is read from a seat whose ssh has just failed, and on a live pod that
     seat is an *ephemeral* container: it cannot be given a passwd file at all,
     because projecting one takes a ``subPath`` per mount and the API server
-    forbids ``subPath`` there. So the GID 0 route has to lead, and the identity
-    volume has to be named as what it is — the identity a ``podbench dev``
-    sidecar gets — rather than as something to deploy in the hope it fixes this.
+    forbids ``subPath`` there. So the routes are ordered by what they cost the
+    reader — the seat's own record first, since it costs nothing and is what the
+    current image does — and the identity volume has to be named as what it is,
+    the identity a ``podbench dev`` sidecar gets, rather than as something to
+    deploy in the hope it fixes this.
     """
     text = agent.NSS_WAY_OUT
     assert "--seat-gid-root" in text
@@ -366,6 +769,44 @@ def test_the_way_out_is_the_one_the_container_reading_it_can_take() -> None:
     # over /etc/passwd, which is the one thing that container may not do.
     assert "which the seat mounts read-only" not in text
     assert text.index("--seat-gid-root") < text.index(SEAT_IDENTITY_VOLUME)
+    # Issue #102 sent one seat round this loop twice, because the flag was
+    # offered as *the* way out with none of what it costs: the free route has to
+    # come first, and the flag cannot be named without its price beside it.
+    assert REAL_SEAT_NSS_PATH in text
+    assert text.index(REAL_SEAT_NSS_PATH) < text.index("--seat-gid-root")
+    assert "takes the debugger" in text, "the price of gid 0, where it is offered"
+
+
+def test_the_image_provides_the_database_this_module_appends_to() -> None:
+    """The one half of issue #102 that no other test in this file can see.
+
+    Every test above patches :data:`podbench.agent.SEAT_NSS_PATH` at a temporary
+    file, because a unit test must not write to the machine's own — which means
+    the suite stays green if the constant and the image drift apart. The failure
+    that drift produces is the #102 bug exactly: the database is not there,
+    :func:`podbench.agent._nss_append_target` falls back to ``/etc/passwd``, the
+    seat carrying the target's gid cannot write it, and ssh is gone. No unit test
+    would notice and the e2e suite needs a cluster, so the contract is checked
+    against the Dockerfile as text.
+
+    Three things have to hold, and the third is a trap a prototype fell into: the
+    package has to be installed, ``nsswitch.conf``'s ``passwd`` line has to name
+    ``extrausers`` (a database NSS does not consult is a file the agent writes and
+    nothing reads), and ``chmod g=u /etc/passwd`` has to *stay* — a ``podbench
+    dev`` sidecar's projection and ``--seat-gid-root`` both still rest on it, so
+    this change adds a route and removes none.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+
+    assert "libnss-extrausers" in dockerfile, "the NSS source has to be installed"
+    assert REAL_SEAT_NSS_PATH in dockerfile, "and the image has to create this path"
+    # `files` first, and not only because NSS needs some order: a `podbench dev`
+    # sidecar's projected /etc/passwd has to keep winning over anything a seat
+    # appended to its own database under the same name.
+    assert re.search(r"passwd:\s+files\s+extrausers", dockerfile) is not None, (
+        "nsswitch's passwd line must consult extrausers, after files"
+    )
+    assert "chmod g=u /etc/passwd" in dockerfile, "the GID 0 fallback is not retired"
 
 
 @pytest.mark.parametrize("verb", ["capreport", "pids", "dbg"])
@@ -395,12 +836,25 @@ def _occurrences(text: str, word: str) -> list[int]:
 def test_registration_refuses_to_shadow_an_existing_login_name(
     tmp_path: Path, passwd: FakePasswd
 ) -> None:
-    """sshd resolves the name the client offered, so the first record wins."""
+    """sshd resolves the name the client offered, so the first record wins.
+
+    The colliding record is in ``/etc/passwd`` and the append target is the
+    ``extrausers`` database, which is the realistic shape: a ``podbench dev``
+    sidecar whose projected ``/etc/passwd`` names ``podbench`` at a uid the
+    sidecar does not run as. So the message must not claim the collision is in
+    the file it was going to write — the reader cats it, finds it empty, and
+    stops believing the diagnostic.
+    """
     with passwd.path.open("a") as handle:
         handle.write(f"{SEAT_USER}:x:999:999::/nonexistent:/bin/sh\n")
     with pytest.raises(RuntimeError) as raised:
-        agent.ensure_passwd_entry(make_layout(tmp_path, root=False), uid=UNKNOWN_UID)
-    assert "already belongs to uid 999" in str(raised.value)
+        agent.ensure_passwd_entry(
+            make_layout(tmp_path, root=False), uid=UNKNOWN_UID, gid=UNKNOWN_UID
+        )
+    message = str(raised.value)
+    assert "already resolves to uid 999" in message
+    assert f"uid 999 in {passwd.nss_path}" not in message
+    assert "getent passwd" in message, "how to find which source has it"
 
 
 def test_an_empty_home_volume_gets_the_directories_the_layout_needs(
