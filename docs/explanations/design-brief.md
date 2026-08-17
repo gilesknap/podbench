@@ -1,11 +1,32 @@
-# Podbench
+# The original design brief
+
+**This is the brief podbench was built from, kept as it was written.** It
+predates every line of code and the [Phase 0 gate report](spikes/phase0-report.md)
+that went on to test its assumptions against a real cluster. It is preserved as
+the record of intent — what the tool set out to be, and why — rather than as a
+description of what it does now.
+
+Two things follow from that, and both matter before you read on:
+
+* **Where this brief and the Phase 0 report disagree, the report wins.** Five of
+  the assumptions below were falsified by measurement; the report's section 3
+  lists each one and what replaced it.
+* **It is still the definition of done.** Each phase's acceptance criteria are
+  stated here and have not been rewritten, which is what makes the disagreements
+  worth recording rather than editing away.
+
+For what podbench actually does today, start with
+[Architecture](architecture.md), or [What is proven, and what is not](status.md)
+for the current state of the evidence.
+
+---
 
 A debug-container image for Kubernetes that puts your editor, gdb, and a Python inner loop *inside* the pod — connected over nothing but your kubeconfig.
 
 Working name — rename freely. This document is the handoff brief for implementation; the kickoff prompt is at the end.
 
 :::{note}
-Historical in one respect: the brief specifies a kubectl plugin, so it says `kubectl podbench <verb>` and lists a `kubectl-podbench` launcher. That plugin was built and then removed — a plugin has to be installed to be discovered, which is the opposite of the "install nothing" goal. The only spelling is `podbench <verb>`, canonically `uvx podbench <verb>`. See [ADR 0003](decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.md). Every acceptance criterion below still stands; only the command spelling changed.
+One correction the reader needs up front: the brief specifies a kubectl plugin, so it says `kubectl podbench <verb>` and lists a `kubectl-podbench` launcher. That plugin was built and then removed — a plugin has to be installed to be discovered, which is the opposite of the "install nothing" goal. The only spelling is `podbench <verb>`, canonically `uvx podbench <verb>`. See [ADR 0003](decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.md). Every acceptance criterion below still stands; only the command spelling changed.
 :::
 
 ## The idea

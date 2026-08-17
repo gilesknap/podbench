@@ -23,9 +23,9 @@ RBAC, in the namespace being debugged. That is the whole list:
 | `services` | `get`, `list`, `patch` | repoint a Service at the dev pod | `--take-traffic` / `--cutover` only |
 | `persistentvolumeclaims` | `get`, `list` | granted by the chart for the optional scratch workspace claim. Nothing in the launcher reads it yet — the dev pod's workspace is always an `emptyDir` | Iterate mode |
 | `pods/resize` | `patch` | raise a running workload's memory limit before attaching | `attach --resize` only |
-| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout | Patch mode |
-| `apps`: `deployments`, `statefulsets` | `patch` | write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Patch mode relies on, so they go on the template — and that same edit is what rolls the workload | Patch mode |
-| `pods` | `patch`, `delete` | annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back | Patch mode |
+| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout | Hotfix mode |
+| `apps`: `deployments`, `statefulsets` | `patch` | write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Hotfix mode relies on, so they go on the template — and that same edit is what rolls the workload | Hotfix mode |
+| `pods` | `patch`, `delete` | annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back | Hotfix mode |
 
 `podbench doctor` asks the cluster for these one `kubectl auth can-i` at a time,
 as your own kubeconfig, and reports them per feature — `attach OK`,
@@ -35,17 +35,17 @@ the chart to assert the two cannot drift. Without it an RBAC denial arrives
 mid-attach, after a container name has been burnt for the life of the pod.
 
 The chart splits these into `rbac.observe` (on by default), `rbac.iterate`,
-`rbac.resize` and `rbac.patch`, because they are genuinely different levels of
+`rbac.resize` and `rbac.hotfix`, because they are genuinely different levels of
 trust: reading and attaching to a pod you own is not the same as creating and
 deleting pods in a namespace, and neither is the same as changing a running
 workload's limits.
 
-`rbac.patch` is the one to hand out most sparingly, and the table row that says
+`rbac.hotfix` is the one to hand out most sparingly, and the table row that says
 `patch` on `deployments` is the reason. It is nominally an annotation write, but
 the annotation is on the pod template, so the same call rolls the workload — the
 mechanism `kubectl rollout restart` uses. It therefore *deploys code*, which is
 the most privileged thing podbench does anywhere. It also grants nothing on its
-own: Patch mode still reads pods and execs into the seat, so it is `rbac.observe`
+own: Hotfix mode still reads pods and execs into the seat, so it is `rbac.observe`
 plus the three rules above.
 
 Note what is **not** there. No cluster-scoped anything. No nodes, no secrets, no
@@ -65,7 +65,7 @@ podbench has no cluster-side component at all: it is a CLI and an image.
   key for the container itself. podbench issues no tokens and stores no secrets.
 * **No changes to the workloads being debugged.** Observe and Iterate mode work
   against any pod, from any chart, completely unmodified. Nothing is installed
-  into the application image and no chart has to be edited. (Patch mode is the
+  into the application image and no chart has to be edited. (Hotfix mode is the
   one licensed exception — it needs a claim mounted over the app's venv path,
   which only the application's own chart can do — and it is deliberately the
   last thing in the design for that reason.)

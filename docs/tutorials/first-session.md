@@ -8,7 +8,7 @@ delete it at the end.
 Budget about fifteen minutes, most of it waiting for image pulls.
 
 You need `uv` and `kubectl` on your machine, the one-time
-[ssh `Include` line](installation.md), and a cluster you are allowed to create
+[ssh `Include` line](setup.md), and a cluster you are allowed to create
 pods in. A local [kind](https://kind.sigs.k8s.io) cluster is ideal. The launcher
 itself is not installed — `uvx` fetches and runs it.
 
@@ -174,7 +174,7 @@ then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
 
 If you have not added the `Include` line yet, run `uvx podbench doctor --fix`
 now — it adds the line above any `Host *` block, which is where it has to be
-(see [Installation](installation.md)). Then:
+(see [Setup](setup.md)). Then:
 
 ```
 $ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn

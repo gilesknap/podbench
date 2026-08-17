@@ -56,7 +56,7 @@ rules:
     verbs: ["patch"]
   {{- end }}
   {{- if .Values.rbac.hotfix }}
-  # Patch mode builds on rbac.observe — it reads the pod to find the application
+  # Hotfix mode builds on rbac.observe — it reads the pod to find the application
   # container and its imageID, and reaches the claim's git checkout by exec'ing
   # into the seat — and adds the following.
   #
@@ -69,7 +69,7 @@ rules:
     resources: ["deployments", "statefulsets", "replicasets"]
     verbs: ["get"]
   # The provenance annotations go on the workload's pod template, because pod
-  # annotations do not survive the reschedule Patch mode relies on. That one
+  # annotations do not survive the reschedule Hotfix mode relies on. That one
   # write is therefore also what rolls the workload — the mechanism `kubectl
   # rollout restart` uses — so this verb deploys code, and it is the most
   # privileged thing podbench asks for anywhere.

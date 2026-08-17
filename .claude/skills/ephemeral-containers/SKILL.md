@@ -52,9 +52,9 @@ recur.
 ## They may only mount volumes the pod already declares
 
 Pod volumes are immutable after creation, and an ephemeral container may not introduce
-one. So anything needing a volume — Patch mode's venv claim, the seat's home directory —
+one. So anything needing a volume — Hotfix mode's venv claim, the seat's home directory —
 only works where the deployment cooperated at creation time. That is the whole reason
-Patch mode asks for a helm change, and `patch --print-values` emits the ask.
+Hotfix mode asks for a helm change, and `patch --print-values` emits the ask.
 
 `launcher.resolve_mounts` refuses an undeclared volume with an explanation rather than
 letting the API server produce a confusing one.
