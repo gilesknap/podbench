@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Spikes &#8212; podbench 0.1.0b6.dev20+gaf2241fbd documentation</title>
+    <title>Spikes &#8212; podbench 0.2.0b2.dev8+g445c35d54 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=32c447e8"></script>
+    <script src="../_static/documentation_options.js?v=e2a08039"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -434,7 +434,7 @@
 <li class="toctree-l2"><a class="reference internal" href="decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
 </ul>
 </details></li>
-<li class="toctree-l1"><a class="reference internal" href="design-brief.html">Podbench</a></li>
+<li class="toctree-l1"><a class="reference internal" href="design-brief.html">The original design brief</a></li>
 <li class="toctree-l1"><a class="reference internal" href="security.html">Security model</a></li>
 <li class="toctree-l1 current active has-children"><a class="current reference internal" href="#">Spikes</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="spikes/phase0-report.html">Podbench — Phase 0 gate report</a></li>
@@ -446,6 +446,7 @@
 <li class="toctree-l2"><a class="reference internal" href="spikes/s6.html">S6 — Suspending an Argo-managed workload: server-side apply field ownership</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="status.html">What is proven, and what is not</a></li>
 </ul>
 </div>
 </nav></div>
@@ -605,7 +606,7 @@ up whether or not the answer was the hoped-for one.</p>
 <p>S6 is a record of a route <em>not</em> taken. The mechanism works, but only against an
 Application that uses server-side apply, and against the far commoner client-side case it
 silently hands podbench ownership of the whole workload spec. The requirement it was
-chasing dissolved instead: Patch mode already gives a singleton an inner loop without
+chasing dissolved instead: Hotfix mode already gives a singleton an inner loop without
 cloning it.</p>
 </section>
 </section>

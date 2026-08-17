@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.1.0b6.dev20+gaf2241fbd documentation</title>
+    <title>Command-line reference &#8212; podbench 0.2.0b2.dev8+g445c35d54 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=32c447e8"></script>
+    <script src="../_static/documentation_options.js?v=e2a08039"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -513,7 +513,7 @@ in both places, rather than a launcher’s guess and a helper’s separate guess
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
 │ dev            create or delete the dev pod                                                      │
-│ patch          durable in-place fixes on a claim-backed venv                                     │
+│ hotfix         durable in-place fixes on a claim-backed venv                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
 │ agent          prepare the container for ssh and idle as its PID 1                               │
@@ -535,7 +535,7 @@ in both places, rather than a launcher’s guess and a helper’s separate guess
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Your machine</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">doctor</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">doctor</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Inside the debug container</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
@@ -565,7 +565,7 @@ choice, and all three run the same code:</p>
 </tbody>
 </table>
 </div>
-<p>See <a class="reference internal" href="../tutorials/installation.html"><span class="std std-doc">Installation</span></a> for the details, including how
+<p>See <a class="reference internal" href="../tutorials/setup.html"><span class="std std-doc">Setup</span></a> for the details, including how
 to run it before the first PyPI release.</p>
 <p>The in-pod verbs are spelled the same way from a terminal in the seat:
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, and so on. There are no shorter aliases on
@@ -584,10 +584,10 @@ and so does <code class="docutils literal notranslate"><span class="pre">doctor<
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">dev</span></code> takes <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>, <code class="docutils literal notranslate"><span class="pre">--context</span></code> and — because it writes an ssh
 config too — <code class="docutils literal notranslate"><span class="pre">--identity</span></code>, <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> and <code class="docutils literal notranslate"><span class="pre">--host-alias</span></code>. It does not take
-<code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>: it shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. Under <code class="docutils literal notranslate"><span class="pre">patch</span></code> the same three —
+<code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>: it shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. Under <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> the same three —
 <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>, <code class="docutils literal notranslate"><span class="pre">--context</span></code> and <code class="docutils literal notranslate"><span class="pre">--kubectl</span></code> — sit on each <strong>sub-verb</strong>, not
-on <code class="docutils literal notranslate"><span class="pre">patch</span></code> itself, so it is <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">status</span> <span class="pre">-n</span> <span class="pre">demo</span></code> and never
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">-n</span> <span class="pre">demo</span> <span class="pre">status</span></code>. <code class="docutils literal notranslate"><span class="pre">patch</span></code> writes no ssh config, so nothing under
+on <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> itself, so it is <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span> <span class="pre">-n</span> <span class="pre">demo</span></code> and never
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">-n</span> <span class="pre">demo</span> <span class="pre">status</span></code>. <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> writes no ssh config, so nothing under
 it takes <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code>.</p>
 <p>podbench shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
@@ -702,7 +702,7 @@ RBAC in demo (kubectl auth can-i, as your kubeconfig&#39;s user)
           grant it with the chart&#39;s rbac.iterate=true, or the equivalent Role
   [warn]  resize         missing: patch pods/resize
           grant it with the chart&#39;s rbac.resize=true, or the equivalent Role
-  [ok]    patch          all 5 verbs allowed
+  [ok]    hotfix         all 5 verbs allowed
 ----------------------------------------------------------------------------
 VERDICT: 1 blocker before `podbench attach` can work (exit 1)
 BLOCKERS: ssh include
@@ -750,7 +750,7 @@ BLOCKERS: ssh include
 <td><p>any of its verbs is denied</p></td>
 <td><p>kubectl could not answer</p></td>
 </tr>
-<tr class="row-even"><td><p>RBAC <code class="docutils literal notranslate"><span class="pre">iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">resize</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<tr class="row-even"><td><p>RBAC <code class="docutils literal notranslate"><span class="pre">iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">resize</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></td>
 <td><p>—</p></td>
 <td><p>any of its verbs is denied, or kubectl could not answer</p></td>
 </tr>
@@ -822,11 +822,11 @@ has already won.</p></li>
 <h3><code class="docutils literal notranslate"><span class="pre">attach</span></code><a class="headerlink" href="#attach" title="Link to this heading">#</a></h3>
 <p>Land a debug seat in a <strong>live</strong> pod, walking the capability ladder, and print
 what that seat can actually do.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench attach [OPTIONS] [POD]
-
- add or reconnect a podbench container and print the report
-
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
+ Usage: podbench attach [OPTIONS] [POD]                                                             
+                                                                                                    
+ add or reconnect a podbench container and print the report                                         
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
 │                   on a single pod lists the namespace and asks                                   │
@@ -839,7 +839,7 @@ what that seat can actually do.</p>
 │ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
 │                                              seat, named by claim or by volume name. MOUNTPATH   │
 │                                              defaults to the application container&#39;s own, which  │
-│                                              Patch mode requires it to equal. Repeatable         │
+│                                              Hotfix mode requires it to equal. Repeatable        │
 │ --new                                        add a container even if one is running (its name is │
 │                                              permanent)                                          │
 │ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
@@ -857,8 +857,12 @@ what that seat can actually do.</p>
 │                                              --seat-gid-root for the seat&#39;s /etc/passwd entry    │
 │ --no-probe                                   skip capreport; the report then says nothing was    │
 │                                              measured                                            │
-│ --resize                    MEMORY           raise the target&#39;s memory limit in place first,     │
-│                                              e.g. 6Gi                                            │
+│ --resize                    MEMORY           raise the target&#39;s memory in place first, as LIMIT  │
+│                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
+│                                              is raised too where a LimitRange bounds             │
+│                                              limit/request                                       │
+│ --resize-cpu                CPU              raise the target&#39;s cpu in place first, as LIMIT or  │
+│                                              REQUEST:LIMIT, e.g. 4 or 500m:4                     │
 │ --identity                  KEY              ssh key to authorise in the seat and name in the    │
 │                                              generated stanza                                    │
 │                                              [default: ~/.ssh/id_ed25519]                        │
@@ -904,18 +908,18 @@ over <code class="docutils literal notranslate"><span class="pre">PODBENCH_IMAGE
 ephemeral container, whose name is then burnt for the pod’s lifetime.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> matters only for the degraded rung, which must match the
 target’s UID exactly and never defaults to root.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> is how a seat reaches a Patch-mode claim. An ephemeral container may
+<li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> is how a seat reaches a Hotfix-mode claim. An ephemeral container may
 mount the volumes its pod <strong>already declares</strong> and may not introduce one —
 <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name the pod does not
 carry is refused with that explanation rather than submitted. That immutability
-is the whole reason Patch mode asks for the chart’s cooperation at deploy time;
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">patch</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
+is the whole reason Hotfix mode asks for the chart’s cooperation at deploy time;
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
 seeding initContainer that put it there.</p>
 <ul class="simple">
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">MOUNTPATH</span></code> is optional and usually should be. Where the application
-container mounts that volume, its mountPath is copied, because Patch mode
+container mounts that volume, its mountPath is copied, because Hotfix mode
 only works when the claim resolves at the <em>same</em> path on both sides — the
 venv’s <code class="docutils literal notranslate"><span class="pre">bin/python</span></code> and the checkout’s editable install are absolute paths
 recorded on the volume. An explicit path that disagrees is honoured and
@@ -926,7 +930,7 @@ is submitted. An ephemeral container’s volumeMounts may not carry one — the
 API server answers <code class="docutils literal notranslate"><span class="pre">Forbidden:</span> <span class="pre">cannot</span> <span class="pre">be</span> <span class="pre">set</span> <span class="pre">for</span> <span class="pre">an</span> <span class="pre">Ephemeral</span> <span class="pre">Container</span></code> and
 rejects the whole request — and dropping it silently would give the seat the
 volume root where the application sees one directory inside it, so every
-path Patch mode recorded would resolve to the wrong thing. Deploy the claim
+path Hotfix mode recorded would resolve to the wrong thing. Deploy the claim
 mounted whole over the venv path, or use <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>, whose seat is an
 ordinary container.</p></li>
 <li><p>Mounts are fixed when a container is created, so <code class="docutils literal notranslate"><span class="pre">--mount</span></code> against a
@@ -974,9 +978,11 @@ ephemeral container and names <code class="docutils literal notranslate"><span c
 the identity, the same line credits it.</p></li>
 </ul>
 </li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is opt-in and only partly proven; it prints a warning either way —
-including that the raised limit is on the pod and not on its controller, so a
-rollout reverts it — and needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> are opt-in and only partly proven; they print a
+warning either way — including that the raised limit is on the pod and not on
+its controller, so a rollout reverts it — and need <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>.
+Both take <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> or <code class="docutils literal notranslate"><span class="pre">REQUEST:LIMIT</span></code>, and raise the request alongside the
+limit where a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> bounds the ratio between them.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is <strong>the</strong> way to an ssh-able seat on a live pod, not a
 fallback from the identity volume: GID 0 lets the agent append its own
 <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> record (the image makes the file group-writable for it), at the
@@ -1266,27 +1272,27 @@ still needs a readable public key, so that what it prints is what <code class="d
 actually create.</p></li>
 </ul>
 </section>
-<section id="patch">
-<h3><code class="docutils literal notranslate"><span class="pre">patch</span></code><a class="headerlink" href="#patch" title="Link to this heading">#</a></h3>
+<section id="hotfix">
+<h3><code class="docutils literal notranslate"><span class="pre">hotfix</span></code><a class="headerlink" href="#hotfix" title="Link to this heading">#</a></h3>
 <p>Durable in-place fixes: a venv on a ReadWriteOnce claim, every change a git
-commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a patched pod go unnoticed.</p>
+commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a hotfixed pod go unnoticed.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>Patch mode has never been run against a cluster. It is unit-tested only.</p>
+<p>Hotfix mode has never been run against a cluster. It is unit-tested only.</p>
 </div>
 <p>The seat must mount the claim at the application’s own mountPath, since that is
-how <code class="docutils literal notranslate"><span class="pre">patch</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Land it that
+how <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Land it that
 way with <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--mount</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">myapp</span><span class="o">-</span><span class="mi">0</span> <span class="o">--</span><span class="n">mount</span> <span class="n">myapp</span><span class="o">-</span><span class="n">venv</span> <span class="o">--</span><span class="n">new</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">patch</span></code> is run from a terminal inside the
+<p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is run from a terminal inside the
 seat, where the claim is already in this process’s own mount namespace.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench patch [OPTIONS] COMMAND [ARGS]...
+ Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
  Durable in-place fixes: a venv on a claim, every change a commit, and a status command that will
- not let a patched pod go unnoticed.
+ not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --print-values              emit the helm values an application&#39;s chart needs, and exit          │
@@ -1304,7 +1310,7 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
 │ init         verify the seeded claim, clone the source, editable-install                         │
 │ apply        commit the change on the claim and roll the workload                                │
-│ status       every patched pod in the namespace, and its drift                                   │
+│ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
@@ -1323,7 +1329,7 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 <td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest, annotate, roll the workload</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
-<td><p>every patched pod in the namespace, its drift, and what is wrong with it</p></td>
+<td><p>every hotfixed pod in the namespace, its drift, and what is wrong with it</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">consolidate</span> <span class="pre">--branch</span> <span class="pre">B</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
 <td><p>push the checkout as a branch and print the retirement checklist</p></td>
@@ -1344,13 +1350,13 @@ can only happen in an initContainer — which is what <code class="docutils lite
 <li><p>The editable install runs in the <strong>application</strong> container, not the seat: the
 venv is shared but its interpreter is not. <code class="docutils literal notranslate"><span class="pre">--no-install</span></code> skips it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> does not open a PR; it prints the <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> line.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired patches” is
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired hotfixes” is
 a testable shutdown assertion.</p></li>
 </ul>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench patch --print-values --app myapp --venv-path /opt/venv
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --venv-path /opt/venv
 </pre></div>
 </div>
-<p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">patchVenv</span></code> values for the podbench
+<p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">hotfixVenv</span></code> values for the podbench
 release, and the volume, volumeMount and seeding initContainer for the
 application’s own chart.</p>
 </section>
@@ -1514,12 +1520,12 @@ setup ordering or a path mapping, each of which fails <em>silently</em> when wro
 Every configuration that applies is emitted at once, each named for its flavour,
 so <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>’s list and VS Code’s own dropdown become the choice. Every
 flavour that does <em>not</em> apply gets a sentence naming the mechanism.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
- Usage: podbench debug-config [OPTIONS] [PID]
-
- Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,
- with the pid, the sysroot-prefixed program path and the mode&#39;s path mappings already filled in.
-
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
+ Usage: podbench debug-config [OPTIONS] [PID]                                                       
+                                                                                                    
+ Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,  
+ with the pid, the sysroot-prefixed program path and the mode&#39;s path mappings already filled in.    
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   [PID]      &lt;int&gt;  pid to attach to; discovered from the container id if omitted                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -1548,11 +1554,14 @@ flavour that does <em>not</em> apply gets a sentence naming the mechanism.</p>
 │ --no-debuginfod                                     do not enable debuginfod (it needs           │
 │                                                     ca-certificates and network)                 │
 │ --lldb                                              shorthand for --flavour lldb                 │
-│ --provision                                         install debugpy into the target with uv when │
-│                                                     it cannot import one. Mutates the workload:  │
-│                                                     ~15 MB of shared ephemeral storage, needs    │
-│                                                     egress from the pod, and no restart survives │
-│                                                     it                                           │
+│ --provision                                         make the target debuggable: install debugpy  │
+│                                                     with uv when it cannot import one, then      │
+│                                                     start the server inside it so the emitted    │
+│                                                     configuration has something to connect to.   │
+│                                                     Mutates the workload: ~15 MB of shared       │
+│                                                     ephemeral storage, needs egress from the     │
+│                                                     pod, ptraces the app for a few seconds, and  │
+│                                                     no restart survives it                       │
 │ --provision-dest          PATH                      where --provision installs it, as the        │
 │                                                     *target* spells it, and the one extra path   │
 │                                                     searched for the target&#39;s copy. Point it at  │
@@ -1887,10 +1896,10 @@ stream.</p>
 <td><p>success — including a degraded seat, which is an honest outcome and not a failure</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
-<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); <code class="docutils literal notranslate"><span class="pre">patch</span> <span class="pre">status</span></code> found a pod needing attention; or <code class="docutils literal notranslate"><span class="pre">doctor</span></code> found something blocking an attach</p></td>
+<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> found a pod needing attention; or <code class="docutils literal notranslate"><span class="pre">doctor</span></code> found something blocking an attach</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
-<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">patch</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), a <code class="docutils literal notranslate"><span class="pre">doctor</span></code> usage error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
+<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), a <code class="docutils literal notranslate"><span class="pre">doctor</span></code> usage error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">15</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> only: the capability verdict</p></td>
@@ -1957,7 +1966,7 @@ stream.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#status"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list"><code class="docutils literal notranslate"><span class="pre">list</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev"><code class="docutils literal notranslate"><span class="pre">dev</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#patch"><code class="docutils literal notranslate"><span class="pre">patch</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix"><code class="docutils literal notranslate"><span class="pre">hotfix</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-pod-verbs">In-pod verbs</a><ul class="nav section-nav flex-column">
