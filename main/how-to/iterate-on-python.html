@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iterate on Python &#8212; podbench 0.2.0b2.dev10+g5eb701580 documentation</title>
+    <title>Iterate on Python &#8212; podbench 0.2.0b2.dev12+g05d226265 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=a6bbd916"></script>
+    <script src="../_static/documentation_options.js?v=77319ace"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -513,12 +513,12 @@ mode do not apply here. Anything heavier than looking belongs in a dev pod.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench dev api-5f6c9b7d8-qz4tn -n demo --port 8080
 dev pod demo/api-5f6c9b7d8-qz4tn-podbench is running (clone of api-5f6c9b7d8-qz4tn;
 api-5f6c9b7d8-qz4tn itself is untouched)
-  target container : api (idled with sleep infinity)
-  debug container  : podbench
-  workspace        : /workspace (emptyDir, also $HOME)
-  app port         : 8080 (readiness follows your process)
-  service          : none — this pod receives no traffic until you pass
-                     --take-traffic or --cutover
+  target        api (idled with sleep infinity)
+  seat          podbench
+  workspace     /workspace (emptyDir, also $HOME)
+  port          8080 (readiness follows your process)
+  service       none — this pod receives no traffic until you pass
+                --take-traffic or --cutover
 
 ssh config written to ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-podbench.conf
 add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
