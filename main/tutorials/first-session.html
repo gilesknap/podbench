@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.2.0b3.dev4+g99a3312b1 documentation</title>
+    <title>Your first session &#8212; podbench 0.2.0b3.dev12+g0d742b3ce documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2f379c00"></script>
+    <script src="../_static/documentation_options.js?v=5d441623"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -599,7 +599,7 @@ first.</p>
 the spec podbench asked for:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">seat</span>        <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">/</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="p">[</span><span class="n">podbench</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>  <span class="p">(</span><span class="n">new</span><span class="p">)</span>
 <span class="n">target</span>      <span class="n">web</span>
-<span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">root</span> <span class="o">+</span> <span class="n">CAP_SYS_PTRACE</span> <span class="p">(</span><span class="n">live</span> <span class="n">attach</span><span class="p">)</span>
+<span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">root</span> <span class="n">plus</span> <span class="n">CAP_SYS_PTRACE</span>
 <span class="n">ladder</span>
   <span class="n">full</span>      <span class="n">landed</span>   <span class="n">admitted</span> <span class="n">by</span> <span class="n">the</span> <span class="n">API</span> <span class="n">server</span> <span class="ow">and</span> <span class="n">the</span> <span class="n">kubelet</span>
 <span class="n">supports</span>
@@ -691,10 +691,12 @@ $ uvx podbench list -n podbench-demo
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">status</span></code> lists every podbench container in a pod, including dead ones whose
-names are burnt. <code class="docutils literal notranslate"><span class="pre">list</span></code> does the same across the namespace — useful for finding
-the session you forgot about last week. Each pod’s block ends with the <code class="docutils literal notranslate"><span class="pre">ssh</span></code>
-line to reconnect with, taken from the stanza <code class="docutils literal notranslate"><span class="pre">attach</span></code> wrote, so the alias
-survives the attach output scrolling away.</p>
+names are burnt, and re-runs the probe in each running one so that the <code class="docutils literal notranslate"><span class="pre">verdict</span></code>
+beside a seat is measured today rather than inferred from the rung it landed on
+a week ago. <code class="docutils literal notranslate"><span class="pre">list</span></code> does the same across the namespace, minus the probe — every
+verdict there reads <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>, because a fleet listing execs into nothing.
+Each pod’s block ends with the <code class="docutils literal notranslate"><span class="pre">ssh</span></code> line to reconnect with, taken from the
+stanza <code class="docutils literal notranslate"><span class="pre">attach</span></code> wrote, so the alias survives the attach output scrolling away.</p>
 </section>
 <section id="clean-up">
 <h2>8. Clean up<a class="headerlink" href="#clean-up" title="Link to this heading">#</a></h2>

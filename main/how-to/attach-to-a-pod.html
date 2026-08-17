@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.2.0b3.dev4+g99a3312b1 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.2.0b3.dev12+g0d742b3ce documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2f379c00"></script>
+    <script src="../_static/documentation_options.js?v=5d441623"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -608,7 +608,7 @@ read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&
 <h2>When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code><a class="headerlink" href="#when-the-cluster-refuses-sys-ptrace" title="Link to this heading">#</a></h2>
 <p>Nothing to do — that is the normal path. podbench catches the refusal and falls
 to the next rung automatically, and still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">degraded</span> <span class="o">-</span> <span class="n">target</span> <span class="n">UID</span><span class="p">,</span> <span class="n">no</span> <span class="n">capabilities</span> <span class="p">(</span><span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspection</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">degraded</span> <span class="o">-</span> <span class="n">a</span> <span class="n">pinned</span> <span class="n">UID</span><span class="p">,</span> <span class="nb">all</span> <span class="n">capabilities</span> <span class="n">dropped</span>
 <span class="n">ladder</span>
   <span class="n">full</span>      <span class="n">refused</span>  <span class="n">Pod</span> <span class="n">Security</span> <span class="n">Admission</span><span class="p">:</span> <span class="n">must</span> <span class="ow">not</span> <span class="n">include</span> <span class="s2">&quot;SYS_PTRACE&quot;</span> <span class="ow">in</span>
                      <span class="n">securityContext</span><span class="o">.</span><span class="n">capabilities</span><span class="o">.</span><span class="n">add</span>
@@ -773,6 +773,13 @@ re-attach.</p>
 $ podbench list -n demo        # every pod in the namespace carrying one
 </pre></div>
 </div>
+<p>Each seat is listed with the rung it was admitted on and, under it, a <code class="docutils literal notranslate"><span class="pre">verdict</span></code>.
+The verdict is measured: <code class="docutils literal notranslate"><span class="pre">status</span></code> runs <code class="docutils literal notranslate"><span class="pre">capreport</span></code> in every <em>running</em> seat, on
+the node, exactly as <code class="docutils literal notranslate"><span class="pre">attach</span></code> did. It is not derived from the rung, which says
+only what was asked for — a mutating webhook that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code>
+leaves a root seat reading back as <code class="docutils literal notranslate"><span class="pre">degraded</span></code> while it attaches perfectly well.
+<code class="docutils literal notranslate"><span class="pre">--no-probe</span></code> skips the exec, and every verdict then reads <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>, which is
+also what <code class="docutils literal notranslate"><span class="pre">list</span></code> says: it lists a whole namespace and execs into nothing.</p>
 <p><code class="docutils literal notranslate"><span class="pre">status</span></code> shows dead containers too, because their names remain burnt. Both
 print the ssh alias for each pod, read from the stanza on disk — so a seat
 someone else landed, or one you landed from another machine, is reported as

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>podbench &#8212; podbench 0.2.0b3.dev4+g99a3312b1 documentation</title>
+    <title>podbench &#8212; podbench 0.2.0b3.dev12+g0d742b3ce documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="_static/documentation_options.js?v=2f379c00"></script>
+    <script src="_static/documentation_options.js?v=5d441623"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
@@ -530,7 +530,7 @@ missing; <code class="docutils literal notranslate"><span class="pre">--fix</spa
 lands the best seat the cluster will admit, and runs its probe <strong>inside the
 container it just created</strong>, so the report is measured rather than inferred from
 the spec it asked for:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">root</span> <span class="o">+</span> <span class="n">CAP_SYS_PTRACE</span> <span class="p">(</span><span class="n">live</span> <span class="n">attach</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">root</span> <span class="n">plus</span> <span class="n">CAP_SYS_PTRACE</span>
 <span class="n">supports</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspect</span> <span class="p">(</span><span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span><span class="p">,</span> <span class="n">maps</span><span class="p">,</span> <span class="n">environ</span><span class="p">)</span>

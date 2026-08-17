@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.2.0b3.dev4+g99a3312b1 documentation</title>
+    <title>Glossary &#8212; podbench 0.2.0b3.dev12+g0d742b3ce documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2f379c00"></script>
+    <script src="../_static/documentation_options.js?v=5d441623"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -495,7 +495,7 @@ first and where it bites podbench second — several of these are ordinary Kuber
 Linux vocabulary that happens to decide something load-bearing here.</p>
 <section id="podbench-s-own-words">
 <h2>Podbench’s own words<a class="headerlink" href="#podbench-s-own-words" title="Link to this heading">#</a></h2>
-<dl class="simple glossary">
+<dl class="glossary">
 <dt id="term-agent">agent<a class="headerlink" href="#term-agent" title="Link to this term">#</a></dt><dd><p>The process podbench runs as PID 1 inside a debug container — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code>. It
 writes the <a class="reference internal" href="#term-sshd"><span class="xref std std-term">sshd</span></a> config, the host key and the <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code> at start-up,
 then idles and reaps orphans. Every one of its start-up steps is an <em>ensure</em> rather
@@ -565,11 +565,16 @@ It is never modified by Iterate mode, and is recorded on the clone as the
 <code class="docutils literal notranslate"><span class="pre">podbench.dev/origin</span></code> annotation.</p>
 </dd>
 <dt id="term-rung">rung<a class="headerlink" href="#term-rung" title="Link to this term">#</a></dt><dd><p>One step of the <a class="reference internal" href="#term-capability-ladder"><span class="xref std std-term">capability ladder</span></a>, and the security context that goes with
-it. <strong>Full</strong> is <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code> plus <a class="reference internal" href="#term-CAP_SYS_PTRACE"><span class="xref std std-term">CAP_SYS_PTRACE</span></a> — live attach. <strong>Degraded</strong>
-is the target’s own uid with all capabilities dropped — read-only inspection.
-<strong>Seat</strong> is whatever the namespace will admit — editor, shell and git only. There is
-no rung between full and degraded, because a capability added to a non-root
-container is a silent no-op.</p>
+it. <strong>Full</strong> is <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code> plus <a class="reference internal" href="#term-CAP_SYS_PTRACE"><span class="xref std std-term">CAP_SYS_PTRACE</span></a>. <strong>Degraded</strong> is the
+target’s own uid with all capabilities dropped. <strong>Seat</strong> is whatever the namespace
+will admit. There is no rung between full and degraded, because a capability added
+to a non-root container is a silent no-op.</p>
+<p>A rung is what was <em>asked for</em>, and the seat’s rung is read back off the container
+the cluster admitted — which is not the same as what the seat can do. A mutating
+webhook that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root seat indistinguishable from
+the degraded rung while it attaches perfectly well, so the rung names no verdict.
+What a seat can do is measured by <a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a>, and <code class="docutils literal notranslate"><span class="pre">status</span></code> reports that
+measurement — or <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>, never the rung — beside each seat it lists.</p>
 </dd>
 <dt id="term-seat">seat<a class="headerlink" href="#term-seat" title="Link to this term">#</a></dt><dd><p>A podbench container you can work in: an editor, a shell, git and a debugger, inside
 the cluster. An <code class="docutils literal notranslate"><span class="pre">attach</span></code> seat is an <a class="reference internal" href="#term-ephemeral-container"><span class="xref std std-term">ephemeral container</span></a> in the live pod; a

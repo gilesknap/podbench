@@ -208,6 +208,33 @@ Every line earns its place:
 | `set debuginfod enabled on` | symbols for stripped binaries and system libraries. Symbols only — see below |
 | `file /proc/<pid>/root$(readlink /proc/<pid>/exe)` **before** `attach` | this is what recovers the *user* frames. A trailing ` (deleted)` is stripped |
 
+### When that `file` line names `/tmp` instead
+
+gdb canonicalises the exec file's name before BFD opens it, and the kernel
+resolves `/proc/<pid>/root` to `/`. The sysroot prefix is therefore *erased* for
+this one command, and gdb reads whatever **this seat** keeps at the target's own
+path. Where the two files differ you get
+
+```
+BFD: /python/…/python3.11: .gnu.version_r invalid entry
+warning: Can't read symbols from /python/…/python3.11: bad value
+Error reading attached process's symbol file.
+```
+
+— a complaint that names the target's path while describing the seat's file —
+and where they differ only slightly, no complaint at all and symbols from the
+wrong build. It is not rare: podbench's image and any uv-managed workload both
+install an interpreter at `/python/cpython-<version>-<triple>/`, so a Python
+target collides by construction (issue #90).
+
+So `podbench dbg` checks whether this container has a file at the target's exe
+path, and if it does, copies the target's binary to `/tmp/podbench-exe/<pid>/`
+and points `file` there. It says so in one line, and `--dry-run` prints the
+command it will actually run. Nothing else in the sequence changes — shared
+libraries are resolved by a different path in gdb and stay sysrooted.
+`podbench dbg <pid> --print-exec-file` prints just that path, which is what the
+image's `gdb-podbench` wrapper feeds to a third-party `gdb --pid <n>`.
+
 ## 5. Breakpoint, source, step
 
 `victim` declares no probes, so this pause is unlimited and you can take as long

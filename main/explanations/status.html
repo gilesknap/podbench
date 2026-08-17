@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.2.0b3.dev4+g99a3312b1 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.2.0b3.dev12+g0d742b3ce documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2f379c00"></script>
+    <script src="../_static/documentation_options.js?v=5d441623"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -558,9 +558,13 @@ exercised.</strong> Kyverno refused a seat at Diamond over a field podbench had 
 set — a <code class="docutils literal notranslate"><span class="pre">validate.pattern</span></code> rule fails on an <em>absent</em> field — and the ladder
 treated that as fatal instead of dropping a rung. Both are fixed, and the ladder
 now degrades through any webhook denial while still raising a webhook that
-failed to <em>answer</em>. <strong>Gatekeeper is untested</strong>, and so is any engine that
-<strong>mutates</strong> rather than refuses: one that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> would leave
-a seat that looks full and behaves degraded, which nothing here would catch.</p>
+failed to <em>answer</em>. <strong>Gatekeeper is untested.</strong> An engine that <strong>mutates</strong>
+rather than refuses now is: one that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root
+seat that reads back as the degraded rung and attaches perfectly well, which is
+the opposite way round from the worry recorded here, and it was reporting rather
+than debugging that it broke (issue #89). <code class="docutils literal notranslate"><span class="pre">status</span></code> no longer describes a seat
+from the rung it landed on; it reports what <code class="docutils literal notranslate"><span class="pre">capreport</span></code> measured in it, or
+<code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>.</p>
 <p><strong>Source provisioning for Observe mode is an open design problem.</strong> Debian’s
 debuginfod serves symbols but <strong>not</strong> sources, and <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> does not cover
 source lookup at all. Fedora/RHEL debuginfod is known to serve sources; Debian

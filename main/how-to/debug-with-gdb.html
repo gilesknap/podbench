@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.2.0b3.dev4+g99a3312b1 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.2.0b3.dev12+g0d742b3ce documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2f379c00"></script>
+    <script src="../_static/documentation_options.js?v=5d441623"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -711,6 +711,30 @@ handed an <code class="docutils literal notranslate"><span class="pre">EPERM</sp
 </tbody>
 </table>
 </div>
+<section id="when-that-file-line-names-tmp-instead">
+<h3>When that <code class="docutils literal notranslate"><span class="pre">file</span></code> line names <code class="docutils literal notranslate"><span class="pre">/tmp</span></code> instead<a class="headerlink" href="#when-that-file-line-names-tmp-instead" title="Link to this heading">#</a></h3>
+<p>gdb canonicalises the exec file’s name before BFD opens it, and the kernel
+resolves <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> to <code class="docutils literal notranslate"><span class="pre">/</span></code>. The sysroot prefix is therefore <em>erased</em> for
+this one command, and gdb reads whatever <strong>this seat</strong> keeps at the target’s own
+path. Where the two files differ you get</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>BFD: /python/…/python3.11: .gnu.version_r invalid entry
+warning: Can&#39;t read symbols from /python/…/python3.11: bad value
+Error reading attached process&#39;s symbol file.
+</pre></div>
+</div>
+<p>— a complaint that names the target’s path while describing the seat’s file —
+and where they differ only slightly, no complaint at all and symbols from the
+wrong build. It is not rare: podbench’s image and any uv-managed workload both
+install an interpreter at <code class="docutils literal notranslate"><span class="pre">/python/cpython-&lt;version&gt;-&lt;triple&gt;/</span></code>, so a Python
+target collides by construction (issue #90).</p>
+<p>So <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> checks whether this container has a file at the target’s exe
+path, and if it does, copies the target’s binary to <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-exe/&lt;pid&gt;/</span></code>
+and points <code class="docutils literal notranslate"><span class="pre">file</span></code> there. It says so in one line, and <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> prints the
+command it will actually run. Nothing else in the sequence changes — shared
+libraries are resolved by a different path in gdb and stay sysrooted.
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">&lt;pid&gt;</span> <span class="pre">--print-exec-file</span></code> prints just that path, which is what the
+image’s <code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code> wrapper feeds to a third-party <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span> <span class="pre">&lt;n&gt;</span></code>.</p>
+</section>
 </section>
 <section id="breakpoint-source-step">
 <h2>5. Breakpoint, source, step<a class="headerlink" href="#breakpoint-source-step" title="Link to this heading">#</a></h2>
@@ -1106,7 +1130,10 @@ was never tried. Nor was a target in a user namespace.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#a-distroless-target">1. A distroless target</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-the-seat">2. Attach the seat</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#find-the-process">3. Find the process</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-gdb">4. Attach gdb</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-gdb">4. Attach gdb</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#when-that-file-line-names-tmp-instead">When that <code class="docutils literal notranslate"><span class="pre">file</span></code> line names <code class="docutils literal notranslate"><span class="pre">/tmp</span></code> instead</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakpoint-source-step">5. Breakpoint, source, step</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-source-text-actually-comes-from">Where source text actually comes from</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#vs-code-attach-templates">VS Code attach templates</a><ul class="nav section-nav flex-column">
