@@ -115,10 +115,32 @@ GDB failed with message: "<gdb's own error>"
 ```
 
 So the named path is the *last* thing to suspect. Check it (`ls -lL`, `test -r`)
-and then read the second half, which is where the fault actually is. Two causes,
-in order of likelihood:
+and then read the second half, which is where the fault actually is. Three
+causes, in order of likelihood:
 
-1. **gdb could not read the file.** gdb reads ELF through **BFD**, the binutils
+1. **gdb read the wrong file — one of *ours* at the target's path** (issue #90).
+   gdb canonicalises the exec file's name before BFD opens it, and the kernel
+   resolves `/proc/<pid>/root` to `/`. The sysroot is therefore *erased* for this
+   one command and gdb opens the bare path in the **seat's** mount namespace.
+   Where the seat keeps a different build there, the section table and the
+   string tables come from different files and BFD says exactly what cause 2
+   says: `invalid string offset … for section '.dynstr'` → `.gnu.version_r
+   invalid entry` → `Can't read symbols: bad value`. It is not a rare
+   coincidence — the seat image and any uv-managed workload both install an
+   interpreter at `/python/cpython-<version>-<triple>/`.
+
+   The discriminator is one command in the seat, and it is worth typing before
+   believing cause 2:
+
+   ```
+   sha256sum "$exe" "/proc/<pid>/root$exe"    # $exe = readlink /proc/<pid>/exe
+   ```
+
+   Two digests means gdb was reading ours. `podbench dbg` and `debug-config`
+   now stage a copy and point `file`/`program` at it, and `gdb-podbench` feeds
+   the same path to a third-party `gdb --pid`; the fix is in the seat, so an
+   **older seat image against a newer launcher still has it**.
+2. **gdb could not read the file.** gdb reads ELF through **BFD**, the binutils
    library, so its reach is pinned to the *image's* binutils rather than the
    user's. Measured: a `debian:bookworm-slim` seat (binutils 2.40) against a
    RHEL-family target gave `BFD: /usr/bin/bash: .gnu.version_r invalid entry` →
@@ -132,7 +154,17 @@ in order of likelihood:
    nothing at all on success, so the check reads the text, never the exit code.
    The remedy is the CodeLLDB entry (its own reader, no binutils) or a newer
    image; nothing in the launcher can fix it.
-2. **The adapter is on the laptop**, as the previous section describes.
+3. **The adapter is on the laptop**, as the previous section describes.
+
+Causes 1 and 2 print the same BFD line, and telling them apart by reading is
+impossible: **the path BFD names is the target's spelling either way**, because
+it is the collapsed name. So run the `sha256sum` above rather than reading.
+
+That ambiguity has already cost a round trip. #90 was filed as cause 2, then
+"falsified" by running gdb on `/python/…/python3.11` in the seat and watching it
+resolve symbols fine — except that command opened the *seat's* inode, so it
+tested nothing. Both readings were wrong: the answer was cause 1, which neither
+the filing nor the falsification had considered.
 
 ## The lowest pid is the entrypoint script, not the workload
 

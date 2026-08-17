@@ -38,8 +38,17 @@ silent.
   silently unaligns the one and unpastes the other; styling a `Text` through
   rich markup instead of by span eats the `[x]` ticks and every bracket in
   somebody else's relayed stderr.
+- **A path is ambiguous across two mount namespaces, and gdb will read the wrong
+  file without saying so.** Read the `gdb-across-namespaces` skill before
+  touching `execfile.py`, `gdbcmd.py`, `image/bin/gdb-podbench`, or anything
+  building a gdb argv or a cppdbg configuration. The seat and any uv-managed
+  target both keep an interpreter at `/python/cpython-<version>-<triple>/`, so a
+  Python target collides by construction — and one of the two failure modes
+  prints no error at all.
 - **Never mutate a cluster outside a scratch namespace.** Cluster testing happens
   in `podbench-*` namespaces created for the purpose and deleted afterwards.
+  There is a persistent k3s box for this: read the `k3s-test-bed` skill before
+  reproducing a field defect or running the e2e suite outside CI.
 - **`Charts/podbench/values.schema.json` is generated.** A pre-commit hook
   (`helm schema`, driven by `Charts/podbench/.schema.config.yaml`) rewrites it
   from `values.yaml` plus `example.values.yaml`. Edit those; hand-edits are

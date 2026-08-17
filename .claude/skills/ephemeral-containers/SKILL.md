@@ -97,6 +97,49 @@ Only the first can be caught by wrapping the call, and only the second burns a n
 each needs its own arm of the walk. Pre-empt the second by reading the target pod's
 `securityContext.runAsNonRoot` before trying a root container.
 
+### Every policy engine words a denial differently, and one word decides
+
+`ADMISSION_DENIAL_MARKERS` (`kubectl.py`) decides whether a refusal is a *verdict* — drop a
+rung and retry — or an *error*, which ends the walk. Get it wrong and the ladder stops on a
+rung the cluster would have admitted, reporting "no rung of the capability ladder was
+admitted".
+
+A native `ValidatingAdmissionPolicy` names itself and its binding and says **`denied
+request`** — not `denied the request`, and with no webhook name — so it misses the webhook
+group by one word (issue #93). It is the engine most likely to be in play, because it needs
+nothing installed.
+
+Keep each group narrow. `denied the request` is required beside a webhook's *name* so that
+a webhook which failed to *answer* — unreachable, timed out, `failed calling webhook` —
+stays an error: retrying lower rungs against a broken webhook replaces one honest failure
+with three.
+
+### A mutating policy does not refuse — it rewrites, and nothing tells you
+
+The quieter half. A `MutatingAdmissionPolicy` that strips `capabilities.add` leaves the API
+call succeeding and the seat landing, so the walk never drops a rung. What lands is a root
+container with no capability, which is **indistinguishable from the degraded rung** by
+reading the spec: `runAsUser: 0`, nothing added.
+
+Two consequences already bitten:
+
+- the ladder remembers the rung it *asked for*, so `attach` names a capability the seat does
+  not have while `status` reads the spec back and says `degraded` (issue #94)
+- `seat_layout` cannot use the rung to decide where the agent put `sshd_config`, because a
+  stripped full rung looks degraded and the reconnect names the wrong path — the symptom is
+  `No such file or directory` in an editor's ssh log (DLS, 2026-08-16)
+
+The honest answer to "what can this seat do" is never the rung. It is what the probe
+measured; see issue #89 and `flavour.can_ptrace_target`.
+
+### A root target may have no admissible rung at all
+
+Worth checking before assuming the walk lands anywhere. With `target_uid == 0`,
+`spec._rung_security_context` raises `InvalidSpecError` (runAsNonRoot at uid 0), so a
+policy that refuses `full` leaves `degraded` **skipped** rather than tried, and `seat`
+fails asynchronously with `CreateContainerConfigError`. A target whose uid is absent from
+the pod spec skips `degraded` even earlier, rather than guessing.
+
 ## Attribution: which processes belong to the target
 
 Under a shared PID namespace the debug container sees everything, including its own
