@@ -1,0 +1,1021 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Security model &#8212; podbench 0.2.0b2 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=0ffc5a95"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/security';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.2.0b2';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Spikes" href="spikes.html" />
+    <link rel="prev" title="The original design brief" href="design-brief.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0b2" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="ways-in.html">Ways in</a></li>
+<li class="toctree-l1"><a class="reference internal" href="attach-flow.html">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dev-flow.html">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="hotfix-flow.html">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="design-brief.html">The original design brief</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Security model</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="spikes.html">Spikes</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="spikes/phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s6.html">S6 — Suspending an Argo-managed workload: server-side apply field ownership</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="status.html">What is proven, and what is not</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../explanations.html" class="nav-link">Explanations</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Security model</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="security-model">
+<h1>Security model<a class="headerlink" href="#security-model" title="Link to this heading">#</a></h1>
+<p>The honest version: what podbench needs, what it deliberately does not need, and
+what to say to the person who has to approve it.</p>
+<p>The short answer is that podbench’s default posture is <em>less</em> privileged than
+most debugging workflows it replaces. It opens no inbound network path, needs no
+pod IP reachability and no port-forward, and asks for one capability —
+<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> — only for the single feature that genuinely cannot work
+without it. Everything else runs with capabilities dropped, non-root, under the
+<strong>restricted</strong> Pod Security Standard.</p>
+<section id="what-it-needs-from-the-cluster">
+<h2>What it needs from the cluster<a class="headerlink" href="#what-it-needs-from-the-cluster" title="Link to this heading">#</a></h2>
+<p>RBAC, in the namespace being debugged. That is the whole list:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Resource</p></th>
+<th class="head"><p>Verbs</p></th>
+<th class="head"><p>Why</p></th>
+<th class="head"><p>When</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span></code>, <code class="docutils literal notranslate"><span class="pre">pods/log</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">watch</span></code></p></td>
+<td><p>read the target’s spec — its container UID and <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> — before choosing a capability rung. Without this podbench would have to guess, and the guess it would make is root</p></td>
+<td><p>always</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods/ephemeralcontainers</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code>, <code class="docutils literal notranslate"><span class="pre">update</span></code></p></td>
+<td><p>attach the seat. podbench posts here directly rather than via <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span></code>, which merges a profile over the spec afterwards and can produce an invalid rung</p></td>
+<td><p>always</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods/exec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">create</span></code></p></td>
+<td><p>the transport. This is the entire network story</p></td>
+<td><p>always</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">create</span></code>, <code class="docutils literal notranslate"><span class="pre">delete</span></code></p></td>
+<td><p>mint and remove a dev pod</p></td>
+<td><p>Iterate mode</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">services</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p>repoint a Service at the dev pod</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code> / <code class="docutils literal notranslate"><span class="pre">--cutover</span></code> only</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">persistentvolumeclaims</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code></p></td>
+<td><p>granted by the chart for the optional scratch workspace claim. Nothing in the launcher reads it yet — the dev pod’s workspace is always an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code></p></td>
+<td><p>Iterate mode</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods/resize</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p>raise a running workload’s memory limit before attaching</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> only</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code>, <code class="docutils literal notranslate"><span class="pre">replicasets</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
+<td><p>walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout</p></td>
+<td><p>Hotfix mode</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p>write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Hotfix mode relies on, so they go on the template — and that same edit is what rolls the workload</p></td>
+<td><p>Hotfix mode</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code>, <code class="docutils literal notranslate"><span class="pre">delete</span></code></p></td>
+<td><p>annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back</p></td>
+<td><p>Hotfix mode</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> asks the cluster for these one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time,
+as your own kubeconfig, and reports them per feature — <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">OK</span></code>,
+<code class="docutils literal notranslate"><span class="pre">iterate</span> <span class="pre">missing</span></code>. It is the same list: <code class="docutils literal notranslate"><span class="pre">podbench.doctor.FEATURES</span></code> names the
+chart flag that grants each feature, and <code class="docutils literal notranslate"><span class="pre">tests/test_chart_contract.py</span></code> renders
+the chart to assert the two cannot drift. Without it an RBAC denial arrives
+mid-attach, after a container name has been burnt for the life of the pod.</p>
+<p>The chart splits these into <code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> (on by default), <code class="docutils literal notranslate"><span class="pre">rbac.iterate</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rbac.resize</span></code> and <code class="docutils literal notranslate"><span class="pre">rbac.hotfix</span></code>, because they are genuinely different levels of
+trust: reading and attaching to a pod you own is not the same as creating and
+deleting pods in a namespace, and neither is the same as changing a running
+workload’s limits.</p>
+<p><code class="docutils literal notranslate"><span class="pre">rbac.hotfix</span></code> is the one to hand out most sparingly, and the table row that says
+<code class="docutils literal notranslate"><span class="pre">patch</span></code> on <code class="docutils literal notranslate"><span class="pre">deployments</span></code> is the reason. It is nominally an annotation write, but
+the annotation is on the pod template, so the same call rolls the workload — the
+mechanism <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">rollout</span> <span class="pre">restart</span></code> uses. It therefore <em>deploys code</em>, which is
+the most privileged thing podbench does anywhere. It also grants nothing on its
+own: Hotfix mode still reads pods and execs into the seat, so it is <code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code>
+plus the three rules above.</p>
+<p>Note what is <strong>not</strong> there. No cluster-scoped anything. No nodes, no secrets, no
+CRDs, no admission webhook to install, no controller to run, no agent DaemonSet.
+podbench has no cluster-side component at all: it is a CLI and an image.</p>
+</section>
+<section id="what-it-deliberately-does-not-need">
+<h2>What it deliberately does not need<a class="headerlink" href="#what-it-deliberately-does-not-need" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>No inbound network path.</strong> ssh is carried by <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. There is no
+listening socket in the pod, so nothing to reach, and no NetworkPolicy hole to
+open.</p></li>
+<li><p><strong>No pod IP reachability.</strong> Your machine never routes to the pod network.</p></li>
+<li><p><strong>No port-forward.</strong> Nothing to babysit, nothing left listening on your
+laptop, no local port that another process on your machine can reach.</p></li>
+<li><p><strong>No second credential.</strong> Authentication is the kubeconfig you already have —
+including exec credential plugins, SSO and short-lived tokens — plus an ssh
+key for the container itself. podbench issues no tokens and stores no secrets.</p></li>
+<li><p><strong>No changes to the workloads being debugged.</strong> Observe and Iterate mode work
+against any pod, from any chart, completely unmodified. Nothing is installed
+into the application image and no chart has to be edited. (Hotfix mode is the
+one licensed exception — it needs a claim mounted over the app’s venv path,
+which only the application’s own chart can do — and it is deliberately the
+last thing in the design for that reason.)</p></li>
+<li><p><strong>Never <code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code>.</strong> It would make gdb’s default sysroot work with zero
+configuration, which is why it gets rediscovered as a shortcut. It is
+container-escape-adjacent, rejected by any restricted policy, and it <em>also</em>
+breaks thread debugging. podbench documents it as an anti-pattern rather than
+using it.</p></li>
+<li><p><strong>No privileged mode, ever.</strong></p></li>
+</ul>
+</section>
+<section id="the-two-rung-ladder">
+<h2>The two-rung ladder<a class="headerlink" href="#the-two-rung-ladder" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> is outside both the <strong>baseline</strong> and the <strong>restricted</strong> Pod
+Security Standards’ allowed capability lists. Being refused is therefore a
+mainstream scenario, not an edge case — which is why the degraded path is a
+first-class mode rather than an error state.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Rung</p></th>
+<th class="head"><p>securityContext</p></th>
+<th class="head"><p>Admitted under</p></th>
+<th class="head"><p>Buys</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>full</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>, <code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code></p></td>
+<td><p>privileged / exempted namespaces, or a targeted policy</p></td>
+<td><p>attach to the workload’s live processes</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>degraded</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">&lt;target's</span> <span class="pre">uid&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">&lt;target's</span> <span class="pre">gid&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">capabilities.drop:</span> <span class="pre">[ALL]</span></code>, <code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsNonRoot:</span> <span class="pre">true</span></code>, <code class="docutils literal notranslate"><span class="pre">seccompProfile:</span> <span class="pre">RuntimeDefault</span></code></p></td>
+<td><p><strong>restricted</strong>, verified</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code>, <code class="docutils literal notranslate"><span class="pre">environ</span></code>, <code class="docutils literal notranslate"><span class="pre">exe</span></code>, <code class="docutils literal notranslate"><span class="pre">cwd</span></code>; full source-level debugging of processes gdb starts itself</p></td>
+</tr>
+<tr class="row-even"><td><p><em>(seat)</em></p></td>
+<td><p>whatever the cluster will admit</p></td>
+<td><p>anything</p></td>
+<td><p>editor, shell, git, uv</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The launcher tries them in order and falls down on refusal, then reports the
+rung it landed on. A degraded seat exits <code class="docutils literal notranslate"><span class="pre">0</span></code>: returning non-zero for “the
+cluster would not grant <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>” would make an honest report look like a
+failure.</p>
+<section id="there-is-no-middle-rung-and-this-matters">
+<h3>There is no middle rung, and this matters<a class="headerlink" href="#there-is-no-middle-rung-and-this-matters" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code> on a container with a non-zero <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> is a
+<strong>silent no-op</strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Uid</span><span class="p">:</span>	<span class="mi">1000</span>	<span class="mi">1000</span>	<span class="mi">1000</span>	<span class="mi">1000</span>
+<span class="n">CapPrm</span><span class="p">:</span>	<span class="mi">0000000000000000</span>
+<span class="n">CapEff</span><span class="p">:</span>	<span class="mi">0000000000000000</span>
+<span class="n">CapBnd</span><span class="p">:</span>	<span class="mi">00000000</span><span class="n">a80c25fb</span>      <span class="o">&lt;--</span> <span class="n">SYS_PTRACE</span> <span class="p">(</span><span class="n">bit</span> <span class="mi">19</span><span class="p">)</span> <span class="ow">in</span> <span class="n">BOUNDING</span> <span class="n">only</span>
+<span class="n">CapAmb</span><span class="p">:</span>	<span class="mi">0000000000000000</span>
+</pre></div>
+</div>
+<p>The kernel grants capabilities to non-root UIDs only through the ambient set,
+which the CRI does not populate. The pod is admitted, the container runs,
+everything looks right, and ptrace fails with a bare <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>. This is the
+mystery-<code class="docutils literal notranslate"><span class="pre">EPERM</span></code> that cost a previous attempt at this tool an afternoon — and it
+is <strong>self-inflicted by the launcher’s own manifest</strong>, not caused by the cluster.</p>
+<p>podbench refuses to author that combination. Shipping a container that silently
+has <code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0</span></code> would tell a user they have live attach when they do not, which
+is worse than refusing.</p>
+</section>
+<section id="root-without-the-capability-is-worse-than-non-root">
+<h3>Root without the capability is <em>worse</em> than non-root<a class="headerlink" href="#root-without-the-capability-is-worse-than-non-root" title="Link to this heading">#</a></h3>
+<p>Counter-intuitive, and measured:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>path</p></th>
+<th class="head"><p>uid 1000, <code class="docutils literal notranslate"><span class="pre">CapEff</span> <span class="pre">0</span></code></p></th>
+<th class="head"><p>uid 0, <code class="docutils literal notranslate"><span class="pre">CapEff</span> <span class="pre">0</span></code></p></th>
+<th class="head"><p>uid 0 + <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">readlink</span> <span class="pre">/proc/T/root</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>FAIL</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ls</span> <span class="pre">/proc/T/root/etc</span></code> (sysroot)</p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/maps</span></code>, <code class="docutils literal notranslate"><span class="pre">/smaps</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/proc/T/environ</span></code></p></td>
+<td><p><strong>OK</strong></p></td>
+<td><p>Permission denied</p></td>
+<td><p>OK</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">/proc/T/mem</span></code></p></td>
+<td><p>denied</p></td>
+<td><p>denied</p></td>
+<td><p>SUCCESS</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Reads pass the kernel’s credential check when the UIDs match and are exempt from
+Yama. Root with no capability matches nothing and gets 3 of 6 probe paths;
+the target’s own UID with zero capabilities gets 6 of 6. So the degraded rung
+matches the <strong>target’s UID</strong> and never defaults to root.</p>
+<p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/mem</span></code> and <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/syscall</span></code> are the exceptions — they use
+<code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_ATTACH</span></code>, so any “read-only memory inspection” feature planned on
+them does not work in the degraded rung.</p>
+</section>
+</section>
+<section id="four-ways-to-be-denied-one-errno">
+<h2>Four ways to be denied, one errno<a class="headerlink" href="#four-ways-to-be-denied-one-errno" title="Link to this heading">#</a></h2>
+<p>Even with <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> granted, attach can be refused by:</p>
+<ol class="arabic simple">
+<li><p><strong>the capability itself</strong> being absent or ineffective;</p></li>
+<li><p><strong>Yama</strong> — <code class="docutils literal notranslate"><span class="pre">/proc/sys/kernel/yama/ptrace_scope</span></code>, a <em>node-level</em>, read-only
+knob. At <code class="docutils literal notranslate"><span class="pre">1</span></code> (Ubuntu’s default) attach to a non-descendant is denied;</p></li>
+<li><p><strong>seccomp</strong> — a filter rejecting <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code>. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> does <strong>not</strong>
+do this, though it does block <code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code>, so gdb cannot
+disable ASLR;</p></li>
+<li><p><strong>AppArmor</strong> — a profile denying ptrace between the two domains. Everything
+observed ran under <code class="docutils literal notranslate"><span class="pre">cri-containerd.apparmor.d</span> <span class="pre">(enforce)</span></code>, which permits
+ptrace between peers <em>in the same profile</em>; a target with a custom profile
+breaks that.</p></li>
+</ol>
+<p>All four return <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>. <code class="docutils literal notranslate"><span class="pre">capreport</span></code> reads the capability sets, <code class="docutils literal notranslate"><span class="pre">Seccomp</span></code>,
+<code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>, both AppArmor profiles and the Yama scope, then runs a scratch
+<code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on its own forked child — always permitted by Yama, so a failure
+<em>there</em> is structural — and a live attach on the target. It names the mechanism.</p>
+<p>Yama is per node and differs by <strong>kernel flavour, not architecture</strong>: two arm64
+nodes in the same cluster disagreed, one denying and one allowing the
+byte-identical container. podbench probes per pod and never caches a
+cluster-wide answer.</p>
+</section>
+<section id="living-without-the-capability">
+<h2>Living without the capability<a class="headerlink" href="#living-without-the-capability" title="Link to this heading">#</a></h2>
+<p>Losing <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> costs exactly one feature — attach to an <em>already running</em>
+process — and even that has workarounds:</p>
+<ul class="simple">
+<li><p><strong>The seat is untouched.</strong> ssh, VS Code, git and uv need no capability.</p></li>
+<li><p><strong>Iterate mode is untouched.</strong> Relaunched processes are the debug container’s
+own children, and debugging your own descendants is always permitted; Yama and
+the capability check both exempt them.</p></li>
+<li><p><strong>gdb-launch survives.</strong> <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code> gives breakpoints,
+<code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">continue</span></code>, backtraces, arguments and locals at uid 1000 with
+<code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>, under <code class="docutils literal notranslate"><span class="pre">restricted</span></code> with <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp.
+Document the inner loop as gdb-<strong>launch</strong>; attach is the privileged special
+case.</p></li>
+<li><p><strong>In-process debug servers are the ptrace-free live attach.</strong> debugpy, Node’s
+inspector, JDWP: the app listens on loopback, the editor attaches through the
+shared network namespace and the ssh tunnel. For Python this means the live
+attach story never touches ptrace at all. Bind such a listener to <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>,
+never <code class="docutils literal notranslate"><span class="pre">0.0.0.0</span></code> — on the pod IP it is an unauthenticated code-execution
+endpoint.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code></strong> in the target program is a
+one-line, capability-free, node-change-free opt-in that makes a sibling
+attachable under Yama. Note that “start it yourself and attach” does <em>not</em>
+satisfy Yama on its own: <code class="docutils literal notranslate"><span class="pre">myprog</span> <span class="pre">&amp;</span> <span class="pre">;</span> <span class="pre">gdb</span> <span class="pre">-p</span> <span class="pre">$!</span></code> makes gdb a sibling, and
+siblings are denied.</p></li>
+</ul>
+</section>
+<section id="the-organisational-escape-hatch">
+<h2>The organisational escape hatch<a class="headerlink" href="#the-organisational-escape-hatch" title="Link to this heading">#</a></h2>
+<p>This is the argument to take to a security team, and it is the reason a
+published, pinned image is part of the product rather than a convenience.</p>
+<p>Policy engines — Kyverno, OPA/Gatekeeper, Validating Admission Policy — and PSS
+exemptions can express a rule far narrower than any blanket exception:</p>
+<blockquote>
+<div><p>allow <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> <strong>only</strong> when the container is
+<code class="docutils literal notranslate"><span class="pre">ghcr.io/gilesknap/podbench&#64;sha256:…</span></code>, <strong>only</strong> as an <em>ephemeral</em> container,
+<strong>only</strong> with that one capability added and nothing else, <strong>only</strong> in these
+namespaces, and <strong>only</strong> when requested by these users or groups.</p>
+</div></blockquote>
+<p>Every clause of that is checkable at admission time, and it is a far easier ask
+than “privileged”. It is also only <em>writable</em> against a pinned, published,
+minimal image — which is exactly why podbench ships one image with a digest
+rather than telling people to build their own.</p>
+<p>Sketch, deliberately abbreviated:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Kyverno, illustrative — adapt to your policy library and test it</span>
+<span class="nt">match</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">any</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">resources</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">kinds</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;Pod/ephemeralcontainers&quot;</span><span class="p p-Indicator">]</span>
+<span class="nt">validate</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">message</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;SYS_PTRACE</span><span class="nv"> </span><span class="s">is</span><span class="nv"> </span><span class="s">allowed</span><span class="nv"> </span><span class="s">only</span><span class="nv"> </span><span class="s">for</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">pinned</span><span class="nv"> </span><span class="s">podbench</span><span class="nv"> </span><span class="s">image&quot;</span>
+<span class="w">  </span><span class="nt">foreach</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">list</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;request.object.spec.ephemeralContainers[]&quot;</span>
+<span class="w">      </span><span class="nt">deny</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">conditions</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">any</span><span class="p">:</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{{</span><span class="nv"> </span><span class="s">element.securityContext.capabilities.add[]</span><span class="nv"> </span><span class="s">||</span><span class="nv"> </span><span class="s">`[]`</span><span class="nv"> </span><span class="s">}}&quot;</span>
+<span class="w">              </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AnyIn</span>
+<span class="w">              </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;SYS_PTRACE&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{{</span><span class="nv"> </span><span class="s">element.image</span><span class="nv"> </span><span class="s">}}&quot;</span>
+<span class="w">              </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NotEquals</span>
+<span class="w">              </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ghcr.io/gilesknap/podbench@sha256:&lt;digest&gt;&quot;</span>
+</pre></div>
+</div>
+<p>Pair it with a RoleBinding that grants <code class="docutils literal notranslate"><span class="pre">pods/ephemeralcontainers</span></code> only to the
+people who should have it. The RBAC decides <em>who</em>; the policy decides <em>what</em>.</p>
+<p>Refusal is fine too. If the answer is no, podbench lands the degraded rung
+automatically and prints why.</p>
+</section>
+<section id="things-worth-knowing-before-you-approve-it">
+<h2>Things worth knowing before you approve it<a class="headerlink" href="#things-worth-knowing-before-you-approve-it" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>The blast radius of the seat is the pod.</strong> A podbench container sees that
+pod’s processes, that pod’s network namespace and the target container’s
+filesystem — nothing outside. There is no node access, no host mount, no
+hostNetwork, no hostPID.</p></li>
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is one-directional.</strong> The debug container can
+read the app’s rootfs; the app cannot see the debug container’s. A compromised
+application container cannot reach the debug toolchain.</p></li>
+<li><p><strong>The target’s filesystem is never written.</strong> <code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem</span></code> is
+common in production and podbench does not depend on writing into the target.
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a read path in every standard workflow.</p></li>
+<li><p><strong>An ssh-able seat on a live pod runs with <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code></strong>, and that is a
+deliberate opt-in (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code>). The degraded rung runs as the
+<em>target’s</em> uid, discovered at attach time, and sshd will not authenticate a
+user NSS cannot resolve; the debug image makes its own <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>
+group-writable so the agent can append a record for that uid, which needs GID
+0. Projecting the file instead — a ConfigMap over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> — is not
+available here: a <code class="docutils literal notranslate"><span class="pre">volumeMount</span></code> on an <em>ephemeral</em> container may not carry a
+<code class="docutils literal notranslate"><span class="pre">subPath</span></code>, and the API server refuses the whole request if one does. So the
+choice on a live pod is a seat in group 0 or a seat reachable only by
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. Group 0 is a group, not a capability: it grants nothing in the
+target container, whose files it does not own, and <code class="docutils literal notranslate"><span class="pre">restricted</span></code> PSA admits it
+(measured: uid 1000 / gid 0). <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>’s seat is an ordinary container
+and takes the projected identity instead, needing no group change.</p></li>
+<li><p><strong>Ephemeral containers are an audit trail.</strong> They cannot be removed, so an
+attach is permanently visible in the pod spec, with the image, the
+securityContext and the container name. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">list</span></code> reads the same
+data.</p></li>
+<li><p><strong>Host keys are minted per attach</strong>, so <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> identity is per pod.
+podbench manages its own <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code>, keyed on the pod UID, rather than
+shipping <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code> — a debugging tool that teaches people to
+skip host verification has taught them something they will apply elsewhere.
+Delivering a stable host key from a Secret is supported and is the better
+posture where it is available.</p></li>
+<li><p><strong>The image needs egress on first connect</strong> for the VS Code server download —
+four host groups, listed in
+<a class="reference internal" href="../how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a>. Air-gapped operation is
+unspiked.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> changes a running workload’s memory limit.</strong> It is a separate
+RBAC grant for that reason, and it is opt-in.</p></li>
+<li><p><strong>Availability, not confidentiality, is the real risk in Observe mode.</strong>
+podbench cannot reserve resources on a live pod, so the plausible incident is
+an OOM-killed or evicted workload, not a data breach. See the footgun section
+on the front page.</p></li>
+</ul>
+</section>
+<section id="unproven-areas">
+<h2>Unproven areas<a class="headerlink" href="#unproven-areas" title="Link to this heading">#</a></h2>
+<p>Stated so nobody relies on them:</p>
+<ul class="simple">
+<li><p>The <strong>seccomp branch</strong> of the capability probe has never executed — a
+<code class="docutils literal notranslate"><span class="pre">localhost/</span></code> profile could not be installed on a test node. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code>
+was tested and permits ptrace.</p></li>
+<li><p><strong>AppArmor uniformity is an assumption.</strong> Every container observed shared one
+profile, and ptrace worked because that profile permits ptrace between peers
+within it. A custom profile on the target breaks that, and the diagnostic text
+for that case has never been seen in the field.</p></li>
+<li><p><strong>Targets in user namespaces</strong>, and targets with unusual UID mappings, were
+never tested.</p></li>
+<li><p><strong>Behaviour through konnectivity or an API gateway</strong> is unknown; every
+transport measurement comes from a flat exec path.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="design-brief.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">The original design brief</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="spikes.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Spikes</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-needs-from-the-cluster">What it needs from the cluster</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-deliberately-does-not-need">What it deliberately does not need</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-two-rung-ladder">The two-rung ladder</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#there-is-no-middle-rung-and-this-matters">There is no middle rung, and this matters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#root-without-the-capability-is-worse-than-non-root">Root without the capability is <em>worse</em> than non-root</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#four-ways-to-be-denied-one-errno">Four ways to be denied, one errno</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#living-without-the-capability">Living without the capability</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-organisational-escape-hatch">The organisational escape hatch</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#things-worth-knowing-before-you-approve-it">Things worth knowing before you approve it</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unproven-areas">Unproven areas</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.2.0b2/docs/explanations/security.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/explanations/security.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
