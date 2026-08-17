@@ -18,6 +18,13 @@ own binary, ``/proc/<pid>/cmdline`` names the interpreter, ``/proc/<pid>/root``
 says whether debugpy is importable *by the target*, and the seat's own
 ``/proc/self/status`` says whether it holds CAP_SYS_PTRACE.
 
+That last one is the weakest of them, and only ever a fallback: the injection
+needs *ptrace*, which the capability is one of four ways to have — a same-uid
+attach under ``ptrace_scope=0`` needs none of it. So where an attach has really
+been tried, :attr:`Seat.target_attach_ok` decides and the bit does not (issue
+#89); where it has not, the bit still decides, because an unmeasured attach is
+no evidence that attach works.
+
 **Nothing here decides for the user.** :func:`assess` returns a verdict for
 every flavour, so ``debug-config`` can emit each configuration that applies and
 name the blocking mechanism for each that does not — the same house style as
@@ -77,6 +84,7 @@ __all__ = [
     "Target",
     "Which",
     "assess",
+    "can_ptrace_target",
     "injection_command",
     "detect_mode",
     "format_inventory",
@@ -289,6 +297,22 @@ class Seat:
     and only the first one is fatal. A binary whose ``.gnu.version_r`` this
     seat's binutils rejects cannot be read at all — see the glossary's *symbol
     versioning*.
+    """
+
+    target_attach_ok: bool | None = None
+    """Whether a real ``PTRACE_ATTACH`` to the target succeeded from this seat.
+
+    The same measurement ``capreport`` lands in
+    :attr:`~podbench.model.CapabilityReport.target_attach_ok`, and it is carried
+    here rather than re-derived because the capability bit answers a *different*
+    question: ptrace is granted by any of four mechanisms, and uid 0 attaching to
+    uid 0 under ``ptrace_scope=0`` is classic ptrace that needs no capability at
+    all (issue #89).
+
+    ``None`` means nobody measured it — which is **not** the same as ``False``.
+    :func:`assess` falls back to the capability bit in that case, because an
+    unmeasured attach is not evidence that attach works, and reporting one as if
+    it were is the overclaim spike S5 and issue #51 exist to prevent.
     """
 
     def has(self, name: str) -> bool:
@@ -588,13 +612,17 @@ def survey_seat(
     listening_port: int | None = None,
     provision_dest: str = PROVISION_DEST,
     program_load_error: str | None = None,
+    target_attach_ok: bool | None = None,
 ) -> Seat:
     """Gather every fact :func:`assess` needs, with no side effects.
 
-    Deliberately *not* a ptrace probe: ``capreport`` measures attach by really
-    attaching, which SIGSTOPs the workload for an instant, and authoring a
-    launch.json must not do that. The capability masks answer the only question
-    the flavours need, and they cost a read of ``/proc/self/status``.
+    Deliberately *not* a ptrace probe itself: measuring attach means really
+    attaching, which SIGSTOPs the workload for an instant, and gathering facts
+    must not do that behind the caller's back. So the three facts that cost
+    something to learn — ``listening_port``, ``program_load_error`` and
+    ``target_attach_ok`` — are handed in by a caller that decided each was worth
+    its price. What is read here costs a stat and a read of
+    ``/proc/self/status``.
     """
     here = _debugpy_dir(debugpy_root)
     there = _target_debugpy(target.pid, proc=proc, provision_dest=provision_dest)
@@ -613,6 +641,7 @@ def survey_seat(
         listening_port=listening_port,
         provision_dest=provision_dest,
         program_load_error=program_load_error,
+        target_attach_ok=target_attach_ok,
     )
 
 
@@ -900,11 +929,32 @@ def _provision_paste(target: Target, seat: Seat) -> str:
     )
 
 
+def can_ptrace_target(seat: Seat) -> bool:
+    """Whether this seat may ptrace the target — measured wherever it was.
+
+    The one place that decision is made, because it is made twice: the debugpy
+    pid-injection prerequisite here, and ``--provision``'s note about what the
+    install will and will not buy. Two spellings of it drifted apart once
+    already (issue #89), and the reader sees both sentences in one run.
+
+    >>> capless = Seat(machine="x86_64", cap_sys_ptrace=False)
+    >>> can_ptrace_target(capless)  # nobody attached, so the bit is all there is
+    False
+    >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                        target_attach_ok=True))
+    True
+    """
+    if seat.target_attach_ok is not None:
+        return seat.target_attach_ok
+    return seat.cap_sys_ptrace
+
+
 def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str, str]]:
     """The unmet prerequisites, as ``(structural, reason, remedy)``.
 
     In the order the live proof hit them: the dlopen path first, the sysroot
-    second, the architecture third. Reporting all of them is the point — fixing
+    second, the architecture third, ptrace fourth and the symbols gdb has to
+    read once it is attached last. Reporting all of them is the point — fixing
     the headline only to meet the next wall is the experience this replaces.
     """
     unmet: list[tuple[bool, str, str]] = []
@@ -984,14 +1034,68 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                     "architecture",
                 )
             )
-    if not seat.cap_sys_ptrace:
+    # The injection is `gdb --pid`, so what it needs is *ptrace*, and the
+    # capability is only one of the four ways to have it: uid 0 attaching to
+    # uid 0 under ptrace_scope=0 is classic ptrace and needs no capability at
+    # all. A Diamond seat whose admission policy strips SYS_PTRACE was refused
+    # the injection while `capreport`, in that same seat and that same minute,
+    # printed `live attach (pid 12) OK` and `BLOCKER: none` (issue #89) - and
+    # the remedy the refusal offered, relaunching on the `full` rung, lands the
+    # same capless seat again, because the policy strips it every time.
+    #
+    # So the measurement wins where there is one. Where there is not, the
+    # answer is still the capability bit: an unmeasured attach is not evidence,
+    # and inferring one from the accounting is the overclaim spike S5 and issue
+    # #51 exist to prevent.
+    if not can_ptrace_target(seat):
+        if seat.target_attach_ok is False:
+            unmet.append(
+                (
+                    False,
+                    "ptrace to the target was refused when this seat measured "
+                    "it, and the injection drives gdb to attach to the target",
+                    "`capreport` names which of the four mechanisms said no - "
+                    "it is not always the capability, and only the one it "
+                    "names is worth changing",
+                )
+            )
+        else:
+            unmet.append(
+                (
+                    False,
+                    "CAP_SYS_PTRACE is not in this seat's effective set, and "
+                    "the injection drives gdb to attach to the target",
+                    "relaunch on the `full` rung (root + SYS_PTRACE); "
+                    "`capreport` names which rung this seat landed on, and "
+                    "measures whether this seat can attach without the "
+                    "capability at all",
+                )
+            )
+    # Last, because it is the last wall in live-failure order: the driver starts
+    # gdb, gdb attaches, and only then does it read the symbols the `call`
+    # needs. Not promoted to the headline the way the arm64 refusal is - that
+    # one has no remedy anywhere, and this one has an image whose binutils is
+    # new enough.
+    if seat.program_load_error is not None:
         unmet.append(
             (
                 False,
-                "CAP_SYS_PTRACE is not in this seat's effective set, and the "
-                "injection drives gdb to attach to the target",
-                "relaunch on the `full` rung (root + SYS_PTRACE); `capreport` "
-                "names which rung this seat landed on",
+                # Withdrawn from *this* flavour too, not only from gdb's. The
+                # injection is not a symbol-free ptrace: debugpy drives gdb to
+                # evaluate `call (void*)dlopen(...)` and then `call
+                # (int)DoAttach(...)` in the inferior, and gdb cannot call a
+                # function whose symbols it just refused to read. Emitting a
+                # configuration anyway leaves the user at the fault issue #92
+                # is about, in cpptools' misleading spelling of it.
+                f"gdb cannot read {target.program}, and the injection drives "
+                "gdb to `call (void*)dlopen(...)` inside the target - a call it "
+                "cannot make without the symbols it just refused to load. gdb "
+                f"said: {seat.program_load_error}",
+                "bake `debugpy.listen()` into the app image, or use `podbench "
+                "dev` - both are pure Python and start no gdb at all. A "
+                "`.gnu.version_r` complaint means this seat's binutils is older "
+                "than the toolchain that linked the target, which is an image "
+                "change, not a flag",
             )
         )
     return unmet

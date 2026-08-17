@@ -47,6 +47,7 @@ from podbench.launcher import (
     try_resize,
 )
 from podbench.model import (
+    PTRACE_READ_PATHS,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
@@ -2455,8 +2456,129 @@ def test_status_lists_every_container_live_or_burnt(
     out = capsys.readouterr().out
     assert "podbench-1" in out
     assert "degraded" in out
-    assert "read-only inspection" in out
     assert "other-sidecar" not in out
+
+
+def status_of(
+    cluster: FakeCluster,
+    capsys: pytest.CaptureFixture[str],
+    *flags: str,
+    config: Path,
+) -> str:
+    """What ``podbench status`` prints for ``cluster``'s one pod.
+
+    Flattened, because every fact under a seat is wrapped to the terminal and a
+    line break inside a verdict must not decide whether an assertion holds.
+    """
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(config), *flags],
+            runner=cluster,
+        )
+        == 0
+    )
+    return " ".join(capsys.readouterr().out.split())
+
+
+def degraded_seat(**capreport: Any) -> FakeCluster:
+    """The issue #89 shape: a seat that reads back as the degraded rung.
+
+    Which is what admission left behind, not what the seat can do — at Diamond
+    a mutating webhook stripped `capabilities.add` from a root seat, so the
+    spec is indistinguishable from the rung podbench falls to. What capreport
+    then measures in it is the argument.
+    """
+    return FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        capreport=capreport_payload(**capreport),
+    )
+
+
+def test_status_reports_the_probe_rather_than_the_rung_it_landed_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Issue #89: the verdict column was `Rung.description`, so a seat that had
+    # just ptraced the target was described as read-only inspection because of
+    # the securityContext it reads back with.
+    out = status_of(degraded_seat(), capsys, config=tmp_path / "cfg")
+
+    assert "live attach available" in out
+    assert "read-only" not in out
+    assert Rung.DEGRADED.description not in out
+
+
+def test_status_says_not_probed_and_claims_nothing_when_it_measured_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cluster = degraded_seat()
+    out = status_of(cluster, capsys, "--no-probe", config=tmp_path / "cfg")
+
+    assert "verdict not probed" in out
+    # Nothing that could be read as a capability, from either direction: the
+    # unprobed seat is not claimed to attach and not claimed to be shut out.
+    for claim in ("live attach", "read-only", "launch-only", "no access"):
+        assert claim not in out
+    assert not any("exec" in call for call in cluster.calls), (
+        "--no-probe still exec'd into the seat"
+    )
+
+
+def test_status_reports_read_only_only_when_every_gated_read_landed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reads = dict.fromkeys(PTRACE_READ_PATHS, True)
+    out = status_of(
+        degraded_seat(target_attach_ok=False, proc_reads=reads),
+        capsys,
+        config=tmp_path / "cfg",
+    )
+    assert "read-only inspection of the target" in out
+
+    # One gated read gone is not read-only, however the probe worded its own
+    # verdict: `ptrace_reads_ok` is all-or-nothing because the claim names all
+    # three paths and a partial tick sends someone to a sysroot that will not
+    # open.
+    partial = status_of(
+        degraded_seat(target_attach_ok=False, proc_reads={"root": True}),
+        capsys,
+        config=tmp_path / "cfg2",
+    )
+    assert "verdict launch-only" in partial
+    assert Verdict.READ_ONLY.summary not in partial
+
+
+def test_status_does_not_claim_an_attach_that_was_never_attempted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `derive_verdict` answers LIVE_ATTACH when there is no target pid at all -
+    # honest as a session banner ("live attach was not tested"), a false
+    # positive in a column. The column is recomputed from what was attempted.
+    out = status_of(
+        degraded_seat(
+            target_pid=None, target_attach_ok=None, proc_reads={}, child_attach_ok=True
+        ),
+        capsys,
+        config=tmp_path / "cfg",
+    )
+    assert "live attach" not in out
+    assert "verdict launch-only" in out
+
+
+def test_status_says_why_a_running_seat_could_not_be_probed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cluster = degraded_seat()
+    # The shape an image older than the launcher gives, and the one an exec
+    # RBAC refusal gives: a running seat that answers, but not with JSON.
+    cluster.capreport_output = "podbench: unrecognised arguments: --json"
+    out = status_of(cluster, capsys, config=tmp_path / "cfg")
+
+    assert "not probed - capreport produced no parsable JSON" in out
+    assert "live attach" not in out
 
 
 def test_list_finds_pods_carrying_a_seat(

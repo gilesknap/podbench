@@ -136,7 +136,7 @@ Nothing to do — that is the normal path. podbench catches the refusal and fall
 to the next rung automatically, and still exits `0`:
 
 ```
-rung        degraded - target UID, no capabilities (read-only inspection)
+rung        degraded - the target's UID, all capabilities dropped
 ladder
   full      refused  Pod Security Admission: must not include "SYS_PTRACE" in
                      securityContext.capabilities.add
@@ -321,6 +321,14 @@ To make host keys survive, deliver one from a Secret via
 $ podbench status web -n demo  # every seat in one pod
 $ podbench list -n demo        # every pod in the namespace carrying one
 ```
+
+Each seat is listed with the rung it was admitted on and, under it, a `verdict`.
+The verdict is measured: `status` runs `capreport` in every *running* seat, on
+the node, exactly as `attach` did. It is not derived from the rung, which says
+only what was asked for — a mutating webhook that strips `capabilities.add`
+leaves a root seat reading back as `degraded` while it attaches perfectly well.
+`--no-probe` skips the exec, and every verdict then reads `not probed`, which is
+also what `list` says: it lists a whole namespace and execs into nothing.
 
 `status` shows dead containers too, because their names remain burnt. Both
 print the ssh alias for each pod, read from the stanza on disk — so a seat

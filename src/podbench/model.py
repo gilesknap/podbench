@@ -20,6 +20,7 @@ __all__ = [
     "DEFAULT_IMAGE",
     "FLOATING_TAG",
     "IMAGE_REPOSITORY",
+    "NOT_PROBED",
     "PTRACE_READ_PATHS",
     "WORLD_READ_PATHS",
     "SEAT_GROUP_KEY",
@@ -40,6 +41,7 @@ __all__ = [
     "describe_gated_fallback",
     "describe_reads",
     "image_tag_for",
+    "measured_verdict",
     "ptrace_reads_ok",
 ]
 
@@ -372,6 +374,71 @@ class Verdict(enum.Enum):
         }[self]
 
 
+NOT_PROBED = "not probed"
+"""What a report puts in a verdict column it has no measurement for.
+
+A verdict column may hold exactly two kinds of thing: something a probe
+measured, or this. Filling it from the rung the cluster admitted is issue #89 —
+a seat whose ``capabilities.add`` a mutating webhook stripped reads back as
+:attr:`Rung.DEGRADED` and ptraces the target perfectly well, so the rung is
+evidence of what was *asked for* and of nothing else.
+"""
+
+
+def measured_verdict(
+    attach_ok: bool | None,
+    proc_reads: Mapping[str, bool],
+    child_ok: bool | None,
+) -> Verdict | None:
+    """The best verdict these three measurements support, or ``None`` for none.
+
+    The arguments are :attr:`CapabilityReport.target_attach_ok`,
+    :attr:`~CapabilityReport.proc_reads` and
+    :attr:`~CapabilityReport.child_attach_ok` — what was *attempted*, rather
+    than :attr:`CapabilityReport.verdict`, which is not the same thing twice
+    over. :func:`podbench.probe.derive_verdict` answers ``LIVE_ATTACH`` when
+    there is no target pid at all ("live attach was not tested"), which is a
+    fair session banner and a false claim in a column; and a launcher older
+    than the image it is reading shows an unrecognised verdict as ``NONE``,
+    which recomputing here corrects for the same reason the read-only tick is
+    recomputed rather than read off the enum.
+
+    >>> measured_verdict(True, {}, None).name
+    'LIVE_ATTACH'
+    >>> reads = dict.fromkeys(PTRACE_READ_PATHS, True)
+    >>> measured_verdict(False, reads, True).name
+    'READ_ONLY'
+
+    Read-only is :func:`ptrace_reads_ok`'s to grant, never a partial matrix's:
+    a seat that kept ``root`` alone is launch-only, and calling it read-only
+    sends someone to an ``environ`` that will not open.
+
+    >>> measured_verdict(False, {"root": True}, True).name
+    'LAUNCH_ONLY'
+    >>> measured_verdict(False, {}, False).name
+    'NONE'
+
+    Nothing attempted is not the same as everything refused, and the difference
+    is the whole point: an unprobed seat is reported as :data:`NOT_PROBED`, not
+    as a seat that can do nothing.
+
+    >>> measured_verdict(None, {}, None) is None
+    True
+    """
+    if attach_ok is True:
+        return Verdict.LIVE_ATTACH
+    if ptrace_reads_ok(proc_reads):
+        return Verdict.READ_ONLY
+    if child_ok is True:
+        return Verdict.LAUNCH_ONLY
+    # A probe that measured nothing at all cannot report the bottom rung: every
+    # one of these is `None` for "not attempted", and `proc_reads` is empty
+    # before the matrix is read as well as after every read failed.
+    if attach_ok is None and child_ok is None and not proc_reads:
+        return None
+    return Verdict.NONE
+
+
 class Blocker(enum.Enum):
     """The mechanism that denied ptrace.
 
@@ -467,11 +534,25 @@ class Rung(enum.Enum):
 
     @property
     def description(self) -> str:
-        """One line for the launcher's capability report."""
+        """What this rung *asked the cluster for*, for a rung column.
+
+        Not what the seat turned out to be able to do, which these lines used
+        to end in — "(live attach)", "(read-only inspection)", "(editor only)".
+        Those are verdicts, and a rung cannot carry one: the spec that lands is
+        the spec admission left behind, so a mutating webhook that strips
+        ``capabilities.add`` leaves a root seat reading back as
+        :attr:`DEGRADED` while it ptraces the target perfectly well (issue #89,
+        measured at DLS 2026-08-16 — see ``launcher.seat_layout``). ``status``
+        printed the parenthetical in a verdict column and so called that seat
+        read-only, contradicting the probe it had just run.
+
+        A verdict is measured: :func:`measured_verdict`, or :data:`NOT_PROBED`
+        where nothing measured one.
+        """
         return {
-            Rung.FULL: "root + CAP_SYS_PTRACE (live attach)",
-            Rung.DEGRADED: "target UID, no capabilities (read-only inspection)",
-            Rung.SEAT: "unprivileged seat (editor only)",
+            Rung.FULL: "root plus CAP_SYS_PTRACE",
+            Rung.DEGRADED: "the target's UID, all capabilities dropped",
+            Rung.SEAT: "all capabilities dropped, no UID insisted on",
         }[self]
 
 
@@ -564,6 +645,18 @@ class CapabilityReport:
     def can_attach(self) -> bool:
         """Whether gdb can attach to the workload's own processes."""
         return self.verdict is Verdict.LIVE_ATTACH
+
+    @property
+    def measured(self) -> Verdict | None:
+        """The verdict this report's own attempts support, or ``None``.
+
+        What a listing states about a seat it probed, since a column has room
+        for one claim and it had better be the measured one. See
+        :func:`measured_verdict` for why it is not simply :attr:`verdict`.
+        """
+        return measured_verdict(
+            self.target_attach_ok, self.proc_reads, self.child_attach_ok
+        )
 
     @property
     def reads_ok(self) -> bool:

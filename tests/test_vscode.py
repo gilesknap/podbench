@@ -17,14 +17,19 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from podbench.flavour import DEBUGPY_PORT, Mode
+from podbench import vscode
+from podbench.execfile import gdb_exec_file
+from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
 from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
+from podbench.probe import AttachOutcome
+from podbench.proc import DEFAULT_PROC
 from podbench.vscode import (
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
@@ -41,6 +46,7 @@ from podbench.vscode import (
     launch_setup_commands,
     lldb_configuration,
     main,
+    measured_attach,
     merge_extensions_json,
     merge_folder_settings,
     merge_launch_json,
@@ -91,6 +97,47 @@ def cli(
 def test_program_is_sysroot_prefixed() -> None:
     """The unprefixed form reads this container's binary and looks fine."""
     assert cppdbg_configuration(PID, EXE)["program"] == f"/proc/{PID}/root/app/victim"
+
+
+def test_program_names_the_staged_copy_where_this_seat_shadows_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #90 through the editor, which is the half no gdb command can fix.
+
+    gdb canonicalises the exec file's name and ``/proc/<pid>/root``
+    canonicalises to ``/``, so a sysroot-prefixed ``program`` still reads this
+    seat's binary. cpptools sends ``program`` as ``-file-exec-and-symbols``
+    before any ``setupCommands``, so the configuration itself has to name a
+    path nothing of ours occupies. Asserted on the bytes behind the emitted
+    path: the right-looking path with the seat's binary behind it is the
+    defect, not the fix.
+    """
+    proc = tmp_path / "proc"
+    (proc / str(PID)).mkdir(parents=True)
+    (proc / str(PID) / "exe").symlink_to(EXE)
+    for view, text in (
+        (proc / "self" / "root", "ours\n"),
+        (proc / str(PID) / "root", "theirs\n"),
+    ):
+        (view / "app").mkdir(parents=True)
+        (view / "app" / "victim").write_text(text)
+    monkeypatch.setattr(
+        vscode,
+        "gdb_exec_file",
+        partial(gdb_exec_file, staging=tmp_path / "staged"),
+    )
+
+    assert cli([str(PID), "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    emitted = [
+        entry for entry in document["configurations"] if entry["type"] == "cppdbg"
+    ]
+
+    assert len(emitted) == 1, document
+    program = emitted[0]["program"]
+    assert Path(program).read_text() == "theirs\n", (
+        f"cpptools would load this seat's own /app/victim: {program}"
+    )
 
 
 def test_mi_debugger_is_the_wrapper_not_usr_bin_gdb() -> None:
@@ -920,6 +967,136 @@ def test_an_arm64_python_target_names_the_missing_helper(
     )
     assert code != 0
     assert "attach_linux_arm64.so" in capsys.readouterr().err
+
+
+# -- may this seat ptrace the target? ----------------------------------------
+#
+# Issue #89: the pid injection is `gdb --pid`, so the question is ptrace, and
+# CAP_SYS_PTRACE is one of four ways to have it. What is pinned here is *when*
+# the seat is allowed to answer that question by really attaching — a
+# PTRACE_ATTACH stops the workload for the instant it takes, and this verb
+# otherwise only authors a file.
+
+
+class RecordingAttacher:
+    """An ``Attacher`` that records the pid instead of ptracing it."""
+
+    def __init__(self, outcome: AttachOutcome) -> None:
+        self.outcome = outcome
+        self.attached: list[int] = []
+
+    def attach_child(self) -> AttachOutcome:
+        raise AssertionError("debug-config has no reason to fork a probe child")
+
+    def attach(self, pid: int) -> AttachOutcome:
+        self.attached.append(pid)
+        return self.outcome
+
+
+PYTHON_TARGET = Target(
+    pid=PID, language=Language.PYTHON, program="/usr/local/bin/python3.11"
+)
+
+
+def test_a_synthetic_proc_is_never_ptraced(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The seam is safe by default, which is why the guard is on ``proc``.
+
+    A unit test injects a ``/proc`` whose pids name unrelated processes on the
+    machine running the suite, so an attach there would measure something else
+    entirely and SIGSTOP somebody's editor. The capability mask written into the
+    tree stays the answer.
+    """
+    attacher = RecordingAttacher(AttachOutcome(ok=True))
+    code = main(
+        [str(PID), "--print-config"],
+        proc=python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=no_listeners,
+        attacher=attacher,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    assert attacher.attached == []
+    assert code != 0
+    assert (
+        "CAP_SYS_PTRACE is not in this seat's effective set" in capsys.readouterr().err
+    )
+
+
+def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The #89 case: the one call worth stopping the workload for."""
+    attacher = RecordingAttacher(AttachOutcome(ok=True))
+    measured = measured_attach(
+        PYTHON_TARGET,
+        Mode.OBSERVE,
+        Seat(machine="x86_64", cap_sys_ptrace=False),
+        proc=DEFAULT_PROC,
+        attacher=attacher,
+    )
+    assert measured is True
+    assert attacher.attached == [PID]
+    # Said out loud: the answer changed *because* something was done to the
+    # workload, and the reader has to be able to connect the two.
+    assert "stopped the workload" in capsys.readouterr().err
+
+
+def test_a_refused_attach_is_measured_as_a_refusal_not_as_silence() -> None:
+    """``None`` means unasked, so a real EPERM must not come back as one."""
+    attacher = RecordingAttacher(AttachOutcome(ok=False, errno=1, message="EPERM"))
+    assert (
+        measured_attach(
+            PYTHON_TARGET,
+            Mode.OBSERVE,
+            Seat(machine="x86_64", cap_sys_ptrace=False),
+            proc=DEFAULT_PROC,
+            attacher=attacher,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "target", "seat"),
+    [
+        (
+            Mode.DEV,
+            PYTHON_TARGET,
+            Seat(machine="x86_64", cap_sys_ptrace=False),
+        ),
+        (
+            Mode.OBSERVE,
+            Target(pid=PID, language=Language.NATIVE, program="/app/victim"),
+            Seat(machine="x86_64", cap_sys_ptrace=False),
+        ),
+        (
+            Mode.OBSERVE,
+            PYTHON_TARGET,
+            Seat(machine="x86_64", cap_sys_ptrace=True),
+        ),
+        (
+            Mode.OBSERVE,
+            PYTHON_TARGET,
+            Seat(machine="x86_64", cap_sys_ptrace=False, listening_port=DEBUGPY_PORT),
+        ),
+    ],
+    ids=["dev-mode", "not-python", "already-capable", "already-listening"],
+)
+def test_the_workload_is_left_alone_where_the_answer_changes_nothing(
+    mode: Mode, target: Target, seat: Seat
+) -> None:
+    """Four cases where no refusal hangs on the answer, so no attach is made:
+    dev mode debugs a child of this container, a native target has no injection
+    to drive, a capable seat is not going to be refused, and a listening server
+    needs no ptrace at all."""
+    attacher = RecordingAttacher(AttachOutcome(ok=True))
+    assert (
+        measured_attach(target, mode, seat, proc=DEFAULT_PROC, attacher=attacher)
+        is None
+    )
+    assert attacher.attached == []
 
 
 # -- provisioning debugpy into the target ------------------------------------

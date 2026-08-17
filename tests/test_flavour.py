@@ -568,6 +568,127 @@ def test_every_prerequisite_met_emits_debugpy(tmp_path: Path) -> None:
     assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).available
 
 
+# -- the injection needs ptrace, and the capability is one way to have it ----
+#
+# Issue #89. A Diamond seat under a policy engine that strips SYS_PTRACE landed
+# capless at uid 0 beside a uid 0 target on a node at ptrace_scope=0 — classic
+# ptrace, no capability involved — and `capreport` in that seat printed
+# `live attach (pid 12) OK` while `debug-config --provision` refused the
+# injection and emitted nothing. Both directions are pinned below, because the
+# fix must not turn "no capability and Yama says no" into a yes: that overclaim
+# is what spike S5 and issue #51 exist to prevent.
+
+
+BFD_REFUSAL = (
+    "BFD: /python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11: "
+    ".gnu.version_r invalid entry / Can't read symbols from "
+    "/python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11: bad value"
+)
+"""What gdb said in the field (issue #90), as ``program_load_error`` joins it."""
+
+
+def injectable(
+    tmp_path: Path,
+    proc: Path,
+    target: Target,
+    *,
+    target_attach_ok: bool | None = None,
+    program_load_error: str | None = None,
+    listening_port: int | None = None,
+) -> Seat:
+    """A seat with every pid-injection prerequisite met, before the measured ones.
+
+    gdb, the sysroot shim, a debugpy on each side and the amd64 helper: whatever
+    these tests then withhold is the only thing left to refuse on.
+    """
+    return survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+        target_attach_ok=target_attach_ok,
+        program_load_error=program_load_error,
+        listening_port=listening_port,
+    )
+
+
+def test_a_measured_attach_offers_the_injection_without_the_capability(
+    tmp_path: Path,
+) -> None:
+    """The bit is clear, the attach was made, and the attach is what gdb needs."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
+    target = inspect_target(PID, proc=proc)
+    seat = injectable(tmp_path, proc, target, target_attach_ok=True)
+    assert not seat.cap_sys_ptrace
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert result.available, result.message()
+
+
+def test_an_unmeasured_attach_leaves_the_capability_deciding(tmp_path: Path) -> None:
+    """No probe result is not a probe result saying yes.
+
+    The regression that would do real harm: an unmeasured attach reported as a
+    working one sends someone to an F5 that fails four subsystems down, which is
+    the whole failure mode #18 and S5 were about.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
+    target = inspect_target(PID, proc=proc)
+    seat = injectable(tmp_path, proc, target)
+    assert seat.target_attach_ok is None
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" in result.reason
+
+
+def test_a_measured_refusal_names_the_measurement_and_not_the_bit(
+    tmp_path: Path,
+) -> None:
+    """A seat holding the capability can still be refused — by Yama, by seccomp,
+    by an existing tracer — and naming the capability there would send the
+    reader after the one mechanism that is not at fault."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=True)
+    target = inspect_target(PID, proc=proc)
+    seat = injectable(tmp_path, proc, target, target_attach_ok=False)
+    assert seat.cap_sys_ptrace
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    assert "refused when this seat measured it" in result.reason
+    assert "CAP_SYS_PTRACE" not in result.message()
+
+
+def test_a_program_gdb_cannot_read_withdraws_the_injection_too(
+    tmp_path: Path,
+) -> None:
+    """The injection is not a symbol-free ptrace (issue #90).
+
+    debugpy drives gdb to evaluate ``call (void*)dlopen(...)`` inside the
+    target, and gdb cannot call a function whose symbols it has just refused to
+    load — so the same measurement that withdraws cppdbg has to withdraw this
+    flavour, quoting what gdb said rather than paraphrasing it.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    target = inspect_target(PID, proc=proc)
+    seat = injectable(tmp_path, proc, target, program_load_error=BFD_REFUSAL)
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    message = result.message()
+    assert BFD_REFUSAL in message
+    assert "dlopen" in message
+
+
+def test_a_listening_server_survives_a_program_gdb_cannot_read(
+    tmp_path: Path,
+) -> None:
+    """``debugpy.listen()`` in the app starts no gdb, so gdb's opinion of the
+    interpreter cannot withdraw it: the symbol check gates the *injection*."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    target = inspect_target(PID, proc=proc)
+    seat = injectable(
+        tmp_path, proc, target, program_load_error=BFD_REFUSAL, listening_port=5678
+    )
+    assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).available
+
+
 def test_a_listening_server_needs_no_prerequisites_at_all(tmp_path: Path) -> None:
     """``debugpy.listen()`` baked into the app is pure Python: any arch, no cap."""
     target = inspect_target(PID, proc=python_proc(tmp_path, machine=EM_AARCH64))

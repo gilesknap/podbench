@@ -54,9 +54,13 @@ exercised.** Kyverno refused a seat at Diamond over a field podbench had never
 set — a `validate.pattern` rule fails on an *absent* field — and the ladder
 treated that as fatal instead of dropping a rung. Both are fixed, and the ladder
 now degrades through any webhook denial while still raising a webhook that
-failed to *answer*. **Gatekeeper is untested**, and so is any engine that
-**mutates** rather than refuses: one that strips `capabilities.add` would leave
-a seat that looks full and behaves degraded, which nothing here would catch.
+failed to *answer*. **Gatekeeper is untested.** An engine that **mutates**
+rather than refuses now is: one that strips `capabilities.add` leaves a root
+seat that reads back as the degraded rung and attaches perfectly well, which is
+the opposite way round from the worry recorded here, and it was reporting rather
+than debugging that it broke (issue #89). `status` no longer describes a seat
+from the rung it landed on; it reports what `capreport` measured in it, or
+`not probed`.
 
 **Source provisioning for Observe mode is an open design problem.** Debian's
 debuginfod serves symbols but **not** sources, and `set sysroot` does not cover
