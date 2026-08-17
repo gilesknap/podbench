@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.2.0b2.dev8+g445c35d54 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.2.0b2.dev10+g5eb701580 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=e2a08039"></script>
+    <script src="../_static/documentation_options.js?v=a6bbd916"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -978,9 +978,10 @@ ephemeral container and names <code class="docutils literal notranslate"><span c
 the identity, the same line credits it.</p></li>
 </ul>
 </li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> are opt-in and only partly proven; they print a
-warning either way — including that the raised limit is on the pod and not on
-its controller, so a rollout reverts it — and need <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>.
+<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> are opt-in and only partly proven, and need
+<code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>. An attach that used neither prints one line offering
+them; one that used either prints what it cost — including that the raised
+limit is on the pod and not on its controller, so a rollout reverts it.
 Both take <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> or <code class="docutils literal notranslate"><span class="pre">REQUEST:LIMIT</span></code>, and raise the request alongside the
 limit where a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> bounds the ratio between them.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is <strong>the</strong> way to an ssh-able seat on a live pod, not a

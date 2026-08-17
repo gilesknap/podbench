@@ -46,19 +46,16 @@ so the numbers below are for the pod you name rather than for pods in general:
 ```
 supports
   [x] live attach (gdb -p <pid>)
-      TIME-LIMITED: 'app' answers probes, so a pause has a deadline - the
-      first is readiness at 11-16s. The WARNING below has the arithmetic and
-      the way out
-...
-WARNING
-  a breakpoint on 'app' is on a timer: it answers probes, and a process
-  stopped in a debugger does not - which the kubelet cannot tell from a
-  hang.
-    readiness, 11-16s into a pause: the pod goes not-ready and stops
-      taking Service traffic - ...
-    liveness, 21-31s into a pause: the container is killed and restarted -
-      and the seat, which shares its namespaces, is killed with it. ...
+      TIME-LIMITED: 'app' answers probes, so a pause has a deadline -
+      readiness at 11-16s (drops out of the Service, and leaves no trace
+      afterwards), liveness at 21-31s (restarts the container, killing the
+      seat with it). Probes cannot be changed on a running pod; `podbench
+      dev` strips all three
 ```
+
+It is one line under the tick rather than a `WARNING` block of its own,
+because the only part of the block that was about *your* pod is those two
+numbers — the mechanism behind them is this page.
 
 A target with no probes gets the opposite statement — `no deadline: 'victim'
 declares no readiness, liveness or startup probe` — because "explore freely"

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.2.0b2.dev8+g445c35d54 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.2.0b2.dev10+g5eb701580 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=e2a08039"></script>
+    <script src="../_static/documentation_options.js?v=a6bbd916"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -531,22 +531,18 @@ restarted, so that name is burnt and coming back needs <code class="docutils lit
 fields a pod update may touch, and unlike <code class="docutils literal notranslate"><span class="pre">resources</span></code> they have no resize-style
 subresource, so there is no <code class="docutils literal notranslate"><span class="pre">--resize</span></code> equivalent to reach for. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> computes both deadlines from the target’s own spec and prints them,
 so the numbers below are for the pod you name rather than for pods in general:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">supports</span>
-  <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
-      <span class="n">TIME</span><span class="o">-</span><span class="n">LIMITED</span><span class="p">:</span> <span class="s1">&#39;app&#39;</span> <span class="n">answers</span> <span class="n">probes</span><span class="p">,</span> <span class="n">so</span> <span class="n">a</span> <span class="n">pause</span> <span class="n">has</span> <span class="n">a</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">the</span>
-      <span class="n">first</span> <span class="ow">is</span> <span class="n">readiness</span> <span class="n">at</span> <span class="mi">11</span><span class="o">-</span><span class="mi">16</span><span class="n">s</span><span class="o">.</span> <span class="n">The</span> <span class="n">WARNING</span> <span class="n">below</span> <span class="n">has</span> <span class="n">the</span> <span class="n">arithmetic</span> <span class="ow">and</span>
-      <span class="n">the</span> <span class="n">way</span> <span class="n">out</span>
-<span class="o">...</span>
-<span class="n">WARNING</span>
-  <span class="n">a</span> <span class="nb">breakpoint</span> <span class="n">on</span> <span class="s1">&#39;app&#39;</span> <span class="ow">is</span> <span class="n">on</span> <span class="n">a</span> <span class="n">timer</span><span class="p">:</span> <span class="n">it</span> <span class="n">answers</span> <span class="n">probes</span><span class="p">,</span> <span class="ow">and</span> <span class="n">a</span> <span class="n">process</span>
-  <span class="n">stopped</span> <span class="ow">in</span> <span class="n">a</span> <span class="n">debugger</span> <span class="n">does</span> <span class="ow">not</span> <span class="o">-</span> <span class="n">which</span> <span class="n">the</span> <span class="n">kubelet</span> <span class="n">cannot</span> <span class="n">tell</span> <span class="kn">from</span><span class="w"> </span><span class="nn">a</span>
-  <span class="n">hang</span><span class="o">.</span>
-    <span class="n">readiness</span><span class="p">,</span> <span class="mi">11</span><span class="o">-</span><span class="mi">16</span><span class="n">s</span> <span class="n">into</span> <span class="n">a</span> <span class="n">pause</span><span class="p">:</span> <span class="n">the</span> <span class="n">pod</span> <span class="n">goes</span> <span class="ow">not</span><span class="o">-</span><span class="n">ready</span> <span class="ow">and</span> <span class="n">stops</span>
-      <span class="n">taking</span> <span class="n">Service</span> <span class="n">traffic</span> <span class="o">-</span> <span class="o">...</span>
-    <span class="n">liveness</span><span class="p">,</span> <span class="mi">21</span><span class="o">-</span><span class="mi">31</span><span class="n">s</span> <span class="n">into</span> <span class="n">a</span> <span class="n">pause</span><span class="p">:</span> <span class="n">the</span> <span class="n">container</span> <span class="ow">is</span> <span class="n">killed</span> <span class="ow">and</span> <span class="n">restarted</span> <span class="o">-</span>
-      <span class="ow">and</span> <span class="n">the</span> <span class="n">seat</span><span class="p">,</span> <span class="n">which</span> <span class="n">shares</span> <span class="n">its</span> <span class="n">namespaces</span><span class="p">,</span> <span class="ow">is</span> <span class="n">killed</span> <span class="k">with</span> <span class="n">it</span><span class="o">.</span> <span class="o">...</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>supports
+  [x] live attach (gdb -p &lt;pid&gt;)
+      TIME-LIMITED: &#39;app&#39; answers probes, so a pause has a deadline -
+      readiness at 11-16s (drops out of the Service, and leaves no trace
+      afterwards), liveness at 21-31s (restarts the container, killing the
+      seat with it). Probes cannot be changed on a running pod; `podbench
+      dev` strips all three
 </pre></div>
 </div>
+<p>It is one line under the tick rather than a <code class="docutils literal notranslate"><span class="pre">WARNING</span></code> block of its own,
+because the only part of the block that was about <em>your</em> pod is those two
+numbers — the mechanism behind them is this page.</p>
 <p>A target with no probes gets the opposite statement — <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">deadline:</span> <span class="pre">'victim'</span> <span class="pre">declares</span> <span class="pre">no</span> <span class="pre">readiness,</span> <span class="pre">liveness</span> <span class="pre">or</span> <span class="pre">startup</span> <span class="pre">probe</span></code> — because “explore freely”
 and “you have twenty seconds” are different facts and you need to know which
 one you are in. For an unlimited pause on a probed workload use
