@@ -31,6 +31,13 @@ silent.
   command each fail *silently* or as something misleading.
 - **Never join a Service silently.** A dev pod carrying the origin's selector
   labels takes production traffic. Opt-in, behind an explicit flag, always.
+- **What a laptop verb prints is laid out by `console.py`, and a warning is one
+  line.** Read the `terminal-reports` skill before adding a `WARNING`, changing
+  a report, or touching `console.py`. Wrapping collapses whitespace, so putting
+  a row of columns or a `do this:  <command>` offer through `paragraph()`
+  silently unaligns the one and unpastes the other; styling a `Text` through
+  rich markup instead of by span eats the `[x]` ticks and every bracket in
+  somebody else's relayed stderr.
 - **Never mutate a cluster outside a scratch namespace.** Cluster testing happens
   in `podbench-*` namespaces created for the purpose and deleted afterwards.
 - **`Charts/podbench/values.schema.json` is generated.** A pre-commit hook

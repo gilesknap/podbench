@@ -125,6 +125,26 @@ the Projects-classic GraphQL deprecation error; the REST call above is the way t
 `UNKNOWN`/`UNKNOWN` for `mergeStateStatus` means GitHub is still computing — that is not
 permission to proceed either.
 
+## A push to an open PR's branch is not a commit added to that PR
+
+The user may merge a PR while you are still working on the branch it points at. A later
+`git push` to that branch then succeeds, the commit sits on the remote branch, and **it is
+in no PR at all** — GitHub does not reopen or extend a merged one. On 2026-08-17, #82 was
+merged carrying one of its two commits; the second was pushed afterwards, reported as "on
+the PR", and was nowhere near `main`.
+
+Nothing warns you. `git push` prints a normal fast-forward, and `gh pr view` still resolves
+the number. Before saying a follow-up commit landed, read the PR back:
+
+```
+gh pr view <n> --json state,commits --jq '{state, commits:[.commits[].messageHeadline]}'
+git log --oneline origin/main..HEAD
+```
+
+`state: MERGED`, or a `commits` list missing what you just pushed, means it needs its own
+PR. Recovery is cheap when the parent commit is already in `main` — branch at `HEAD`, push,
+and open a new PR; `origin/main..HEAD` will show exactly the orphaned commits.
+
 ## An e2e failure on kind is not yet a regression
 
 `tests/e2e/test_s4_iterate.py::test_edit_relaunch_and_see_it_through_the_service` flakes in
