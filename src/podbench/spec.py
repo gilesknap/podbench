@@ -27,6 +27,7 @@ Three of those rules are hard invariants rather than defaults:
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -56,6 +57,7 @@ __all__ = [
     "dev_seat_identity",
     "devpod_selector",
     "ephemeral_container_spec",
+    "pull_policy",
     "runs_as_non_root",
     "seat_identity_volume_mounts",
     "service_selector_patch",
@@ -255,6 +257,56 @@ def validate_ephemeral_volume_mounts(
             )
 
 
+_IMMUTABLE_TAG = re.compile(r"^\d+\.\d+\.\d+([.-]?(a|b|rc|alpha|beta)\.?\d+)?$")
+"""A tag CI publishes once and never moves: a release, or a prerelease of one.
+
+Everything else this project publishes is *mutable* — ``main`` moves on every
+default-branch push, and a branch tag (``0.2.0-beta.2-my-branch``) is overwritten
+on every push to that branch. Deliberately a whitelist: an unrecognised tag is
+treated as mutable, because the cost of being wrong that way is one manifest
+request and the cost of being wrong the other way is silently debugging last
+hour's code.
+"""
+
+
+def pull_policy(image: str) -> str:
+    """``Always`` for a tag that moves, ``IfNotPresent`` for one that cannot.
+
+    ``IfNotPresent`` everywhere was a silent trap for the one workflow that
+    matters most during development: push a fix, re-attach with the same branch
+    tag, and a node that pulled that tag an hour ago never asks the registry
+    again. The seat comes up carrying the old code and says nothing — and since
+    the launcher and the image are two halves of one release, "which half am I
+    running" is the last question anyone thinks to ask.
+
+    ``Always`` is not a re-download: the kubelet checks the manifest and reuses
+    the cached layers when the digest matches. What it does cost is a registry
+    round trip the container start now depends on, which is why an immutable
+    reference keeps ``IfNotPresent`` — there is nothing to re-check, and a seat
+    that could have started offline should.
+
+    >>> pull_policy("ghcr.io/gilesknap/podbench:0.2.0")
+    'IfNotPresent'
+    >>> pull_policy("ghcr.io/gilesknap/podbench:0.2.0-beta.1")
+    'IfNotPresent'
+    >>> pull_policy("ghcr.io/gilesknap/podbench@sha256:" + "0" * 64)
+    'IfNotPresent'
+    >>> pull_policy("ghcr.io/gilesknap/podbench:main")
+    'Always'
+    >>> pull_policy("ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch")
+    'Always'
+    """
+    # A digest names one manifest for all time, so there is nothing to re-check
+    # — and the `@` beats the `:` in a reference that carries both.
+    if "@" in image.rsplit("/", 1)[-1]:
+        return "IfNotPresent"
+    _, separator, tag = image.rsplit("/", 1)[-1].partition(":")
+    # No tag at all means `:latest`, which moves by definition.
+    if not separator:
+        return "Always"
+    return "IfNotPresent" if _IMMUTABLE_TAG.match(tag) else "Always"
+
+
 def ephemeral_container_spec(
     *,
     name: str,
@@ -298,7 +350,7 @@ def ephemeral_container_spec(
     spec: dict[str, Any] = {
         "name": name,
         "image": image,
-        "imagePullPolicy": "IfNotPresent",
+        "imagePullPolicy": pull_policy(image),
         "command": list(command),
         "terminationMessagePolicy": "File",
         "securityContext": _rung_security_context(
@@ -754,7 +806,7 @@ def _sidecar(
     return {
         "name": name,
         "image": image,
-        "imagePullPolicy": "IfNotPresent",
+        "imagePullPolicy": pull_policy(image),
         # The sidecar is this pod's ssh endpoint too, so it runs the agent for
         # the same reason the ephemeral container does: nothing writes the sshd
         # config, the authorized keys or the host key otherwise.

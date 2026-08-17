@@ -174,6 +174,32 @@ def test_full_rung_is_root_plus_sys_ptrace() -> None:
     assert "resources" not in spec
 
 
+def test_a_moving_tag_is_pulled_every_time() -> None:
+    """A branch image is overwritten on every push, and IfNotPresent hides that.
+
+    The seat and the launcher are two halves of one release, so a node serving
+    an hour-old copy of a tag that has moved produces a session where half the
+    fixes are present — and nothing says so.
+    """
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="ghcr.io/gilesknap/podbench:0.2.0-beta.2-my-branch",
+        rung=Rung.FULL,
+    )
+    assert spec["imagePullPolicy"] == "Always"
+
+
+def test_a_released_tag_can_still_start_without_a_registry() -> None:
+    """CI publishes a version tag once and never moves it, so there is nothing
+    to re-check — and a seat that could have started offline should."""
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="ghcr.io/gilesknap/podbench:0.2.0-beta.1",
+        rung=Rung.FULL,
+    )
+    assert spec["imagePullPolicy"] == "IfNotPresent"
+
+
 def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
     spec = ephemeral_container_spec(
         name="podbench-2",
