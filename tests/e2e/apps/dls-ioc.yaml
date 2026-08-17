@@ -1,0 +1,142 @@
+# A DLS-alike EPICS IOC target: the shape that broke #89 and #90.
+#
+# Unlike the other two apps here this one is not lifted from a spike. It is a
+# reconstruction of a *measured* production workload —
+# `b01-1-beamline/bl01c-ea-flip-02-0` at Diamond Light Source, read out of the
+# live cluster on 2026-08-17 — because both open defects reproduce only against
+# the combination of properties below, and each of them was individually assumed
+# away somewhere in podbench. See docs/explanations/spikes/phase0-report.md for
+# the convention: where a real measurement and a reasoned assumption disagree,
+# the measurement wins.
+#
+# It keeps the no-local-container-runtime rule the other two apps obey: the
+# image is public and pre-built, so CI needs only kubectl. It does *not* keep
+# their "public base image plus a ConfigMap" pattern, because the two things
+# under test both ship inside Diamond's image — the wrappers the process chain
+# is built from, and a uv-managed CPython under /python — and neither can be
+# faked by running a script under python:3.12-slim.
+#
+# Applied with `kubectl apply -n <scratch namespace> -f dls-ioc.yaml`, so no
+# namespace is named here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dls-ioc-config
+data:
+  # The IOC's own config, mounted at the path the real deployment uses. `port:
+  # SIM` is the whole reason this runs on a test bed at all: the controller
+  # (fastcs_thorlabs_mff/controllers.py:86) does `port.upper() == "SIM"` and
+  # substitutes a SimSerialConnection, so the IOC starts with no Thorlabs MFF
+  # flipper on the other end of a serial line. Any other value blocks on a
+  # device that does not exist.
+  fastcs.yaml: |
+    controllers:
+      - id: TEST
+        type: fastcs_thorlabs_mff.ThorlabsMFF
+        port: SIM
+    transport:
+      - epicsca: {}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dls-ioc
+  labels:
+    app: dls-ioc
+spec:
+  # Never, for the same reason as distroless-c.yaml: a crashed target must leave
+  # a corpse to attach to, not silently become a new pid mid-test.
+  restartPolicy: Never
+  # MEASURED: hostNetwork: true. EPICS Channel Access finds PVs by UDP broadcast
+  # to 5064/5065, which does not cross a pod network, so every IOC at Diamond
+  # runs in the node's network namespace.
+  #
+  # The consequence the tests exist to catch is that the pod's loopback and
+  # ports are the *node's*, so a debugpy listener on 127.0.0.1:5678 is node-wide
+  # and only one IOC per node can hold the default port. That is issue #87.
+  #
+  # Apply only one copy of this manifest per node, and do not expect an error if
+  # you get that wrong. Measured on the bed with two copies running: both reach
+  # Running and both log `iocRun: All initialization complete`. Both bind UDP
+  # 0.0.0.0:5064 (the CA name-resolution socket takes SO_REUSEADDR, so the
+  # second bind succeeds and broadcast search replies become ambiguous); the
+  # first pod keeps TCP 5064 and the second silently falls back to an ephemeral
+  # port (45581 in the run observed), with pvxs logging only `Server unable to
+  # bind port 5075, falling back to [::]:39675` at WARN. Nothing fails, so a
+  # test that asserts on PVs while a stale copy is still up reads the wrong
+  # IOC's answers.
+  hostNetwork: true
+  # MEASURED: the target runs as uid 0, and so does podbench's seat. That pair,
+  # plus the node's kernel.yama.ptrace_scope=0, is classic ptrace and needs no
+  # capability at all — which is exactly what #89 gets wrong when it reports
+  # `CAP_SYS_PTRACE (eff) no` beside a live attach that actually succeeded.
+  # Stated explicitly rather than inherited from the image, so that a future
+  # Diamond image adding a USER line cannot quietly turn this into a different
+  # test.
+  securityContext:
+    runAsUser: 0
+    runAsGroup: 0
+  volumes:
+    - name: config
+      configMap:
+        name: dls-ioc-config
+  containers:
+    - name: ioc
+      # A real Diamond IOC image, not a stand-in. Two of its properties are
+      # under test and neither survives substitution: the app is CPython 3.11
+      # (so every 3.14 external-inspection route is out of reach), and its
+      # interpreter is a uv-managed python-build-standalone at
+      # /python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11 — the same
+      # *path* podbench's own seat image installs its interpreter at, with a
+      # different file behind it, which is the collision #90 lives in.
+      image: ghcr.io/diamondlightsource/fastcs-thorlabs-mff:0.2.0
+      imagePullPolicy: IfNotPresent
+      # MEASURED, and the point of this manifest: PID 1 is not the app. The
+      # image's entrypoint is overridden to reproduce Diamond's wrapper chain,
+      # which is four processes deep in one container:
+      #
+      #   1  stdio-expose --ptty --stdin --ctrl-d fastcs-thorlabs-mff run ...
+      #   9  /bin/sh -c pptty "stdbuf -oL -eL fastcs-thorlabs-mff run ..."
+      #  11  pptty stdbuf -oL -eL fastcs-thorlabs-mff run ...
+      #  12  fastcs-thorlabs-mff run /epics/ioc/config/fastcs.yaml   <-- the app
+      #
+      # These are the *real* stdio-expose and pptty: the published image carries
+      # both in /app/.venv/bin (checked, not assumed), so no stand-in wrapper is
+      # needed and the chain is byte-for-byte the production one. On the bed
+      # this reproduced Diamond's pids exactly — 1, 9, 11, 12 — but a second
+      # copy of the same pod came up as 1, 8, 10, 11. Assert on the depth and on
+      # `exe`, never on the number: it is not stable even between two identical
+      # pods.
+      #
+      # stdio-expose takes its command as a *single* argument and prepends its
+      # own `stdbuf -oL -eL` before handing it to `sh -c pptty "..."`. Passing
+      # the pieces as separate argv entries yields a doubled stdbuf and a chain
+      # that no longer matches production, so the command stays one string.
+      #
+      # Anything in podbench that reasons from "the target is PID 1" is wrong
+      # here — `podbench pids` has to find the app. (`/proc/1/root` as a sysroot
+      # is still fine: all four processes share the container's mount
+      # namespace.)
+      command:
+        - stdio-expose
+        - --ptty
+        - --stdin
+        - --ctrl-d
+        - fastcs-thorlabs-mff run /epics/ioc/config/fastcs.yaml
+      # stdio-expose's --stdin puts the container's stdin fd into an asyncio
+      # reader. With no stdin allocated the registration raises EPERM, which
+      # asyncio logs as an unhandled-callback traceback before the IOC comes up
+      # anyway; that noise is not what a test reading logs should have to filter,
+      # so stdin is allocated. tty is deliberately left off: the pty in the chain
+      # is pptty's, which is what production has.
+      stdin: true
+      volumeMounts:
+        - name: config
+          mountPath: /epics/ioc/config
+          readOnly: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 512Mi

@@ -1,0 +1,125 @@
+# An admission policy, written by somebody else, that refuses the full rung.
+#
+# The cluster podbench is really field-tested on (Diamond Light Source) runs
+# Kyverno, and one of its policies rejects any container asking for
+# `SYS_PTRACE`. podbench's ladder is supposed to notice that, walk down, and
+# land on the degraded rung — which is the state issue #89 misreports. Without
+# something in front of the API server saying no, the seat always gets the full
+# rung and #89 cannot appear at all.
+#
+# This models it with a native `ValidatingAdmissionPolicy` rather than by
+# installing Kyverno: it is core API since 1.30, so there is no controller to
+# install, no CRDs to wait for and no webhook certificate to rotate on a runner
+# that has only kubectl. What it reproduces is the property that matters —
+# *an admission rule podbench did not write, and cannot negotiate with, refuses
+# the SYS_PTRACE rung synchronously* — and the ladder cannot tell the two
+# implementations apart at the level that matters: both come back as a 403 on
+# the same API call, and both are answers about one rung rather than about the
+# attach. The wording does differ, and `kubectl.ADMISSION_DENIAL_MARKERS`
+# needed a third group before this one was recognised at all.
+#
+# ## The subresource is the whole trick
+#
+# `podbench attach` adds a seat through the pod's **ephemeralcontainers**
+# subresource (`kubectl replace --raw .../pods/<pod>/ephemeralcontainers`), so
+# this policy matches `pods/ephemeralcontainers` on UPDATE. A policy written
+# against `pods` CREATE — the obvious spelling, and the one every example on the
+# internet uses — never fires for an ephemeral container. That was measured on
+# the k3s bed, not reasoned: the identical expression bound to `pods`/CREATE
+# admitted a `capabilities.add: [SYS_PTRACE]` ephemeral container with exit 0
+# and no message anywhere. It fails *open*, so every test downstream would go on
+# passing while quietly asserting against the full rung. If you change
+# `resourceRules`, prove the policy still denies by watching a real `attach`
+# land degraded, not by reading it.
+#
+# The object handed to the expression is the whole Pod, and its
+# `spec.ephemeralContainers` is the list *after* the patch, so the check is over
+# every seat on the pod rather than just the new one. That is fine and slightly
+# stronger: an ephemeral container can never be removed, so a pod that already
+# carried a SYS_PTRACE seat could only have got it before the policy was bound.
+#
+# ## What it must still admit
+#
+# Only `capabilities.add: [SYS_PTRACE]` is refused. The degraded rung — the
+# target's own uid, `capabilities.drop: [ALL]`, no additions (spec.py
+# `_rung_security_context`) — has to sail through, or podbench fails outright
+# instead of walking down the ladder and there is no degraded seat to
+# mis-describe.
+#
+# ## Applying and scoping it
+#
+# Both objects are **cluster-scoped**, and the suite's namespaces are random per
+# module, so the binding is scoped by a label the namespace opts in with rather
+# than by name:
+#
+#     ns = namespace_factory(labels={"podbench.dev/deny-sys-ptrace": "enforce"})
+#     kubectl.apply(Path(__file__).parent / "apps" / "deny-sys-ptrace.yaml")
+#
+# `kubectl apply -n <ns>` is correct here: the namespace flag is ignored for
+# cluster-scoped objects. Names are fixed, so two modules applying it
+# concurrently is idempotent — but deleting it is not, which is why teardown of
+# these two objects belongs in a *session*-scoped fixture (or a `finally` that
+# runs once), never in the module fixture that made the namespace. Deleting the
+# namespace is enough to un-scope the policy; the two cluster objects still have
+# to be deleted explicitly:
+#
+#     kubectl delete validatingadmissionpolicybinding/podbench-deny-sys-ptrace \
+#                    validatingadmissionpolicy/podbench-deny-sys-ptrace \
+#                    --ignore-not-found
+#
+# The `type/name` slashes are load-bearing. Spelled as `kubectl delete
+# validatingadmissionpolicybinding podbench-deny-sys-ptrace
+# validatingadmissionpolicy podbench-deny-sys-ptrace`, kubectl reads everything
+# after the first word as *names of a binding*, deletes the binding, reports
+# nothing wrong under `--ignore-not-found`, and leaves the policy on the
+# cluster.
+#
+# If a run must be safe against a *concurrent* run tearing down underneath it,
+# rename both objects and the `policyName` per namespace instead — the file is
+# small enough to `sed` — and keep the label selector as it is.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: podbench-deny-sys-ptrace
+spec:
+  # Fail closed. An expression that errors must not silently admit the rung
+  # this whole fixture exists to refuse.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      # pods/ephemeralcontainers, UPDATE. Not pods/CREATE — see the header.
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods/ephemeralcontainers"]
+  validations:
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) ||
+          !('SYS_PTRACE' in c.securityContext.capabilities.add))
+      reason: Forbidden
+      message: >-
+        this namespace's admission policy refuses ephemeral containers that add
+        SYS_PTRACE; use a container that drops all capabilities instead
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: podbench-deny-sys-ptrace
+spec:
+  policyName: podbench-deny-sys-ptrace
+  # Deny, not Warn/Audit: the ladder only walks down when the API call actually
+  # fails. Warn would let the full rung through while looking, in the logs,
+  # exactly like it had been refused.
+  validationActions: [Deny]
+  matchResources:
+    # The opt-in. Every namespace carries `kubernetes.io/metadata.name`
+    # automatically and could be selected by that, but the suite's namespace
+    # names are random per module, so the namespace declares itself instead and
+    # this file needs no templating.
+    namespaceSelector:
+      matchLabels:
+        podbench.dev/deny-sys-ptrace: enforce
