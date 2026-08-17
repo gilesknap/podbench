@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.2.0b2.dev12+g05d226265 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.2.0b2.dev23+ga1bb6065c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=77319ace"></script>
+    <script src="../_static/documentation_options.js?v=df0451a0"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -733,7 +733,18 @@ touching the pod. <code class="docutils literal notranslate"><span class="pre">-
 <p>Useful flags:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">--host-alias</span> <span class="pre">myseat</span></code> — the ssh <code class="docutils literal notranslate"><span class="pre">Host</span></code> name. Defaults to
-<code class="docutils literal notranslate"><span class="pre">podbench-&lt;namespace&gt;-&lt;pod&gt;</span></code>.</p></li>
+<code class="docutils literal notranslate"><span class="pre">podbench-&lt;namespace&gt;-&lt;pod&gt;-&lt;n&gt;</span></code>, where <code class="docutils literal notranslate"><span class="pre">&lt;n&gt;</span></code> is the seat’s number. The seat is
+in the name because a pod can carry several at once — an ephemeral container is
+never removed, so every <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--new</span></code> adds one and the earlier ones keep
+running. One name over all of them meant the newest seat’s stanza overwrote the
+previous one’s, while <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> kept every <code class="docutils literal notranslate"><span class="pre">ssh</span></code> — and every VS Code
+window — on the connection already open to the <em>older</em> seat.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--pull</span> <span class="pre">always</span></code> — re-check the registry for the seat’s image. The default is
+<code class="docutils literal notranslate"><span class="pre">IfNotPresent</span></code>, which is what lets a side-loaded image work at all (<code class="docutils literal notranslate"><span class="pre">kind</span> <span class="pre">load</span></code>, <code class="docutils literal notranslate"><span class="pre">ctr</span> <span class="pre">import</span></code>, an air-gapped mirror) — <code class="docutils literal notranslate"><span class="pre">Always</span></code> is the one policy that
+<em>requires</em> a reachable registry. Use it when you are iterating on a tag that
+moves, such as <code class="docutils literal notranslate"><span class="pre">main</span></code> or a branch image: a node that already has a copy will
+otherwise serve it, and a seat older than the launcher that started it has no
+symptom at all. <code class="docutils literal notranslate"><span class="pre">attach</span></code> names the tag in its report when this applies.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ssh-user</span></code> — the login name. <code class="docutils literal notranslate"><span class="pre">root</span></code> on the full rung; on a degraded rung
 sshd resolves the name through NSS, so the image needs an account for that
 UID and you may need to say which.</p></li>

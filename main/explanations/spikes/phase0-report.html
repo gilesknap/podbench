@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.2.0b2.dev12+g05d226265 documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.2.0b2.dev23+ga1bb6065c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=77319ace"></script>
+    <script src="../../_static/documentation_options.js?v=df0451a0"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1455,6 +1455,24 @@ numbers are warm-image-cache.</p></li>
 <hr class="docutils" />
 <section id="open-questions-and-residual-risk">
 <h2>5. Open questions and residual risk<a class="headerlink" href="#open-questions-and-residual-risk" title="Link to this heading">#</a></h2>
+<section id="field-session-2026-08-17-diamond-light-source">
+<h3>Field session, 2026-08-17 — Diamond Light Source<a class="headerlink" href="#field-session-2026-08-17-diamond-light-source" title="Link to this heading">#</a></h3>
+<p>The spikes ran on a k3s cluster this project owns. This session did not: an EPICS IOC pod in a
+namespace where the user is <strong>not</strong> an admin, under Kyverno policies written by somebody else, with
+a <strong>RHEL-family</strong> target image and a real VS Code client on a workstation. It closed the largest
+open item in this register and opened two new ones, and every defect it found was invisible from
+this side of the cluster boundary.</p>
+<p>What it settled is recorded against R2, R5, R6, R9 and R13 below. What it <em>changed</em> is
+<a class="reference external" href="https://github.com/gilesknap/podbench/pull/83">PR #83</a> — six defects, each found by fixing the one
+before it, which is worth stating because it is the shape of the risk rather than a list of bugs:
+<strong>every layer was hiding the next</strong>. The editor was reading a stale seat, so the seat’s code was
+never exercised; the seat could not be replaced because admission refused it; the replacement it
+did get was a cached image; and the debugger it finally ran was pointed at the entrypoint shell.
+Four of the six produced no error at all — a wrong answer delivered confidently.</p>
+<p>The single generalisation worth carrying into later phases: <strong>podbench’s two halves are one
+release, and nothing in the system says which half is running.</strong> A launcher from <code class="docutils literal notranslate"><span class="pre">uvx</span></code> and a seat
+from a cached tag can differ by a day, and every symptom of that looks like a bug in the newer
+half. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--version</span></code> in the seat is the only thing that answers it, and nothing prints it.</p>
 <p><strong>R1 — S1 and S2 contradict each other on <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-e</span></code>. Unresolved.</strong>
 S1 proved <code class="docutils literal notranslate"><span class="pre">-e</span></code> is mandatory (<code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span></code> alone fails reproducibly at KEX with <code class="docutils literal notranslate"><span class="pre">Broken</span> <span class="pre">pipe</span></code>) and
 isolated the mechanism to fd-2 teardown of the CRI exec stream. S2 ran
@@ -1473,6 +1491,20 @@ figure (~97 MiB idle) is a <strong>lower bound</strong>. Pylance alone is a 117 
 is unmeasured; cpptools likewise. <strong>Where it bites:</strong> the memory budget, the pod-resize headroom
 calculation, and therefore whether Podbench OOM-kills itself (§3.9, unrecoverable) inside tightly
 limited production pods. Measure before Phase 2 ships.</p>
+<p><em>Settled 2026-08-17, on function.</em> A real Remote-SSH client connected from a DLS workstation, the
+extension host started, <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> 1.32.2 unpacked into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, and
+its debug adapter drove gdb against the workload — a live debugging session on an EPICS IOC, which
+is the thing this row said had never happened. The seat had been given <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">6Gi</span></code> first and did
+not OOM, so §3.9’s failure was not reached. That is <em>not</em> a measurement: the RSS figures still come
+from the 2026-08-16 session (a server plus one extension, 1215 MiB live) and no per-extension
+number was taken here. <strong>What remains open is the number, not the mechanism</strong> — and the mechanism
+was the part nobody could predict.</p>
+<p><em>Two client-side findings, both silent.</em> <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--install-extension</span> <span class="pre">--remote</span></code> exits 0 for
+“installed”, for “already installed” <strong>and</strong> for “never reached the remote”: one of the three
+extensions podbench reported as installed was simply not there, and only the seat’s own directory
+listing said so. And a locally-installed cpptools runs its debug adapter on the <em>laptop</em>, where no
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path exists — which surfaces as a <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> that looks wrong. Both are now
+checked rather than assumed.</p>
 <p><strong>R3 — Trimming the built-in extensions is unvalidated against a real client.</strong>
 The −218 MiB trim was verified only by “server starts and serves <code class="docutils literal notranslate"><span class="pre">/version</span></code>”. A GUI client may
 require what was deleted. Re-validate before making the trim default.</p>
@@ -1485,10 +1517,30 @@ without picking one.</p>
 <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">source</span></code>’s <strong>fullname</strong>, which is exactly the field the nested-<code class="docutils literal notranslate"><span class="pre">substitute-path</span></code> bug corrupts
 (§3.3). If DAP normalises paths differently, the <code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> recommendation may
 need revisiting. Untested and directly on the Phase 3 critical path.</p>
+<p><em>Exercised 2026-08-17.</em> cpptools drove gdb over MI inside a seat and attached to a live workload, so
+this is no longer untested code. The <code class="docutils literal notranslate"><span class="pre">fullname</span></code> question specifically — whether DAP normalises paths
+in a way that changes the <code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> recommendation — is only answered by a
+session that resolved <strong>source lines</strong>, and that was not separately verified here.</p>
+<p><em>The finding that cost the session, and it is about diagnosis rather than paths.</em> cpptools reports
+<strong>any</strong> failure to load the program as</p>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Program path &#39;/proc/1/root/usr/bin/bash&#39; is missing or invalid.
+GDB failed with message: &quot;&lt;gdb&#39;s own error&gt;&quot;
+</pre></div>
+</div>
+<p>with gdb’s real error appended. The path in that sentence was present, readable and a valid ELF; the
+fault was entirely in the second half. So on this adapter <strong>the named path is the last thing to
+suspect</strong>, which is the opposite of what the message invites. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code> now asks gdb
+whether it can load the program before emitting a <code class="docutils literal notranslate"><span class="pre">cppdbg</span></code> entry, and quotes gdb’s refusal verbatim
+rather than letting cpptools relabel it.</p>
 <p><strong>R6 — Multithreaded and non-root targets are unproven for gdb.</strong> S3 exercised a single-threaded
 target only; <code class="docutils literal notranslate"><span class="pre">libthread_db</span></code> loaded and <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code> listed the one LWP after
 <code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span></code>, but a genuinely multithreaded target was never tried. Targets with
 <code class="docutils literal notranslate"><span class="pre">runAsUser</span> <span class="pre">!=</span> <span class="pre">0</span></code> or in a user namespace were also not tested.</p>
+<p><em>Half settled 2026-08-17.</em> The DLS target is genuinely multithreaded — <code class="docutils literal notranslate"><span class="pre">ps</span></code> reports the IOC and its
+Python supervisor in state <code class="docutils literal notranslate"><span class="pre">Sl</span></code>, the <code class="docutils literal notranslate"><span class="pre">l</span></code> meaning <code class="docutils literal notranslate"><span class="pre">CLONE_THREAD</span></code> — and gdb attached to it through
+cpptools. The <strong>non-root</strong> half is untouched: that target runs as uid 0, so a <code class="docutils literal notranslate"><span class="pre">runAsUser</span> <span class="pre">!=</span> <span class="pre">0</span></code>
+target and a user-namespaced one are both still unexercised, and they are the two that decide
+whether the degraded rung is worth its complexity.</p>
 <p><strong>R7 — The seccomp branch of <code class="docutils literal notranslate"><span class="pre">capreport</span></code> is untested code.</strong> S5 could not install a <code class="docutils literal notranslate"><span class="pre">localhost/</span></code>
 seccomp profile on a node (spike rules), so the “seccomp filter is rejecting ptrace” verdict path
 has never executed. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> was tested and <strong>allows</strong> ptrace. Treat that branch as
@@ -1503,6 +1555,20 @@ per attach, so <code class="docutils literal notranslate"><span class="pre">know
 <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code>. Shipping that teaches users to disable host verification. Needs either a
 host key delivered from a Secret, or <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> keyed on pod UID with programmatic
 <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> management.</p>
+<p><em>Resolved, and exercised 2026-08-17.</em> The second option shipped: <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> keyed on the pod UID
+with podbench managing <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> itself, and no <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code> anywhere. The field
+session added the correction this row could not have anticipated — the alias must name the <strong>seat</strong>
+as well as the pod. A pod carries several seats at once (an ephemeral container is never removed, so
+every <code class="docutils literal notranslate"><span class="pre">--new</span></code> adds one and the earlier ones keep running), each mints its own host key, and one
+alias over two live containers pins one key under a name both answer to. That arrives as a host-key
+mismatch: the loudest and most misleading failure ssh has.</p>
+<p><em>It was worse than a warning, because it was silent instead.</em> The stanza is one file per name, so a
+second seat’s config <strong>overwrote</strong> the first’s; and the stanza sets <code class="docutils literal notranslate"><span class="pre">ControlMaster</span> <span class="pre">auto</span></code>, whose
+multiplexing key is the host as typed, so every <code class="docutils literal notranslate"><span class="pre">ssh</span></code> — VS Code’s included — kept riding the
+connection already open to the <em>older</em> seat. The measured consequence: <code class="docutils literal notranslate"><span class="pre">--open</span></code> wrote <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>
+into <code class="docutils literal notranslate"><span class="pre">podbench-2</span></code> over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, correctly, while the editor read <code class="docutils literal notranslate"><span class="pre">podbench-1</span></code>’s copy from
+hours earlier. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> showed it plainly — every vscode-server process in the old seat’s
+container id, nothing but an agent in the new one.</p>
 <p><strong>R10 — Ephemeral-container state loss on pod restart.</strong> The apt-installed sshd, host keys,
 <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code>, the 690 MiB server and all extensions live in the ephemeral container’s writable
 layer, and the ephemeral container spec is immutable and unrestartable. A pod restart or an OOM
@@ -1576,10 +1642,88 @@ The raised limit lives on the pod object, so only regenerating the pod reverts i
 Neither namespace measured had either, so nothing here says how the resize behaves when the raised
 limit has to be re-admitted against a quota. A second Kubernetes version is also still untested.
 Podbench is still being asked to depend on this to avoid the unrecoverable OOM of §3.9.</p>
+<p><em><code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> settled 2026-08-17; <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> still open.</em> The DLS namespace has one, capping
+<code class="docutils literal notranslate"><span class="pre">limit/request</span></code> at a ratio of 10, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--resize</span> <span class="pre">6Gi</span></code> was admitted: the launcher
+raised the <strong>request</strong> to 615Mi alongside the limit, because raising a limit on its own only ever
+widens that ratio and would have been refused. So a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> is handled and is handled by
+arithmetic rather than by luck. A <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> is a different admission check and remains
+untested. The cluster’s Kubernetes version was not recorded, so “one Kubernetes version” may still
+stand — worth filling in, since it is one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">version</span></code> away.</p>
 <p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is memory-only.</strong> It takes a memory value and patches <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code>; a CPU limit is
 not raised with it. That did not bite in this measurement — <code class="docutils literal notranslate"><span class="pre">cpu.stat</span></code> showed <code class="docutils literal notranslate"><span class="pre">nr_throttled</span> <span class="pre">0</span></code> with
 a vscode-server plus extensions running — but a throttled seat under a tight <code class="docutils literal notranslate"><span class="pre">limits.cpu</span></code> has no
 mitigation in the flag.</p>
+<p><strong>R14 — The seat’s binutils can be older than the toolchain that built the target, and then gdb
+cannot read the binary at all.</strong> New, measured 2026-08-17. The image is <code class="docutils literal notranslate"><span class="pre">debian:bookworm-slim</span></code> —
+gdb 13.1, binutils 2.40 — and against a RHEL-family target it refused a distro binary outright:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">BFD</span><span class="p">:</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="nb">bin</span><span class="o">/</span><span class="n">bash</span><span class="p">:</span> <span class="o">.</span><span class="n">gnu</span><span class="o">.</span><span class="n">version_r</span> <span class="n">invalid</span> <span class="n">entry</span>
+<span class="n">Can</span><span class="s1">&#39;t read symbols from /usr/bin/bash: bad value</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">.gnu.version_r</span></code> is the symbol-versioning table, and BFD — the binutils library every GNU tool reads
+ELF through — would not parse the one that toolchain emitted. <strong>This is not “no debug information”.</strong>
+A stripped binary loads silently and debugs fine at the address level; this is the file not opening,
+and the two are indistinguishable from the editor. It is also asymmetric between the two paths a
+seat offers: a failed symbol load is <strong>non-fatal at the CLI</strong>, so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> printed the
+complaint and attached anyway, while cpptools treated it as fatal and aborted. “Works in <code class="docutils literal notranslate"><span class="pre">dbg</span></code>,
+fails in VS Code” is therefore a symptom of this and not of the adapter.</p>
+<p>The target’s <em>own</em> application binaries read cleanly, so the blast radius here was the image’s
+distro binaries — which is only survivable because target selection no longer points at one. <strong>Where
+it bites:</strong> gdb’s ability to read a binary is really its binutils’, and this pins the debugger’s
+reach to the <em>image’s</em> vintage rather than the user’s. A target built on a newer toolchain than
+bookworm ships is not a bug anyone can work around from the launcher — it is an image bump. CodeLLDB
+is the escape hatch, since it carries its own reader, and podbench’s refusal now says so.</p>
+<p><strong>Still unproven:</strong> the refusal itself has never fired in a cluster. The check is unit-tested and
+the message is field-shaped, but the one binary that triggers it is the one target selection now
+avoids.</p>
+<p><strong>R15 — Admission is not only Pod Security Admission, and a policy engine can refuse a field that
+was never set.</strong> New, measured 2026-08-17. §3.18 recorded two rejection <em>channels</em> (synchronous API
+server, asynchronous kubelet); this is a third dimension inside the first one. Kyverno refused the
+full rung with</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rule</span> <span class="n">block</span> <span class="n">privilege</span> <span class="n">escalation</span> <span class="n">failed</span> <span class="n">at</span> <span class="n">path</span>
+<span class="o">/</span><span class="n">spec</span><span class="o">/</span><span class="n">ephemeralContainers</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">securityContext</span><span class="o">/</span><span class="n">allowPrivilegeEscalation</span><span class="o">/</span>
+</pre></div>
+</div>
+<p>and podbench had not set that field at all. A Kyverno <code class="docutils literal notranslate"><span class="pre">validate.pattern</span></code> rule fails on an <strong>absent</strong>
+field unless the pattern wraps it in a conditional anchor, so “must not be set to true” is what a
+policy says when it means “must be present and false”. Stating both <code class="docutils literal notranslate"><span class="pre">privileged</span></code> and
+<code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation</span></code> explicitly on every rung costs nothing the kernel can see and removes the
+class.</p>
+<p>The second half is the general one, and it is a design failure rather than a spelling one: the
+ladder re-raised anything that was not one PSA substring, so <strong>any</strong> other validating webhook ended
+the walk — in a namespace where the very next rung would have been admitted, from a launcher whose
+entire purpose is a ladder of decreasing privilege. A denial is a verdict about one rung.</p>
+<p><strong>Where it bites beyond one cluster:</strong> policy engines are normal in the places podbench is for, and
+each words itself differently. Detection is now two fragments (<code class="docutils literal notranslate"><span class="pre">violates</span> <span class="pre">PodSecurity</span></code>, and a webhook
+name beside <code class="docutils literal notranslate"><span class="pre">denied</span> <span class="pre">the</span> <span class="pre">request</span></code>) and deliberately excludes a webhook that failed to <em>answer</em> —
+retrying lower rungs against a broken webhook turns one honest failure into three. <strong>Untested:</strong>
+Gatekeeper, and any engine that mutates rather than refuses. A mutating webhook that strips
+<code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> produces a seat that looks full and behaves degraded, which nothing here would
+catch.</p>
+<p><strong>R16 — The lowest pid in a container is usually the wrong debug target, and <code class="docutils literal notranslate"><span class="pre">comm</span></code> does not say
+so.</strong> New, measured 2026-08-17. Most images start <code class="docutils literal notranslate"><span class="pre">ENTRYPOINT</span> <span class="pre">[&quot;/start.sh&quot;]</span></code>, so pid 1 is a shell and
+the workload is one or more levels below it. Depth in the process tree is the only signal in <code class="docutils literal notranslate"><span class="pre">/proc</span></code>
+that separates a wrapper from a workload — an entrypoint script is an <em>ancestor</em> of the thing it
+starts — and podbench now ranks on it, with shells last.</p>
+<p>The trap inside the trap is worth its own sentence: for a shebang exec <strong>the kernel sets <code class="docutils literal notranslate"><span class="pre">comm</span></code> to
+the script name</strong>, so pid 1 running <code class="docutils literal notranslate"><span class="pre">/bin/bash</span> <span class="pre">/epics/ioc/start.sh</span></code> reports <code class="docutils literal notranslate"><span class="pre">comm</span></code> as <code class="docutils literal notranslate"><span class="pre">start.sh</span></code>
+and not <code class="docutils literal notranslate"><span class="pre">bash</span></code>. Any “is this a shell” test keyed on <code class="docutils literal notranslate"><span class="pre">comm</span></code> alone silently misses the commonest case
+there is. <strong>Where it bites:</strong> it is not an error, it is a debugger correctly attached to the wrong
+process — and on this occasion the wrong process was also the one binary R14 made unreadable, which
+is how a two-line fix became an afternoon.</p>
+<p><strong>R17 — <code class="docutils literal notranslate"><span class="pre">IfNotPresent</span></code> is load-bearing, and so is knowing when it lies.</strong> New, measured 2026-08-17,
+including one self-inflicted regression worth recording. A tag that moves — <code class="docutils literal notranslate"><span class="pre">main</span></code>, or a per-branch
+prerelease — leaves a node serving whatever it cached, so a seat can be older than the launcher that
+started it <strong>with no symptom whatsoever</strong>. The obvious repair, deriving <code class="docutils literal notranslate"><span class="pre">Always</span></code> from the tag, broke
+the entire e2e suite: kind side-loads its image and never pulls it, so <code class="docutils literal notranslate"><span class="pre">Always</span></code> — the one policy
+that <em>requires</em> a registry — answered <code class="docutils literal notranslate"><span class="pre">pull</span> <span class="pre">access</span> <span class="pre">denied,</span> <span class="pre">repository</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span></code>. The same
+would happen behind an air-gapped mirror or after a <code class="docutils literal notranslate"><span class="pre">ctr</span> <span class="pre">import</span></code>.</p>
+<p>There is no third policy. The kubelet cannot be told “re-check if you can, carry on if you cannot”,
+and nothing in an image reference distinguishes side-loaded from not-yet-pulled. So the default
+stays <code class="docutils literal notranslate"><span class="pre">IfNotPresent</span></code>, the choice moves to <code class="docutils literal notranslate"><span class="pre">--pull</span></code>, and the launcher <em>names</em> the risk when the tag
+can move and the policy will not re-check. <strong>The general lesson:</strong> a heuristic about somebody else’s
+registry conventions may decide what podbench says, and must not decide what it does.</p>
+</section>
 </section>
 </section>
 
@@ -1663,7 +1807,10 @@ mitigation in the flag.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#arch-and-node-caveats">4.6 Arch and node caveats</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#open-questions-and-residual-risk">5. Open questions and residual risk</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#open-questions-and-residual-risk">5. Open questions and residual risk</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#field-session-2026-08-17-diamond-light-source">Field session, 2026-08-17 — Diamond Light Source</a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 

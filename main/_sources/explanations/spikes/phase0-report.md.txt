@@ -733,6 +733,27 @@ A pre-flight read of the target pod's `securityContext.runAsNonRoot` lets it ski
 
 ## 5. Open questions and residual risk
 
+### Field session, 2026-08-17 — Diamond Light Source
+
+The spikes ran on a k3s cluster this project owns. This session did not: an EPICS IOC pod in a
+namespace where the user is **not** an admin, under Kyverno policies written by somebody else, with
+a **RHEL-family** target image and a real VS Code client on a workstation. It closed the largest
+open item in this register and opened two new ones, and every defect it found was invisible from
+this side of the cluster boundary.
+
+What it settled is recorded against R2, R5, R6, R9 and R13 below. What it *changed* is
+[PR #83](https://github.com/gilesknap/podbench/pull/83) — six defects, each found by fixing the one
+before it, which is worth stating because it is the shape of the risk rather than a list of bugs:
+**every layer was hiding the next**. The editor was reading a stale seat, so the seat's code was
+never exercised; the seat could not be replaced because admission refused it; the replacement it
+did get was a cached image; and the debugger it finally ran was pointed at the entrypoint shell.
+Four of the six produced no error at all — a wrong answer delivered confidently.
+
+The single generalisation worth carrying into later phases: **podbench's two halves are one
+release, and nothing in the system says which half is running.** A launcher from `uvx` and a seat
+from a cached tag can differ by a day, and every symptom of that looks like a bug in the newer
+half. `podbench --version` in the seat is the only thing that answers it, and nothing prints it.
+
 **R1 — S1 and S2 contradict each other on `sshd -e`. Unresolved.**
 S1 proved `-e` is mandatory (`sshd -i` alone fails reproducibly at KEX with `Broken pipe`) and
 isolated the mechanism to fd-2 teardown of the CRI exec stream. S2 ran
@@ -753,6 +774,22 @@ is unmeasured; cpptools likewise. **Where it bites:** the memory budget, the pod
 calculation, and therefore whether Podbench OOM-kills itself (§3.9, unrecoverable) inside tightly
 limited production pods. Measure before Phase 2 ships.
 
+*Settled 2026-08-17, on function.* A real Remote-SSH client connected from a DLS workstation, the
+extension host started, `ms-vscode.cpptools` 1.32.2 unpacked into the seat's `~/.vscode-server`, and
+its debug adapter drove gdb against the workload — a live debugging session on an EPICS IOC, which
+is the thing this row said had never happened. The seat had been given `--resize 6Gi` first and did
+not OOM, so §3.9's failure was not reached. That is *not* a measurement: the RSS figures still come
+from the 2026-08-16 session (a server plus one extension, 1215 MiB live) and no per-extension
+number was taken here. **What remains open is the number, not the mechanism** — and the mechanism
+was the part nobody could predict.
+
+*Two client-side findings, both silent.* `code --install-extension --remote` exits 0 for
+"installed", for "already installed" **and** for "never reached the remote": one of the three
+extensions podbench reported as installed was simply not there, and only the seat's own directory
+listing said so. And a locally-installed cpptools runs its debug adapter on the *laptop*, where no
+`/proc/<pid>/root` path exists — which surfaces as a `launch.json` that looks wrong. Both are now
+checked rather than assumed.
+
 **R3 — Trimming the built-in extensions is unvalidated against a real client.**
 The −218 MiB trim was verified only by "server starts and serves `/version`". A GUI client may
 require what was deleted. Re-validate before making the trim default.
@@ -768,10 +805,33 @@ without picking one.
 (§3.3). If DAP normalises paths differently, the `directory /proc/<pid>/root` recommendation may
 need revisiting. Untested and directly on the Phase 3 critical path.
 
+*Exercised 2026-08-17.* cpptools drove gdb over MI inside a seat and attached to a live workload, so
+this is no longer untested code. The `fullname` question specifically — whether DAP normalises paths
+in a way that changes the `directory /proc/<pid>/root` recommendation — is only answered by a
+session that resolved **source lines**, and that was not separately verified here.
+
+*The finding that cost the session, and it is about diagnosis rather than paths.* cpptools reports
+**any** failure to load the program as
+
+    Program path '/proc/1/root/usr/bin/bash' is missing or invalid.
+    GDB failed with message: "<gdb's own error>"
+
+with gdb's real error appended. The path in that sentence was present, readable and a valid ELF; the
+fault was entirely in the second half. So on this adapter **the named path is the last thing to
+suspect**, which is the opposite of what the message invites. `podbench debug-config` now asks gdb
+whether it can load the program before emitting a `cppdbg` entry, and quotes gdb's refusal verbatim
+rather than letting cpptools relabel it.
+
 **R6 — Multithreaded and non-root targets are unproven for gdb.** S3 exercised a single-threaded
 target only; `libthread_db` loaded and `info threads` listed the one LWP after
 `add-auto-load-safe-path`, but a genuinely multithreaded target was never tried. Targets with
 `runAsUser != 0` or in a user namespace were also not tested.
+
+*Half settled 2026-08-17.* The DLS target is genuinely multithreaded — `ps` reports the IOC and its
+Python supervisor in state `Sl`, the `l` meaning `CLONE_THREAD` — and gdb attached to it through
+cpptools. The **non-root** half is untouched: that target runs as uid 0, so a `runAsUser != 0`
+target and a user-namespaced one are both still unexercised, and they are the two that decide
+whether the degraded rung is worth its complexity.
 
 **R7 — The seccomp branch of `capreport` is untested code.** S5 could not install a `localhost/`
 seccomp profile on a node (spike rules), so the "seccomp filter is rejecting ptrace" verdict path
@@ -789,6 +849,22 @@ per attach, so `known_hosts` either warns on every new pod or must be bypassed. 
 `StrictHostKeyChecking no`. Shipping that teaches users to disable host verification. Needs either a
 host key delivered from a Secret, or `HostKeyAlias` keyed on pod UID with programmatic
 `known_hosts` management.
+
+*Resolved, and exercised 2026-08-17.* The second option shipped: `HostKeyAlias` keyed on the pod UID
+with podbench managing `known_hosts` itself, and no `StrictHostKeyChecking no` anywhere. The field
+session added the correction this row could not have anticipated — the alias must name the **seat**
+as well as the pod. A pod carries several seats at once (an ephemeral container is never removed, so
+every `--new` adds one and the earlier ones keep running), each mints its own host key, and one
+alias over two live containers pins one key under a name both answer to. That arrives as a host-key
+mismatch: the loudest and most misleading failure ssh has.
+
+*It was worse than a warning, because it was silent instead.* The stanza is one file per name, so a
+second seat's config **overwrote** the first's; and the stanza sets `ControlMaster auto`, whose
+multiplexing key is the host as typed, so every `ssh` — VS Code's included — kept riding the
+connection already open to the *older* seat. The measured consequence: `--open` wrote `launch.json`
+into `podbench-2` over `kubectl exec`, correctly, while the editor read `podbench-1`'s copy from
+hours earlier. `podbench pids` showed it plainly — every vscode-server process in the old seat's
+container id, nothing but an agent in the new one.
 
 **R10 — Ephemeral-container state loss on pod restart.** The apt-installed sshd, host keys,
 `authorized_keys`, the 690 MiB server and all extensions live in the ephemeral container's writable
@@ -856,7 +932,99 @@ Neither namespace measured had either, so nothing here says how the resize behav
 limit has to be re-admitted against a quota. A second Kubernetes version is also still untested.
 Podbench is still being asked to depend on this to avoid the unrecoverable OOM of §3.9.
 
+*`LimitRange` settled 2026-08-17; `ResourceQuota` still open.* The DLS namespace has one, capping
+`limit/request` at a ratio of 10, and `podbench attach --resize 6Gi` was admitted: the launcher
+raised the **request** to 615Mi alongside the limit, because raising a limit on its own only ever
+widens that ratio and would have been refused. So a `LimitRange` is handled and is handled by
+arithmetic rather than by luck. A `ResourceQuota` is a different admission check and remains
+untested. The cluster's Kubernetes version was not recorded, so "one Kubernetes version" may still
+stand — worth filling in, since it is one `kubectl version` away.
+
 **`--resize` is memory-only.** It takes a memory value and patches `limits.memory`; a CPU limit is
 not raised with it. That did not bite in this measurement — `cpu.stat` showed `nr_throttled 0` with
 a vscode-server plus extensions running — but a throttled seat under a tight `limits.cpu` has no
 mitigation in the flag.
+
+**R14 — The seat's binutils can be older than the toolchain that built the target, and then gdb
+cannot read the binary at all.** New, measured 2026-08-17. The image is `debian:bookworm-slim` —
+gdb 13.1, binutils 2.40 — and against a RHEL-family target it refused a distro binary outright:
+
+```
+BFD: /usr/bin/bash: .gnu.version_r invalid entry
+Can't read symbols from /usr/bin/bash: bad value
+```
+
+`.gnu.version_r` is the symbol-versioning table, and BFD — the binutils library every GNU tool reads
+ELF through — would not parse the one that toolchain emitted. **This is not "no debug information".**
+A stripped binary loads silently and debugs fine at the address level; this is the file not opening,
+and the two are indistinguishable from the editor. It is also asymmetric between the two paths a
+seat offers: a failed symbol load is **non-fatal at the CLI**, so `podbench dbg` printed the
+complaint and attached anyway, while cpptools treated it as fatal and aborted. "Works in `dbg`,
+fails in VS Code" is therefore a symptom of this and not of the adapter.
+
+The target's *own* application binaries read cleanly, so the blast radius here was the image's
+distro binaries — which is only survivable because target selection no longer points at one. **Where
+it bites:** gdb's ability to read a binary is really its binutils', and this pins the debugger's
+reach to the *image's* vintage rather than the user's. A target built on a newer toolchain than
+bookworm ships is not a bug anyone can work around from the launcher — it is an image bump. CodeLLDB
+is the escape hatch, since it carries its own reader, and podbench's refusal now says so.
+
+**Still unproven:** the refusal itself has never fired in a cluster. The check is unit-tested and
+the message is field-shaped, but the one binary that triggers it is the one target selection now
+avoids.
+
+**R15 — Admission is not only Pod Security Admission, and a policy engine can refuse a field that
+was never set.** New, measured 2026-08-17. §3.18 recorded two rejection *channels* (synchronous API
+server, asynchronous kubelet); this is a third dimension inside the first one. Kyverno refused the
+full rung with
+
+```
+rule block privilege escalation failed at path
+/spec/ephemeralContainers/1/securityContext/allowPrivilegeEscalation/
+```
+
+and podbench had not set that field at all. A Kyverno `validate.pattern` rule fails on an **absent**
+field unless the pattern wraps it in a conditional anchor, so "must not be set to true" is what a
+policy says when it means "must be present and false". Stating both `privileged` and
+`allowPrivilegeEscalation` explicitly on every rung costs nothing the kernel can see and removes the
+class.
+
+The second half is the general one, and it is a design failure rather than a spelling one: the
+ladder re-raised anything that was not one PSA substring, so **any** other validating webhook ended
+the walk — in a namespace where the very next rung would have been admitted, from a launcher whose
+entire purpose is a ladder of decreasing privilege. A denial is a verdict about one rung.
+
+**Where it bites beyond one cluster:** policy engines are normal in the places podbench is for, and
+each words itself differently. Detection is now two fragments (`violates PodSecurity`, and a webhook
+name beside `denied the request`) and deliberately excludes a webhook that failed to *answer* —
+retrying lower rungs against a broken webhook turns one honest failure into three. **Untested:**
+Gatekeeper, and any engine that mutates rather than refuses. A mutating webhook that strips
+`capabilities.add` produces a seat that looks full and behaves degraded, which nothing here would
+catch.
+
+**R16 — The lowest pid in a container is usually the wrong debug target, and `comm` does not say
+so.** New, measured 2026-08-17. Most images start `ENTRYPOINT ["/start.sh"]`, so pid 1 is a shell and
+the workload is one or more levels below it. Depth in the process tree is the only signal in `/proc`
+that separates a wrapper from a workload — an entrypoint script is an *ancestor* of the thing it
+starts — and podbench now ranks on it, with shells last.
+
+The trap inside the trap is worth its own sentence: for a shebang exec **the kernel sets `comm` to
+the script name**, so pid 1 running `/bin/bash /epics/ioc/start.sh` reports `comm` as `start.sh`
+and not `bash`. Any "is this a shell" test keyed on `comm` alone silently misses the commonest case
+there is. **Where it bites:** it is not an error, it is a debugger correctly attached to the wrong
+process — and on this occasion the wrong process was also the one binary R14 made unreadable, which
+is how a two-line fix became an afternoon.
+
+**R17 — `IfNotPresent` is load-bearing, and so is knowing when it lies.** New, measured 2026-08-17,
+including one self-inflicted regression worth recording. A tag that moves — `main`, or a per-branch
+prerelease — leaves a node serving whatever it cached, so a seat can be older than the launcher that
+started it **with no symptom whatsoever**. The obvious repair, deriving `Always` from the tag, broke
+the entire e2e suite: kind side-loads its image and never pulls it, so `Always` — the one policy
+that *requires* a registry — answered `pull access denied, repository does not exist`. The same
+would happen behind an air-gapped mirror or after a `ctr import`.
+
+There is no third policy. The kubelet cannot be told "re-check if you can, carry on if you cannot",
+and nothing in an image reference distinguishes side-loaded from not-yet-pulled. So the default
+stays `IfNotPresent`, the choice moves to `--pull`, and the launcher *names* the risk when the tag
+can move and the policy will not re-check. **The general lesson:** a heuristic about somebody else's
+registry conventions may decide what podbench says, and must not decide what it does.

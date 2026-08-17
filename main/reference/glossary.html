@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.2.0b2.dev12+g05d226265 documentation</title>
+    <title>Glossary &#8212; podbench 0.2.0b2.dev23+ga1bb6065c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=77319ace"></script>
+    <script src="../_static/documentation_options.js?v=df0451a0"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -853,6 +853,60 @@ explicable. <a class="reference internal" href="#term-CAP_SYS_PTRACE"><span clas
 </dd>
 </dl>
 </section>
+<section id="binaries-and-symbols">
+<h2>Binaries and symbols<a class="headerlink" href="#binaries-and-symbols" title="Link to this heading">#</a></h2>
+<p>These decide what a debugger can <em>tell</em> you once it has attached, and they fail in a
+way worth naming: “cannot read the file” and “the file carries no debug information”
+look alike from the editor and are nothing alike underneath. The first is a refusal,
+the second is a working session with addresses instead of source.</p>
+<dl class="simple glossary">
+<dt id="term-BFD">BFD<a class="headerlink" href="#term-BFD" title="Link to this term">#</a></dt><dd><p>The <em>Binary File Descriptor</em> library, part of GNU binutils — the layer that actually
+parses object files. gdb, <code class="docutils literal notranslate"><span class="pre">objdump</span></code>, <code class="docutils literal notranslate"><span class="pre">ld</span></code>, <code class="docutils literal notranslate"><span class="pre">readelf</span></code> and <code class="docutils literal notranslate"><span class="pre">strip</span></code> all read <a class="reference internal" href="#term-ELF"><span class="xref std std-term">ELF</span></a>
+through it rather than each implementing the format. So a <code class="docutils literal notranslate"><span class="pre">BFD:</span> <span class="pre">…</span></code> line is the
+library complaining and not gdb, which matters when deciding what to upgrade: gdb’s
+ability to read a binary is its binutils’ ability. gdb renders BFD’s refusals in its
+own words, of which <code class="docutils literal notranslate"><span class="pre">bad</span> <span class="pre">value</span></code> — <code class="docutils literal notranslate"><span class="pre">bfd_error_bad_value</span></code> — is the one meaning “I
+parsed this far and the file does not make sense”.</p>
+</dd>
+<dt id="term-build-id">build-id<a class="headerlink" href="#term-build-id" title="Link to this term">#</a></dt><dd><p>A hash the linker embeds in <code class="docutils literal notranslate"><span class="pre">.note.gnu.build-id</span></code>, identifying an exact build of a
+binary. It is what <a class="reference internal" href="#term-debuginfod"><span class="xref std std-term">debuginfod</span></a> looks a binary up by, so a <a class="reference internal" href="#term-stripped"><span class="xref std std-term">stripped</span></a>
+binary that kept its build-id can still be given symbols, and one without it cannot.
+Podbench reads it when deciding what to say about a target: “no <code class="docutils literal notranslate"><span class="pre">.debug_info</span></code>, but
+the build-id is present” and “no <code class="docutils literal notranslate"><span class="pre">.debug_info</span></code> and no build-id either” are different
+predictions about what you are about to see.</p>
+</dd>
+<dt id="term-debuginfod">debuginfod<a class="headerlink" href="#term-debuginfod" title="Link to this term">#</a></dt><dd><p>A protocol and public service that serves <a class="reference internal" href="#term-DWARF"><span class="xref std std-term">DWARF</span></a> for a <a class="reference internal" href="#term-build-id"><span class="xref std std-term">build-id</span></a>, so a
+stripped distro binary can be debugged without installing a <code class="docutils literal notranslate"><span class="pre">-dbg</span></code> package. Needs
+egress and <code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code>, which is why <code class="docutils literal notranslate"><span class="pre">--no-debuginfod</span></code> exists. On Debian it
+serves symbols but not sources (report §3.2), so expect named frames and no source
+view.</p>
+</dd>
+<dt id="term-DWARF">DWARF<a class="headerlink" href="#term-DWARF" title="Link to this term">#</a></dt><dd><p>The debug-information format, carried in <code class="docutils literal notranslate"><span class="pre">.debug_*</span></code> sections. It is what turns
+addresses into file, line, variable and type — everything a source-level debugger
+shows beyond a raw backtrace. Its absence is not an error: gdb attaches to a binary
+with no DWARF perfectly well and shows disassembly and whatever names the symbol
+tables hold.</p>
+</dd>
+<dt id="term-ELF">ELF<a class="headerlink" href="#term-ELF" title="Link to this term">#</a></dt><dd><p><em>Executable and Linkable Format</em>, the object-file format on Linux. Podbench parses
+just enough of it by hand — the machine, the section names — to decide which
+debugger flavour applies, because that decision must be made from the target’s own
+binary rather than from the node’s architecture or from anything the user typed.</p>
+</dd>
+<dt id="term-stripped">stripped<a class="headerlink" href="#term-stripped" title="Link to this term">#</a></dt><dd><p>A binary whose symbol table, debug sections or both have been removed. Debuggable —
+breakpoints by address, frames from the dynamic symbol table, library names intact —
+just not at source level, unless <a class="reference internal" href="#term-debuginfod"><span class="xref std std-term">debuginfod</span></a> can serve the missing
+<a class="reference internal" href="#term-DWARF"><span class="xref std std-term">DWARF</span></a>.</p>
+</dd>
+<dt id="term-symbol-versioning">symbol versioning<a class="headerlink" href="#term-symbol-versioning" title="Link to this term">#</a></dt><dd><p>The scheme letting one shared library export several incompatible versions of a
+symbol, recorded in the <code class="docutils literal notranslate"><span class="pre">.gnu.version_r</span></code> and <code class="docutils literal notranslate"><span class="pre">.gnu.version_d</span></code> sections. Ordinarily
+invisible; it matters here because a <a class="reference internal" href="#term-BFD"><span class="xref std std-term">BFD</span></a> older than the toolchain that
+linked a binary can reject its <code class="docutils literal notranslate"><span class="pre">.gnu.version_r</span></code> outright, and then the file cannot
+be read <em>at all</em>. Measured on a Debian bookworm seat (binutils 2.40) against a
+RHEL-family target image: the target’s own application binaries read fine, its
+distro binaries — <code class="docutils literal notranslate"><span class="pre">/usr/bin/bash</span></code> among them — did not.</p>
+</dd>
+</dl>
+</section>
 <section id="ssh-and-the-transport">
 <h2>ssh, and the transport<a class="headerlink" href="#ssh-and-the-transport" title="Link to this heading">#</a></h2>
 <dl class="simple glossary">
@@ -1004,6 +1058,7 @@ image</em>.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#podbench-s-own-words">Podbench’s own words</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kubernetes">Kubernetes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#linux-and-why-ptrace-says-no">Linux, and why ptrace says no</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#binaries-and-symbols">Binaries and symbols</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-and-the-transport">ssh, and the transport</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#python-packaging">Python packaging</a></li>
 </ul>

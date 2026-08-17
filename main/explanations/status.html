@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.2.0b2.dev12+g05d226265 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.2.0b2.dev23+ga1bb6065c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=77319ace"></script>
+    <script src="../_static/documentation_options.js?v=df0451a0"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -522,18 +522,45 @@ report is the empirical basis for most of the non-obvious behaviour in the tool:
 it falsified five of the <a class="reference internal" href="design-brief.html"><span class="std std-doc">design brief</span></a>’s load-bearing
 assumptions, and <strong>where the brief and the report disagree, the report wins</strong>.</p>
 <p>Section 3 is the evidence, section 4 the constraint checklist that shaped the
-implementation, section 5 the residual risk as it stood at the gate. Several of
-those constraints look arbitrary and are not; the failure modes they avoid are
-silent.</p>
+implementation, section 5 the residual risk — as it stood at the gate, and with
+a dated paragraph on each row that a later session has settled or added to.
+Several of those constraints look arbitrary and are not; the failure modes they
+avoid are silent.</p>
+<p>The spikes ran on a cluster this project owns. A field session on 2026-08-17 did
+not: an EPICS IOC at Diamond, in a namespace where the user is not an admin,
+under someone else’s Kyverno policies and against a RHEL-family target image. It
+closed the largest item below and opened two others, and most of what it found
+was invisible from this side of the cluster boundary.</p>
 </section>
 <section id="known-unproven-stated-plainly">
 <h2>Known-unproven, stated plainly<a class="headerlink" href="#known-unproven-stated-plainly" title="Link to this heading">#</a></h2>
-<p><strong>No real VS Code GUI client has connected yet.</strong> The transport was verified at
-the protocol level — HTTP 200 plus a WebSocket <code class="docutils literal notranslate"><span class="pre">101</span></code> through <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code> — and the
-server was driven headlessly. Every RSS figure in these docs is therefore a
-<strong>lower bound</strong>: no extension host and no language server has ever been
-measured, and the memory budget is exactly where that matters. See
+<p><strong>A real VS Code GUI client has now connected — and the numbers still have not
+been taken.</strong> On 2026-08-17 a Remote-SSH client reached a seat, started an
+extension host, unpacked <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code>, and drove gdb through the C++
+adapter into a live IOC. The <em>mechanism</em> is no longer an assumption; the
+<strong>budget</strong> still is. Every RSS figure in these docs remains a <strong>lower bound</strong> —
+no per-extension measurement was taken during that session, and the seat had
+been given <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">6Gi</span></code> before anything started. See
 <a class="reference internal" href="../how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a>.</p>
+<p><strong>The seat’s gdb is only as new as the image’s binutils.</strong> gdb reads ELF through
+BFD, so its ability to read a binary is really binutils’. Against a RHEL-family
+target, bookworm’s binutils 2.40 rejected <code class="docutils literal notranslate"><span class="pre">/usr/bin/bash</span></code> outright —
+<code class="docutils literal notranslate"><span class="pre">.gnu.version_r</span> <span class="pre">invalid</span> <span class="pre">entry</span></code> — and the file would not open at all. That is
+<em>not</em> “no debug information”: a stripped binary debugs fine at the address
+level, and the two are indistinguishable from the editor. A target built by a
+newer toolchain than the image ships is an image bump rather than something the
+launcher can work around; CodeLLDB is the escape hatch, since it carries its own
+reader. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> now asks gdb before emitting a <code class="docutils literal notranslate"><span class="pre">cppdbg</span></code> entry — <strong>but
+that refusal has never fired in a cluster</strong>, because the one binary that
+triggers it is the one target selection now avoids.</p>
+<p><strong>Admission engines beyond Pod Security Admission are handled, barely
+exercised.</strong> Kyverno refused a seat at Diamond over a field podbench had never
+set — a <code class="docutils literal notranslate"><span class="pre">validate.pattern</span></code> rule fails on an <em>absent</em> field — and the ladder
+treated that as fatal instead of dropping a rung. Both are fixed, and the ladder
+now degrades through any webhook denial while still raising a webhook that
+failed to <em>answer</em>. <strong>Gatekeeper is untested</strong>, and so is any engine that
+<strong>mutates</strong> rather than refuses: one that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> would leave
+a seat that looks full and behaves degraded, which nothing here would catch.</p>
 <p><strong>Source provisioning for Observe mode is an open design problem.</strong> Debian’s
 debuginfod serves symbols but <strong>not</strong> sources, and <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span></code> does not cover
 source lookup at all. Fedora/RHEL debuginfod is known to serve sources; Debian
@@ -556,6 +583,14 @@ a temp directory and a fake <code class="docutils literal notranslate"><span cla
 seat at the application’s own mountPath, so the workflow is reachable end to
 end; reachable is not the same as demonstrated. See
 <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
+<p><strong>Nothing tells you which half you are running.</strong> The launcher and the image are
+one release in two places, and they can differ: <code class="docutils literal notranslate"><span class="pre">uvx</span></code> resolves the launcher on
+every invocation, while a seat comes from whatever copy of the image tag the
+node already has. Every symptom of that mismatch looks like a bug in the newer
+half — a fix that is present in the launcher and absent from the seat reads
+exactly like a fix that does not work. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--version</span></code> inside the seat is
+the only thing that answers it, and nothing prints it unasked. When iterating on
+a tag that moves, <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--pull</span> <span class="pre">always</span></code> is what keeps the two in step.</p>
 <p>The security-side gaps — the untested seccomp branch of the capability probe,
 and the assumption that every container on a node shares one AppArmor profile —
 are listed under <em>Unproven areas</em> in the <a class="reference internal" href="security.html"><span class="std std-doc">Security model</span></a>.</p>

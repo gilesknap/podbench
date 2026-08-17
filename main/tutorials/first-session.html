@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.2.0b2.dev12+g05d226265 documentation</title>
+    <title>Your first session &#8212; podbench 0.2.0b2.dev23+ga1bb6065c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=77319ace"></script>
+    <script src="../_static/documentation_options.js?v=df0451a0"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -638,16 +638,16 @@ which of the target’s <code class="docutils literal notranslate"><span class="
 <section id="connect-with-ssh">
 <h2>5. Connect with ssh<a class="headerlink" href="#connect-with-ssh" title="Link to this heading">#</a></h2>
 <p>The last lines of the attach output tell you the alias:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ssh</span> <span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="o">.</span><span class="n">conf</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ssh</span> <span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="o">-</span><span class="mf">1.</span><span class="n">conf</span>
 <span class="n">add</span> <span class="n">this</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">ssh</span><span class="o">/</span><span class="n">config</span> <span class="n">once</span><span class="p">:</span>  <span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
 <span class="ow">or</span> <span class="n">let</span> <span class="n">podbench</span> <span class="n">check</span> <span class="ow">and</span> <span class="n">add</span> <span class="n">it</span><span class="p">:</span>  <span class="n">podbench</span> <span class="n">doctor</span> <span class="o">--</span><span class="n">fix</span>
-<span class="n">then</span><span class="p">:</span>  <span class="n">ssh</span> <span class="n">podbench</span><span class="o">-</span><span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span>
+<span class="n">then</span><span class="p">:</span>  <span class="n">ssh</span> <span class="n">podbench</span><span class="o">-</span><span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="o">-</span><span class="mi">1</span>
 </pre></div>
 </div>
 <p>If you have not added the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line yet, run <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">--fix</span></code>
 now — it adds the line above any <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block, which is where it has to be
 (see <a class="reference internal" href="setup.html"><span class="std std-doc">Setup</span></a>). Then:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 PID  UID  TARGET  CONTAINER      COMM    CMDLINE
 1    0    yes     87d20e23a1b4   python  python -m http.server 8080
@@ -703,7 +703,7 @@ survives the attach output scrolling away.</p>
 </pre></div>
 </div>
 <p>Also drop the generated stanza if you want a tidy config directory:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ rm ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn.conf
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ rm ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
 </pre></div>
 </div>
 </section>
