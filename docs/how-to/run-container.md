@@ -144,7 +144,7 @@ Two, and both are structural rather than convenient.
 | On `PATH` | What it is |
 |---|---|
 | `podbench` | `exec /app/.venv/bin/podbench "$@"` — the venv is on no default `PATH`, and `ssh <host> podbench capreport` runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve |
-| `gdb-podbench` | installed as `gdb` as well, so anything that shells out to `gdb --pid <n>` in the seat gets a sysroot and a working directory that exists |
+| `gdb-podbench` | installed as `gdb` as well, so anything that shells out to `gdb --pid <n>` in the seat gets a sysroot, an exec file gdb cannot canonicalise back into this container (issue #90) and a working directory that exists |
 
 Every in-pod verb is reached as `podbench <verb>`: `podbench pids`, `podbench
 dbg`, `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,

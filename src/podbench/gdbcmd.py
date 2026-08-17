@@ -19,6 +19,11 @@ sequence in one place, which is what :func:`attach_commands` is. Nothing here
 runs gdb interactively to feed it commands — the sequence is handed over at
 exec time, so there is no window in which a half-configured gdb is attached.
 
+The one command in that sequence whose argument is not a sysroot path is
+``file``, and :mod:`podbench.execfile` is why: gdb canonicalises the exec file's
+name, ``/proc/<pid>/root`` canonicalises to ``/``, and the seat then reads its
+own binary of the same name (issue #90).
+
 Two further constraints from the report shape what is *not* here. Sources are
 wired with ``directory``, never ``substitute-path``: the generic substitution
 functions, but gdb re-applies it on display and hands the DAP client
@@ -40,6 +45,7 @@ from typing import Annotated
 import typer
 
 from .cli import new_app, require_subcommand, run
+from .execfile import gdb_exec_file
 from .model import CapabilityReport, ProcInfo, Verdict, describe_gated_fallback
 from .probe import Attacher, probe
 from .proc import (
@@ -97,6 +103,7 @@ def attach_commands(
     pid: int,
     *,
     exe: str | None = None,
+    exec_file: str | None = None,
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
 ) -> list[str]:
@@ -111,6 +118,14 @@ def attach_commands(
     set debuginfod enabled on
     file /proc/597/root/app/victim
     attach 597
+
+    ``exec_file`` overrides the path the ``file`` command is given, and is how
+    issue #90 is kept out of the sequence: where the seat has a file of its own
+    at the target's ``exe`` path, gdb canonicalises the sysroot away and reads
+    ours instead, so :func:`podbench.execfile.gdb_exec_file` hands a copy in.
+
+    >>> attach_commands(597, exe="/app/victim", exec_file="/tmp/x/victim")[-2:]
+    ['file /tmp/x/victim', 'attach 597']
 
     Every line earns its place:
 
@@ -136,7 +151,9 @@ def attach_commands(
     commands += [f"directory {directory}" for directory in source_dirs]
     commands.append(f"add-auto-load-safe-path {root}")
     commands.append(f"set debuginfod enabled {'on' if debuginfod else 'off'}")
-    if exe is not None:
+    if exec_file is not None:
+        commands.append(f"file {exec_file}")
+    elif exe is not None:
         # String concatenation, never a path join: the exe link is absolute, and
         # joining would discard the sysroot and silently read our own binary.
         commands.append(f"file {root}{strip_deleted(exe)}")
@@ -521,6 +538,17 @@ def _dbg_command(
                 "or starting gdb",
             ),
         ] = False,
+        print_exec_file: Annotated[
+            bool,
+            typer.Option(
+                "--print-exec-file",
+                help="print the one path to give gdb's `file` command and exit. "
+                "It is the target's own path under the sysroot unless this "
+                "container has a file of its own at that path, in which case gdb "
+                "would read ours (issue #90) and a copy is staged instead. What "
+                "`gdb-podbench` calls for a third-party `gdb --pid`",
+            ),
+        ] = False,
         launch: Annotated[
             str | None,
             typer.Option(
@@ -540,6 +568,7 @@ def _dbg_command(
                 debuginfod=not no_debuginfod,
                 run_it=run_it,
                 dry_run=dry_run,
+                print_exec_file=print_exec_file,
                 launch=launch,
                 program_args=program_args,
                 proc=proc,
@@ -576,6 +605,7 @@ def _run_dbg(
     debuginfod: bool,
     run_it: bool,
     dry_run: bool,
+    print_exec_file: bool,
     launch: str | None,
     program_args: Sequence[str],
     proc: Path,
@@ -593,6 +623,13 @@ def _run_dbg(
         if dry_run:
             print(command_file_text(commands), end="")
             return 0
+        if print_exec_file:
+            # A launched program runs in *this* container, so there is no
+            # sysroot to canonicalise away and nothing to stage. Answered
+            # rather than ignored: the alternative is a flag that asks for a
+            # path and starts a debugger instead.
+            print(launch)
+            return 0
         return runner(gdb_argv(commands))
 
     pid, notes = resolve_target_pid(pid, container_id, proc=proc)
@@ -602,14 +639,36 @@ def _run_dbg(
         return EXIT_USAGE
 
     exe = read_exe(pid, proc=proc)
+    file_path: str | None = None
     if exe is None:
         _warn(
             f"could not read /proc/{pid}/exe (it needs PTRACE_MODE_READ): gdb "
             "gets no `file` command, so frames in the main executable may come "
             "back as ?? ()"
         )
+    else:
+        # Resolved before `--dry-run` returns, and with the same side effect,
+        # because the point of printing the sequence is that it can be pasted:
+        # a dry run that showed `file /proc/<pid>/root<exe>` would document the
+        # one path issue #90 says gdb misreads. On a laptop there is no
+        # /proc/<pid> at all, `read_exe` has already answered None, and nothing
+        # here runs.
+        file_path, staged_notes = gdb_exec_file(pid, exe, proc=proc)
+        for note in staged_notes:
+            _warn(note)
+    if print_exec_file:
+        # gdb-podbench's answer: one path on stdout for the caller to feed to
+        # `file`, or nothing and a usage exit when the exe could not be read.
+        if file_path is None:
+            return EXIT_USAGE
+        print(file_path)
+        return 0
     commands = attach_commands(
-        pid, exe=exe, source_dirs=list(source_dirs), debuginfod=debuginfod
+        pid,
+        exe=exe,
+        exec_file=file_path,
+        source_dirs=list(source_dirs),
+        debuginfod=debuginfod,
     )
     if dry_run:
         # Deliberately before the probe: generating the documented command file

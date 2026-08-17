@@ -128,7 +128,7 @@ structural; neither is a convenience.
 | On PATH | What it is | Why it has to exist |
 |---|---|---|
 | `podbench` | `exec /app/.venv/bin/podbench "$@"` | the venv is on no default `PATH`, and report 4.1's sshd_config sets `UsePAM no`, so `ssh <seat> podbench pids` gets sshd's compiled-in `PATH`. That includes `/usr/local/bin` and not `/app/.venv/bin`. |
-| `gdb-podbench` | a shell wrapper around `/usr/bin/gdb`, installed as `gdb` too | its caller is a *third party* — debugpy's injection shells out to `gdb --nw --nh --nx --pid 1`, and without the wrapper it gets no `set sysroot` and a cwd VS Code may have deleted. No podbench subcommand can stand in for it. |
+| `gdb-podbench` | a shell wrapper around `/usr/bin/gdb`, installed as `gdb` too | its caller is a *third party* — debugpy's injection shells out to `gdb --nw --nh --nx --pid 1`, and without the wrapper it gets no `set sysroot`, no exec file that survives gdb's canonicalisation (issue #90) and a cwd VS Code may have deleted. No podbench subcommand can stand in for it. |
 
 The `podbench` shim calls the venv by **absolute path** on purpose: `ssh <host>
 podbench capreport` runs a non-login, non-interactive shell that sources
@@ -147,6 +147,14 @@ aliases; see deviation 6.
 extension directory as a cwd, which VS Code deletes on update — gdb's libpython
 then fails `getcwd()` and the process dies during startup with no signal name.
 See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
+
+It does *call* one, though: `podbench dbg <pid> --print-exec-file`, for the path
+to give gdb's `file` command. Deciding that path means knowing whether the
+target shares this container's mount namespace and whether anything of ours sits
+at its `exe` path, which is deviation 2's rule exactly — worked out once in
+Python, where it is tested, rather than a second time in `sh` where it could
+only drift. The call is optional: no answer, and the wrapper behaves as it did
+before, which is what a seat with a broken venv still deserves.
 
 ## Deviations from the brief
 
