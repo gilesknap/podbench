@@ -55,9 +55,11 @@ class FakeSeat:
         unreadable: Sequence[str] = (),
         unwritable: Sequence[str] = (),
         install_rc: int = 0,
+        install_lands: bool = True,
         open_rc: int = 0,
         ssh_rc: int = 0,
         ssh_stderr: str = "",
+        list_rc: int = 0,
     ) -> None:
         self.configurations = list(configurations)
         self.debug_config_rc = debug_config_rc
@@ -69,9 +71,15 @@ class FakeSeat:
         self.unreadable = set(unreadable)
         self.unwritable = set(unwritable)
         self.install_rc = install_rc
+        # `code --install-extension --remote` exits 0 without a connection, so
+        # "the command succeeded" and "the seat has it" are independent facts
+        # and the fake has to be able to hold them apart.
+        self.install_lands = install_lands
+        self.unpacked: set[str] = set()
         self.open_rc = open_rc
         self.ssh_rc = ssh_rc
         self.ssh_stderr = ssh_stderr
+        self.list_rc = list_rc
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(
@@ -132,6 +140,16 @@ class FakeSeat:
             "the preflight has to use the alias VS Code will, through the same "
             f"config: {argv}"
         )
+        if argv[-1].startswith("ls -1"):
+            # The seat's extensions directory, named as vscode-server names it:
+            # the id, a version and sometimes a platform triple. Its own return
+            # code, because the preflight has already passed by the time this
+            # runs — a listing can fail on a connection the probe proved.
+            return _result(
+                self.list_rc,
+                stdout="".join(f"{name}-1.0.0\n" for name in sorted(self.unpacked)),
+                stderr=self.ssh_stderr,
+            )
         return _result(self.ssh_rc, stderr=self.ssh_stderr)
 
     def _editor(self, argv: list[str]) -> CommandResult:
@@ -140,6 +158,8 @@ class FakeSeat:
             "installs on the laptop and the adapter runs there too"
         )
         if "--install-extension" in argv:
+            if self.install_rc == 0 and self.install_lands:
+                self.unpacked.add(argv[-1].lower())
             return _result(self.install_rc, stderr="no Remote-SSH here")
         return _result(self.open_rc, stderr="cannot resolve host")
 
@@ -588,12 +608,52 @@ def test_the_open_step_does_not_claim_the_window_connected() -> None:
     )
 
 
-def test_an_already_installed_extension_is_not_claimed_as_new() -> None:
-    """`code --install-extension` exits 0 for "already installed" too."""
+def test_an_extension_is_claimed_only_once_the_seat_has_it() -> None:
+    """ "Unpacked", and asserted against the seat's own listing.
+
+    `code --install-extension` exits 0 for "already installed" *and* for "never
+    reached the remote", so its exit code cannot tell anyone anything about the
+    seat. The directory can.
+    """
     seat = FakeSeat()
     notes = run_open(seat)
 
-    assert any("ms-python.python is installed in SSH" in note for note in notes)
+    assert any("ms-python.python is unpacked in SSH" in note for note in notes)
+    assert any(
+        "ls -1 ~/.vscode-server/extensions" in call[-1]
+        for call in seat.calls
+        if call[0] == "ssh"
+    )
+
+
+def test_an_install_that_exits_0_without_reaching_the_seat_is_not_believed() -> None:
+    """The DLS run of 2026-08-16: three extensions "installed", none present.
+
+    The remedy has to name the *local* install trap, because that is where the
+    Extensions view sends someone who does not know to look for "in SSH:" on the
+    button - and a locally-installed cpptools runs the adapter on the laptop,
+    where `/proc/<pid>/root/...` does not exist.
+    """
+    seat = FakeSeat(install_lands=False)
+    notes = run_open(seat)
+
+    assert any("did not land in the seat" in note for note in notes)
+    assert any("Install in SSH" in note for note in notes)
+    assert not any("is unpacked in SSH" in note for note in notes)
+    assert not any("Reload Window" in note for note in notes)
+
+
+def test_an_unlistable_seat_is_unproven_rather_than_a_failure() -> None:
+    """ssh worked minutes ago, so a failed listing is a transient.
+
+    Reporting it as "not installed" would send the user to reinstall something
+    that is already there; claiming success would be the bug this check exists
+    to remove. Neither, then — and say which.
+    """
+    seat = FakeSeat(list_rc=255)
+    notes = run_open(seat)
+
+    assert any("unverified" in note for note in notes)
 
 
 # -- the two refusals --------------------------------------------------------

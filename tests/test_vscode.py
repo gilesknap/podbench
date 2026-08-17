@@ -60,6 +60,7 @@ from test_flavour import (
 
 PID = 597
 EXE = "/app/victim"
+CID = "cafe1234cafe1234cafe1234cafe1234"
 
 
 @pytest.fixture
@@ -514,6 +515,110 @@ def test_every_applicable_flavour_is_emitted_and_named(
         "podbench: attach to victim (gdb)",
         "podbench: attach to victim (lldb)",
     ]
+
+
+def container_tree(
+    tmp_path: Path, processes: Sequence[tuple[int, str, str, int]]
+) -> Path:
+    """A ``/proc`` holding one container's process tree.
+
+    ``processes`` is ``(pid, comm, exe, ppid)``. Every entry lands in the same
+    cgroup, so all of them are the target container's — which is the case the
+    ranking exists for.
+    """
+    (tmp_path / "self").mkdir()
+    (tmp_path / "self" / "cgroup").write_text("0::/\n")
+    for pid, comm, exe, ppid in processes:
+        entry = tmp_path / str(pid)
+        entry.mkdir()
+        (entry / "comm").write_text(f"{comm}\n")
+        (entry / "cmdline").write_text(f"{exe}\x00")
+        (entry / "cgroup").write_text(f"0::/../cri-containerd-{CID}.scope\n")
+        (entry / "status").write_text(
+            f"Name:\t{comm}\nPPid:\t{ppid}\nUid:\t0\t0\t0\t0\n"
+        )
+        (entry / "exe").symlink_to(exe)
+    return tmp_path
+
+
+#: The tree from the live IOC pod that produced the bug: a bash entrypoint, the
+#: Python that supervises it, the ``sh -c`` it re-execs through, and the binary
+#: the pod exists to run — which is the *deepest* of the four, not the lowest.
+IOC_TREE = (
+    (1, "bash", "/usr/bin/bash", 0),
+    (8, "python3", "/usr/bin/python3", 1),
+    (11, "sh", "/usr/bin/sh", 8),
+    (13, "ioc", "/epics/ioc/bin/ioc", 11),
+)
+
+
+def test_an_entrypoint_script_does_not_become_the_debug_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The bug from a live IOC pod: pid 1 is bash, and nobody wants to debug it.
+
+    A cppdbg entry for ``/proc/1/root/usr/bin/bash`` is not a broken
+    configuration — it is a correct configuration for the wrong process, which
+    is exactly why it costs an afternoon. Shells are dropped rather than listed
+    after the real target: an entry in the dropdown gets picked.
+    """
+    proc = container_tree(tmp_path, IOC_TREE)
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    programs = [
+        entry["program"] for entry in document["configurations"] if "program" in entry
+    ]
+    assert programs
+    assert not any("bash" in program or "/sh" in program for program in programs)
+    assert all("/proc/13/root" in program for program in programs)
+
+
+def test_every_candidate_gets_an_entry_rather_than_one_winning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing measurable separates two live children of an entrypoint script.
+
+    So they do not compete for one slot: launch.json holds a list and the choice
+    is made at F5, which is the same reason two flavours of one process are both
+    emitted. The best candidate is first, because VS Code's dropdown defaults to
+    whatever is at the top.
+    """
+    proc = container_tree(
+        tmp_path,
+        (
+            (1, "bash", "/usr/bin/bash", 0),
+            (8, "supervisor", "/app/supervisor", 1),
+            (13, "worker", "/app/worker", 8),
+        ),
+    )
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    pids = [
+        str(entry["processId"])
+        for entry in document["configurations"]
+        if "processId" in entry
+    ]
+    assert pids[0] == "13"
+    assert set(pids) == {"13", "8"}
+
+
+def test_an_explicit_pid_is_not_second_guessed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Naming a pid is an answer, so offering three others is not helpfulness.
+
+    This is also the escape hatch when the ranking is wrong — including the way
+    back to a shell — so it has to be exactly one entry per flavour and not one
+    per process.
+    """
+    proc = container_tree(tmp_path, IOC_TREE)
+    assert cli(["1", "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    pids = {
+        str(entry.get("processId") or entry.get("pid"))
+        for entry in document["configurations"]
+    }
+    assert pids == {"1"}
 
 
 def test_a_refused_flavour_names_its_mechanism(

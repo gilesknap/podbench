@@ -89,7 +89,7 @@ from .gdbcmd import (
     EXIT_USAGE,
     attach_commands,
     launch_commands,
-    resolve_target_pid,
+    resolve_target_pids,
     sysroot_path,
 )
 from .kubectl import Runner, run_subprocess
@@ -977,7 +977,13 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     from .dev import LISTENERS_COMMAND, listeners_on, parse_ss
 
     run = runner if runner is not None else run_subprocess
-    result = run(list(LISTENERS_COMMAND))
+    try:
+        result = run(list(LISTENERS_COMMAND))
+    except OSError:
+        # "cannot run" includes "is not installed", which is not a non-zero exit
+        # but an exception — and the caller is mid-way through authoring a
+        # configuration, so it must not be one here.
+        return None
     if result.returncode != 0:
         return None
     return port if listeners_on(parse_ss(result.stdout), port) else None
@@ -1181,8 +1187,16 @@ def _emit(
     source_dirs: Sequence[str],
     source_map: Mapping[str, str],
     debuginfod: bool,
+    verbose: bool = True,
 ) -> list[dict[str, Any]]:
-    """Turn the verdicts into configurations, and the refusals into sentences."""
+    """Turn the verdicts into configurations, and the refusals into sentences.
+
+    ``verbose`` is false for a candidate the user did not ask about — the second
+    and third process in the container. Their refusals are the *same* refusals as
+    the target's nine times in ten (one seat, one set of capabilities), and
+    repeating three paragraphs of them buries the configurations that did come
+    out.
+    """
     configurations: list[dict[str, Any]] = []
     for assessment in assessments:
         if assessment.flavour not in wanted:
@@ -1209,7 +1223,7 @@ def _emit(
         # A flavour ruled out purely by language is noise unless it was asked
         # for by name — nobody debugging a C binary needs to be told that delve
         # is for Go. Everything else is a mechanism the user could act on.
-        if explicit or not assessment.language_mismatch:
+        if (explicit or not assessment.language_mismatch) and verbose:
             _warn(assessment.message())
     return configurations
 
@@ -1242,12 +1256,89 @@ def _run(
     if problems:
         return EXIT_USAGE
 
-    pid, notes = resolve_target_pid(pid, container_id, proc=proc)
+    pids, notes = resolve_target_pids(pid, container_id, proc=proc)
     for note in notes:
         _warn(note)
-    if pid is None:
+    if not pids:
+        return EXIT_USAGE
+    explicit_pid = pid is not None
+
+    requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
+    explicit = bool(requested)
+    wanted = set(requested) if explicit else set(Flavour)
+
+    configurations: list[dict[str, Any]] = []
+    # Every candidate gets a configuration, not just the best one. An entrypoint
+    # script's children are usually two *different* languages — an IOC binary
+    # under gdb beside the Python that supervises it — so the flavours do not
+    # compete for one slot, and launch.json holds a list precisely so the choice
+    # can be made at F5 rather than guessed here (issue #92). The best candidate
+    # goes first, and is the only one --provision may touch.
+    for index, candidate in enumerate(pids):
+        primary = index == 0
+        if not primary:
+            _warn(f"also emitting for pid {candidate}")
+        configurations.extend(
+            _for_target(
+                candidate,
+                program=program if explicit_pid else None,
+                mode=mode,
+                wanted=wanted,
+                explicit=explicit,
+                # A refusal is worth a paragraph for the target the user is
+                # about to debug and worth a line for the alternatives, which
+                # they did not ask about and may not want.
+                verbose=primary or explicit_pid,
+                port=port,
+                source_dirs=source_dirs,
+                source_map=source_map,
+                debuginfod=debuginfod,
+                provision=provision and primary,
+                provision_dest=provision_dest,
+                provision_python=provision_python,
+                proc=proc,
+                runner=runner,
+                which=which,
+                debugpy_root=debugpy_root,
+                hint=primary,
+            )
+        )
+
+    if not configurations:
+        _warn(
+            "no debugger flavour could be emitted for this target — every "
+            "mechanism that said no is named above"
+        )
         return EXIT_USAGE
 
+    if print_config:
+        print(launch_json_text(configurations), end="")
+        return 0
+    return _write(configurations, output)
+
+
+def _for_target(
+    pid: int,
+    *,
+    program: str | None,
+    mode: Mode | None,
+    wanted: set[Flavour],
+    explicit: bool,
+    verbose: bool,
+    port: int,
+    source_dirs: Sequence[str],
+    source_map: Mapping[str, str],
+    debuginfod: bool,
+    provision: bool,
+    provision_dest: str,
+    provision_python: str | None,
+    proc: Path,
+    runner: Runner | None,
+    which: Which,
+    debugpy_root: str | None,
+    hint: bool,
+) -> list[dict[str, Any]]:
+    """Everything one candidate pid contributes to ``launch.json``."""
     target = inspect_target(pid, proc=proc, program=program)
     for note in target.notes:
         _warn(note)
@@ -1295,13 +1386,9 @@ def _run(
             seat = measure()
     assessments = assess(target, mode, seat)
 
-    requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
-    explicit = bool(requested)
-    wanted = set(requested) if explicit else set(Flavour)
-    print(
-        f"debug-config: {target.language.value} target, {mode.value} mode"
-        + (f", {target.machine}" if target.machine else ""),
-        file=sys.stderr,
+    _warn(
+        f"pid {pid} ({target.name}): {target.language.value} target, "
+        f"{mode.value} mode" + (f", {target.machine}" if target.machine else "")
     )
     configurations = _emit(
         assessments,
@@ -1314,22 +1401,22 @@ def _run(
         source_dirs=source_dirs,
         source_map=source_map,
         debuginfod=debuginfod,
+        verbose=verbose,
     )
-    if not configurations:
-        _warn(
-            "no debugger flavour could be emitted for this target — every "
-            "mechanism that said no is named above"
+    if not configurations and not verbose:
+        # The quiet path still has to account for itself: a candidate that was
+        # announced and then contributed nothing reads as a bug in the emitter.
+        refused = next(
+            (a for a in assessments if not a.available and not a.language_mismatch),
+            None,
         )
-        return EXIT_USAGE
-
-    if print_config:
-        print(launch_json_text(configurations), end="")
-    else:
-        code = _write(configurations, output)
-        if code != 0:
-            return code
-    _hint(target, mode, seat, assessments, wanted, port=port)
-    return 0
+        _warn(
+            f"pid {pid} ({target.name}): nothing emitted"
+            + (f" — {refused.reason}" if refused else "")
+        )
+    if hint and configurations:
+        _hint(target, mode, seat, assessments, wanted, port=port)
+    return configurations
 
 
 def _write(configurations: Sequence[Mapping[str, Any]], output: str | None) -> int:

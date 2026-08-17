@@ -512,6 +512,11 @@ class ProcInfo:
     degraded rung may never be handed: it costs the sysroot, maps, environ and
     exe that are the whole point of that rung, and the launcher picks
     ``runAsUser`` from here (report 3.11).
+
+    ``ppid`` is read for one reason: an image whose entrypoint is a script has
+    the shell as its lowest pid, and the process worth debugging is somewhere
+    below it. Depth in the tree is what separates the two, and nothing else
+    measurable does — see :func:`podbench.proc.debug_candidates`.
     """
 
     pid: int
@@ -520,6 +525,8 @@ class ProcInfo:
     cmdline: str
     container_id: str | None = None
     is_target: bool = False
+    ppid: int | None = None
+    """The parent, or ``None`` when ``/proc/<pid>/status`` could not be read."""
 
 
 @dataclass(frozen=True)

@@ -46,6 +46,8 @@ from .model import (
 from .proc import (
     DEFAULT_PROC,
     apparmor_profile,
+    candidate_note,
+    debug_candidates,
     env_target_container_id,
     no_new_privs,
     proc_read_matrix,
@@ -830,10 +832,8 @@ def _discover_target(
     if not targets:
         return None, [f"no process found in a cgroup matching container id {cid}"]
     notes = [] if listing.warning is None else [listing.warning]
-    if len(targets) > 1:
-        notes.append(
-            "target container has "
-            f"{len(targets)} processes; probing the lowest pid "
-            f"({targets[0].pid}, {targets[0].comm})"
-        )
-    return targets[0].pid, notes
+    candidates = debug_candidates(targets)
+    note = candidate_note(candidates, "probing")
+    if note is not None:
+        notes.append(note)
+    return candidates[0].pid, notes

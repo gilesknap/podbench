@@ -46,7 +46,10 @@ from .proc import (
     DEFAULT_PROC,
     DELETED_SUFFIX,
     ProcessListing,
+    candidate_note,
+    debug_candidates,
     env_target_container_id,
+    is_shell,
     read_exe,
     scan_processes,
     strip_deleted,
@@ -68,6 +71,7 @@ __all__ = [
     "pids_payload",
     "read_exe",
     "resolve_target_pid",
+    "resolve_target_pids",
     "strip_deleted",
     "sysroot_path",
 ]
@@ -214,32 +218,52 @@ def resolve_target_pid(
     *,
     proc: Path = DEFAULT_PROC,
 ) -> tuple[int | None, list[str]]:
-    """Work out which pid to debug, and say how sure we are.
+    """The one pid to debug, and how sure we are.
+
+    For ``podbench dbg``, which runs a single gdb: the best candidate only. Use
+    :func:`resolve_target_pids` where every candidate can be offered at once.
+    """
+    pids, notes = resolve_target_pids(pid, container_id, proc=proc)
+    return (pids[0] if pids else None), notes
+
+
+def resolve_target_pids(
+    pid: int | None,
+    container_id: str | None,
+    *,
+    proc: Path = DEFAULT_PROC,
+) -> tuple[list[int], list[str]]:
+    """Every process in the target container worth debugging, best first.
 
     With neither an explicit pid nor a container id we refuse to guess: "the
     target is PID 1" is wrong under ``shareProcessNamespace: true``, where PID 1
-    is ``/pause`` (3.15).
+    is ``/pause`` (3.15). An explicit pid is taken as given and is the only
+    answer — the caller named a process, so offering it three others is not
+    helpfulness.
     """
     if pid is not None:
-        return pid, []
+        return [pid], []
     cid = container_id or env_target_container_id()
     if cid is None:
-        return None, [
+        return [], [
             "no pid given and no PODBENCH_TARGET_CID: pass a pid explicitly — "
             "PID 1 is the pod's pause process, not the target"
         ]
     listing = scan_processes(cid, proc=proc)
     targets = listing.targets
     if not targets:
-        return None, [f"no process found in a cgroup matching container id {cid}"]
+        return [], [f"no process found in a cgroup matching container id {cid}"]
     notes = [] if listing.warning is None else [listing.warning]
-    if len(targets) > 1:
-        notes.append(
-            f"target container has {len(targets)} processes; debugging the "
-            f"lowest pid ({targets[0].pid}, {targets[0].comm}). Run "
-            "`podbench pids` to choose another."
-        )
-    return targets[0].pid, notes
+    candidates = debug_candidates(targets)
+    note = candidate_note(candidates, "debugging")
+    if note is not None:
+        notes.append(note)
+    # Shells are a *fallback* target, not an extra one. Where something else
+    # ran they are dropped rather than offered, because "attach to bash" in the
+    # dropdown beside "attach to ioc" is the original bug with one more step:
+    # the entry is selectable, it attaches, and it shows nothing.
+    offered = [info for info in candidates if not is_shell(info)] or candidates
+    return [info.pid for info in offered], notes
 
 
 def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
