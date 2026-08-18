@@ -625,7 +625,12 @@ def survey_seat(
     ``/proc/self/status``.
     """
     here = _debugpy_dir(debugpy_root)
-    there = _target_debugpy(target.pid, proc=proc, provision_dest=provision_dest)
+    there = _target_debugpy(
+        target.pid,
+        argv=target.cmdline.split(),
+        proc=proc,
+        provision_dest=provision_dest,
+    )
     return Seat(
         machine=machine or os.uname().machine,
         cap_sys_ptrace=self_capabilities(proc=proc).sys_ptrace_effective,
@@ -671,8 +676,49 @@ def _spelled(pid: int, proc: Path, local: Path) -> str:
     return f"{sysroot_path(pid)}/{relative.as_posix()}"
 
 
+def _venv_site_packages(root: Path, argv: Sequence[str]) -> Path | None:
+    """The target's virtualenv ``site-packages``, read off its own ``argv``.
+
+    :data:`_SEARCH_ROOTS` describes a *system* layout, and an epics-containers
+    image is not one: the interpreter is ``/app/.venv/bin/python3`` and every
+    dependency the app imports — debugpy among them — lives under
+    ``/app/.venv/lib/python3.X/site-packages``, which neither prefix reaches.
+    Measured on p47's ``fastcs-example``, whose image ships debugpy 1.8.17 and
+    whose ``debug-config`` still refused the flavour for want of it.
+
+    ``argv`` rather than ``/proc/<pid>/exe``: a uv-built venv symlinks its
+    interpreter out to ``/python/cpython-<version>-<triple>/bin``, so the exe
+    link resolves *past* the venv and names the base prefix instead. Two
+    entries are read because either can be the one inside the venv — a console
+    script is ``argv[0]`` on its own, and ``python /app/.venv/bin/app`` puts it
+    in ``argv[1]``.
+
+    ``pyvenv.cfg`` is what makes this a lookup rather than a guess: without it
+    an ``argv[0]`` of ``/usr/bin/python3`` would be read as a venv rooted at
+    ``/usr``, and the answer would be a system tree the target may not even
+    import from.
+
+    >>> _venv_site_packages(Path("/nonexistent"), ["/app/.venv/bin/python3"])
+    """
+    for candidate in argv[:2]:
+        binary = Path(candidate)
+        if not candidate.startswith("/") or binary.parent.name != "bin":
+            continue
+        venv = root / binary.parent.parent.relative_to("/")
+        if not (venv / "pyvenv.cfg").is_file():
+            continue
+        for parent in sorted(venv.glob("lib/python3*")):
+            if _has_debugpy(parent / "site-packages"):
+                return parent / "site-packages"
+    return None
+
+
 def _target_debugpy(
-    pid: int, *, proc: Path = DEFAULT_PROC, provision_dest: str = PROVISION_DEST
+    pid: int,
+    *,
+    argv: Sequence[str] = (),
+    proc: Path = DEFAULT_PROC,
+    provision_dest: str = PROVISION_DEST,
 ) -> Path | None:
     """Where the *target* keeps debugpy, as a path this container can stat.
 
@@ -682,11 +728,20 @@ def _target_debugpy(
     ``uv pip install --python-version``. Anything broader would be a walk of
     another container's rootfs, which is the OOM the vscode-in-a-seat skill
     warns about and which an ephemeral container cannot be restarted from.
+
+    The target's own venv is asked next and before the system prefixes, because
+    that is the tree its interpreter really imports from: a venv built with
+    ``include-system-site-packages = false`` cannot reach ``/usr/lib`` at all,
+    so answering with a system copy would name a debugpy the bootstrap could
+    not load.
     """
     root = Path(f"{proc}/{pid}/root")
     provisioned = root / provision_dest.lstrip("/")
     if _has_debugpy(provisioned):
         return provisioned
+    venv = _venv_site_packages(root, argv)
+    if venv is not None:
+        return venv
     for prefix in _SEARCH_ROOTS:
         for parent in sorted((root / prefix).glob("python3*")):
             for leaf in ("site-packages", "dist-packages"):
