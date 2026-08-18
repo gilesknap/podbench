@@ -439,6 +439,119 @@ def test_the_provisioned_copy_is_found_by_one_more_fixed_path(
     assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).available
 
 
+VENV_CMDLINE = (
+    "/app/.venv/bin/python3 /app/.venv/bin/fastcs-example run "
+    "/epics/ioc/config/controller.yaml"
+)
+"""p47's ``bl47p-ea-fastcs-01``, verbatim: a uv venv at ``/app/.venv`` whose
+interpreter is a symlink out to ``/python/cpython-<version>-<triple>``."""
+
+
+def venv_proc(tmp_path: Path, *, pyvenv_cfg: bool = True) -> Path:
+    """An epics-containers rootfs: the app in a venv, nothing under ``/usr``."""
+    proc = make_proc(
+        tmp_path,
+        exe="/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+        cmdline=VENV_CMDLINE,
+        cap_sys_ptrace=True,
+    )
+    venv = proc / str(PID) / "root" / "app" / ".venv"
+    venv.mkdir(parents=True)
+    if pyvenv_cfg:
+        (venv / "pyvenv.cfg").write_text("version_info = 3.11.13\n")
+    write_debugpy(venv / "lib" / "python3.11" / "site-packages", helpers=AMD64_HELPER)
+    return proc
+
+
+def test_the_target_venv_is_searched_and_beats_a_system_copy(tmp_path: Path) -> None:
+    """``_SEARCH_ROOTS`` is a system layout, and a DLS IOC is not one.
+
+    Measured against p47's ``fastcs-example`` on 2026-08-18: the image ships
+    debugpy 1.8.17 in ``/app/.venv/lib/python3.11/site-packages``, both fixed
+    prefixes missed it, and ``debug-config`` refused the flavour with "debugpy
+    is not importable by the target" — of the app that had it installed. Every
+    epics-containers image is this shape, so the refusal was not a corner case.
+
+    The venv wins over ``/usr/lib`` rather than merely being tried after it: a
+    venv built ``include-system-site-packages = false`` cannot import from
+    there at all, so a system answer would name a tree the bootstrap could not
+    load.
+    """
+    proc = venv_proc(tmp_path)
+    write_debugpy(
+        proc / str(PID) / "root" / "usr" / "lib" / "python3.11" / "site-packages",
+        helpers=AMD64_HELPER,
+    )
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    assert seat.debugpy_there == (
+        f"/proc/{PID}/root/app/.venv/lib/python3.11/site-packages"
+    )
+    assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY).available
+
+
+def test_a_bin_directory_without_pyvenv_cfg_is_not_a_venv(tmp_path: Path) -> None:
+    """The guard that keeps the lookup a measurement rather than a guess.
+
+    ``argv[0]``'s grandparent is a venv root only when ``pyvenv.cfg`` says so;
+    otherwise ``/usr/bin/python3`` would be read as a venv rooted at ``/usr``,
+    and any ``lib/python3*/site-packages`` under it would be answered as the
+    target's own tree.
+    """
+    proc = venv_proc(tmp_path, pyvenv_cfg=False)
+    write_debugpy(
+        proc / str(PID) / "root" / "usr" / "lib" / "python3.11" / "site-packages",
+        helpers=AMD64_HELPER,
+    )
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    assert seat.debugpy_there == (f"/proc/{PID}/root/usr/lib/python3.11/site-packages")
+
+
+def test_a_parent_directory_component_disqualifies_a_candidate(
+    tmp_path: Path,
+) -> None:
+    """The answer leaves this mount namespace, so it may not carry a ``..``.
+
+    ``debugpy_there`` becomes the injection's ``PYTHONPATH`` and the prefix of
+    the ``dlopen`` path written into the *target*, and the only reason
+    ``/proc/<pid>/root/...`` is the one spelling valid on both sides is that it
+    names the same file in either namespace. A ``..`` is resolved against
+    whatever ``/proc/<pid>/root`` means on each side, so it also walks out of
+    the rootfs the lookup is supposed to stay inside — here, into a venv the
+    target does not have.
+    """
+    proc = make_proc(
+        tmp_path,
+        exe="/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+        cmdline="/../../../opt/venv/bin/python3 /app/run.py",
+        cap_sys_ptrace=True,
+    )
+    outside = tmp_path.parent / "opt" / "venv"
+    (outside / "bin").mkdir(parents=True, exist_ok=True)
+    (outside / "pyvenv.cfg").write_text("version_info = 3.11.13\n")
+    write_debugpy(
+        outside / "lib" / "python3.11" / "site-packages", helpers=AMD64_HELPER
+    )
+    seat = survey_seat(
+        inspect_target(PID, proc=proc),
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    assert seat.debugpy_there is None
+
+
 def test_a_chosen_destination_is_the_one_searched_and_the_one_printed(
     tmp_path: Path,
 ) -> None:
