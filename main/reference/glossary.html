@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.2.0b3.dev23+g0bc6d5a0d documentation</title>
+    <title>Glossary &#8212; podbench 0.2.0b3.dev25+gf5ff9846e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=e7ffaaa8"></script>
+    <script src="../_static/documentation_options.js?v=d8a7d6ad"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -820,6 +820,16 @@ explicitly when that is what happened, rather than leaving you to suspect your c
 </dd>
 <dt id="term-EPERM">EPERM<a class="headerlink" href="#term-EPERM" title="Link to this term">#</a></dt><dd><p>“Operation not permitted”. Every one of the four <a class="reference internal" href="#term-blocker"><span class="xref std std-term">blocker</span></a>s returns it, which
 is why a report that only prints the errno is worth nothing.</p>
+</dd>
+<dt id="term-LSM">LSM<a class="headerlink" href="#term-LSM" title="Link to this term">#</a></dt><dd><p>Linux Security Module — the kernel’s hook framework for access-control policies
+layered on top of the ordinary uid/gid rules. <a class="reference internal" href="#term-Yama"><span class="xref std std-term">Yama</span></a>, <a class="reference internal" href="#term-AppArmor"><span class="xref std std-term">AppArmor</span></a> and
+SELinux are all LSMs, and <code class="docutils literal notranslate"><span class="pre">security_ptrace_access_check()</span></code> is the <strong>last</strong> thing
+<code class="docutils literal notranslate"><span class="pre">__ptrace_may_access()</span></code> calls: a ptrace that satisfies credentials, dumpability and
+<a class="reference internal" href="#term-CAP_SYS_PTRACE"><span class="xref std std-term">CAP_SYS_PTRACE</span></a> can still be refused here, with the same <a class="reference internal" href="#term-EPERM"><span class="xref std std-term">EPERM</span></a> as
+everything else. That is what denies <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_READ</span></code> at Diamond on a seat sharing
+the target’s uid — established by elimination, since every other check demonstrably
+passes (issue #52). An LSM refusal names nothing on the way out, which is why
+<code class="docutils literal notranslate"><span class="pre">capreport</span></code> reaching “unknown” is a real outcome rather than a defect.</p>
 </dd>
 <dt id="term-NSS">NSS<a class="headerlink" href="#term-NSS" title="Link to this term">#</a></dt><dd><p>Name Service Switch — how a Linux process turns a uid into a login name, usually via
 <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>. <a class="reference internal" href="#term-sshd"><span class="xref std std-term">sshd</span></a> resolves the name a client offers through NSS <em>before</em> it

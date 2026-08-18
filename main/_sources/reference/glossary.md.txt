@@ -392,6 +392,17 @@ EPERM
   "Operation not permitted". Every one of the four {term}`blocker`s returns it, which
   is why a report that only prints the errno is worth nothing.
 
+LSM
+  Linux Security Module — the kernel's hook framework for access-control policies
+  layered on top of the ordinary uid/gid rules. {term}`Yama`, {term}`AppArmor` and
+  SELinux are all LSMs, and `security_ptrace_access_check()` is the **last** thing
+  `__ptrace_may_access()` calls: a ptrace that satisfies credentials, dumpability and
+  {term}`CAP_SYS_PTRACE` can still be refused here, with the same {term}`EPERM` as
+  everything else. That is what denies `PTRACE_MODE_READ` at Diamond on a seat sharing
+  the target's uid — established by elimination, since every other check demonstrably
+  passes (issue #52). An LSM refusal names nothing on the way out, which is why
+  `capreport` reaching "unknown" is a real outcome rather than a defect.
+
 NSS
   Name Service Switch — how a Linux process turns a uid into a login name, usually via
   `/etc/passwd`. {term}`sshd` resolves the name a client offers through NSS *before* it
