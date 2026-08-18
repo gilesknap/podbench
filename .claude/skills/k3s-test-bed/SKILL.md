@@ -1,6 +1,6 @@
 ---
 name: k3s-test-bed
-description: The persistent single-node k3s box podbench is developed against, the edit-sync-run loop it imposes, and the five ways a run on it silently tests the wrong thing. Read before reproducing a field defect, running the e2e suite outside CI, or testing anything that needs a real kernel.
+description: The persistent single-node k3s box podbench is developed against, the edit-sync-run loop it imposes, and the six ways a run on it silently tests the wrong thing. Read before reproducing a field defect, running the e2e suite outside CI, or testing anything that needs a real kernel.
 ---
 
 # The k3s test bed
@@ -65,7 +65,7 @@ ssh podbench-bed 'cd /root/podbench && KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
 Only the *launcher* half of podbench lives in `src/` and is picked up by a sync alone.
 The other half ships inside the image.
 
-## Five ways a run here silently tests the wrong thing
+## Six ways a run here silently tests the wrong thing
 
 ### 1. A stale side-loaded image
 
@@ -115,6 +115,14 @@ So: reproduce at 0, but **the acceptance run is at 1**. Any change to how capabi
 reported has to be green at both, because turning "no capability and Yama says no" into a
 false positive is the overclaim S5 and issue #51 exist to prevent. It is the one way this
 kind of work does real harm. Always say which setting a result was obtained under.
+
+**Yama gates `PTRACE_ATTACH` only — never `PTRACE_MODE_READ`.** Measured 2026-08-17: at
+scope 1, a session whose uid *and* gid match the target read `maps`, `environ`, `exe` and
+`root` while the attach was refused, purely because it was not an ancestor. So a seat can
+hold complete `/proc` access and still not attach, which reads like a contradiction and is
+not one — it is `Verdict.READ_ONLY` (`model.py`), and `--provision` deliberately warns
+rather than refuses there, because the tree lands in the target's own rootfs and outlives
+the seat. Do not "fix" that apparent inconsistency.
 
 ### 3. AppArmor, which denies ptrace before Yama is even consulted
 
@@ -180,6 +188,39 @@ is node-local and the kind suite still covers the cluster-wide-cache case, so th
 sound trade — but it means a `hostNetwork: true` fixture (the DLS IOC is one, because
 EPICS Channel Access needs UDP broadcast) has the node's port space entirely to itself.
 Two such pods clash, and issue #87 is about exactly that. One at a time.
+
+### 6. A tracee that dropped its own privileges
+
+The one on this list that is not about the box at all — it is about the fixture, and it
+produced two consecutive false negatives on 2026-08-17 before it was spotted.
+
+**A process that reaches its uid via `setuid()` from root is left non-dumpable, and
+tracing a non-dumpable process needs `CAP_SYS_PTRACE` whatever the credentials.** So a
+target built by dropping privileges refuses every attach with `EPERM` — which is
+indistinguishable from the credential failure you set out to measure, and just as
+plausible. `setpriv --reuid 1000 --regid 1000` has the same problem by a different route:
+the flag is cleared at `execve`.
+
+The tell is ownership of the target's own `/proc` files:
+
+```sh
+stat -c %u:%g /proc/<pid>/status   # 0:0 => non-dumpable, the fixture is lying to you
+                                   # 1000:1000 => dumpable, like a real workload
+```
+
+A **kubelet-started** container process at that uid is dumpable, which is why this never
+appears against a real fixture pod and only ever bites a hand-rolled one. Prefer a real
+container at the uid you want; where that is impractical, neutralise both other gates in
+the tracee so only the credential check is left standing:
+
+```c
+prctl(PR_SET_DUMPABLE, 1);                    /* undo the setuid flag */
+prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY);    /* take Yama out — see 2 */
+```
+
+With those two in place the credential matrix is clean: uid **and** gid matching succeeds,
+and a gid mismatch alone denies in either direction (measured 2026-08-17). Without them
+every case denies and the matrix reads as though the kernel ignores credentials entirely.
 
 ## What the bed does not model
 
