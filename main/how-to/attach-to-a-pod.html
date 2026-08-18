@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.2.0b3.dev21+ge5c7794cc documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.2.0b3.dev23+g0bc6d5a0d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=b6a447e3"></script>
+    <script src="../_static/documentation_options.js?v=e7ffaaa8"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -685,6 +685,37 @@ and it will not ask for a limit above the <code class="docutils literal notransl
 <p>Write <code class="docutils literal notranslate"><span class="pre">REQUEST:LIMIT</span></code> — <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">1Gi:6Gi</span></code> — to choose the request yourself. A
 request already large enough is left alone: it is a scheduling promise the
 workload was placed on.</p>
+</section>
+<section id="a-container-with-a-resource-claim-cannot-be-resized-at-all">
+<h3>A container with a resource claim cannot be resized at all<a class="headerlink" href="#a-container-with-a-resource-claim-cannot-be-resized-at-all" title="Link to this heading">#</a></h3>
+<p>A container that declares <code class="docutils literal notranslate"><span class="pre">resources.claims</span></code> — a DRA claim, which is how a
+device such as a usbip-attached instrument reaches a pod — refuses every
+resize, whatever the patch says:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">The</span> <span class="n">Pod</span> <span class="s2">&quot;bl01c-ea-flip-02-0&quot;</span> <span class="ow">is</span> <span class="n">invalid</span><span class="p">:</span> <span class="n">spec</span><span class="p">:</span> <span class="n">Forbidden</span><span class="p">:</span> <span class="n">only</span> <span class="n">cpu</span> <span class="ow">and</span>
+<span class="n">memory</span> <span class="n">resources</span> <span class="n">are</span> <span class="n">mutable</span>
+</pre></div>
+</div>
+<p>The message is about neither cpu nor memory. Validating a resize rebuilds the
+incoming container’s resources from limits and requests alone —
+<code class="docutils literal notranslate"><span class="pre">core.ResourceRequirements{Limits:</span> <span class="pre">lim,</span> <span class="pre">Requests:</span> <span class="pre">req}</span></code> — so the claim is
+dropped from the value compared against the stored container, which still has
+one. The two can never compare equal, and that sentence is the only error the
+comparison knows how to raise.</p>
+<p>Measured at Diamond on 2026-08-18 against an EPICS IOC holding a claim for its
+usbip device. A strategic-merge patch, a JSON patch of the single memory limit,
+and a JSON patch rewriting <code class="docutils literal notranslate"><span class="pre">256Mi</span></code> as <code class="docutils literal notranslate"><span class="pre">256Mi</span></code> were refused identically, while a
+claim-free pod in the same namespace — same <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code>, same admission
+policies — accepted a no-op resize. Nothing about the patch is at fault, so
+nothing podbench can send will get through.</p>
+<p>It is an upstream defect rather than a rule about claims: <code class="docutils literal notranslate"><span class="pre">release-1.32</span></code>
+through <code class="docutils literal notranslate"><span class="pre">release-1.35</span></code> all drop <code class="docutils literal notranslate"><span class="pre">Claims</span></code> in that comparison, and <code class="docutils literal notranslate"><span class="pre">master</span></code>
+preserves it, so a 1.36 cluster resizes such a container normally. podbench
+submits the patch rather than refusing first, for that reason, and names the
+claim when the refusal comes back.</p>
+<p>Until then the only lever is the workload’s own template — raise the limits
+there and let it roll — because <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> cannot help either: a claim is
+allocated to one pod, so a copy of the workload would either be refused the
+device or take it away from the pod being debugged.</p>
 <p>It is opt-in and it prints a warning either way, for two reasons.</p>
 <p>It is only <strong>partly proven</strong>: three pods, two of them managed by a Deployment —
 a ReplicaSet reconciles pod <em>existence</em>, not pod <em>spec</em>, so it does not fight
@@ -913,6 +944,7 @@ would make an honest report look like a failure.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-reads-are-denied-too">When the reads are denied too</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-and-cpu-headroom-first">Making memory and CPU headroom first</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#requests-move-with-limits">Requests move with limits</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-container-with-a-resource-claim-cannot-be-resized-at-all">A container with a resource claim cannot be resized at all</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opening-vs-code-on-the-seat">Opening VS Code on the seat</a></li>

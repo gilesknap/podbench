@@ -223,6 +223,42 @@ Write `REQUEST:LIMIT` — `--resize 1Gi:6Gi` — to choose the request yourself.
 request already large enough is left alone: it is a scheduling promise the
 workload was placed on.
 
+### A container with a resource claim cannot be resized at all
+
+A container that declares `resources.claims` — a DRA claim, which is how a
+device such as a usbip-attached instrument reaches a pod — refuses every
+resize, whatever the patch says:
+
+```
+The Pod "bl01c-ea-flip-02-0" is invalid: spec: Forbidden: only cpu and
+memory resources are mutable
+```
+
+The message is about neither cpu nor memory. Validating a resize rebuilds the
+incoming container's resources from limits and requests alone —
+`core.ResourceRequirements{Limits: lim, Requests: req}` — so the claim is
+dropped from the value compared against the stored container, which still has
+one. The two can never compare equal, and that sentence is the only error the
+comparison knows how to raise.
+
+Measured at Diamond on 2026-08-18 against an EPICS IOC holding a claim for its
+usbip device. A strategic-merge patch, a JSON patch of the single memory limit,
+and a JSON patch rewriting `256Mi` as `256Mi` were refused identically, while a
+claim-free pod in the same namespace — same `LimitRange`, same admission
+policies — accepted a no-op resize. Nothing about the patch is at fault, so
+nothing podbench can send will get through.
+
+It is an upstream defect rather than a rule about claims: `release-1.32`
+through `release-1.35` all drop `Claims` in that comparison, and `master`
+preserves it, so a 1.36 cluster resizes such a container normally. podbench
+submits the patch rather than refusing first, for that reason, and names the
+claim when the refusal comes back.
+
+Until then the only lever is the workload's own template — raise the limits
+there and let it roll — because `podbench dev` cannot help either: a claim is
+allocated to one pod, so a copy of the workload would either be refused the
+device or take it away from the pod being debugged.
+
 It is opt-in and it prints a warning either way, for two reasons.
 
 It is only **partly proven**: three pods, two of them managed by a Deployment —

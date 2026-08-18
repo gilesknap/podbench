@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.2.0b3.dev21+ge5c7794cc documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.2.0b3.dev23+g0bc6d5a0d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=b6a447e3"></script>
+    <script src="../../_static/documentation_options.js?v=e7ffaaa8"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1649,6 +1649,23 @@ widens that ratio and would have been refused. So a <code class="docutils litera
 arithmetic rather than by luck. A <code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> is a different admission check and remains
 untested. The cluster’s Kubernetes version was not recorded, so “one Kubernetes version” may still
 stand — worth filling in, since it is one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">version</span></code> away.</p>
+<p><em>A container holding a DRA resource claim cannot be resized by any released Kubernetes. Measured
+2026-08-18 at Diamond.</em> <code class="docutils literal notranslate"><span class="pre">bl01c-ea-flip-02-0</span></code>, an EPICS IOC whose <code class="docutils literal notranslate"><span class="pre">resources.claims</span></code> entry attaches
+the usbip device its driver talks to, refused every patch tried against it with
+<code class="docutils literal notranslate"><span class="pre">spec:</span> <span class="pre">Forbidden:</span> <span class="pre">only</span> <span class="pre">cpu</span> <span class="pre">and</span> <span class="pre">memory</span> <span class="pre">resources</span> <span class="pre">are</span> <span class="pre">mutable</span></code> — a strategic-merge patch, a JSON
+patch of the single memory limit, and a JSON patch rewriting <code class="docutils literal notranslate"><span class="pre">256Mi</span></code> as <code class="docutils literal notranslate"><span class="pre">256Mi</span></code>. A claim-free pod
+in the same namespace, under the same <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> and the same Kyverno policies, accepted a no-op
+resize, which rules out both the namespace and the patch. The cause is upstream: validating a
+resize rebuilds the container’s resources as
+<code class="docutils literal notranslate"><span class="pre">core.ResourceRequirements{Limits:</span> <span class="pre">lim,</span> <span class="pre">Requests:</span> <span class="pre">req}</span></code>, dropping <code class="docutils literal notranslate"><span class="pre">Claims</span></code> from the value compared
+against the stored container, so the comparison can never match. <code class="docutils literal notranslate"><span class="pre">release-1.32</span></code> through
+<code class="docutils literal notranslate"><span class="pre">release-1.35</span></code> all do this and <code class="docutils literal notranslate"><span class="pre">master</span></code> does not, so it is fixed and unreleased. <strong>Where it bites:</strong>
+every device-attached IOC at Diamond is a pod where §3.9’s unrecoverable OOM has no mitigation —
+<code class="docutils literal notranslate"><span class="pre">--resize</span></code> cannot work, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> cannot substitute, because a claim is allocated to one
+pod and a copy would either be refused the device or take it from the workload being debugged. The
+only lever left is the workload’s own template, which costs a rollout. podbench submits the patch
+anyway rather than pre-empting it, because a 1.36 cluster will take it, and names the claim when
+the refusal comes back.</p>
 <p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is memory-only.</strong> It takes a memory value and patches <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code>; a CPU limit is
 not raised with it. That did not bite in this measurement — <code class="docutils literal notranslate"><span class="pre">cpu.stat</span></code> showed <code class="docutils literal notranslate"><span class="pre">nr_throttled</span> <span class="pre">0</span></code> with
 a vscode-server plus extensions running — but a throttled seat under a tight <code class="docutils literal notranslate"><span class="pre">limits.cpu</span></code> has no
