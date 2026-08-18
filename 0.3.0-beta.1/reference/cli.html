@@ -1,0 +1,2100 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Command-line reference &#8212; podbench 0.3.0b1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=c574efb9"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'reference/cli';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.3.0b1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Glossary" href="glossary.html" />
+    <link rel="prev" title="Reference" href="../reference.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.3.0b1" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Command-line reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="glossary.html">Glossary</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../_api/podbench.html">API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../genindex.html">Index</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/gilesknap/podbench/releases">Release Notes</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../reference.html" class="nav-link">Reference</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Command-line reference</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="command-line-reference">
+<h1>Command-line reference<a class="headerlink" href="#command-line-reference" title="Link to this heading">#</a></h1>
+<p>One binary serves both halves of podbench, under one spelling. On your machine
+it is reached as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>; inside the debug container the same binary
+is PID 1 and answers to the same <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. Keeping it as one package
+means the capability logic that decides what a session can do is the same code
+in both places, rather than a launcher’s guess and a helper’s separate guess.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench --help
+
+ Usage: podbench [OPTIONS] COMMAND [ARGS]...
+
+ A development seat inside a Kubernetes pod.
+
+ Run `podbench VERB --help` for a verb&#39;s own options.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --version  -v        show the launcher&#39;s version and exit                                        │
+│ --help               Show this message and exit.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
+│ doctor         check this machine can attach, and name what stops it                             │
+│ attach         add or reconnect a podbench container and print the report                        │
+│ ssh-config     regenerate the ssh stanza for an existing session                                 │
+│ status         the podbench containers in one pod and what each supports                         │
+│ list           every pod in the namespace carrying a podbench container                          │
+│ dev            create or delete the dev pod                                                      │
+│ hotfix         durable in-place fixes on a claim-backed venv                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
+│ agent          prepare the container for ssh and idle as its PID 1                               │
+│ capreport      name the mechanism that denies ptrace in this container                           │
+│ pids           list the pod&#39;s processes                                                          │
+│ dbg            debug a process                                                                   │
+│ debug-config   write VS Code&#39;s launch.json for this seat                                         │
+│ dev-bootstrap  clone, sync and editable-install a checkout                                       │
+│ run            relaunch the app and verify it                                                    │
+│ stop           stop the recorded child                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Where it runs</p></th>
+<th class="head"><p>Verbs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Your machine</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">doctor</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Inside the debug container</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Every verb below is written as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, which is the only spelling
+there is — there is no kubectl plugin. How you reach that program is your
+choice, and all three run the same code:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Invocation</p></th>
+<th class="head"><p>Why</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code></p></td>
+<td><p>the canonical one. uv fetches the launcher for the run and leaves nothing installed</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench&#64;&lt;version&gt;</span> <span class="pre">&lt;verb&gt;</span></code></p></td>
+<td><p>pinned, so a session is reproducible and the image tag it picks is known in advance</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">tool</span> <span class="pre">install</span> <span class="pre">podbench</span></code> (or pipx, or pip)</p></td>
+<td><p>for <code class="docutils literal notranslate"><span class="pre">podbench</span></code> permanently on <code class="docutils literal notranslate"><span class="pre">PATH</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>See <a class="reference internal" href="../tutorials/setup.html"><span class="std std-doc">Setup</span></a> for the details, including how
+to run it before the first PyPI release.</p>
+<p>The in-pod verbs are spelled the same way from a terminal in the seat:
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, and so on. There are no shorter aliases on
+<code class="docutils literal notranslate"><span class="pre">PATH</span></code> — the image once shipped one file per subcommand and no longer does
+(<code class="docutils literal notranslate"><span class="pre">image/README.md</span></code>, deviation 6).</p>
+<section id="common-options">
+<h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
+<p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these,
+and so does <code class="docutils literal notranslate"><span class="pre">doctor</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">namespace</span>  <span class="o">-</span><span class="n">n</span>  <span class="n">NAMESPACE</span>  <span class="n">namespace</span> <span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">the</span> <span class="n">kubeconfig</span> <span class="n">context</span><span class="s1">&#39;s own)</span>
+<span class="o">--</span><span class="n">context</span>        <span class="n">NAME</span>       <span class="n">kubeconfig</span> <span class="n">context</span>
+<span class="o">--</span><span class="n">kubectl</span>        <span class="n">BIN</span>        <span class="n">kubectl</span> <span class="n">binary</span> <span class="n">to</span> <span class="n">use</span> <span class="p">[</span><span class="n">default</span><span class="p">:</span> <span class="n">kubectl</span><span class="p">]</span>
+<span class="o">--</span><span class="n">config</span><span class="o">-</span><span class="nb">dir</span>     <span class="n">DIR</span>        <span class="n">where</span> <span class="n">the</span> <span class="n">generated</span> <span class="n">ssh</span> <span class="n">config</span> <span class="ow">and</span> <span class="n">known_hosts</span> <span class="n">live</span>
+                            <span class="p">(</span><span class="n">default</span> <span class="o">~/.</span><span class="n">podbench</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">dev</span></code> takes <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>, <code class="docutils literal notranslate"><span class="pre">--context</span></code> and — because it writes an ssh
+config too — <code class="docutils literal notranslate"><span class="pre">--identity</span></code>, <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> and <code class="docutils literal notranslate"><span class="pre">--host-alias</span></code>. It does not take
+<code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>: it shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. Under <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> the same three —
+<code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>, <code class="docutils literal notranslate"><span class="pre">--context</span></code> and <code class="docutils literal notranslate"><span class="pre">--kubectl</span></code> — sit on each <strong>sub-verb</strong>, not
+on <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> itself, so it is <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span> <span class="pre">-n</span> <span class="pre">demo</span></code> and never
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">-n</span> <span class="pre">demo</span> <span class="pre">status</span></code>. <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> writes no ssh config, so nothing under
+it takes <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code>.</p>
+<p>podbench shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> deliberately, so it inherits your kubeconfig,
+your current context and any exec credential plugin. There is no second
+credential and no client library.</p>
+</section>
+<section id="naming-the-pod">
+<span id="id1"></span><h2>Naming the pod<a class="headerlink" href="#naming-the-pod" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> take a <code class="docutils literal notranslate"><span class="pre">POD</span></code>, and none of them needs the
+whole name. Resolution is the same in all three:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>you type</p></th>
+<th class="head"><p>what happens</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>the full name, or <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code></p></td>
+<td><p>used as typed, in one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">pod</span></code> — an exact name is never ambiguous, even when it is also a substring of another pod’s name</p></td>
+</tr>
+<tr class="row-odd"><td><p>a substring matching <strong>one</strong> pod</p></td>
+<td><p>resolved to that pod, and the name it resolved to is echoed on stderr</p></td>
+</tr>
+<tr class="row-even"><td><p>a substring matching <strong>several</strong></p></td>
+<td><p>the matches are listed and you are asked which</p></td>
+</tr>
+<tr class="row-odd"><td><p>nothing at all</p></td>
+<td><p>every pod in the namespace is listed and you are asked which — unless the namespace holds exactly one, which resolves and is echoed like any other single match</p></td>
+</tr>
+<tr class="row-even"><td><p>a substring matching <strong>none</strong></p></td>
+<td><p>an error naming the namespace searched, with what is in it</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach api -n demo
+&#39;api&#39; matches 2 pods in namespace demo
+      NAME        READY  STATUS   AGE  PODBENCH
+  1.  api-7f9     1/1    Running  3h   podbench-1
+  2.  api-canary  0/1    Pending  3h   -
+which one? [number or name, empty to cancel] 1
+</pre></div>
+</div>
+<p>The listing carries what you choose <em>by</em>: ready containers, status, age, and the
+podbench container already in the pod — which is the difference between landing
+a seat and reconnecting to yours. Answer with the number, the name, or a longer
+substring; an empty line cancels.</p>
+<p>The prompt is only ever offered on a terminal. <strong>When stdin is not a tty — a
+script, a CI job, an <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">host</span> <span class="pre">podbench</span> <span class="pre">...</span></code> — a prompt would be a hang</strong>, so
+podbench prints the same listing, explains that it will not ask, and exits <code class="docutils literal notranslate"><span class="pre">2</span></code>.
+<code class="docutils literal notranslate"><span class="pre">--no-prompt</span></code> asks for that behaviour on a terminal too. Both the listing and
+the “matched” echo go to <strong>stderr</strong>, so a redirected stdout still holds only the
+report.</p>
+<p>Resolution lists every pod in the namespace, which is not what <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">list</span></code>
+does: <code class="docutils literal notranslate"><span class="pre">list</span></code> shows the pods that already carry a podbench container, and
+resolution offers the pods that could. A fully typed name is answered without
+listing at all, so <code class="docutils literal notranslate"><span class="pre">attach</span></code> still works with RBAC that grants <code class="docutils literal notranslate"><span class="pre">get</span></code> on pods but
+not <code class="docutils literal notranslate"><span class="pre">list</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="cluster-side-verbs">
+<h2>Cluster-side verbs<a class="headerlink" href="#cluster-side-verbs" title="Link to this heading">#</a></h2>
+<section id="doctor">
+<h3><code class="docutils literal notranslate"><span class="pre">doctor</span></code><a class="headerlink" href="#doctor" title="Link to this heading">#</a></h3>
+<p>Everything that has to be true of <strong>this machine</strong> before the first attach, and
+the name of whatever is not. <code class="docutils literal notranslate"><span class="pre">status</span></code> is about pods; <code class="docutils literal notranslate"><span class="pre">doctor</span></code> is about your
+laptop.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench doctor [OPTIONS]
+
+ Name what will block the first attach from this machine.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --fix                            make the two changes podbench can make safely: create the       │
+│                                  config directory, and add the ssh Include above any Host *      │
+│                                  block. Never creates an ssh key                                 │
+│ --identity            KEY        the ssh key attach would use [default: ~/.ssh/id_ed25519]       │
+│ --namespace   -n      NAMESPACE  namespace to test RBAC in (default: the context&#39;s own)          │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench doctor -n demo
+============================= podbench doctor ==============================
+THIS MACHINE
+  launcher       1.0.0b1
+  image          ghcr.io/gilesknap/podbench:1.0.0b1
+  context        prod-eu
+  namespace      demo
+CHECKS
+  [ok]    kubectl        v1.31 at /usr/local/bin/kubectl
+  [ok]    kubeconfig     context prod-eu
+  [ok]    ssh client     /usr/bin/ssh
+  [ok]    ssh identity   /home/dev/.ssh/id_ed25519 and /home/dev/.ssh/id_ed25519.pub
+  [warn]  ssh agent      agent on /run/user/1000/keyring/ssh holds SHA256:Ql+7…: ssh will sign with the AGENT, not with /home/dev/.ssh/id_ed25519
+          that socket is gnome-keyring standing in for ssh-agent, which has a long history of refusing ED25519 keys with `agent refused operation`
+          prove it is the agent and not the seat:  SSH_AUTH_SOCK= ssh podbench-demo-&lt;pod&gt;
+          if it refuses, sign with the file instead — put this in ~/.ssh/config below the Include line, where it cannot shadow the generated stanza:
+              Host podbench-*
+                  IdentityAgent none
+          never for a FIDO/sk-* key or a smartcard, though: those can only sign through an agent
+  [ok]    config dir     /home/dev/.podbench/config.d
+  [FAIL]  ssh include    /home/dev/.ssh/config does not include the generated stanzas
+          add this line above any Host * block:  Include /home/dev/.podbench/config.d/*.conf
+          or run:  podbench doctor --fix
+RBAC in demo (kubectl auth can-i, as your kubeconfig&#39;s user)
+  [ok]    attach         all 5 verbs allowed
+  [warn]  iterate        missing: create pods, delete pods
+          grant it with the chart&#39;s rbac.iterate=true, or the equivalent Role
+  [warn]  resize         missing: patch pods/resize
+          grant it with the chart&#39;s rbac.resize=true, or the equivalent Role
+  [ok]    hotfix         all 5 verbs allowed
+----------------------------------------------------------------------------
+VERDICT: 1 blocker before `podbench attach` can work (exit 1)
+BLOCKERS: ssh include
+============================================================================
+</pre></div>
+</div>
+<p>What it checks:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Check</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">FAIL</span></code> when</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">warn</span></code> when</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kubectl</span></code></p></td>
+<td><p>not on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, or older than <strong>1.25</strong></p></td>
+<td><p>it printed no version to read</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kubeconfig</span></code></p></td>
+<td><p>there is no current context</p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">client</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ssh</span></code> is not on <code class="docutils literal notranslate"><span class="pre">PATH</span></code></p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">identity</span></code></p></td>
+<td><p>either half of the key is missing</p></td>
+<td><p>—</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">agent</span></code></p></td>
+<td><p>—</p></td>
+<td><p>an agent is running <strong>and holds the identity</strong> (unless your config already sets <code class="docutils literal notranslate"><span class="pre">IdentityAgent</span> <span class="pre">none</span></code>), its socket is set but dead, or the comparison could not be made</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">config</span> <span class="pre">dir</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code> does not exist yet</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">include</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> does not include the generated stanzas</p></td>
+<td><p>it includes them <strong>below</strong> a <code class="docutils literal notranslate"><span class="pre">Host</span></code>/<code class="docutils literal notranslate"><span class="pre">Match</span></code> block</p></td>
+</tr>
+<tr class="row-odd"><td><p>RBAC <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>any of its verbs is denied</p></td>
+<td><p>kubectl could not answer</p></td>
+</tr>
+<tr class="row-even"><td><p>RBAC <code class="docutils literal notranslate"><span class="pre">iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">resize</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></td>
+<td><p>—</p></td>
+<td><p>any of its verbs is denied, or kubectl could not answer</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><strong>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> when nothing blocks the headline attach path and <code class="docutils literal notranslate"><span class="pre">1</span></code> when
+something does</strong>; a warning never changes it. A cluster that will not grant
+Iterate mode is a fact about that cluster, not a failure — the same call
+<code class="docutils literal notranslate"><span class="pre">attach</span></code> makes when it lands a degraded seat. <code class="docutils literal notranslate"><span class="pre">2</span></code> remains a usage error.</p></li>
+<li><p>The RBAC verbs are asked one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time, in the namespace
+in play, as your kubeconfig’s user. The table lives in
+<code class="docutils literal notranslate"><span class="pre">podbench.doctor.FEATURES</span></code> and names the <code class="docutils literal notranslate"><span class="pre">rbac.&lt;flag&gt;</span></code> of
+<a class="reference internal" href="../explanations/security.html"><span class="std std-doc">the chart</span></a> that grants each feature;
+<code class="docutils literal notranslate"><span class="pre">tests/test_chart_contract.py</span></code> renders the chart and asserts they are the same
+list, so the flag a report tells you to set really is the one that fixes it.</p></li>
+<li><p>Only two things are ever written, and only with <code class="docutils literal notranslate"><span class="pre">--fix</span></code>: <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code>
+is created, and the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line is prepended to <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> above any
+<code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block. Your file is not rewritten — the line is added at the top and
+everything you had stays where it was — and the write goes through a temporary
+file, because a half-written <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> locks you out of every host you
+have, not only podbench’s. Running <code class="docutils literal notranslate"><span class="pre">--fix</span></code> twice changes nothing the second
+time.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--fix</span></code> never creates an ssh key.</strong> A missing identity is named, with the
+<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span></code> line to run, because a key podbench minted would be a credential
+you never chose and <code class="docutils literal notranslate"><span class="pre">attach</span></code> would then authorise it inside your cluster.</p></li>
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">agent</span></code> check names what will <em>sign</em>, which is not always the file.</strong>
+With <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code> unset, ssh signs with the key file and a passphrase prompt
+is expected. With it set, ssh offers the agent’s keys first, so an identity the
+agent also holds is signed for by the <strong>agent</strong> — the private file is never
+opened, and <code class="docutils literal notranslate"><span class="pre">IdentitiesOnly</span> <span class="pre">yes</span></code> in the generated stanza does not change that:
+it limits which keys are <em>offered</em>, not who signs for them. doctor compares
+<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span> <span class="pre">-lf</span> <span class="pre">&lt;identity&gt;.pub</span></code> against <code class="docutils literal notranslate"><span class="pre">ssh-add</span> <span class="pre">-l</span></code> and says which of the two
+it will be. It does not ask for a signature, so it reports what would be asked,
+never what it would answer — hence a warning and never a blocker. Any part of
+that comparison it cannot make — a listing that failed, a <code class="docutils literal notranslate"><span class="pre">.pub</span></code> it cannot
+read, <code class="docutils literal notranslate"><span class="pre">ssh-add</span></code> off <code class="docutils literal notranslate"><span class="pre">PATH</span></code> — is reported as <em>not measured</em>, with what the
+command said, rather than folded into either answer.</p></li>
+<li><p><strong>The warning goes away when you act on it.</strong> Once the agent holds the
+identity, doctor asks <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-G</span></code> what <code class="docutils literal notranslate"><span class="pre">IdentityAgent</span></code> resolves to for the alias
+<code class="docutils literal notranslate"><span class="pre">attach</span></code> would generate in this namespace, and reports <code class="docutils literal notranslate"><span class="pre">ok</span></code> when the answer is
+<code class="docutils literal notranslate"><span class="pre">none</span></code> — so the check can see its own advice taken. It asks about
+<code class="docutils literal notranslate"><span class="pre">podbench-&lt;namespace&gt;-pod</span></code>, which is what a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">podbench-*</span></code> block matches; if
+you attach with <code class="docutils literal notranslate"><span class="pre">--host-alias</span> <span class="pre">NAME</span></code>, that block has to name <code class="docutils literal notranslate"><span class="pre">NAME</span></code> instead, and
+doctor cannot see it.</p></li>
+<li><p>A refusing agent is the one failure that looks like podbench’s fault and is
+not: ssh reports <code class="docutils literal notranslate"><span class="pre">agent</span> <span class="pre">refused</span> <span class="pre">operation</span></code> and then <code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey,keyboard-interactive)</span></code>, which reads as the seat rejecting the key.
+<code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK=</span> <span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span></code> settles it in one line — if that logs in, the
+agent was the only thing refusing. A socket under <code class="docutils literal notranslate"><span class="pre">/run/user/*/keyring/</span></code> is
+gnome-keyring standing in for ssh-agent, which has a long history of refusing
+ED25519 keys exactly this way.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">IdentityAgent</span> <span class="pre">none</span></code> is never recommended unconditionally</strong>, by doctor or by
+these docs: a FIDO/<code class="docutils literal notranslate"><span class="pre">sk-*</span></code> key or a smartcard has no private half on disk and
+can <em>only</em> sign through an agent, so the fix that rescues an ED25519 key
+disables those outright. doctor also does not write it — the generated stanza
+is rewritten on every attach, so the keyword belongs in a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">podbench-*</span></code>
+block in your own <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, <strong>below</strong> the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line: a <code class="docutils literal notranslate"><span class="pre">Host</span></code> block
+above it shadows the generated stanza, which is the next warning down this
+list.</p></li>
+<li><p>An <code class="docutils literal notranslate"><span class="pre">Include</span></code> below a <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block is a warning rather than a blocker: the
+stanza is still read, but ssh takes the <strong>first</strong> value it sees for each
+keyword, so anything that block also sets — a <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code>, a <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> —
+has already won.</p></li>
+</ul>
+</section>
+<section id="attach">
+<h3><code class="docutils literal notranslate"><span class="pre">attach</span></code><a class="headerlink" href="#attach" title="Link to this heading">#</a></h3>
+<p>Land a debug seat in a <strong>live</strong> pod, walking the capability ladder, and print
+what that seat can actually do.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
+ Usage: podbench attach [OPTIONS] [POD]                                                             
+                                                                                                    
+ add or reconnect a podbench container and print the report                                         
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --target                    NAME             workload container name                             │
+│ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
+│                                              image built from this launcher&#39;s version)           │
+│ --target-uid                UID              the target&#39;s uid, when its pod spec does not say    │
+│ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
+│                                              seat, named by claim or by volume name. MOUNTPATH   │
+│                                              defaults to the application container&#39;s own, which  │
+│                                              Hotfix mode requires it to equal. Repeatable        │
+│ --new                                        add a container even if one is running (its name is │
+│                                              permanent)                                          │
+│ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
+│                                              an /etc/passwd entry for the target&#39;s uid. Rarely   │
+│                                              needed: the seat registers its own record in        │
+│                                              /var/lib/extrausers/passwd without it, and what is  │
+│                                              left for this flag is a seat that database will not │
+│                                              serve - an image whose NSS does not consult it, or  │
+│                                              a uid or gid below 500. It drops the target&#39;s own   │
+│                                              group, and a seat whose gid no longer matches the   │
+│                                              target&#39;s cannot ptrace it - on a target whose gid   │
+│                                              is not 0 this buys ssh and takes the debugger       │
+│ --no-seat-identity                           do not mount the pod&#39;s podbench-home volume, which  │
+│                                              is otherwise mounted by convention when the pod     │
+│                                              declares it and keeps everything the seat writes    │
+│                                              off the workload&#39;s ephemeral-storage budget. The    │
+│                                              podbench-identity volume is never mounted by        │
+│                                              attach: it needs a subPath per file, which an       │
+│                                              ephemeral container may not have - a live-pod seat  │
+│                                              registers its own NSS record instead, and needs no  │
+│                                              volume for it                                       │
+│ --no-probe                                   skip capreport; the report then says nothing was    │
+│                                              measured                                            │
+│ --pull                      POLICY           imagePullPolicy for the seat: IfNotPresent          │
+│                                              (default), Always or Never. Use Always when         │
+│                                              iterating on a tag that moves - `main`, or a branch │
+│                                              image - since a node that already has a copy will   │
+│                                              otherwise serve it. It cannot be the default:       │
+│                                              Always is the one policy that needs a registry, so  │
+│                                              it breaks an image side-loaded with `kind load` or  │
+│                                              `ctr import`                                        │
+│                                              [default: IfNotPresent]                             │
+│ --resize                    MEMORY           raise the target&#39;s memory in place first, as LIMIT  │
+│                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
+│                                              is raised too where a LimitRange bounds             │
+│                                              limit/request                                       │
+│ --resize-cpu                CPU              raise the target&#39;s cpu in place first, as LIMIT or  │
+│                                              REQUEST:LIMIT, e.g. 4 or 500m:4                     │
+│ --identity                  KEY              ssh key to authorise in the seat and name in the    │
+│                                              generated stanza                                    │
+│                                              [default: ~/.ssh/id_ed25519]                        │
+│ --ssh-user                  NAME             login name to put in the stanza                     │
+│ --host-alias                NAME             ssh Host name for the seat                          │
+│ --print-config                               print the ssh stanza instead of writing it to the   │
+│                                              config dir                                          │
+│ --open                                       open the seat&#39;s home in VS Code over Remote-SSH     │
+│                                              once it lands, with the /proc and /sys excludes,    │
+│                                              this target&#39;s launch.json and only the extensions   │
+│                                              its debugger needs. Needs `code` on PATH            │
+│ --provision                                  with --open, make the target debuggable: install    │
+│                                              debugpy when it cannot import one, then start the   │
+│                                              server so F5 has something to connect to -          │
+│                                              otherwise a stock Python workload gets no           │
+│                                              launch.json at all. Mutates the workload: ~15 MB of │
+│                                              shared ephemeral storage, needs egress from the     │
+│                                              pod, ptraces the app for a few seconds, and no      │
+│                                              restart survives it                                 │
+│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
+│                                              refused with the candidates instead. Already        │
+│                                              implied when stdin is not a tty                     │
+│ --namespace         -n      NAMESPACE        namespace (default: the kubeconfig context&#39;s own)   │
+│ --context                   NAME             kubeconfig context                                  │
+│ --kubectl                   BIN              kubectl binary to use [default: kubectl]            │
+│ --config-dir                DIR              where the generated ssh config and known_hosts live │
+│                                              (default ~/.podbench)                               │
+│ --help                                       Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Notes:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>, a substring of one, or nothing at
+all — see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--image</span></code> has no fixed default to print: the launcher asks for the image
+built from its own version — <code class="docutils literal notranslate"><span class="pre">ghcr.io/gilesknap/podbench:&lt;launcher</span> <span class="pre">version&gt;</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">:main</span></code> when the launcher is a dev build off a checkout. <code class="docutils literal notranslate"><span class="pre">--image</span></code> wins
+over <code class="docutils literal notranslate"><span class="pre">PODBENCH_IMAGE</span></code>, which wins over that. See
+<a class="reference internal" href="../how-to/run-container.html"><span class="std std-doc">The container image</span></a>.</p></li>
+<li><p>Re-running <code class="docutils literal notranslate"><span class="pre">attach</span></code> <strong>reconnects</strong> to a running seat. <code class="docutils literal notranslate"><span class="pre">--new</span></code> appends another
+ephemeral container, whose name is then burnt for the pod’s lifetime.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> matters only for the degraded rung, which must match the
+target’s UID exactly and never defaults to root.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> is how a seat reaches a Hotfix-mode claim. An ephemeral container may
+mount the volumes its pod <strong>already declares</strong> and may not introduce one —
+<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name the pod does not
+carry is refused with that explanation rather than submitted. That immutability
+is the whole reason Hotfix mode asks for the chart’s cooperation at deploy time;
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
+seeding initContainer that put it there.</p>
+<ul class="simple">
+<li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
+resolved to the volume entry that references it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MOUNTPATH</span></code> is optional and usually should be. Where the application
+container mounts that volume, its mountPath is copied, because Hotfix mode
+only works when the claim resolves at the <em>same</em> path on both sides — the
+venv’s <code class="docutils literal notranslate"><span class="pre">bin/python</span></code> and the checkout’s editable install are absolute paths
+recorded on the volume. An explicit path that disagrees is honoured and
+warned about; a volume the application does not mount has no path to copy,
+so one must be given.</p></li>
+<li><p>An application mount that uses a <strong><code class="docutils literal notranslate"><span class="pre">subPath</span></code> is refused</strong>, before anything
+is submitted. An ephemeral container’s volumeMounts may not carry one — the
+API server answers <code class="docutils literal notranslate"><span class="pre">Forbidden:</span> <span class="pre">cannot</span> <span class="pre">be</span> <span class="pre">set</span> <span class="pre">for</span> <span class="pre">an</span> <span class="pre">Ephemeral</span> <span class="pre">Container</span></code> and
+rejects the whole request — and dropping it silently would give the seat the
+volume root where the application sees one directory inside it, so every
+path Hotfix mode recorded would resolve to the wrong thing. Deploy the claim
+mounted whole over the venv path, or use <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>, whose seat is an
+ordinary container.</p></li>
+<li><p>Mounts are fixed when a container is created, so <code class="docutils literal notranslate"><span class="pre">--mount</span></code> against a
+reconnect warns and does nothing. Use <code class="docutils literal notranslate"><span class="pre">--new</span></code> for a seat with a new mount.</p></li>
+</ul>
+</li>
+<li><p><strong>The seat’s home is mounted by convention, not by flag.</strong> If the pod declares
+a volume named <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts it read-write at
+<code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> and makes it the seat’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>, which keeps vscode-server and
+everything else the seat writes off the workload’s ephemeral-storage budget.</p>
+<ul class="simple">
+<li><p>It is a convention because the volume cannot be there by accident: an
+ephemeral container may only mount volumes the pod already declares and
+<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable, so anything called <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> was put in
+the pod at deploy time on purpose.</p></li>
+<li><p>It needs the pod to set <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> to the application’s gid, or it arrives
+owned by <code class="docutils literal notranslate"><span class="pre">root:root</span></code> and the seat cannot write to it. The agent reports that
+by name at start-up.</p></li>
+<li><p>An explicit <code class="docutils literal notranslate"><span class="pre">--mount</span></code> for the same mountPath <strong>wins</strong> over the convention.
+<code class="docutils literal notranslate"><span class="pre">--no-seat-identity</span></code> turns the convention off.</p></li>
+</ul>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">attach</span></code> cannot mount <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>, however plainly the pod declares
+it.</strong> The identity has to land as two <em>files</em> — <code class="docutils literal notranslate"><span class="pre">passwd</span></code> over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>,
+<code class="docutils literal notranslate"><span class="pre">group</span></code> over <code class="docutils literal notranslate"><span class="pre">/etc/group</span></code> — and one file at a time takes a <code class="docutils literal notranslate"><span class="pre">subPath</span></code> per
+mount, which an ephemeral container may not have: the API server answers
+<code class="docutils literal notranslate"><span class="pre">spec.ephemeralContainers[0].volumeMounts[0].subPath:</span> <span class="pre">Forbidden:</span> <span class="pre">cannot</span> <span class="pre">be</span> <span class="pre">set</span> <span class="pre">for</span> <span class="pre">an</span> <span class="pre">Ephemeral</span> <span class="pre">Container</span></code> and refuses the <em>whole</em> request, so no seat lands
+at all. Mounting the volume whole is not an alternative either; a directory
+mount replaces the path, and over <code class="docutils literal notranslate"><span class="pre">/etc</span></code> it would take <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code> with it
+— the very lookup the identity exists to satisfy.</p>
+<ul class="simple">
+<li><p><strong>On a live pod the seat writes its own record, and needs no volume and no
+flag to.</strong> The image installs <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code>, points <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">passwd</span></code> line at it and ships <code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> world-writable, so
+the agent appends a record for the uid <em>and gid</em> the seat turned out to run
+as. That is the whole mechanism: no capability, no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>, nothing in
+the workload’s manifest. The exception is a seat under that database’s
+compiled-in floors — it ignores a record whose uid or gid is below 500, gid
+100 excepted — which falls back to <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> and so to
+<code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code>.</p></li>
+<li><p>The volume is for a seat that is an <strong>ordinary</strong> container, which is what
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> authors — <code class="docutils literal notranslate"><span class="pre">subPath</span></code> is legal there and nothing is written at
+runtime. (The dev sidecar does not mount it yet; see the follow-up note in
+<code class="docutils literal notranslate"><span class="pre">Charts/podbench/values.yaml</span></code>.)</p></li>
+<li><p>The capability report says so where it matters: when the pod declares the
+volume, the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">seat</span></code> line explains that it cannot be projected into an
+ephemeral container and names the seat’s own record as the route instead, so
+that a pod somebody prepared for podbench does not read as one whose
+preparation failed. Where a seat <em>does</em> carry the identity, the same line
+credits it.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> are opt-in and only partly proven, and need
+<code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>. An attach that used neither prints one line offering
+them; one that used either prints what it cost — including that the raised
+limit is on the pod and not on its controller, so a rollout reverts it.
+Both take <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> or <code class="docutils literal notranslate"><span class="pre">REQUEST:LIMIT</span></code>, and raise the request alongside the
+limit where a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> bounds the ratio between them.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is a <strong>fallback</strong>, and one worth understanding before using.
+GID 0 lets the agent append to the image’s group-writable <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, which
+is what a seat had to do before <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code> shipped (issue #102) and
+what it still does when that database will not serve it — an image whose NSS
+does not consult it, or a uid or gid below its floor of 500. The cost is the
+target’s own group, and that group is not decoration: the kernel
+compares the gid as well as the uid when a process without <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>
+ptraces another, and a mismatch denies in both directions (measured, issue
+#98). So against a target whose gid is not 0 — 36070 at Diamond — the flag buys
+ssh and takes the debugger. Admission is not what makes it opt-in: the
+restricted Pod Security Standard does not constrain <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code> at all.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--open</span></code></strong> takes the seat from “landed” to “bound breakpoint” in one
+command. It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH, and the local VS Code needs the
+<strong>Remote - SSH</strong> extension; both are checked at the point of use and named in
+the failure rather than reported as a traceback. <code class="docutils literal notranslate"><span class="pre">code</span></code> is looked for
+<em>before</em> the seat is landed, because an ephemeral container’s name is
+permanent and a run that was always going to end at “no <code class="docutils literal notranslate"><span class="pre">code</span></code>” must not burn
+one.</p>
+<p>It has to be the <strong>desktop</strong> <code class="docutils literal notranslate"><span class="pre">code</span></code>. Inside a Remote-SSH window, a
+devcontainer or a Codespace, the <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH is VS Code’s <em>remote</em>
+CLI, which forwards to the window that terminal already belongs to:
+<code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> would install into that machine rather than into the
+seat, leaving breakpoints that never bind. podbench refuses that one by name
+before landing anything — run it from a terminal on the machine your VS Code
+itself runs on, or drop <code class="docutils literal notranslate"><span class="pre">--open</span></code> and use <strong>Remote-SSH: Connect to Host</strong>.</p>
+<p>In order it:</p>
+<ul class="simple">
+<li><p>writes <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/settings.json</span></code> with every exclude <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code>
+writes at machine scope — the watcher, search, Pylance and cpptools entries
+for <code class="docutils literal notranslate"><span class="pre">/proc</span></code>, <code class="docutils literal notranslate"><span class="pre">/sys</span></code>, <code class="docutils literal notranslate"><span class="pre">/dev</span></code> and <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> — <strong>before</strong> the window
+opens, because the walk starts the moment it does. A single folder makes
+that file the <em>workspace</em> settings, so none of the keys is dropped there,
+and this is the one copy that survives <em>Kill/Uninstall VS Code Server on
+Host</em>. Inside a home, <code class="docutils literal notranslate"><span class="pre">**/.vscode-server/**</span></code> is the entry that earns its
+place first, and <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code> the only one that stops cpptools’
+tag parser walking on its own account;</p></li>
+<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> in the seat and merges the result into
+<code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/launch.json</span></code>, matching on configuration name, so a second
+<code class="docutils literal notranslate"><span class="pre">--open</span></code> updates its own entries rather than appending copies;</p></li>
+<li><p>installs <strong>only</strong> the extensions the emitted configurations name, with
+<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span> <span class="pre">--install-extension</span></code> — which is the
+“Install in SSH: <code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code>” button as a flag. A locally installed extension
+runs the debug adapter on your laptop, where no <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path
+means anything, and the failure looks like a bad <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>. They are
+also recommended in <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/extensions.json</span></code> as a fallback. An
+install only unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, so a window that
+was <strong>already</strong> connected keeps the extension host it started and never
+loads it — the adapter stays unregistered and its <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> entry
+cannot run. A first <code class="docutils literal notranslate"><span class="pre">--open</span></code> is unaffected, since the install finishes
+before the window opens; a later run needs the reload only where it put a
+<em>new</em> extension in the seat, and the <em>Developer: Reload Window</em> reminder is
+printed whenever an install <strong>succeeded</strong>, because <code class="docutils literal notranslate"><span class="pre">code</span></code> exits 0 for
+“already installed” too and this side cannot tell an open window from a
+fresh one. A run whose every install failed prints no reminder, having
+unpacked nothing;</p></li>
+<li><p>opens the <strong>seat’s home</strong> — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a
+<code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume. Never <code class="docutils literal notranslate"><span class="pre">/</span></code>: a folder there points the watcher at
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, which is a symlink into another container’s rootfs, and
+the walk has no bottom.</p></li>
+</ul>
+<p>It cannot be combined with <code class="docutils literal notranslate"><span class="pre">--print-config</span></code>, which writes no stanza:
+<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span></code> resolves the alias through ssh, and ssh
+reads the config dir. A target no debugger fits is not a failure — the
+excludes, the folder and the terminals are the rest of the seat.</p>
+<p><code class="docutils literal notranslate"><span class="pre">debug-config</span></code>’s own stderr is relayed line by line rather than summarised.
+It is the only thing in the run that can see the target, so its narration is
+the diagnosis — it names every mechanism that said no, and on success it also
+carries the injection command, which the emitted debugpy configuration needs
+and cannot state: the entry is written once the <em>prerequisites</em> are met, and
+nothing is listening until that command is run.</p>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--provision</span></code></strong> passes through to that <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> run and means <em>make
+this target debuggable</em>. It is the answer to the commonest empty-handed case:
+a Python target whose image has no debugpy. The injection bootstrap runs
+inside the target’s interpreter, so debugpy has to be importable <em>there</em>;
+without it no configuration can be emitted and <code class="docutils literal notranslate"><span class="pre">--open</span></code> writes no
+<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> at all.</p>
+<p>It does both halves. The seat installs debugpy into the target with <code class="docutils literal notranslate"><span class="pre">uv</span></code>,
+resolved for the <em>target’s</em> Python version rather than the seat’s, and then
+starts the debugpy server inside the app — so the emitted configuration has
+something to connect to and F5 works when the command finishes. The two are
+one flag because issue #45 ordered these mutations and put <em>installing</em> above
+<em>injecting</em>: a run already allowed the larger one has been allowed the
+smaller, and asking twice left the configuration emitted, the port closed and
+the first F5 at <code class="docutils literal notranslate"><span class="pre">ECONNREFUSED</span></code>.</p>
+<p>It is opt-in and stays so. It writes ~15 MB into the workload’s writable
+layer, on an ephemeral-storage budget the seat shares with the workload and
+<strong>cannot reserve</strong> — an ephemeral container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code>
+(report 3.9); it needs egress from the pod, since uv resolves and downloads
+from an index; starting the server ptraces the app, so it stops answering
+probes for the few seconds that takes (~3 s measured, against the deadlines
+the report above prints); and a restart of the target container ends the
+debugging. The two halves do not expire together: the <strong>server</strong> never
+survives a restart, being a live process in the container that died, while the
+<strong>install</strong> survives one where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into
+the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is pod-scoped and outlives a container — and not at
+the default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>, which is the container’s own writable
+layer. Either way the next step is <code class="docutils literal notranslate"><span class="pre">--provision</span></code> again, since without the
+server nothing is listening. Installing debugpy into the app image, or baking
+<code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app, is the durable answer.</p>
+<p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> still only prints the injection command. That is
+<code class="docutils literal notranslate"><span class="pre">injection_command</span></code>’s rule unchanged — authoring a <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> may not
+ptrace the workload on its own — and <code class="docutils literal notranslate"><span class="pre">--provision</span></code> is what revokes it.</p>
+<p>Without <code class="docutils literal notranslate"><span class="pre">--open</span></code> it is <strong>refused</strong>, not ignored: there is no <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>
+run for it to change, and a flag that reads as a promise to mutate the
+workload must not quietly decline to keep it. Where the target’s rootfs is
+read-only the write fails with <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> — the mount flag lives in the target’s
+mount namespace — and the seat’s own <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision-dest</span></code>
+is what points it at a writable volume instead.</p>
+<p>Each extension unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, which in Observe
+mode is on the <strong>workload’s</strong> ephemeral-storage budget: a server plus one
+extension measured 1215 MiB live, and <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> alone is 330 MiB.
+That is why only the flavour’s own extensions are installed — though “only”
+is the <em>list</em>, not the outcome: VS Code resolves each entry’s dependencies,
+and <code class="docutils literal notranslate"><span class="pre">ms-python.python</span></code> is an extension pack, so a Python target also lands
+<code class="docutils literal notranslate"><span class="pre">ms-python.vscode-pylance</span></code> (117 MiB) and <code class="docutils literal notranslate"><span class="pre">ms-python.vscode-python-envs</span></code>. The
+excludes are written for what actually arrives, which is why
+<code class="docutils literal notranslate"><span class="pre">python.analysis.exclude</span></code> is among them.</p>
+</li>
+<li><p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for any seat that lands, including a degraded one; <code class="docutils literal notranslate"><span class="pre">2</span></code> for a
+real error.</p></li>
+</ul>
+</section>
+<section id="ssh-config">
+<h3><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code><a class="headerlink" href="#ssh-config" title="Link to this heading">#</a></h3>
+<p>Regenerate the ssh stanza for a seat that is already running, without touching
+the pod.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench ssh-config [OPTIONS] [POD]
+
+ regenerate the ssh stanza for an existing session
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
+│                                    stanza                                                        │
+│                                    [default: ~/.ssh/id_ed25519]                                  │
+│ --ssh-user              NAME       login name to put in the stanza                               │
+│ --host-alias            NAME       ssh Host name for the seat                                    │
+│ --print-config                     print the ssh stanza instead of writing it to the config dir  │
+│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
+│                                    with the candidates instead. Already implied when stdin is    │
+│                                    not a tty                                                     │
+│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)             │
+│ --context               NAME       kubeconfig context                                            │
+│ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
+│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
+│                                    ~/.podbench)                                                  │
+│ --help                             Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Fails if there is no running podbench container in the pod.</p>
+</section>
+<section id="status">
+<h3><code class="docutils literal notranslate"><span class="pre">status</span></code><a class="headerlink" href="#status" title="Link to this heading">#</a></h3>
+<p>Every podbench container in one pod, including dead ones whose names remain
+burnt.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench status [OPTIONS] [POD]
+
+ the podbench containers in one pod and what each supports
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --no-prompt                      never ask which pod: an ambiguous or missing POD is refused     │
+│                                  with the candidates instead. Already implied when stdin is not  │
+│                                  a tty                                                           │
+│ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)               │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --no-probe                       do not run capreport in the seats; every verdict then reads     │
+│                                  `not probed`, which is what this listing has to say when it has │
+│                                  measured nothing                                                │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+</section>
+<section id="list">
+<h3><code class="docutils literal notranslate"><span class="pre">list</span></code><a class="headerlink" href="#list" title="Link to this heading">#</a></h3>
+<p>The same, across the namespace.</p>
+<p>Both verbs end each pod’s block with the ssh alias to connect with, read out of
+the stanza in <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> rather than derived from the pod’s name: <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--host-alias</span> <span class="pre">NAME</span></code> is recorded nowhere in the cluster, so a derived alias would
+be wrong for whoever used the flag. When there is no stanza on this machine —
+the seat was landed from another one — they say so and name <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, the
+verb that writes the missing half. Neither verb writes anything.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench list [OPTIONS]
+
+ every pod in the namespace carrying a podbench container
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --namespace   -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)               │
+│ --context             NAME       kubeconfig context                                              │
+│ --kubectl             BIN        kubectl binary to use [default: kubectl]                        │
+│ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
+│                                  ~/.podbench)                                                    │
+│ --help                           Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+</section>
+<section id="dev">
+<h3><code class="docutils literal notranslate"><span class="pre">dev</span></code><a class="headerlink" href="#dev" title="Link to this heading">#</a></h3>
+<p>Author a sacrificial dev pod from a target’s spec — Iterate mode.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench dev [OPTIONS] [POD]
+
+ create or delete the dev pod (runs on the laptop)
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   POD      &lt;str&gt;  the pod to clone, or the dev pod to delete: pod/NAME, a bare NAME, or any      │
+│                   substring of one. Anything that does not settle on a single pod lists the      │
+│                   candidates and asks — every pod in the namespace, or with --delete only the    │
+│                   dev pods                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)             │
+│ --context               NAME       kubeconfig context                                            │
+│ --container             NAME       container to take over                                        │
+│ --name                  NAME       dev pod name (default: POD-podbench)                          │
+│ --image                 REF        podbench image (default: the image built from this launcher&#39;s │
+│                                    version)                                                      │
+│ --port                  PORT       the port your app serves                                      │
+│ --take-traffic                     copy the origin&#39;s labels so the dev pod shares Service        │
+│                                    traffic with it. Off by default: joining a production Service │
+│                                    silently is a foot-cannon                                     │
+│ --cutover               SERVICE    point SERVICE exclusively at the dev pod, recording its       │
+│                                    selector for an exact restore at teardown                     │
+│ --identity              KEY        ssh key to authorise in the sidecar and name in the generated │
+│                                    stanza                                                        │
+│                                    [default: ~/.ssh/id_ed25519]                                  │
+│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
+│                                    ~/.podbench)                                                  │
+│ --host-alias            NAME       ssh Host name for the sidecar                                 │
+│ --delete                           tear the dev pod down                                         │
+│ --timeout               SECONDS    seconds to wait [default: 120.0]                              │
+│ --dry-run                          print the authored pod instead of creating it                 │
+│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
+│                                    with the candidates instead. Already implied when stdin is    │
+│                                    not a tty                                                     │
+│ --help                             Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">POD</span></code> is resolved exactly as <code class="docutils literal notranslate"><span class="pre">attach</span></code> resolves it, through the same helper:
+<code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>, a substring of one, or nothing at all, in which
+case the candidates are listed and you are asked. A substring that settles on
+one pod is echoed rather than assumed, and <code class="docutils literal notranslate"><span class="pre">--no-prompt</span></code> — or a stdin that is
+not a tty — turns the question into a refusal that lists the candidates. With
+<code class="docutils literal notranslate"><span class="pre">--delete</span></code> the candidates are the dev pods alone, since nothing else in the
+namespace is something it would agree to delete.</p></li>
+<li><p>The namespace comes from your kubeconfig context when <code class="docutils literal notranslate"><span class="pre">-n</span></code> is not given, the
+same as everywhere else. It used to mean the literal namespace <code class="docutils literal notranslate"><span class="pre">default</span></code>
+here, which is the fix in issue #44.</p></li>
+<li><p>The origin pod is never modified, and a pod podbench itself authored is
+refused as one: cloning a dev pod would copy its sidecar in as an ordinary
+container. Name the workload it was made from.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code> and <code class="docutils literal notranslate"><span class="pre">--cutover</span></code> are the only ways the dev pod sees Service
+traffic, and both are explicit. <code class="docutils literal notranslate"><span class="pre">--cutover</span></code> uses a JSON <em>replace</em> patch — a
+merge patch would union the selector maps and quietly leave the original pod
+serving half the requests.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--identity</span></code> is authorised inside the sidecar and named as the stanza’s
+<code class="docutils literal notranslate"><span class="pre">IdentityFile</span></code>, exactly as for <code class="docutils literal notranslate"><span class="pre">attach</span></code> — same flag, same default, same
+refusal when the public key is missing. It is read <strong>before</strong> anything is
+created, because the key reaches the sidecar through its environment and a
+container’s environment cannot be changed after the pod exists.</p></li>
+<li><p>The generated stanza is written to the same <code class="docutils literal notranslate"><span class="pre">config.d</span></code> file <code class="docutils literal notranslate"><span class="pre">attach</span></code> would
+use for that pod, and the summary ends with the alias to <code class="docutils literal notranslate"><span class="pre">ssh</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> line is printed as well: it works when ssh does not.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--delete</span></code> restores any borrowed selector, removes the pod, then removes the
+stanza and the <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> entry it wrote. <code class="docutils literal notranslate"><span class="pre">attach</span></code> deliberately leaves its
+stanza in place — that seat is reconnectable while its pod lives, this one is
+not.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--delete</span></code> takes either the dev pod’s name or its origin’s, since one derives
+from the other, and anything it has to search for is searched for among the
+dev pods alone. That is what keeps teardown scriptable: a reference matching
+no dev pod — including one that still matches the origin’s own replicas — is
+a teardown that has already happened, so it exits 0 saying “nothing to
+delete” rather than refusing an ambiguity it could not have acted on. A dev
+pod created with <code class="docutils literal notranslate"><span class="pre">--name</span></code> is found the same way, by its label.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> is the best available description of what this mode does. It
+still needs a readable public key, so that what it prints is what <code class="docutils literal notranslate"><span class="pre">dev</span></code> would
+actually create.</p></li>
+</ul>
+</section>
+<section id="hotfix">
+<h3><code class="docutils literal notranslate"><span class="pre">hotfix</span></code><a class="headerlink" href="#hotfix" title="Link to this heading">#</a></h3>
+<p>Durable in-place fixes: a venv on a ReadWriteOnce claim, every change a git
+commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a hotfixed pod go unnoticed.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Hotfix mode has never been run against a cluster. It is unit-tested only.</p>
+</div>
+<p>The seat must mount the claim at the application’s own mountPath, since that is
+how <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Land it that
+way with <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--mount</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">myapp</span><span class="o">-</span><span class="mi">0</span> <span class="o">--</span><span class="n">mount</span> <span class="n">myapp</span><span class="o">-</span><span class="n">venv</span> <span class="o">--</span><span class="n">new</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is run from a terminal inside the
+seat, where the claim is already in this process’s own mount namespace.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
+
+ Durable in-place fixes: a venv on a claim, every change a commit, and a status command that will
+ not let a hotfixed pod go unnoticed.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --print-values              emit the helm values an application&#39;s chart needs, and exit          │
+│ --app                 NAME  application name, for --print-values                                 │
+│ --venv-path           PATH  the application&#39;s venv path, for --print-values                      │
+│ --size                SIZE  claim size, for --print-values [default: 2Gi]                        │
+│ --app-image           REF   image the seeding initContainer runs, for --print-values             │
+│                             [default: &lt;the application&#39;s own image&gt;]                             │
+│ --uid                 UID   the application container&#39;s uid, for --print-values                  │
+│                             [default: &lt;the application&#39;s runAsUser&gt;]                             │
+│ --gid                 GID   the application container&#39;s gid, for --print-values                  │
+│                             [default: &lt;the application&#39;s runAsGroup&gt;]                            │
+│ --help                      Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ init         verify the seeded claim, clone the source, editable-install                         │
+│ apply        commit the change on the claim and roll the workload                                │
+│ status       every hotfixed pod in the namespace, and its drift                                  │
+│ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Sub-verb</p></th>
+<th class="head"><p>Does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">--repo</span> <span class="pre">URL</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>verify the claim was seeded from the image’s venv, clone the source onto it, editable-install, record the base commit</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest, annotate, roll the workload</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
+<td><p>every hotfixed pod in the namespace, its drift, and what is wrong with it</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">consolidate</span> <span class="pre">--branch</span> <span class="pre">B</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>push the checkout as a branch and print the retirement checklist</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">TARGET</span></code> is <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">deployment/NAME</span></code> or <code class="docutils literal notranslate"><span class="pre">statefulset/NAME</span></code>. Shared flags:
+<code class="docutils literal notranslate"><span class="pre">--venv</span></code> (the mountPath the claim is mounted at, which <em>is</em> the application’s
+venv path), <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>, <code class="docutils literal notranslate"><span class="pre">--author</span></code>.</p>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><strong>Single replica only</strong>, refused otherwise: the claim is <code class="docutils literal notranslate"><span class="pre">ReadWriteOnce</span></code>, so a
+second replica either fails to schedule or races on one checkout.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">init</span></code> <strong>verifies</strong> the seed, never performs it. Once the claim is mounted over
+the venv path the image’s own venv is hidden in every container, so the copy
+can only happen in an initContainer — which is what <code class="docutils literal notranslate"><span class="pre">--print-values</span></code> emits.</p></li>
+<li><p>The editable install runs in the <strong>application</strong> container, not the seat: the
+venv is shared but its interpreter is not. <code class="docutils literal notranslate"><span class="pre">--no-install</span></code> skips it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> does not open a PR; it prints the <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> line.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired hotfixes” is
+a testable shutdown assertion.</p></li>
+</ul>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --venv-path /opt/venv
+</pre></div>
+</div>
+<p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">hotfixVenv</span></code> values for the podbench
+release, and the volume, volumeMount and seeding initContainer for the
+application’s own chart.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="in-pod-verbs">
+<h2>In-pod verbs<a class="headerlink" href="#in-pod-verbs" title="Link to this heading">#</a></h2>
+<section id="capreport">
+<h3><code class="docutils literal notranslate"><span class="pre">capreport</span></code><a class="headerlink" href="#capreport" title="Link to this heading">#</a></h3>
+<p>Name the mechanism that denies ptrace in this container. The launcher runs it
+automatically after every attach; run it yourself when something changes.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench capreport [OPTIONS] [PID]
+
+ Name the mechanism that denies ptrace in this container.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      &lt;int&gt;  target pid; discovered from the target container id if omitted               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id        ID  target container id (default: $PODBENCH_TARGET_CID)                    │
+│ --json                    emit the stable JSON form instead of the human report                  │
+│ --help                    Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p><strong>Exit codes are the interface</strong>, so a shell script can branch without parsing:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Code</p></th>
+<th class="head"><p>Verdict</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>live attach available</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">10</span></code></p></td>
+<td><p>read-only inspection of the target (rootfs, <code class="docutils literal notranslate"><span class="pre">maps</span></code>, <code class="docutils literal notranslate"><span class="pre">environ</span></code>); no live attach</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">15</span></code></p></td>
+<td><p>launch-only: no read-only inspection of the target, but <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span></code> works</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<td><p>neither; the seat itself still works</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">10</span></code> says nothing about gdb-launch: the two are measured separately, and a seat
+whose own forked child refuses to be traced can still read all three gated paths
+at the target’s uid. <code class="docutils literal notranslate"><span class="pre">child_attach_ok</span></code> in the JSON is the only thing that claims
+that rung.</p>
+<p>It reads <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>/<code class="docutils literal notranslate"><span class="pre">CapBnd</span></code>/<code class="docutils literal notranslate"><span class="pre">CapAmb</span></code>, <code class="docutils literal notranslate"><span class="pre">Seccomp</span></code>, <code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>, the AppArmor
+profile of both itself and the target, and <code class="docutils literal notranslate"><span class="pre">yama/ptrace_scope</span></code>; then runs a
+scratch <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on its own forked child (always permitted by Yama, so a
+failure there is structural) and a live attach on the target; then a six-path
+<code class="docutils literal notranslate"><span class="pre">/proc</span></code> read matrix. Yama is a <strong>node-level</strong> knob that differs by kernel
+flavour, so this must be re-run per pod and never cached cluster-wide.</p>
+<p>Only three of those six paths decide the <code class="docutils literal notranslate"><span class="pre">10</span></code>. <code class="docutils literal notranslate"><span class="pre">root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> and <code class="docutils literal notranslate"><span class="pre">environ</span></code> take
+<code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_READ</span></code>; <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">fd</span></code> need no permission at all and are
+therefore readable on a pod where nothing else is, so they are reported and never
+counted as evidence. The JSON form carries both — the full matrix as <code class="docutils literal notranslate"><span class="pre">proc_reads</span></code>,
+and the decision as <code class="docutils literal notranslate"><span class="pre">reads_ok</span></code>. The matrix comes back alphabetical rather than
+grouped — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span> <span class="pre">--json</span></code> emits with <code class="docutils literal notranslate"><span class="pre">sort_keys</span></code>, so the two halves
+cannot disagree about ordering:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench capreport --json | jq &#39;{verdict, reads_ok, proc_reads}&#39;
+{
+  &quot;verdict&quot;: &quot;launch_only&quot;,
+  &quot;reads_ok&quot;: false,
+  &quot;proc_reads&quot;: {
+    &quot;cmdline&quot;: true,
+    &quot;environ&quot;: false,
+    &quot;fd&quot;: true,
+    &quot;maps&quot;: false,
+    &quot;root&quot;: false,
+    &quot;status&quot;: true
+  }
+}
+</pre></div>
+</div>
+<p>A <strong>DEBUGGERS</strong> block sits beside the verdict, listing what the image actually
+ships — so what <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> emits and what the seat can run cannot drift
+apart:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>DEBUGGERS (what this image ships)
+  yes  gdb: /usr/local/bin/gdb
+  no   lldb: absent (CodeLLDB brings its own to the remote, so this is optional)
+  no   dlv: absent (delve, for Go targets)
+  yes  gdb-podbench: /usr/local/bin/gdb-podbench (`gdb` on PATH is the shim)
+  yes  debugpy: /opt/podbench/debugpy (attach helpers: attach_linux_amd64.so)
+</pre></div>
+</div>
+<p>Two lines say more than yes/no on purpose. <code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code> reports whether a bare
+<code class="docutils literal notranslate"><span class="pre">gdb</span></code> <em>resolves</em> to the wrapper, because that is what a tool shelling out to
+<code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span></code> will run; and debugpy lists its attach helpers by name, because on
+arm64 the package is present and the mechanism is not.</p>
+</section>
+<section id="pids">
+<h3><code class="docutils literal notranslate"><span class="pre">pids</span></code><a class="headerlink" href="#pids" title="Link to this heading">#</a></h3>
+<p>List the processes in the pod’s shared PID namespace and say which container
+owns each.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench pids [OPTIONS]
+
+ List the processes in this pod&#39;s shared PID namespace, and say which container owns each one.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id        ID  target container id (default: $PODBENCH_TARGET_CID)                    │
+│ --targets                 list only the target container&#39;s processes                             │
+│ --json                    emit the stable JSON form instead of the table                         │
+│ --help                    Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Attribution substring-matches the target’s container runtime ID against
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/cgroup</span></code>. Without one, every other container’s processes look like
+targets — the JSON carries <code class="docutils literal notranslate"><span class="pre">attribution</span></code> and <code class="docutils literal notranslate"><span class="pre">warning</span></code> fields, and a consumer
+that ignores them is reading a guess as a fact.</p>
+</section>
+<section id="dbg">
+<h3><code class="docutils literal notranslate"><span class="pre">dbg</span></code><a class="headerlink" href="#dbg" title="Link to this heading">#</a></h3>
+<p>gdb, with sysroot, source path and auto-load path set in the one order that
+produces a correct backtrace.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench dbg [OPTIONS] [PID]
+
+ Run gdb against a process in another container of this pod, with the sysroot, source path and
+ auto-load path set in the order that produces a correct backtrace.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      &lt;int&gt;  pid to attach to; discovered from the container id if omitted                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id                    ID       target container id used to discover the pid          │
+│                                            (default: $PODBENCH_TARGET_CID)                       │
+│ --source-dir                      DIR      extra source directory, wired with gdb&#39;s `directory`. │
+│                                            debuginfod serves symbols but no sources on Debian,   │
+│                                            so this is how source text outside the target&#39;s       │
+│                                            rootfs is found. Repeatable                           │
+│ --no-debuginfod                            do not enable debuginfod (it needs ca-certificates    │
+│                                            and network)                                          │
+│ --run                                      with --launch, start the program immediately          │
+│ --dry-run,--print-commands                 print the generated gdb commands and exit, without    │
+│                                            probing or starting gdb                               │
+│ --print-exec-file                          print the one path to give gdb&#39;s `file` command and   │
+│                                            exit. It is the target&#39;s own path under the sysroot   │
+│                                            unless this container has a file of its own at that   │
+│                                            path, in which case gdb would read ours (issue #90)   │
+│                                            and a copy is staged instead. What `gdb-podbench`     │
+│                                            calls for a third-party `gdb --pid`                   │
+│ --launch                          PROGRAM  debug a program gdb starts itself instead of          │
+│                                            attaching. Needs no capability. Consumes the rest of  │
+│                                            the command line, so put other flags first            │
+│ --help                                     Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--launch</span></code> consumes the remainder of the command line, so any other flag must
+come first. See <a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--print-exec-file</span></code> exists because <code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root&lt;exe&gt;</span></code> is not always
+the right answer. gdb canonicalises the exec file’s name, the kernel resolves
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> to <code class="docutils literal notranslate"><span class="pre">/</span></code>, and a seat that has a file of its own at the target’s
+path then reads <em>ours</em> — a <code class="docutils literal notranslate"><span class="pre">.gnu.version_r</span> <span class="pre">invalid</span> <span class="pre">entry</span></code> if the two builds
+differ enough, and the wrong symbols in silence if they do not. Where that
+happens <code class="docutils literal notranslate"><span class="pre">dbg</span></code> copies the target’s binary somewhere nothing shadows it, says so
+in one line, and points <code class="docutils literal notranslate"><span class="pre">file</span></code> at the copy; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> prints the same command
+it would run, so the sequence stays pasteable.</p>
+</section>
+<section id="debug-config">
+<h3><code class="docutils literal notranslate"><span class="pre">debug-config</span></code><a class="headerlink" href="#debug-config" title="Link to this heading">#</a></h3>
+<p>The VS Code debug configuration for this seat, written the way <code class="docutils literal notranslate"><span class="pre">attach</span></code> writes
+the ssh stanza — so nobody hand-fills a pid, a sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code>, a
+setup ordering or a path mapping, each of which fails <em>silently</em> when wrong.</p>
+<p>Which debugger is not one choice but three: <strong>language x mode x architecture</strong>.
+Every configuration that applies is emitted at once, each named for its flavour,
+so <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>’s list and VS Code’s own dropdown become the choice. Every
+flavour that does <em>not</em> apply gets a sentence naming the mechanism.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
+ Usage: podbench debug-config [OPTIONS] [PID]                                                       
+                                                                                                    
+ Write the VS Code debug configuration for this seat: one entry per debugger flavour that applies,  
+ with the pid, the sysroot-prefixed program path and the mode&#39;s path mappings already filled in.    
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [PID]      &lt;int&gt;  pid to attach to; discovered from the container id if omitted                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --container-id            ID                        target container id used to discover the pid │
+│                                                     (default: $PODBENCH_TARGET_CID)              │
+│ --flavour                 &lt;gdb|lldb|delve|debugpy&gt;  emit only this debugger flavour, and say why │
+│                                                     if it cannot be emitted. Repeatable; the     │
+│                                                     default is every flavour that applies        │
+│ --mode                    &lt;observe|dev&gt;             override the detected mode. Observe attaches │
+│                                                     to another container and needs path          │
+│                                                     mappings; dev launches in this one and must  │
+│                                                     not have any                                 │
+│ --port                    PORT                      the debugpy port to connect to (shared       │
+│                                                     network namespace, so always 127.0.0.1)      │
+│                                                     [default: 5678]                              │
+│ --program                 PATH                      the target&#39;s binary as its own rootfs spells │
+│                                                     it, when /proc/&lt;pid&gt;/exe cannot be read. It  │
+│                                                     is prefixed with the sysroot here, so do not │
+│                                                     prefix it yourself                           │
+│ --source-dir              DIR                       extra source directory in *this* container,  │
+│                                                     wired with gdb&#39;s `directory`. Repeatable     │
+│ --source-map              FROM=TO                   map a DWARF compilation directory (`info     │
+│                                                     source` prints it) onto a readable path.     │
+│                                                     Repeatable                                   │
+│ --no-debuginfod                                     do not enable debuginfod (it needs           │
+│                                                     ca-certificates and network)                 │
+│ --lldb                                              shorthand for --flavour lldb                 │
+│ --provision                                         make the target debuggable: install debugpy  │
+│                                                     with uv when it cannot import one, then      │
+│                                                     start the server inside it so the emitted    │
+│                                                     configuration has something to connect to.   │
+│                                                     Mutates the workload: ~15 MB of shared       │
+│                                                     ephemeral storage, needs egress from the     │
+│                                                     pod, ptraces the app for a few seconds, and  │
+│                                                     no restart survives it                       │
+│ --provision-dest          PATH                      where --provision installs it, as the        │
+│                                                     *target* spells it, and the one extra path   │
+│                                                     searched for the target&#39;s copy. Point it at  │
+│                                                     a writable mount when the target&#39;s rootfs is │
+│                                                     read-only                                    │
+│                                                     [default: /opt/podbench-debugpy]             │
+│ --provision-python        X.Y                       the target&#39;s Python version for uv to        │
+│                                                     resolve against, when it cannot be read from │
+│                                                     the target itself                            │
+│ --print-config                                      print the configuration instead of writing   │
+│                                                     it                                           │
+│ --output                  PATH                      where to write it (default:                  │
+│                                                     ./.vscode/launch.json)                       │
+│ --help                                              Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<section id="the-three-axes">
+<h4>The three axes<a class="headerlink" href="#the-three-axes" title="Link to this heading">#</a></h4>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>axis</p></th>
+<th class="head"><p>how it is decided</p></th>
+<th class="head"><p>what it changes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>language</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/exe</span></code> and <code class="docutils literal notranslate"><span class="pre">argv[0]</span></code> for an interpreter; the target’s ELF sections for Go (<code class="docutils literal notranslate"><span class="pre">.gopclntab</span></code>)</p></td>
+<td><p>which adapter: <code class="docutils literal notranslate"><span class="pre">cppdbg</span></code>, CodeLLDB, the Go extension, debugpy</p></td>
+</tr>
+<tr class="row-odd"><td><p>mode</p></td>
+<td><p>whether the target shares this container’s <strong>mount namespace</strong> — a <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> pod relaunches the app from the seat, so its process is on this side</p></td>
+<td><p>attach vs launch, and whether <code class="docutils literal notranslate"><span class="pre">pathMappings</span></code> is populated <strong>or empty</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>architecture</p></td>
+<td><p>the target <em>binary</em>’s <code class="docutils literal notranslate"><span class="pre">e_machine</span></code>, not the node label</p></td>
+<td><p>whether debugpy’s attach-to-pid exists at all</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">pathMappings</span></code> is the field with no error message: get it wrong and breakpoints
+simply never bind. In Observe mode the editor sees the source through
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> and the debuggee reports its own path, so a mapping is
+required; in dev mode both are the same inodes and the mapping must be empty.
+<code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code> is right in both, because the seat and the app share the pod’s
+network namespace — no port-forward, no tunnel.</p>
+</section>
+<section id="when-a-flavour-cannot-be-emitted">
+<h4>When a flavour cannot be emitted<a class="headerlink" href="#when-a-flavour-cannot-be-emitted" title="Link to this heading">#</a></h4>
+<p>The refusal names the mechanism, in <code class="docutils literal notranslate"><span class="pre">capreport</span></code>’s house style, and lists <em>every</em>
+unmet prerequisite rather than only the first — fixing one to meet the next wall
+is the experience this replaces:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>debug-config: debugpy unavailable: no debugpy in this seat to drive the injection
+debug-config:   also: debugpy is not importable by the target: the bootstrap runs
+                inside the target&#39;s interpreter, and debugpy injects a dlopen of the
+                path the *driver* sees, which the target&#39;s mount namespace does not have
+debug-config:   also: no sysroot-aware gdb on PATH: debugpy shells out to a bare
+                `gdb --nx --pid`, which reads this seat&#39;s libraries for the target&#39;s process
+</pre></div>
+</div>
+<p>On arm64 the architecture prerequisite is promoted to the headline, because it
+is the only one with no remedy anywhere: debugpy ships <code class="docutils literal notranslate"><span class="pre">attach_linux_amd64.so</span></code>
+alone and publishes no aarch64 Linux wheel, so there is nothing to install.
+<code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> baked into the app is pure Python and works on any
+architecture — as does <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>.</p>
+<p>The helper is looked for in the tree the <strong>injection</strong> loads, and the message
+names that tree: <code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code> points the driver at the <em>target’s</em> copy whenever
+there is one, so the seat’s copy answers a different question. On amd64 the
+helper is in every wheel, so a tree without one is an incomplete install with a
+re-install to fix it, not the architecture.</p>
+</section>
+<section id="installing-debugpy-into-the-target-provision">
+<h4>Installing debugpy into the target (<code class="docutils literal notranslate"><span class="pre">--provision</span></code>)<a class="headerlink" href="#installing-debugpy-into-the-target-provision" title="Link to this heading">#</a></h4>
+<p>A stock Python image has no debugpy, and debugpy’s pid-injection needs it
+importable <strong>by the target</strong>: the bootstrap runs in the target’s interpreter,
+and the path debugpy injects is the one the <em>driver</em> sees, so
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/...</span></code> is the only spelling valid in both mount namespaces. The
+seat can supply it — it ships <code class="docutils literal notranslate"><span class="pre">uv</span></code>, live attach already requires <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is the target’s own filesystem — so the refusal prints
+the command rather than asking for an image rebuild:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">uv</span> <span class="n">pip</span> <span class="n">install</span> <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">cache</span> <span class="o">--</span><span class="n">python</span><span class="o">-</span><span class="n">version</span> <span class="mf">3.12</span> <span class="o">--</span><span class="n">target</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">opt</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">debugpy</span> <span class="n">debugpy</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--python-version</span></code> is the load-bearing flag, and the reason this is a uv install
+and not a copy of the seat’s tree. The image installs debugpy for the seat’s own
+interpreter, so its copy carries <code class="docutils literal notranslate"><span class="pre">pydevd_cython.cpython-311-*.so</span></code> alone; put
+that in a 3.12 target and the accelerator is skipped and pydevd falls back to
+pure Python <strong>silently</strong>. uv resolves for an interpreter it is not running, and
+a 3.12 target then loads the cp312 accelerators out of the provisioned
+directory. Copying the seat’s tree is the fallback for a pod with no egress, not
+the route.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--provision</span></code> runs it for you, and is <strong>opt-in on purpose</strong>. The injection
+command is printed rather than run because it ptraces the workload; writing
+~15 MB into the workload’s own writable layer is the larger mutation of the two,
+and a verb that authors a configuration file has to stay safe to re-run. Behind
+the flag it probes the destination for writability first and names what refuses:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>cost</p></th>
+<th class="head"><p>why it cannot be ignored</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>network egress from the pod</p></td>
+<td><p>uv resolves and downloads from an index; a locked-down namespace refuses it, and the fallback is a copy of the seat’s tree with the accelerator caveat above</p></td>
+</tr>
+<tr class="row-odd"><td><p>no restart survives it</p></td>
+<td><p>neither the install nor the injection — a restart brings back the app image exactly as built</p></td>
+</tr>
+<tr class="row-even"><td><p>~15 MB of ephemeral storage</p></td>
+<td><p>on a budget the seat <strong>shares with the workload and cannot reserve</strong>, because an ephemeral container may not carry <code class="docutils literal notranslate"><span class="pre">resources</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--no-cache</span></code> is what keeps that last number true. uv downloads into its cache in
+the <em>seat’s</em> writable layer and materialises from there into <code class="docutils literal notranslate"><span class="pre">--target</span></code>; the two
+are different filesystems, so no hardlink is possible and both copies would
+exist — against the one pod-level budget. The install is also echoed before it
+runs, because uv’s output is captured for the failure message and a resolve
+against an unroutable index is otherwise silence indistinguishable from a hang.</p>
+<p><code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem:</span> <span class="pre">true</span></code> is the one genuinely new precondition, and it is
+not readable from the seat: the mount flag lives in the target’s mount
+namespace, so it arrives as <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> on the write. Uid 0 in the seat carries
+<code class="docutils literal notranslate"><span class="pre">CAP_DAC_OVERRIDE</span></code>, so the target’s own uid and file modes are never the
+explanation — a <code class="docutils literal notranslate"><span class="pre">permission</span> <span class="pre">denied</span></code> here is the <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> traversal,
+which takes <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_READ</span></code> and is refused to a root seat with no
+<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> (report 3.11), or an LSM denying the cross-container write.
+Where the rootfs is read-only there is usually still a writable
+<code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> or tmpfs in the pod — <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> puts the copy there instead,
+and is also the extra path <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> searches on a later run.</p>
+<p>At that destination “already installed” is not a refusal: an installed tree
+records no version, and <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> is searched <strong>first</strong>, so a copy
+resolved for the wrong <code class="docutils literal notranslate"><span class="pre">X.Y</span></code> would otherwise shadow the target’s own correct one
+for the pod’s lifetime. Re-running installs over it. The target’s own
+site-packages is never written over — only supplemented, when its copy is
+missing the architecture helper.</p>
+<p>Only <strong>Observe</strong> mode needs any of this. A <code class="docutils literal notranslate"><span class="pre">dev</span></code> pod relaunches the app as the
+seat’s own child in this container, where debugpy is an ordinary workspace-venv
+dependency; Hotfix mounts the same PVC over the venv at the same path in both
+containers. <code class="docutils literal notranslate"><span class="pre">--provision</span></code> says so rather than installing anyway.</p>
+<p><code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> names <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/gdb-podbench</span></code>, never <code class="docutils literal notranslate"><span class="pre">/usr/bin/gdb</span></code>:
+cpptools launches gdb inheriting its own extension directory as a working
+directory, which VS Code deletes on extension update, and gdb’s libpython then
+dies in <code class="docutils literal notranslate"><span class="pre">getcwd()</span></code> during startup with no signal name. <code class="docutils literal notranslate"><span class="pre">--source-map</span> <span class="pre">/</span></code> is
+refused rather than emitted — gdb re-applies a root substitution on display and
+the editor is handed <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/proc/&lt;pid&gt;/root/...</span></code>.</p>
+<p>Re-running replaces its own entries by name and leaves a hand-written
+configuration beside them untouched — which is why every generated name carries
+its flavour. A <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> it cannot parse — VS Code permits comments, <code class="docutils literal notranslate"><span class="pre">json</span></code>
+does not — is refused rather than rewritten. See
+<a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
+</section>
+</section>
+<section id="dev-bootstrap">
+<h3><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code><a class="headerlink" href="#dev-bootstrap" title="Link to this heading">#</a></h3>
+<p>Populate the dev pod’s workspace: clone, sync, editable install.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench dev-bootstrap [OPTIONS]
+
+ clone, sync and editable-install (runs in the pod)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --repo               URL      git URL to clone [required]                                     │
+│    --ref                REF      branch, tag or commit to check out                              │
+│    --dir                DIR      checkout directory (must be in this container)                  │
+│                                  [default: /workspace/src]                                       │
+│    --python             VERSION  CPython version for uv to use                                   │
+│    --no-sync                     skip uv sync --frozen                                           │
+│    --no-editable                 skip uv pip install -e .                                        │
+│    --help                        Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>“must be in this container” is enforced, not advisory: a checkout under
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/...</span></code> is refused, because an editable install whose <code class="docutils literal notranslate"><span class="pre">.pth</span></code>
+names a path in another mount namespace is <strong>silently ignored</strong> by <code class="docutils literal notranslate"><span class="pre">site.py</span></code>.</p>
+</section>
+<section id="run">
+<h3><code class="docutils literal notranslate"><span class="pre">run</span></code><a class="headerlink" href="#run" title="Link to this heading">#</a></h3>
+<p>Relaunch the workload from the debug container and verify that your child owns
+the port.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench run [OPTIONS] [COMMAND]...
+
+ relaunch the app and verify it (runs in the pod)
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   [COMMAND]...      &lt;str&gt;  the command, after `--`                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --port             PORT     the port it must serve [required]                                 │
+│    --workspace        DIR      workspace root [default: /workspace]                              │
+│    --dir              DIR      working directory (default: workspace)                            │
+│    --timeout          SECONDS  seconds to verify [default: 15.0]                                 │
+│    --help                      Show this message and exit.                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Exits non-zero when the port is not owned by the process it started — a socket
+poll alone gives a false PASS, and <code class="docutils literal notranslate"><span class="pre">SO_REUSEPORT</span></code> will otherwise split traffic
+between old and new code with nothing in any log to say so.</p>
+</section>
+<section id="stop">
+<h3><code class="docutils literal notranslate"><span class="pre">stop</span></code><a class="headerlink" href="#stop" title="Link to this heading">#</a></h3>
+<p>Stop it, by recorded pid.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench stop [OPTIONS]
+
+ stop the recorded child (runs in the pod)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --workspace        DIR      workspace root [default: /workspace]                                 │
+│ --grace            SECONDS  seconds before SIGKILL [default: 5.0]                                │
+│ --help                      Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Never <code class="docutils literal notranslate"><span class="pre">pkill</span> <span class="pre">-f</span></code>: under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> that matches the invoking
+shell and every other container’s processes.</p>
+</section>
+<section id="agent">
+<h3><code class="docutils literal notranslate"><span class="pre">agent</span></code><a class="headerlink" href="#agent" title="Link to this heading">#</a></h3>
+<p>The debug container’s PID 1. The launcher sets it as the container’s command;
+you should not need to run it yourself.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench agent [OPTIONS]
+
+ Prepare the debug container for ssh and idle as its PID 1.
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --ensure-only                      prepare the container and exit instead of idling              │
+│ --self-check                       run the startup checks and exit; non-zero if any fails        │
+│ --print-host-key                   print the host public key for the launcher&#39;s known_hosts      │
+│ --print-login-user                 print the login name sshd will resolve for this uid; non-zero │
+│                                    with the reason on stderr when there is none                  │
+│ --no-self-check                    skip the startup checks (they cost a subprocess and ~0.2 s)   │
+│ --idle-interval           SECONDS  seconds between reap sweeps while idling [default: 30.0]      │
+│ --help                             Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p>Every step is <em>ensure</em>, never <em>create</em>: running it twice against the same
+container is normal operation. The host key, the authorized keys and the sshd
+config are rebuilt from the environment or a mounted Secret on each start, which
+is what makes “the ephemeral container is strictly disposable” true rather than
+aspirational.</p>
+<p>No step is fatal either. PID 1 of an unrestartable container that exits burns its
+name for the pod’s lifetime, so a step that cannot do its job records the reason
+and the agent idles anyway — <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> needs none of sshd. Two steps are
+worth knowing by name:</p>
+<ul class="simple">
+<li><p><strong>home-dir</strong> creates <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> and the <code class="docutils literal notranslate"><span class="pre">.ssh</span></code> / <code class="docutils literal notranslate"><span class="pre">.podbench</span></code> directories in it. A
+mounted <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> arrives <em>empty</em>, and sshd creates nothing. If the
+directory is not writable the failure names <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code>, which is almost always
+the cause: a projected volume is <code class="docutils literal notranslate"><span class="pre">root:root</span></code> until the pod’s <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> hands it
+to the seat’s group, and a seat running as the target’s uid can chown nothing.</p></li>
+<li><p><strong>nss-identity</strong> is a no-op when NSS already resolves the seat’s uid — what a
+mounted <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> achieves for an ordinary container, and it stays a
+no-op even though the projected <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> is read-only. In an ephemeral
+seat, which cannot be given that file at all, it appends a record to
+<code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> instead, which needs no particular gid — or to
+<code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, for the seats that database will not serve. It is allowed to
+fail: the agent records the reason and idles, because a container that exits
+burns its name.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">--print-login-user</span></code> is how the launcher decides whether an ssh stanza is worth
+writing: the name on stdout, or exit 1 with the mechanism and, on stderr, either
+the way out or the <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span></code> command that shows why the registration step
+failed. It is a pure read and ensures nothing, so it reports the state sshd will
+actually find.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--self-check</span></code> includes the fd-2 tripwire — a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> round trip with a
+delayed second line, which fails if anything in the path has broken the CRI exec
+stream.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="environment-variables">
+<h2>Environment variables<a class="headerlink" href="#environment-variables" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Read by</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_IMAGE</span></code></p></td>
+<td><p>launcher</p></td>
+<td><p>debug image to attach; <code class="docutils literal notranslate"><span class="pre">--image</span></code> overrides. Both override the default, which is <code class="docutils literal notranslate"><span class="pre">ghcr.io/gilesknap/podbench:</span></code> plus the launcher’s own version (<code class="docutils literal notranslate"><span class="pre">main</span></code> for a dev build)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_CONFIG_DIR</span></code></p></td>
+<td><p>launcher, <code class="docutils literal notranslate"><span class="pre">dev</span></code></p></td>
+<td><p>where the ssh config and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> go; <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> overrides. Default <code class="docutils literal notranslate"><span class="pre">~/.podbench</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code></p></td>
+<td><p>the target container’s runtime ID, injected at attach time</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_PUBKEY</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>authorized key, injected into the seat’s spec by <code class="docutils literal notranslate"><span class="pre">attach</span></code> and by <code class="docutils literal notranslate"><span class="pre">dev</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_PUBKEY_FILE</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>read it from a file instead. Default mount <code class="docutils literal notranslate"><span class="pre">/etc/podbench/ssh/authorized_keys</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_HOST_KEY</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>host private key, rather than minting one</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_SSH_HOST_KEY_FILE</span></code></p></td>
+<td><p>agent</p></td>
+<td><p>the same from a file. Default mount <code class="docutils literal notranslate"><span class="pre">/etc/podbench/ssh/ssh_host_ed25519_key</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS</span></code></p></td>
+<td><p>gdb, <code class="docutils literal notranslate"><span class="pre">dbg</span></code></p></td>
+<td><p>symbol server. The image sets <code class="docutils literal notranslate"><span class="pre">https://debuginfod.debian.net</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="exit-codes">
+<h2>Exit codes<a class="headerlink" href="#exit-codes" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Code</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>success — including a degraded seat, which is an honest outcome and not a failure</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> found a pod needing attention; or <code class="docutils literal notranslate"><span class="pre">doctor</span></code> found something blocking an attach</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), a <code class="docutils literal notranslate"><span class="pre">doctor</span></code> usage error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> / <code class="docutils literal notranslate"><span class="pre">10</span></code> / <code class="docutils literal notranslate"><span class="pre">15</span></code> / <code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> only: the capability verdict</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../reference.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Reference</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="glossary.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Glossary</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-options">Common options</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#naming-the-pod">Naming the pod</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cluster-side-verbs">Cluster-side verbs</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#doctor"><code class="docutils literal notranslate"><span class="pre">doctor</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#attach"><code class="docutils literal notranslate"><span class="pre">attach</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-config"><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#status"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list"><code class="docutils literal notranslate"><span class="pre">list</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev"><code class="docutils literal notranslate"><span class="pre">dev</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix"><code class="docutils literal notranslate"><span class="pre">hotfix</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-pod-verbs">In-pod verbs</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capreport"><code class="docutils literal notranslate"><span class="pre">capreport</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pids"><code class="docutils literal notranslate"><span class="pre">pids</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dbg"><code class="docutils literal notranslate"><span class="pre">dbg</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#debug-config"><code class="docutils literal notranslate"><span class="pre">debug-config</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-three-axes">The three axes</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-flavour-cannot-be-emitted">When a flavour cannot be emitted</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#installing-debugpy-into-the-target-provision">Installing debugpy into the target (<code class="docutils literal notranslate"><span class="pre">--provision</span></code>)</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dev-bootstrap"><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run"><code class="docutils literal notranslate"><span class="pre">run</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stop"><code class="docutils literal notranslate"><span class="pre">stop</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#agent"><code class="docutils literal notranslate"><span class="pre">agent</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment-variables">Environment variables</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exit-codes">Exit codes</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.3.0b1/docs/reference/cli.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/reference/cli.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
