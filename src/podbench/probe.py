@@ -382,9 +382,16 @@ def _accounting_notes(
             "no Yama LSM on this node (the file is absent, which is not the "
             "same as ptrace_scope=0); other nodes in the same cluster may differ"
         )
-    if seccomp == 2:
+    if seccomp == 2 and child.ok:
+        # Conditioned on the child attach, not on the mode. This note used to be
+        # printed for any filter and asserted that RuntimeDefault permits
+        # ptrace; at DLS on 2026-08-18 it appeared in a report that named
+        # seccomp as the blocker, telling the reader the filter allows the
+        # syscall it had just measured being refused. Where the child attach
+        # worked the filter demonstrably permits ptrace and the ASLR half is
+        # the useful part; where it did not, `_classify_structural` says so.
         notes.append(
-            "RuntimeDefault seccomp permits ptrace but blocks "
+            "this seccomp filter permits ptrace but blocks "
             "personality(ADDR_NO_RANDOMIZE): gdb cannot disable ASLR, so "
             "addresses vary run to run"
         )
@@ -516,8 +523,13 @@ def _classify_structural(
         "ptrace(2) itself is unusable here - this is not about the target"
     ]
     if seccomp in (1, 2):
-        # Untested branch: S5 could not install a profile that denies ptrace,
-        # and RuntimeDefault demonstrably allows it (report R7).
+        # No longer an untested branch. S5 could not install a profile that
+        # denied ptrace and report R7 concluded RuntimeDefault allows it, which
+        # is true only of the runtimes R7 ran on: at DLS on 2026-08-18 a seat
+        # at Seccomp 2 was refused PTRACE_ATTACH on its own forked child, on a
+        # node where the same pod's unfiltered root seat had managed it. That
+        # profile was podbench's own — see `spec.target_seccomp_profile` for
+        # why the rungs now mirror the target instead of imposing one.
         return Blocker.SECCOMP, notes
     if yama == 3:
         return Blocker.YAMA_SCOPE, notes

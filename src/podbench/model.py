@@ -491,8 +491,11 @@ class Blocker(enum.Enum):
                 "host-global, node-local setting; CAP_SYS_PTRACE overrides it."
             ),
             Blocker.SECCOMP: (
-                "a seccomp filter is rejecting the ptrace syscall. The pod's "
-                "seccompProfile has to allow ptrace for live attach to work."
+                "a seccomp filter is rejecting the ptrace syscall, so neither "
+                "attaching nor launching an inferior works. The filter is this "
+                "container's own seccompProfile - podbench mirrors the "
+                "target's rather than imposing one, so where it denies ptrace "
+                "it is the profile the pod runs under that has to change."
             ),
             Blocker.APPARMOR: (
                 "AppArmor denies ptrace between this container's profile and "

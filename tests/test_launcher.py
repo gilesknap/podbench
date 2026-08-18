@@ -123,6 +123,7 @@ def pod_document(
     container: str = "app",
     uid: int | None = None,
     non_root: bool = False,
+    seccomp: Mapping[str, Any] | None = None,
     ephemeral: Sequence[dict[str, Any]] = (),
     ephemeral_statuses: Sequence[dict[str, Any]] = (),
     volumes: Sequence[dict[str, Any]] = (),
@@ -137,6 +138,8 @@ def pod_document(
         security["runAsUser"] = uid
     if non_root:
         security["runAsNonRoot"] = True
+    if seccomp is not None:
+        security["seccompProfile"] = dict(seccomp)
     workload: dict[str, Any] = {"name": container, "securityContext": security}
     if volume_mounts:
         workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
@@ -498,7 +501,6 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     assert session.uid == 1000
     assert security_contexts(cluster)[1] == {
         "capabilities": {"drop": ["ALL"]},
-        "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
         "privileged": False,
         "allowPrivilegeEscalation": False,
@@ -507,6 +509,37 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     steps = {step.rung: step for step in session.steps}
     assert not steps[Rung.FULL].admitted
     assert "Pod Security Admission" in steps[Rung.FULL].detail
+
+
+def test_the_seat_imposes_no_seccomp_profile_its_target_does_not_have() -> None:
+    """The DLS shape, 2026-08-18.
+
+    The target declares no ``seccompProfile``, so neither may the seat. Landing
+    it at ``RuntimeDefault`` put the seat under a filter the workload did not
+    have, and on that node the filter denied ``ptrace`` — including on a child
+    the seat forked itself, which costs the rung ``dbg --launch`` as well as
+    live attach.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
+    attach(talking_to(cluster), "target")
+
+    assert "seccompProfile" not in security_contexts(cluster)[1]
+
+
+def test_the_seat_mirrors_a_seccomp_profile_its_target_does_have() -> None:
+    """Which is what keeps the rung admissible under restricted PSA.
+
+    A namespace enforcing ``restricted`` would have refused the workload
+    without one, so mirroring the target is enough to comply wherever
+    compliance is actually required.
+    """
+    profile = {"type": "Localhost", "localhostProfile": "profiles/audit.json"}
+    cluster = FakeCluster(
+        pod_document(uid=1000, seccomp=profile), psa_denies_ptrace=True
+    )
+    attach(talking_to(cluster), "target")
+
+    assert security_contexts(cluster)[1]["seccompProfile"] == profile
 
 
 def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
@@ -1876,7 +1909,6 @@ def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     assert session.rung is Rung.DEGRADED
     assert security_contexts(cluster)[0] == {
         "capabilities": {"drop": ["ALL"]},
-        "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
         "privileged": False,
         "allowPrivilegeEscalation": False,

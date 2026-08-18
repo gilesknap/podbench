@@ -88,6 +88,7 @@ from .spec import (
     ephemeral_container_spec,
     moves,
     runs_as_non_root,
+    target_seccomp_profile,
     target_uid_gid,
 )
 from .sshcfg import (
@@ -1146,6 +1147,11 @@ def _walk_ladder(
                 ),
                 volume_mounts=volume_mounts,
                 seat_gid_root=seat_gid_root,
+                # The target's own, never RuntimeDefault by default: a filter
+                # the workload does not have is one podbench inflicted, and a
+                # node whose RuntimeDefault denies ptrace turns it into the
+                # blocker for a rung that has no capability to fall back on.
+                seccomp_profile=target_seccomp_profile(pod_json, workload),
                 pull_policy=pull_policy,
             )
         except InvalidSpecError as error:

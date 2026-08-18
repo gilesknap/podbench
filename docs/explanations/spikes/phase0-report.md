@@ -542,6 +542,11 @@ A pre-flight read of the target pod's `securityContext.runAsNonRoot` lets it ski
 * **`RuntimeDefault` seccomp does not block `ptrace(2)`** but **does** block
   `personality(ADDR_NO_RANDOMIZE)` (S5): gdb warns `Error disabling address space randomization:
   Operation not permitted` and leaves ASLR on, so addresses are non-reproducible run to run.
+  **Superseded in part, 2026-08-18.** True of the runtimes S5 ran on, not of every node: a DLS
+  node refused `PTRACE_ATTACH` on a self-forked child from a seat at `Seccomp 2`, where the same
+  pod's unfiltered root seat had made the same call. `RuntimeDefault` is a *name*, and what it
+  denies is the runtime's business — so podbench mirrors the target's profile rather than
+  imposing one. See R7.
 * **A gdb built with Python hard-fails if its Python stdlib is missing** (S5) — it does not degrade
   (`Python path configuration: … Python not initialized`). Ship `/usr/lib/pythonX.Y` (~19 MB) with
   `PYTHONHOME`/`PYTHONPATH`, or select a gdb without Python support.
@@ -837,6 +842,13 @@ whether the degraded rung is worth its complexity.
 seccomp profile on a node (spike rules), so the "seccomp filter is rejecting ptrace" verdict path
 has never executed. `RuntimeDefault` was tested and **allows** ptrace. Treat that branch as
 unverified.
+
+**Closed, 2026-08-18, by the field rather than by a spike.** The branch executed at DLS and named
+the right mechanism. The premise underneath it did not survive: that node's `RuntimeDefault`
+denies `ptrace(2)`, including on a child the tracer forked itself — so the profile cost the
+degraded rung live attach *and* `dbg --launch`, and it was podbench's own spec that applied it.
+The rungs now mirror the target's `seccompProfile` and impose none
+(`spec.target_seccomp_profile`). The remaining untested path is `SECCOMP_MODE_STRICT`.
 
 **R8 — AppArmor uniformity is an assumption.** Every container observed ran under
 `cri-containerd.apparmor.d (enforce)`, and ptrace worked only because that profile permits ptrace
