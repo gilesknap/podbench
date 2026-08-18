@@ -698,11 +698,22 @@ def _venv_site_packages(root: Path, argv: Sequence[str]) -> Path | None:
     ``/usr``, and the answer would be a system tree the target may not even
     import from.
 
+    A ``..`` disqualifies a candidate outright, because the answer is not just
+    a path to stat here: it becomes the ``PYTHONPATH`` of the injection command
+    and the prefix of the ``dlopen`` path debugpy writes *into the target*. The
+    single property that makes ``/proc/<pid>/root/...`` the one spelling valid
+    on both sides is that it names the same file in either mount namespace, and
+    a ``..`` is resolved against whatever ``/proc/<pid>/root`` means on each —
+    so a component this module cannot resolve is one it must not carry.
+
     >>> _venv_site_packages(Path("/nonexistent"), ["/app/.venv/bin/python3"])
+    >>> _venv_site_packages(Path("/nonexistent"), ["/../../opt/venv/bin/python"])
     """
     for candidate in argv[:2]:
         binary = Path(candidate)
-        if not candidate.startswith("/") or binary.parent.name != "bin":
+        if not candidate.startswith("/") or ".." in binary.parts:
+            continue
+        if binary.parent.name != "bin":
             continue
         venv = root / binary.parent.parent.relative_to("/")
         if not (venv / "pyvenv.cfg").is_file():

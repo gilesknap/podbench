@@ -518,6 +518,40 @@ def test_a_bin_directory_without_pyvenv_cfg_is_not_a_venv(tmp_path: Path) -> Non
     assert seat.debugpy_there == (f"/proc/{PID}/root/usr/lib/python3.11/site-packages")
 
 
+def test_a_parent_directory_component_disqualifies_a_candidate(
+    tmp_path: Path,
+) -> None:
+    """The answer leaves this mount namespace, so it may not carry a ``..``.
+
+    ``debugpy_there`` becomes the injection's ``PYTHONPATH`` and the prefix of
+    the ``dlopen`` path written into the *target*, and the only reason
+    ``/proc/<pid>/root/...`` is the one spelling valid on both sides is that it
+    names the same file in either namespace. A ``..`` is resolved against
+    whatever ``/proc/<pid>/root`` means on each side, so it also walks out of
+    the rootfs the lookup is supposed to stay inside — here, into a venv the
+    target does not have.
+    """
+    proc = make_proc(
+        tmp_path,
+        exe="/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+        cmdline="/../../../opt/venv/bin/python3 /app/run.py",
+        cap_sys_ptrace=True,
+    )
+    outside = tmp_path.parent / "opt" / "venv"
+    (outside / "bin").mkdir(parents=True, exist_ok=True)
+    (outside / "pyvenv.cfg").write_text("version_info = 3.11.13\n")
+    write_debugpy(
+        outside / "lib" / "python3.11" / "site-packages", helpers=AMD64_HELPER
+    )
+    seat = survey_seat(
+        inspect_target(PID, proc=proc),
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=seat_debugpy(tmp_path, helpers=AMD64_HELPER),
+    )
+    assert seat.debugpy_there is None
+
+
 def test_a_chosen_destination_is_the_one_searched_and_the_one_printed(
     tmp_path: Path,
 ) -> None:
