@@ -1,0 +1,1015 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>What dev does &#8212; podbench 0.4.0b1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=5ab759a8"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/dev-flow';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.4.0b1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="What hotfix does" href="hotfix-flow.html" />
+    <link rel="prev" title="What attach does" href="attach-flow.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.4.0b1" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="ways-in.html">Ways in</a></li>
+<li class="toctree-l1"><a class="reference internal" href="attach-flow.html">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="hotfix-flow.html">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="design-brief.html">The original design brief</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security model</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="spikes.html">Spikes</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="spikes/phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s6.html">S6 — Suspending an Argo-managed workload: server-side apply field ownership</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="status.html">What is proven, and what is not</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../explanations.html" class="nav-link">Explanations</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="what-dev-does">
+<h1>What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does<a class="headerlink" href="#what-dev-does" title="Link to this heading">#</a></h1>
+<p>Iterate mode. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> authors a <strong>sacrificial clone</strong> of a running pod, idles
+the application container in the clone, and adds a real sidecar carrying the editor,
+the checkout and the interpreter. You then edit and run <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> inside it; the
+change is visible through the Service in about a second.</p>
+<p>The origin pod is never touched. The clone is a second copy of the workload, which is
+why this mode is unavailable to singletons and refused outright against anything a
+GitOps controller reconciles.</p>
+<p>This page is the mechanism, in order, with the <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> commands each step becomes.</p>
+<section id="creating-the-dev-pod">
+<h2>Creating the dev pod<a class="headerlink" href="#creating-the-dev-pod" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench dev POD -n NS [--container NAME] [--port 8080]
+                       [--take-traffic | --cutover SERVICE] [--dry-run]
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ LOCAL                                                            │
+│   namespace : -n, else the kubeconfig context&#39;s own              │
+│              config view --minify -o jsonpath={..namespace}      │
+│   ssh key   : ~/.ssh/id_ed25519.pub — read before the namespace  │
+│              is listed, exactly as attach reads it: a missing    │
+│              key refuses this run whichever pod is chosen, so    │
+│              asking which one would spend the answer on nothing  │
+│   POD       : pod/NAME, a bare NAME, a substring, or nothing —   │
+│              resolved by attach&#39;s own helper, so an ambiguous    │
+│              one lists the namespace and asks (--no-prompt, or   │
+│              a stdin that is not a tty, refuses instead)         │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ no .pub file ───────────────▶ exit 1
+                                  ▼      an ordinary container&#39;s env is immutable
+                                         once the pod exists, so there is no
+                                         second chance: a dev pod made without a
+                                         key can only be deleted and remade
+┌──────────────────────────────────────────────────────────────────┐
+│ READ THE ORIGIN         get pod POD -o json                      │
+│                                                                  │
+│   A pod carrying podbench.dev/devpod is refused: it is somebody  │
+│   else&#39;s dev pod, and cloning it would copy its sidecar in as an │
+│   ordinary container. Clone the workload it was made from.       │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ IS IT GITOPS-MANAGED?   walk up to 3 owner hops                  │
+│                                                                  │
+│   pod → ReplicaSet → Deployment, checking each object for        │
+│     label      argocd.argoproj.io/instance                       │
+│     annotation argocd.argoproj.io/tracking-id                    │
+│                                                                  │
+│   get replicaset NAME -o json                                    │
+│   get deployment NAME -o json                                    │
+│                                                                  │
+│   The walk is the point: Argo stamps what it applied from git —  │
+│   the Deployment — and the pods a controller makes carry none    │
+│   of it (measured: 0 of 82 pods).  A failed `get` reads as       │
+│   &quot;unmarked&quot; rather than as &quot;managed&quot;.                           │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ marked ─────────────────────▶ exit 1
+                                  ▼            (absolute; there is no override)
+┌──────────────────────────────────────────────────────────────────┐
+│ DECIDE THE SHAPE                                                 │
+│   target container = --container, else the pod&#39;s *only* one      │
+│                      (2+ containers and no flag → refuse)        │
+│   target port      = --port, else its first containerPort        │
+│                      (neither → refuse: the readiness probe      │
+│                       needs one and guessing is worse)           │
+│   dev pod name     = --name, else POD-podbench (idempotent)      │
+│   seat identity    = uid/gid, if the origin declares the         │
+│                      podbench-identity volume and pins both      │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ AUTHOR THE CLONE   (pure JSON in, JSON out; see next section)    │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ --dry-run → print it ───────▶ exit 0
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ --cutover SERVICE ?                                              │
+│   get service SERVICE -o json → record its current selector      │
+│   …onto the dev pod&#39;s annotations, BEFORE the Service is touched │
+│   so a failure between the two still leaves a pod that knows     │
+│   how to undo itself                                             │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ Service has no selector ────▶ exit 1
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ CREATE                                                           │
+│   create -f - -o json          (create, never apply: a dev pod   │
+│                                 must not adopt something)        │
+│   wait pod/NAME --for=jsonpath={.status.phase}=Running           │
+│                                                                  │
+│   Running, NOT Ready: the sidecar&#39;s readiness probe follows your │
+│   process, and nothing is listening until your first `run`.      │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ --cutover SERVICE ?                                              │
+│   patch service SERVICE --type=json                              │
+│     [{&quot;op&quot;:&quot;replace&quot;,&quot;path&quot;:&quot;/spec/selector&quot;,                    │
+│       &quot;value&quot;:{&quot;podbench.dev/devpod&quot;:&quot;true&quot;}}]                   │
+│                                                                  │
+│   A JSON *replace*.  A merge patch unions the two maps, which    │
+│   adds the dev pod without removing the original — the opposite  │
+│   of a cutover, and invisible until half the responses are stale.│
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ WIRE THE CLIENT — the same code path attach uses                 │
+│   exec -c podbench -- podbench agent --print-login-user          │
+│   get pod NAME -o json           → metadata.uid (HostKeyAlias)   │
+│   exec -c podbench -- podbench agent --print-host-key …          │
+│   write ~/.podbench/known_hosts and config.d/&lt;ns&gt;-&lt;pod&gt;.conf     │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+                 connection summary + next steps         exit 0
+</pre></div>
+</div>
+</section>
+<section id="what-the-authored-clone-changes">
+<h2>What the authored clone changes<a class="headerlink" href="#what-the-authored-clone-changes" title="Link to this heading">#</a></h2>
+<p>The launcher builds the manifest itself rather than shelling out to <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">debug</span> <span class="pre">--copy-to</span></code>, which strips every label and annotation — leaving the clone invisible to
+the Service, so the headline demo cannot work at all — and offers no way to give the
+debug container <code class="docutils literal notranslate"><span class="pre">resources</span></code> or a workspace volume, and no <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> to preview any
+of it.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  origin pod JSON                          dev pod JSON
+  ───────────────                          ────────────
+  metadata.name          ────────────────▶ POD-podbench
+  metadata.labels        ──── dropped, unless --take-traffic
+                              and then minus every controller label:
+                              pod-template-hash, controller-revision-hash,
+                              controller-uid, job-name, statefulset…pod-name
+                         ────────────────▶ + podbench.dev/devpod: &quot;true&quot;
+  metadata.annotations   ──── dropped ───▶ only podbench.dev/origin: POD
+  metadata.uid, resourceVersion, ownerReferences, …  ──── dropped
+  status                 ──── dropped
+  spec.nodeName          ──── dropped
+  spec.ephemeralContainers ── dropped   (forbidden on create, and spent anyway)
+                         ────────────────▶ restartPolicy: Never
+                         ────────────────▶ shareProcessNamespace: true
+  spec.volumes           ──── copied ────▶ + podbench-workspace (emptyDir 4Gi)
+  the target container:
+    command/args         ────────────────▶ [&quot;sleep&quot;,&quot;infinity&quot;]
+    readiness/liveness/startup probes, lifecycle ──── stripped
+    everything else      ──── copied
+                         ────────────────▶ + the podbench sidecar (below)
+</pre></div>
+</div>
+<p>Four of those are things <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> cannot express, and each is load-bearing:</p>
+<ol class="arabic simple">
+<li><p><strong>Label policy.</strong> Keeping the Service-selector labels while dropping
+<code class="docutils literal notranslate"><span class="pre">pod-template-hash</span></code> puts the dev pod in the EndpointSlice without making it a
+ReplicaSet member. Keeping the hash would give a <code class="docutils literal notranslate"><span class="pre">replicas:</span> <span class="pre">1</span></code> ReplicaSet two
+matching pods, and one of them would be reaped.</p></li>
+<li><p><strong>A readiness probe on the sidecar</strong>, <code class="docutils literal notranslate"><span class="pre">tcpSocket</span></code> on the app’s port. Without it a
+dev pod is Ready the instant it starts and joins the Service while nothing is
+listening — roughly half the requests blackholed. With it, Service membership
+tracks the inner loop in both directions.</p></li>
+<li><p><strong>Real <code class="docutils literal notranslate"><span class="pre">resources</span></code> and a workspace volume</strong> on the sidecar. This is what makes
+Iterate mode immune to the OOM and eviction traps Observe mode has to warn about.</p></li>
+<li><p><strong>An inert PID 1 by construction.</strong> The command becomes <code class="docutils literal notranslate"><span class="pre">sleep</span> <span class="pre">infinity</span></code> <em>in the
+authored spec</em>, never by pausing a live pod: if PID 1 exits the kubelet restarts
+the container with pristine image code, and a SIGSTOPped process still holds its
+listening socket while liveness probes kill it anyway.</p></li>
+</ol>
+<p>The sidecar itself:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  name: podbench            command: [&quot;podbench&quot;,&quot;agent&quot;]     (never sleep)
+  workingDir / HOME: /workspace        ← uv&#39;s caches, toolchains and venvs
+  volumeMounts: podbench-workspace at /workspace
+                (+ podbench-home and the two identity subPaths, when the
+                 origin declared them — see the securityContext below)
+  resources: 200m/512Mi requests, 2 CPU/3Gi limits
+  readinessProbe: tcpSocket &lt;target port&gt;, period 2s, failureThreshold 1
+  env: PODBENCH_TARGET=&lt;app container&gt;, PODBENCH_PUBKEY=&lt;your public key&gt;
+
+  securityContext — one of two, and they are mutually exclusive:
+    origin declares podbench-identity and pins a non-root uid+gid
+        → runAsUser/runAsGroup = the app&#39;s own, drop ALL, no SYS_PTRACE,
+          /etc/passwd and /etc/group projected by subPath (an *ordinary*
+          container may do this; an ephemeral one may not)
+        → admissible under the restricted Pod Security Standard
+    otherwise
+        → runAsUser: 0, runAsNonRoot: false, capabilities.add [SYS_PTRACE]
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> needs uid 0, and the projected passwd record names the application’s uid.
+Running as root with that file mounted would leave sshd resolving the login name to a
+uid the container is not, and your <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code> unreadable by it. So the identity
+wins, and gives up ptrace with the root it no longer has.</p>
+</section>
+<section id="the-inner-loop-inside-the-pod">
+<h2>The inner loop, inside the pod<a class="headerlink" href="#the-inner-loop-inside-the-pod" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code> and <code class="docutils literal notranslate"><span class="pre">stop</span></code> make no API calls at all — they are ordinary
+processes in the sidecar, reached over ssh or <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench dev-bootstrap --repo URL [--ref REF] [--dir /workspace/src] [--python 3.12]
+    │
+    ├─ refuse if the checkout or venv path resolves under /proc/&lt;pid&gt;/root
+    │     (the mount-namespace rule — see below)
+    ▼
+   checkout exists?  no → git clone URL DIR         [+ git checkout --force REF]
+                     yes→ git -C DIR fetch --prune --tags
+                          git -C DIR checkout --force REF   (or pull --ff-only)
+    │
+    ├─ uv python install VERSION                    (--python only)
+    ├─ uv --directory DIR sync --frozen             (--frozen: the lockfile is
+    │                                                the application&#39;s; a dev pod
+    │                                                that re-resolves is no longer
+    │                                                running what production runs)
+    └─ uv --directory DIR pip install -e .
+
+   Nothing is apt-installed. git, curl, uv, iproute2, procps and a pre-seeded
+   CPython are baked into the image because apt-get was 10.6 s of a 19 s loop.
+</pre></div>
+</div>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench run --port 8080 -- python -m myapp
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 1 · MOUNT-NAMESPACE CHECK                                        │
+│     interpreter and cwd must not resolve under /proc/&lt;pid&gt;/root  │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ they do ────────────────────▶ exit 1
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 2 · STOP THE RECORDED CHILD                                      │
+│     read /workspace/.podbench/run.json → pid                     │
+│     SIGTERM, wait --grace (5s), then SIGKILL                     │
+│                                                                  │
+│     By recorded pid, never `pkill -f`: under                     │
+│     shareProcessNamespace that matches the invoking shell and    │
+│     every other container&#39;s processes.                           │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 3 · PRE-FLIGHT THE PORT — two `ss` calls, because one cannot     │
+│     answer both questions                                        │
+│                                                                  │
+│     ss -lntpe            → is anything LISTENING on the port?    │
+│     ss -tan state time-wait → how many sockets are in TIME_WAIT? │
+│                                                                  │
+│     a listener → refuse, naming its pid, its command line, and   │
+│       which container in the pod it lives in.                    │
+│       A second SO_REUSEPORT bind succeeds silently and the       │
+│       kernel splits traffic between old and new code.            │
+│     TIME_WAIT → warn: a rebind can fail for ~60 s while          │
+│       `ss -l` shows no listener at all.                          │
+│     ss unreadable → refuse. Failing open puts back the guess     │
+│       this pre-flight exists to remove.                          │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ not clear ──────────────────▶ exit 1
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 4 · SPAWN, DETACHED                                              │
+│     stdout+stderr → /workspace/.podbench/run.log                 │
+│     record pid, port, command, cwd, start_ticks                  │
+│       → /workspace/.podbench/run.json, BEFORE it is verified,    │
+│         so a child that never binds is still killable by `stop`  │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 5 · VERIFY — poll every 50 ms up to --timeout (15 s)             │
+│                                                                  │
+│     is the pid still alive?          /proc/&lt;pid&gt;                 │
+│     does `ss -lntpe` attribute the port to *our* pid?            │
+│     is that socket&#39;s inode open in /proc/&lt;pid&gt;/fd?               │
+│                                                                  │
+│     All three, because a socket poll alone gives a false PASS:   │
+│     the spike&#39;s naive wrapper printed &quot;LISTENING after 1 polls&quot;  │
+│     and exited 0 for a relaunch that had already died with       │
+│     EADDRINUSE, while the Service happily served the old code.   │
+│                                                                  │
+│     Somebody else owns the port → stop immediately, do not poll  │
+│     on: SO_REUSEPORT would serve half the traffic from old code. │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ any check fails → tail run.log ▶ exit 1
+                                  ▼
+                     &quot;pid N owns the listening socket&quot;      exit 0
+                     the readiness probe passes ~2 s later,
+                     and the pod (re)joins the Service
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code> is step 2 on its own.</p>
+<section id="the-mount-namespace-rule">
+<h3>The mount-namespace rule<a class="headerlink" href="#the-mount-namespace-rule" title="Link to this heading">#</a></h3>
+<p>Interpreter, venv and checkout must all live in the debug container. An editable
+install writes a <code class="docutils literal notranslate"><span class="pre">.pth</span></code> into the <em>interpreter’s</em> site-packages naming the checkout; if
+the interpreter is the target’s and the checkout is the sidecar’s, that path does not
+exist in the namespace that resolves it, and <code class="docutils literal notranslate"><span class="pre">site.py</span></code> <strong>silently drops it</strong> — the
+symptom is a <code class="docutils literal notranslate"><span class="pre">ModuleNotFoundError</span></code> much later, in something that looks unrelated.</p>
+<p>There is no workaround, because the <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is one-directional by
+capability: the sidecar can read the app’s rootfs, the app cannot see the sidecar’s.
+So <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code> and <code class="docutils literal notranslate"><span class="pre">run</span></code> refuse the layout rather than let it be discovered.</p>
+</section>
+</section>
+<section id="teardown">
+<h2>Teardown<a class="headerlink" href="#teardown" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench dev --delete [POD] -n NS
+    │
+    ▼
+   the dev pod&#39;s name, or the origin&#39;s: one derives from the other, and
+   `get pod NAME -o name` confirms it without listing anything. Only a
+   reference that names no such pod is searched for — and only among the
+   pods carrying podbench.dev/devpod, which is the difference from the
+   create path. A dev pod given its own name with --name is found that
+   way; an ordinary workload that merely shares the prefix is not, so a
+   second teardown run stays &quot;nothing to delete&quot; rather than becoming an
+   ambiguity refusal. With no POD at all, that same list is what you are
+   offered to choose from, and an empty one is again nothing to delete
+    │
+    ▼
+   get pod NAME -o json
+    │
+    ├─ no such pod ───────────────────────────▶ &quot;nothing to delete&quot;, exit 0
+    ├─ no podbench.dev/devpod label ──────────▶ exit 1
+    │      `dev --delete` typed with the origin&#39;s name would otherwise
+    │      delete production
+    ▼
+   recorded cutover?  patch service SVC --type=json  ← the *exact* old selector
+    │                   Selector first, pod second: there is then no window
+    ▼                   in which the Service selects nothing
+   delete pod NAME --wait=true
+    │
+    ▼
+   remove ~/.podbench/config.d/&lt;ns&gt;-&lt;pod&gt;.conf
+   drop the HostKeyAlias line from ~/.podbench/known_hosts
+       (unlike an attach seat, this pod is never coming back, and its alias is
+        keyed on a pod UID no pod will ever have again)
+</pre></div>
+</div>
+</section>
+<section id="every-cluster-call-in-order">
+<h2>Every cluster call, in order<a class="headerlink" href="#every-cluster-call-in-order" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  create:
+   1  kubectl config view --minify -o jsonpath={..namespace}
+                                                    # only when -n was not given
+   2  kubectl -n NS get pod POD -o name             # an exact reference stops here;
+                                                    # a substring or no POD at all
+                                                    # adds get pods -o json to list
+   3  kubectl -n NS get pod NAME -o json
+   4  kubectl -n NS get replicaset NAME -o json     ┐ GitOps ownership walk,
+   5  kubectl -n NS get deployment NAME -o json     ┘ up to 3 hops, errors ignored
+   6  kubectl -n NS get service SVC -o json         # --cutover only
+   7  kubectl -n NS create -f - -o json             # the authored manifest, on stdin
+   8  kubectl -n NS wait pod/NAME \
+          --for=jsonpath={.status.phase}=Running --timeout=120s
+   9  kubectl -n NS patch service SVC --type=json -p &#39;[{&quot;op&quot;:&quot;replace&quot;,…}]&#39;
+                                                    # --cutover only
+  10  kubectl -n NS exec -c podbench NAME -- podbench agent --print-login-user
+  11  kubectl -n NS get pod NAME -o json            # metadata.uid
+  12  kubectl -n NS exec -c podbench NAME -- podbench agent --print-host-key …
+
+  delete:
+   1  kubectl config view --minify -o jsonpath={..namespace}
+   2  kubectl -n NS get pod NAME -o name            # the derived dev pod name;
+                                                    # a hit stops the search here
+   3  kubectl -n NS get pods -o json                # only on a miss, and only the
+                                                    # podbench.dev/devpod pods of
+                                                    # it are candidates
+   4  kubectl -n NS get pod NAME -o json            # a 404 here is the teardown
+                                                    # that already happened:
+                                                    # &quot;nothing to delete&quot;, exit 0
+   5  kubectl -n NS patch service SVC --type=json -p &#39;[…original selector…]&#39;
+   6  kubectl -n NS delete pod NAME --wait=true --ignore-not-found
+
+  the inner loop:  no API calls at all
+</pre></div>
+</div>
+<p>RBAC — <code class="docutils literal notranslate"><span class="pre">rbac.iterate</span></code> in the chart, on top of <code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> — is <code class="docutils literal notranslate"><span class="pre">create</span></code>/<code class="docutils literal notranslate"><span class="pre">delete</span></code> on
+<code class="docutils literal notranslate"><span class="pre">pods</span></code>, <code class="docutils literal notranslate"><span class="pre">get</span></code>/<code class="docutils literal notranslate"><span class="pre">list</span></code>/<code class="docutils literal notranslate"><span class="pre">patch</span></code> on <code class="docutils literal notranslate"><span class="pre">services</span></code> (only for <code class="docutils literal notranslate"><span class="pre">--take-traffic</span></code> and <code class="docutils literal notranslate"><span class="pre">--cutover</span></code>)
+and <code class="docutils literal notranslate"><span class="pre">get</span></code>/<code class="docutils literal notranslate"><span class="pre">list</span></code> on <code class="docutils literal notranslate"><span class="pre">persistentvolumeclaims</span></code>. The ownership walk’s <code class="docutils literal notranslate"><span class="pre">get</span></code> on
+replicasets and deployments is optional: a refusal reads as “not GitOps-managed”.</p>
+</section>
+<section id="see-also">
+<h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../reference/glossary.html"><span class="std std-doc">Glossary</span></a> — PSA, Yama, the ambient set, <code class="docutils literal notranslate"><span class="pre">subPath</span></code> and every
+other term used here without explanation.</p></li>
+<li><p><a class="reference internal" href="ways-in.html"><span class="std std-doc">Ways in</span></a> — singleton-safety, GitOps-safety, and when not to use this.</p></li>
+<li><p><a class="reference internal" href="architecture.html"><span class="std std-doc">Architecture</span></a> — why the launcher authors pod specs itself.</p></li>
+<li><p><a class="reference internal" href="spikes/phase0-report.html"><span class="std std-doc">Phase 0 gate report</span></a> — §3.5 <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code>, §3.6 the
+readiness probe, §3.16 SO_REUSEPORT and TIME_WAIT, §3.17 the <code class="docutils literal notranslate"><span class="pre">.pth</span></code>, §4.4 the 1.18 s
+cycle.</p></li>
+<li><p><a class="reference internal" href="../how-to/iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a> — the same thing as instructions.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="attach-flow.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="hotfix-flow.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#creating-the-dev-pod">Creating the dev pod</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-authored-clone-changes">What the authored clone changes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-inner-loop-inside-the-pod">The inner loop, inside the pod</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-mount-namespace-rule">The mount-namespace rule</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#teardown">Teardown</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#every-cluster-call-in-order">Every cluster call, in order</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See also</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.4.0b1/docs/explanations/dev-flow.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/explanations/dev-flow.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
