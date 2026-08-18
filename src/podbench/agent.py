@@ -446,6 +446,18 @@ def extrausers_serves(uid: int, gid: int) -> bool:
     False
     >>> extrausers_serves(1000, 100)      # gid 100 is `users`, exempted
     True
+
+    The boundary, spelled from both sides because a floor that *moved* is the
+    failure this function cannot detect for itself. ``_container.yml`` asserts
+    these same six points against the library in a built image, so if the two
+    ever disagree it is this function that is wrong.
+
+    >>> extrausers_serves(500, 500)       # uid == MINUID, gid == MINGID
+    True
+    >>> extrausers_serves(499, 500)       # one below MINUID
+    False
+    >>> extrausers_serves(501, 499)       # one below MINGID, uid clear
+    False
     """
     if uid < _EXTRAUSERS_MIN_UID:
         return False

@@ -97,48 +97,60 @@ jobs:
           docker run --rm --entrypoint sh tag_for_testing -c 'command -v podbench gdb sshd uv git'
 
       # `agent.extrausers_serves` decides which passwd database a seat registers
-      # in from two numbers - libnss-extrausers' MINUID and MINGID - and it
-      # carries them as literals, because they are compiled into the shared
-      # object and there is no configuration file or query that reveals them.
-      # `libnss-extrausers` is installed unversioned, so a Debian update could
-      # move them, and the failure is silent in the worst possible way: the seat
-      # appends its record, the line is in the file, and nothing resolves. A
-      # capless non-root seat then has no ssh, which is issue #102 over again.
+      # in from three numbers compiled into libnss-extrausers - MINUID, MINGID
+      # and the USERSGID exemption - which it carries as literals because
+      # nothing reveals them at runtime. The package is installed unversioned,
+      # so a Debian update could move them, and the failure is silent in the
+      # worst possible way: the seat appends its record, the line is in the
+      # file, and nothing resolves. A capless non-root seat then has no ssh,
+      # which is issue #102 over again.
       #
-      # Asserted here rather than by pinning the package version: a pinned apt
-      # version rots as soon as the archive supersedes it, failing the build on a
-      # version that no longer exists, and a version string only *implies* the
-      # behaviour the code depends on. This checks the behaviour.
+      # Asserted rather than pinned to an apt version: a pinned version rots as
+      # soon as the archive supersedes it, failing the build on a version that
+      # no longer exists, and a version string only *implies* the behaviour the
+      # code depends on.
       #
-      # The positive probe is what makes the negatives mean something. 36070:36070
-      # resolving out of the same file in the same run proves the database is
-      # wired up, so a refusal below the floor is the floor and not a missing
-      # nsswitch line - without it this step would pass just as happily on an
-      # image where extrausers was never installed.
+      # **Each record isolates one constant**, which is the whole design of this
+      # step. Probing only "something high is served, something low is not"
+      # would pass unchanged against a build with MINUID=200 - every probe still
+      # gives the same answer - while `extrausers_serves` sent a uid-300 seat to
+      # /etc/passwd, which on a non-zero gid it cannot write. So the pair 500 and
+      # 499 pins MINUID from both sides, 501:499 pins MINGID without moving the
+      # uid, 502:100 pins the exemption, and 36071:0 keeps the `--seat-gid-root`
+      # shape explicit because it is the one whose mis-routing costs a user ssh.
       #
-      # uid 101 is safe to probe with because the runtime image's highest system
-      # uid is 100 (sshd); a uid `files` could answer would make the test lie.
-      # The 36071:0 row is the one that matters most: gid 0 is the shape every
-      # `--seat-gid-root` seat takes, and mis-routing it takes ssh away from the
-      # flag documented as the way out.
+      # The wiring proof is what makes every refusal mean something: 36070:36070
+      # resolving out of the same file in the same run says the database is
+      # consulted at all, so a refusal below a floor is the floor and not a
+      # missing nsswitch line. uids 499-502 are safe to probe with because the
+      # runtime image's highest system uid is 100 (sshd) - a uid `files` could
+      # answer would make this step lie.
       - name: Test the NSS database's floors are what the agent assumes
         run: |
           set -euo pipefail
           docker run --rm --entrypoint sh tag_for_testing -c '
             set -eu
             db=/var/lib/extrausers/passwd
-            printf "%s\n" "pbabove:x:36070:36070:pbabove:/tmp:/bin/sh" >> "$db"
-            printf "%s\n" "pbunder:x:101:101:pbunder:/tmp:/bin/sh" >> "$db"
-            printf "%s\n" "pbgidzero:x:36071:0:pbgidzero:/tmp:/bin/sh" >> "$db"
+            printf "%s\n" "pbwire:x:36070:36070:pbwire:/tmp:/bin/sh"       >> "$db"
+            printf "%s\n" "pbuidat:x:500:500:pbuidat:/tmp:/bin/sh"         >> "$db"
+            printf "%s\n" "pbuidbelow:x:499:500:pbuidbelow:/tmp:/bin/sh"   >> "$db"
+            printf "%s\n" "pbgidbelow:x:501:499:pbgidbelow:/tmp:/bin/sh"   >> "$db"
+            printf "%s\n" "pbgidusers:x:502:100:pbgidusers:/tmp:/bin/sh"   >> "$db"
+            printf "%s\n" "pbgidzero:x:36071:0:pbgidzero:/tmp:/bin/sh"     >> "$db"
             fail=0
-            getent passwd 36070     >/dev/null || { echo "FAIL: 36070:36070 not served - is extrausers in nsswitch.conf?"; fail=1; }
-            getent passwd pbabove   >/dev/null || { echo "FAIL: a name above the floors is not served"; fail=1; }
-            getent passwd 101       >/dev/null && { echo "FAIL: a uid below MINUID was served - the floors moved"; fail=1; }
-            getent passwd pbunder   >/dev/null && { echo "FAIL: a name below MINUID was served - the floors moved"; fail=1; }
-            getent passwd 36071     >/dev/null && { echo "FAIL: a gid 0 record was served - --seat-gid-root routing is now wrong"; fail=1; }
-            getent passwd pbgidzero >/dev/null && { echo "FAIL: a gid 0 record was served by name"; fail=1; }
+            # `if`, not `&&`/`||`: a failing AND-OR list is ignored by `set -e` at
+            # top level but becomes a function`s return status, so `refused` would
+            # abort the script on the first correctly-refused probe.
+            served()  { if ! getent passwd "$1" >/dev/null; then echo "FAIL: $1 not served - $2"; fail=1; fi; }
+            refused() { if getent passwd "$1" >/dev/null;   then echo "FAIL: $1 was served - $2"; fail=1; fi; }
+            served  pbwire      "the database is not consulted at all - is extrausers in nsswitch.conf?"
+            served  pbuidat     "uid 500 must be at or above MINUID"
+            refused pbuidbelow  "uid 499 must be below MINUID, so MINUID has moved"
+            refused pbgidbelow  "gid 499 must be below MINGID, so MINGID has moved"
+            served  pbgidusers  "gid 100 must stay the USERSGID exemption"
+            refused pbgidzero   "gid 0 must be refused, or --seat-gid-root routing is now wrong"
             [ "$fail" = 0 ] || { echo "agent.extrausers_serves needs updating to match this build"; exit 1; }
-            echo "floors are MINUID/MINGID 500 as agent.extrausers_serves assumes"
+            echo "floors pinned: MINUID 500, MINGID 500, USERSGID 100 - as agent.extrausers_serves assumes"
           '
 
       # Pushed by digest and left untagged: a per-architecture tag would be a
