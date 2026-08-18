@@ -41,6 +41,32 @@ RUN arch="$(dpkg --print-architecture)" \
     && helm plugin install https://github.com/losisin/helm-values-schema-json \
     --version v2.5.0
 
+# kubectl, which is the launcher's only way to reach a cluster: podbench has one
+# runtime dependency and it is the CLI, so every API call is a `kubectl` shelled
+# out to (never a Kubernetes client library - see CLAUDE.md). The devcontainer
+# shipped without it, which meant the one tool the product is built around could
+# not be run in the environment it is developed in, and `podbench doctor`,
+# tests/e2e and any hand check against the k3s bed all failed at the first call.
+#
+# Pinned to ci.yml's `kubectl-version`, which is the version the field cluster
+# and the k3s bed both run: matching it means a `kubectl` here behaves as it does
+# where the evidence was taken. It is only a floor for the launcher, which asks
+# for MIN_KUBECTL (1.25) and no more, so bumping this is safe; keep the two
+# numbers equal so there is one thing to bump.
+#
+# Verified against the digest published beside it, for the reason the helm block
+# above states. kubectl's .sha256 carries the bare hash with no filename, so the
+# name has to be supplied before `sha256sum -c` will read it.
+ARG KUBECTL_VERSION=v1.36.1
+RUN arch="$(dpkg --print-architecture)" \
+    && base="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}" \
+    && curl -fsSL "${base}/kubectl" -o /tmp/kubectl \
+    && curl -fsSL "${base}/kubectl.sha256" -o /tmp/kubectl.sha256 \
+    && echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum -c - \
+    && install -m 0755 /tmp/kubectl /usr/local/bin/kubectl \
+    && rm -f /tmp/kubectl /tmp/kubectl.sha256 \
+    && kubectl version --client
+
 # The build stage installs the context into the venv
 FROM developer AS build
 
