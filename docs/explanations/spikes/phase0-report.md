@@ -940,6 +940,24 @@ arithmetic rather than by luck. A `ResourceQuota` is a different admission check
 untested. The cluster's Kubernetes version was not recorded, so "one Kubernetes version" may still
 stand — worth filling in, since it is one `kubectl version` away.
 
+*A container holding a DRA resource claim cannot be resized by any released Kubernetes. Measured
+2026-08-18 at Diamond.* `bl01c-ea-flip-02-0`, an EPICS IOC whose `resources.claims` entry attaches
+the usbip device its driver talks to, refused every patch tried against it with
+`spec: Forbidden: only cpu and memory resources are mutable` — a strategic-merge patch, a JSON
+patch of the single memory limit, and a JSON patch rewriting `256Mi` as `256Mi`. A claim-free pod
+in the same namespace, under the same `LimitRange` and the same Kyverno policies, accepted a no-op
+resize, which rules out both the namespace and the patch. The cause is upstream: validating a
+resize rebuilds the container's resources as
+`core.ResourceRequirements{Limits: lim, Requests: req}`, dropping `Claims` from the value compared
+against the stored container, so the comparison can never match. `release-1.32` through
+`release-1.35` all do this and `master` does not, so it is fixed and unreleased. **Where it bites:**
+every device-attached IOC at Diamond is a pod where §3.9's unrecoverable OOM has no mitigation —
+`--resize` cannot work, and `podbench dev` cannot substitute, because a claim is allocated to one
+pod and a copy would either be refused the device or take it from the workload being debugged. The
+only lever left is the workload's own template, which costs a rollout. podbench submits the patch
+anyway rather than pre-empting it, because a 1.36 cluster will take it, and names the claim when
+the refusal comes back.
+
 **`--resize` is memory-only.** It takes a memory value and patches `limits.memory`; a CPU limit is
 not raised with it. That did not bite in this measurement — `cpu.stat` showed `nr_throttled 0` with
 a vscode-server plus extensions running — but a throttled seat under a tight `limits.cpu` has no

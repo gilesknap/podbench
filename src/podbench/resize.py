@@ -30,6 +30,10 @@ Two invariants constrain the answer:
   So a request is never raised to meet its limit unless it was already there.
 * **A request is never lowered.** Shrinking one silently gives the workload
   less than it was scheduled with, which is not what a debugging flag is for.
+
+And one container shape cannot be resized at all by any released Kubernetes,
+whatever the numbers say: one holding a ``resources.claims`` entry. See
+:func:`explain_claim_refusal`.
 """
 
 from __future__ import annotations
@@ -46,9 +50,11 @@ from .model import as_dict
 __all__ = [
     "MEMORY",
     "CPU",
+    "MUTABLE_RESOURCES_REFUSAL",
     "ResizeError",
     "ResizePlan",
     "Want",
+    "explain_claim_refusal",
     "format_cpu",
     "format_memory",
     "namespace_limits",
@@ -59,6 +65,15 @@ __all__ = [
 
 MEMORY = "memory"
 CPU = "cpu"
+
+MUTABLE_RESOURCES_REFUSAL = "only cpu and memory resources are mutable"
+"""The API server's whole vocabulary for "your resize changed something else".
+
+Matched rather than parsed because it is the *entire* message: the check behind
+it is a struct comparison over the whole container, and the field path it
+reports is ``spec``. See :func:`explain_claim_refusal` for the one cause that
+names cpu and memory while being neither.
+"""
 
 _BINARY: dict[str, int] = {
     "Ki": 2**10,
@@ -263,6 +278,52 @@ def _absorb(into: dict[str, Fraction], values: Mapping[str, Any]) -> None:
         current = into.get(resource)
         if current is None or value < current:
             into[resource] = value
+
+
+def explain_claim_refusal(current: Mapping[str, Any], stderr: str) -> str:
+    """Why a resize of *this* container was refused, when the reason is a claim.
+
+    Validating a resize rebuilds the incoming container's ``resources`` from
+    limits and requests alone::
+
+        container.Resources = core.ResourceRequirements{Limits: lim, Requests: req}
+
+    so a ``claims`` entry is dropped from the value compared against the stored
+    container, which still has one. The two can never compare equal, and the
+    only error that comparison knows how to raise names cpu and memory. Every
+    released Kubernetes does this — checked in ``pkg/apis/core/validation`` on
+    ``release-1.32`` through ``release-1.35``; ``master`` preserves ``Claims``
+    and so will 1.36.
+
+    Measured at Diamond on 2026-08-18 on an IOC holding a claim for its usbip
+    device: a strategic-merge patch, a JSON patch of the single memory limit and
+    a JSON patch rewriting 256Mi as 256Mi were refused identically, while a
+    claim-free pod in the same namespace — same ``LimitRange``, same admission
+    policies — took a no-op resize. So the refusal is the container's shape, and
+    no patch podbench could author gets through.
+
+    Returns the empty string unless both halves hold, because the same message
+    is the API server's answer to any other non-cpu/memory change and guessing
+    at a claim would send the reader after the wrong thing.
+    """
+    if MUTABLE_RESOURCES_REFUSAL not in stderr:
+        return ""
+    claims = current.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return ""
+    named = ", ".join(
+        sorted(
+            str(name)
+            for claim in cast(list[Any], claims)
+            if (name := as_dict(claim).get("name")) is not None
+        )
+    )
+    return (
+        f"the target container holds a resource claim{f' ({named})' if named else ''}"
+        ", which no released Kubernetes can resize: the claim is dropped from "
+        "the comparison that validates the patch, so even one changing nothing "
+        "is refused. Raise the limits in the workload's own template instead."
+    )
 
 
 @dataclass(frozen=True)
