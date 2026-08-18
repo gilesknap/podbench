@@ -158,8 +158,16 @@ class FakeMachine:
             if not self.can_i_answers:
                 return 1, "", "error: the server could not be reached"
             index = argv.index("can-i")
-            grant = (argv[index + 1], argv[index + 2])
-            allowed = grant in self.allowed
+            verb, resource = argv[index + 1], argv[index + 2]
+            # A subresource arrives as --subresource=exec, so put it back into
+            # the `pods/exec` spelling `allowed` is keyed by. Reading only the
+            # positional would make every subresource grant look like a request
+            # for the bare resource, which is the defect this fake must not
+            # reproduce.
+            for arg in argv[index + 3 :]:
+                if arg.startswith("--subresource="):
+                    resource = f"{resource}/{arg.split('=', 1)[1]}"
+            allowed = (verb, resource) in self.allowed
             return (0, "yes\n", "") if allowed else (1, "no\n", "")
         raise AssertionError(f"unexpected kubectl call: {argv}")
 
@@ -772,6 +780,26 @@ def test_every_grant_is_asked_of_the_namespace_in_play(home: Path) -> None:
     asked = [call for call in machine.calls if "can-i" in call]
     assert len(asked) == sum(len(feature.grants) for feature in FEATURES)
     assert all(("-n", "demo") == call[1:3] for call in asked)
+
+
+def test_a_subresource_is_asked_for_as_a_subresource(home: Path) -> None:
+    # kubectl reads a positional `pods/exec` as a pod *named* exec, so asking
+    # that way reports the whole attach path as blocked against a namespace
+    # where it works. Invisible from an entitled kubeconfig, which is allowed
+    # both readings — so this asserts the argv, not the verdict.
+    wired(home)
+    machine = FakeMachine()
+    diagnose(runner=machine, which=machine.which)
+    asked = [call for call in machine.calls if "can-i" in call]
+    assert ("create", "pods", "--subresource=exec") in {call[-3:] for call in asked}
+    assert ("update", "pods", "--subresource=ephemeralcontainers") in {
+        call[-3:] for call in asked
+    }
+    assert ("patch", "pods", "--subresource=resize") in {call[-3:] for call in asked}
+    # No grant reaches kubectl as one slashed word, whatever the table says.
+    assert not [
+        arg for call in asked for arg in call if arg.count("/") and arg[0] != "-"
+    ]
 
 
 def test_a_denied_attach_verb_blocks_the_headline_path(home: Path) -> None:
