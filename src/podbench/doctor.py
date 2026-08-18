@@ -120,13 +120,41 @@ class Check:
 
 @dataclass(frozen=True)
 class Grant:
-    """One RBAC permission, spelled the way ``kubectl auth can-i`` takes it."""
+    """One RBAC permission, spelled the way an RBAC rule writes it."""
 
     verb: str
     resource: str
 
     def __str__(self) -> str:
         return f"{self.verb} {self.resource}"
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        """``auth can-i`` arguments that ask about exactly this grant.
+
+        A subresource goes in ``--subresource`` and never in the positional.
+        kubectl splits a positional ``pods/exec`` on the slash into a resource
+        and a resource *name*, so the review asks whether the caller may create
+        a pod **called** ``exec`` — which a Role granting the exec subresource
+        correctly answers no to. Reported from a Diamond beamline namespace,
+        where ``auth can-i --list`` showed ``pods/exec [create]`` for a
+        ServiceAccount that ``can-i create pods/exec`` said no for.
+
+        It survives because it is invisible from an entitled kubeconfig: a
+        cluster-admin is allowed both readings and answers yes to either, so the
+        wrong question only misreports for the narrowly-scoped credential this
+        verb exists to check. ``--subresource`` needs kubectl 1.24, below
+        :data:`MIN_KUBECTL`.
+
+        >>> Grant("create", "pods/exec").argv
+        ('create', 'pods', '--subresource=exec')
+        >>> Grant("get", "deployments.apps").argv
+        ('get', 'deployments.apps')
+        """
+        resource, _, subresource = self.resource.partition("/")
+        if not subresource:
+            return (self.verb, self.resource)
+        return (self.verb, resource, f"--subresource={subresource}")
 
 
 @dataclass(frozen=True)
@@ -854,7 +882,7 @@ def can_i(kubectl: Kubectl, grant: Grant) -> bool | None:
     re-implemented here to be read — and a resolver of ours getting that subtly
     wrong is exactly the silent wrong answer this verb exists to remove.
     """
-    result = kubectl.run("auth", "can-i", grant.verb, grant.resource, check=False)
+    result = kubectl.run("auth", "can-i", *grant.argv, check=False)
     answer = result.stdout.strip().lower()
     if answer.startswith("yes"):
         return True

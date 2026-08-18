@@ -300,9 +300,10 @@ def granted_by(flag: str) -> set[tuple[str, str]]:
     that, every feature's rules would arrive with observe's mixed in and a grant
     checked under the wrong flag would pass.
 
-    A resource is spelled the way ``kubectl auth can-i`` takes it -
-    ``deployments.apps``, ``pods/exec`` - because that is the spelling
-    :mod:`podbench.doctor` asks the apiserver with.
+    A resource is spelled the way an RBAC rule writes it -
+    ``deployments.apps``, ``pods/exec`` - which is how :class:`podbench.doctor.
+    Grant` spells it too. It is *not* how the question reaches the apiserver: a
+    subresource goes over as ``--subresource``, per :attr:`Grant.argv`.
     """
     rendered = subprocess.run(
         [
