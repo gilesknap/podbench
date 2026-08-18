@@ -96,6 +96,51 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/podbench tag_for_testing pids --help
           docker run --rm --entrypoint sh tag_for_testing -c 'command -v podbench gdb sshd uv git'
 
+      # `agent.extrausers_serves` decides which passwd database a seat registers
+      # in from two numbers - libnss-extrausers' MINUID and MINGID - and it
+      # carries them as literals, because they are compiled into the shared
+      # object and there is no configuration file or query that reveals them.
+      # `libnss-extrausers` is installed unversioned, so a Debian update could
+      # move them, and the failure is silent in the worst possible way: the seat
+      # appends its record, the line is in the file, and nothing resolves. A
+      # capless non-root seat then has no ssh, which is issue #102 over again.
+      #
+      # Asserted here rather than by pinning the package version: a pinned apt
+      # version rots as soon as the archive supersedes it, failing the build on a
+      # version that no longer exists, and a version string only *implies* the
+      # behaviour the code depends on. This checks the behaviour.
+      #
+      # The positive probe is what makes the negatives mean something. 36070:36070
+      # resolving out of the same file in the same run proves the database is
+      # wired up, so a refusal below the floor is the floor and not a missing
+      # nsswitch line - without it this step would pass just as happily on an
+      # image where extrausers was never installed.
+      #
+      # uid 101 is safe to probe with because the runtime image's highest system
+      # uid is 100 (sshd); a uid `files` could answer would make the test lie.
+      # The 36071:0 row is the one that matters most: gid 0 is the shape every
+      # `--seat-gid-root` seat takes, and mis-routing it takes ssh away from the
+      # flag documented as the way out.
+      - name: Test the NSS database's floors are what the agent assumes
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh tag_for_testing -c '
+            set -eu
+            db=/var/lib/extrausers/passwd
+            printf "%s\n" "pbabove:x:36070:36070:pbabove:/tmp:/bin/sh" >> "$db"
+            printf "%s\n" "pbunder:x:101:101:pbunder:/tmp:/bin/sh" >> "$db"
+            printf "%s\n" "pbgidzero:x:36071:0:pbgidzero:/tmp:/bin/sh" >> "$db"
+            fail=0
+            getent passwd 36070     >/dev/null || { echo "FAIL: 36070:36070 not served - is extrausers in nsswitch.conf?"; fail=1; }
+            getent passwd pbabove   >/dev/null || { echo "FAIL: a name above the floors is not served"; fail=1; }
+            getent passwd 101       >/dev/null && { echo "FAIL: a uid below MINUID was served - the floors moved"; fail=1; }
+            getent passwd pbunder   >/dev/null && { echo "FAIL: a name below MINUID was served - the floors moved"; fail=1; }
+            getent passwd 36071     >/dev/null && { echo "FAIL: a gid 0 record was served - --seat-gid-root routing is now wrong"; fail=1; }
+            getent passwd pbgidzero >/dev/null && { echo "FAIL: a gid 0 record was served by name"; fail=1; }
+            [ "$fail" = 0 ] || { echo "agent.extrausers_serves needs updating to match this build"; exit 1; }
+            echo "floors are MINUID/MINGID 500 as agent.extrausers_serves assumes"
+          '
+
       # Pushed by digest and left untagged: a per-architecture tag would be a
       # published artefact people could pull by accident. The merge job below is
       # what gives these digests their tags, as a single manifest list.
