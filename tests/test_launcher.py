@@ -708,6 +708,60 @@ def test_a_stripped_full_seat_is_not_reused_under_a_ceiling() -> None:
     assert declined and "uid 0" in declined[0]
 
 
+def test_a_stripped_full_seat_is_not_reused_against_a_root_target() -> None:
+    # The same mutated seat as above, but the target is root too, so there is no
+    # uid for the pin comparison to disagree with. Judged on `runAsUser: 0`
+    # alone, which no rung below full authors: the degraded rung refuses a root
+    # target and the seat rung drops the uid rather than pin it.
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {
+            "runAsUser": 0,
+            "privileged": False,
+            "allowPrivilegeEscalation": False,
+            "capabilities": DLS_MUTATED_CAPABILITIES,
+        },
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=0,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert not session.reused
+    assert session.seat.container == "podbench-2"
+    assert session.rung is Rung.SEAT
+    declined = [note for note in session.warnings if "podbench-1" in note]
+    assert declined and "uid 0" in declined[0]
+
+
+def test_a_seat_ceiling_reuses_the_seat_it_would_have_landed() -> None:
+    # The seat rung honours a non-zero target uid too, so the seat rung and the
+    # degraded rung are indistinguishable through `rung_of_spec` - both read
+    # back as `degraded`. Declining this one would burn a container name on
+    # every reconnect, and land the same securityContext again.
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {"runAsUser": 1000, "runAsNonRoot": True},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.SEAT)
+
+    assert session.reused
+    assert cluster.added == []
+
+
 def test_a_seat_that_honours_the_ceiling_is_still_reused() -> None:
     existing = {
         "name": "podbench-1",

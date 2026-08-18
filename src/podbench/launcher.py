@@ -707,20 +707,40 @@ def above_ceiling(
     pin the target's own, and it is the pin rather than the label that buys the
     ptrace credential match.
 
+    Root is judged on its own, before the pin is compared, because a root
+    target has no uid to compare against: ``uid 0`` is the one pin no rung
+    below full ever writes.
+
     >>> seat = SeatInfo("podbench-1", Rung.DEGRADED, "running", "", uid=0)
     >>> above_ceiling(seat, Rung.FULL, target_uid=37887) is None
     True
     >>> above_ceiling(seat, Rung.DEGRADED, target_uid=37887)
-    "it runs as uid 0, not the target's uid 37887"
-    >>> above_ceiling(seat, Rung.DEGRADED, target_uid=0) is None
+    'it runs as uid 0, which no rung below full authors'
+    >>> above_ceiling(seat, Rung.DEGRADED, target_uid=0)
+    'it runs as uid 0, which no rung below full authors'
+    >>> other = SeatInfo("podbench-2", Rung.DEGRADED, "running", "", uid=1000)
+    >>> above_ceiling(other, Rung.DEGRADED, target_uid=37887)
+    "it runs as uid 1000, not the target's uid 37887"
+    >>> seat_rung = SeatInfo("podbench-3", Rung.SEAT, "running", "", uid=None)
+    >>> above_ceiling(seat_rung, Rung.DEGRADED, target_uid=0) is None
     True
     """
     if ceiling is Rung.FULL:
         return None
     if seat.rung is Rung.FULL:
         return f"it carries SYS_PTRACE, which is above the {ceiling.value} rung"
+    if seat.uid == 0:
+        # The full rung is the only one that writes `runAsUser: 0`: the degraded
+        # rung refuses a root target outright and the seat rung drops uid 0
+        # rather than pin it, because `runAsNonRoot: true` beside it is admitted
+        # and then refused by the kubelet (report 3.18, `_rung_security_context`).
+        # So a root seat below the full label is a *stripped* full rung, which is
+        # exactly the seat this flag exists to get away from (issue #94) - and
+        # against a root target it is the one the pin comparison below cannot
+        # catch, there being no non-zero uid for it to disagree with.
+        return "it runs as uid 0, which no rung below full authors"
     # A target at uid 0 has no rung that pins one (`spec._rung_security_context`
-    # refuses both), so there is nothing for the pin to disagree with.
+    # refuses both), so an unpinned seat has nothing to disagree with.
     if target_uid and seat.uid != target_uid:
         ran_as = "the image's own user" if seat.uid is None else f"uid {seat.uid}"
         return f"it runs as {ran_as}, not the target's uid {target_uid}"
