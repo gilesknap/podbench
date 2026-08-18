@@ -173,9 +173,11 @@ Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
 1. **the capability itself** being absent or ineffective;
 2. **Yama** — `/proc/sys/kernel/yama/ptrace_scope`, a *node-level*, read-only
    knob. At `1` (Ubuntu's default) attach to a non-descendant is denied;
-3. **seccomp** — a filter rejecting `ptrace(2)`. `RuntimeDefault` does **not**
-   do this, though it does block `personality(ADDR_NO_RANDOMIZE)`, so gdb cannot
-   disable ASLR;
+3. **seccomp** — a filter rejecting `ptrace(2)`. Whether `RuntimeDefault` does
+   this is the *runtime's* business, not the name's: the spike nodes permitted
+   it, a DLS node denied it even on a self-forked child (2026-08-18), so only
+   `capreport` can say which node you are on. It blocks
+   `personality(ADDR_NO_RANDOMIZE)` either way, so gdb cannot disable ASLR;
 4. **AppArmor** — a profile denying ptrace between the two domains. Everything
    observed ran under `cri-containerd.apparmor.d (enforce)`, which permits
    ptrace between peers *in the same profile*; a target with a custom profile
@@ -398,9 +400,11 @@ resolving out of it. The image says so beside the `chmod`.
 
 Stated so nobody relies on them:
 
-* The **seccomp branch** of the capability probe has never executed — a
-  `localhost/` profile could not be installed on a test node. `RuntimeDefault`
-  was tested and permits ptrace.
+* The **`SECCOMP_MODE_STRICT` branch** of the capability probe has never
+  executed — a `localhost/` profile could not be installed on a test node. The
+  filter branch itself is no longer unproven: it fired at DLS on 2026-08-18,
+  under a `RuntimeDefault` profile that denies ptrace, and named the right
+  mechanism.
 * **AppArmor uniformity is an assumption.** Every container observed shared one
   profile, and ptrace worked because that profile permits ptrace between peers
   within it. A custom profile on the target breaks that, and the diagnostic text
