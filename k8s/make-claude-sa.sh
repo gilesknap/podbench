@@ -3,11 +3,21 @@
 # Provision a namespace-confined ServiceAccount for Claude, and prove it is
 # confined.
 #
-#   ./k8s/make-claude-sa.sh <namespace> [--podbench] [--duration 24h]
+#   ./k8s/make-claude-sa.sh <namespace> [--podbench[=TIERS]] [--duration 24h]
 #
 # Creates `claude-$USER` in <namespace>, a Role and RoleBinding beside it, then
 # writes a self-contained kubeconfig to k8s/<namespace>-claude-<user>.kubeconfig
 # (gitignored) and runs the confinement checks against it.
+#
+# --podbench grants the verbs podbench needs, in the same tiers the chart uses:
+#   observe  attach: ephemeral container + exec           (the default tier)
+#   iterate  `podbench dev`: create/delete pods, patch a Service selector
+#   resize   `--memory`: patch pods/resize
+#   hotfix   `podbench hotfix`: patch a pod template, which DEPLOYS CODE
+# `--podbench` alone is observe; `--podbench=iterate,resize` adds to it;
+# `--podbench-all` is every tier. Nothing here can run the e2e suite: that
+# creates and deletes its own namespaces and binds cluster-scoped admission
+# policies, neither of which a namespace-confined account can do.
 #
 # Run it with YOUR OWN admin credential: it reads your current context for the
 # API server address and CA, and needs create rights on serviceaccounts, roles
@@ -21,16 +31,42 @@ set -euo pipefail
 NS=""
 DURATION=24h
 PODBENCH=0
+TIER_OBSERVE=0
+TIER_ITERATE=0
+TIER_RESIZE=0
+TIER_HOTFIX=0
 
 usage() {
-  sed -n '3,12p' "$0" | sed 's/^#\s\?//'
+  sed -n '3,20p' "$0" | sed 's/^#\s\?//'
   exit "${1:-1}"
+}
+
+# Every tier implies observe: iterate, resize and hotfix all end in an attach,
+# and an attach without pods/exec is a seat nothing can reach.
+add_tiers() { # add_tiers <comma-separated tier list>
+  local tier
+  local IFS=,
+  for tier in $1; do
+    case "$tier" in
+      all)     TIER_OBSERVE=1; TIER_ITERATE=1; TIER_RESIZE=1; TIER_HOTFIX=1 ;;
+      observe) TIER_OBSERVE=1 ;;
+      iterate) TIER_OBSERVE=1; TIER_ITERATE=1 ;;
+      resize)  TIER_OBSERVE=1; TIER_RESIZE=1 ;;
+      hotfix)  TIER_OBSERVE=1; TIER_HOTFIX=1 ;;
+      *) echo "unknown podbench tier '$tier'" >&2
+         echo "want one or more of: observe,iterate,resize,hotfix,all" >&2
+         exit 1 ;;
+    esac
+  done
+  PODBENCH=1
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)     usage 0 ;;
-    --podbench)    PODBENCH=1; shift ;;
+    --podbench)    add_tiers observe; shift ;;
+    --podbench=*)  add_tiers "${1#*=}"; shift ;;
+    --podbench-all) add_tiers all; shift ;;
     --duration)    DURATION=${2:?--duration needs a value}; shift 2 ;;
     --duration=*)  DURATION=${1#*=}; shift ;;
     -*)            echo "unknown option: $1" >&2; usage ;;
@@ -61,7 +97,14 @@ OUT="${HERE}/${NS}-${SA}.kubeconfig"
 kubectl get namespace "$NS" >/dev/null 2>&1 \
   || { echo "namespace '$NS' does not exist (or you cannot see it)" >&2; exit 1; }
 
+TIERS=""
+for pair in "observe:$TIER_OBSERVE" "iterate:$TIER_ITERATE" \
+            "resize:$TIER_RESIZE" "hotfix:$TIER_HOTFIX"; do
+  [ "${pair#*:}" = 1 ] && TIERS="${TIERS}${TIERS:+,}${pair%%:*}"
+done
+
 echo "==> provisioning $SA in $NS"
+echo "    podbench tiers: ${TIERS:-none (read-only)}"
 
 # --- the RBAC --------------------------------------------------------------
 # Role and RoleBinding, never ClusterRole/ClusterRoleBinding: a namespaced
@@ -74,7 +117,8 @@ echo "==> provisioning $SA in $NS"
 RULES='
   - apiGroups: [""]
     resources: ["pods", "pods/log", "services", "configmaps",
-                "persistentvolumeclaims", "events", "endpoints"]
+                "persistentvolumeclaims", "events", "endpoints",
+                "limitranges"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "replicasets", "daemonsets"]
@@ -86,8 +130,11 @@ RULES='
     resources: ["pods"]
     verbs: ["get", "list"]'
 
-if [ "$PODBENCH" = 1 ]; then
-  # podbench's `observe` tier, matching Charts/podbench/templates/rbac.yaml.
+# The tiers below mirror Charts/podbench/templates/rbac.yaml, whose comments
+# say why each verb exists. Keep the two in step: podbench's own `doctor` verb
+# reports a missing grant by naming the chart flag that gives it, so a tier that
+# is generous here and absent there sends a reader somewhere that cannot help.
+if [ "$TIER_OBSERVE" = 1 ]; then
   # `update` on the subresource is the one that matters: the seat is added by
   # PUTting pods/ephemeralcontainers rather than shelling out to `kubectl
   # debug`, which merges its own profile over the spec and can hand back a rung
@@ -99,6 +146,45 @@ if [ "$PODBENCH" = 1 ]; then
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]'
+fi
+
+if [ "$TIER_ITERATE" = 1 ]; then
+  # Iterate mode mints a sacrificial dev pod from the target'"'"'s spec and deletes
+  # it on teardown. The Service patch is `--take-traffic`/`--cutover` only, and
+  # is also how someone accidentally takes production traffic.
+  RULES="${RULES}"'
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["patch"]'
+fi
+
+if [ "$TIER_RESIZE" = 1 ]; then
+  # A seat shares the workload'"'"'s memory limit and cannot reserve its own, so an
+  # editor session can get the workload OOM-killed. In-place resize is the
+  # mitigation, and it changes a running workload'"'"'s limits.
+  RULES="${RULES}"'
+  - apiGroups: [""]
+    resources: ["pods/resize"]
+    verbs: ["patch"]'
+fi
+
+if [ "$TIER_HOTFIX" = 1 ]; then
+  # The provenance annotations go on the workload'"'"'s pod template, because pod
+  # annotations do not survive the reschedule hotfix mode relies on. That write
+  # is therefore also what rolls the workload - the mechanism `kubectl rollout
+  # restart` uses - so this verb DEPLOYS CODE, and it is the most privileged
+  # thing on this list. An unowned pod takes the annotations directly and is
+  # never deleted; a controlled one is deleted so its controller replaces it.
+  RULES="${RULES}"'
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch", "delete"]'
 fi
 
 kubectl apply -f - <<EOF
@@ -225,26 +311,52 @@ expect() { # expect <yes|no> <label> <can-i args...>
   fi
 }
 
+# What a tier flag says the answer should be. Hard-coding "no" for a verb the
+# caller explicitly asked for would fail the script for doing its job, and
+# hard-coding "yes" would stop these checks noticing a Role that did not apply.
+tier() { if [ "$1" = 1 ]; then echo yes; else echo no; fi; }
+
+# Both iterate (teardown of its dev pod) and hotfix (replacing a controlled pod)
+# need it, so it is granted if either is.
+DELETE_PODS=0
+if [ "$TIER_ITERATE" = 1 ] || [ "$TIER_HOTFIX" = 1 ]; then DELETE_PODS=1; fi
+
 echo
 echo "==> confinement checks (as ${SA})"
 echo "    inside ${NS}:"
 expect yes "read pods"                       get pods -n "$NS"
 expect yes "read deployments"                get deployments.apps -n "$NS"
+expect yes "read limitranges"                get limitranges -n "$NS"
+# Never granted, at any tier: with secrets the SA could read every other
+# ServiceAccount token in the namespace and become them.
 expect no  "read secrets"                    get secrets -n "$NS"
-expect no  "create pods"                     create pods -n "$NS"
-expect no  "delete pods"                     delete pods -n "$NS"
-expect no  "patch deployments"               patch deployments.apps -n "$NS"
-if [ "$PODBENCH" = 1 ]; then
-  expect yes "exec into pods (--podbench)"     create pods/exec -n "$NS"
-  expect yes "add ephemeral container"         update pods/ephemeralcontainers -n "$NS"
-else
-  expect no  "exec into pods"                  create pods/exec -n "$NS"
-fi
+# --subresource, never `pods/exec` as one word. kubectl splits that argument on
+# the slash into resource and resource *name*, so `can-i create pods/exec` asks
+# whether you may create a pod called "exec" - a different question, answered
+# "no" by a Role that grants the exec subresource perfectly well. It reads as
+# correct because a cluster-admin gets "yes" to both readings; only a
+# narrowly-scoped account like this one can tell them apart.
+expect "$(tier "$TIER_OBSERVE")" "exec into pods" \
+                                             create pods --subresource=exec -n "$NS"
+expect "$(tier "$TIER_OBSERVE")" "add ephemeral container" \
+                                             update pods --subresource=ephemeralcontainers -n "$NS"
+expect "$(tier "$TIER_ITERATE")" "create pods (iterate)" \
+                                             create pods -n "$NS"
+expect "$(tier "$TIER_ITERATE")" "patch services (iterate)" \
+                                             patch services -n "$NS"
+expect "$(tier "$DELETE_PODS")"  "delete pods" \
+                                             delete pods -n "$NS"
+expect "$(tier "$TIER_RESIZE")"  "resize pods in place" \
+                                             patch pods --subresource=resize -n "$NS"
+expect "$(tier "$TIER_HOTFIX")"  "patch pods (hotfix)" \
+                                             patch pods -n "$NS"
+expect "$(tier "$TIER_HOTFIX")"  "patch deployments (hotfix: deploys code)" \
+                                             patch deployments.apps -n "$NS"
 
 echo "    outside ${NS} (control: ${CONTROL}):"
 expect no "read pods in ${CONTROL}"          get pods -n "$CONTROL"
 expect no "read secrets in ${CONTROL}"       get secrets -n "$CONTROL"
-expect no "exec into pods in ${CONTROL}"     create pods/exec -n "$CONTROL"
+expect no "exec into pods in ${CONTROL}"     create pods --subresource=exec -n "$CONTROL"
 expect no "anything, anywhere"               '*' '*' --all-namespaces
 
 # auth can-i is a SelfSubjectAccessReview answered by the API server's
@@ -302,6 +414,13 @@ echo
 if [ "$FAILED" = 0 ]; then
   echo "==> PASS: ${SA} reaches ${NS} and nothing else."
   echo "    use it with:  KUBECONFIG=${OUT}"
+  if [ "$PODBENCH" = 1 ]; then
+    echo "    check it with:  KUBECONFIG=${OUT} uvx podbench doctor -n ${NS}"
+    # The e2e suite is not a thing this credential can run, and finding that out
+    # from a wall of namespace-creation failures costs an afternoon.
+    echo "    note: tests/e2e creates its own namespaces and binds cluster-scoped"
+    echo "          admission policies, so it needs a credential this is not."
+  fi
 else
   echo "==> FAIL: confinement is not what was asked for. Do not hand this over." >&2
   exit 1
