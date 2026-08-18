@@ -149,6 +149,7 @@ than author one.
                                   │
       pre-skipped, no API call, no name burnt:
         the pod or the container sets runAsNonRoot: true
+        or --max-rung named a lower rung as the ceiling
       refused synchronously, in kubectl's stderr:
         PSA — 'must not include "SYS_PTRACE" in ...capabilities.add'
                                   │
@@ -194,6 +195,27 @@ around the API call:
                  │
                  └── state.terminated → same, name burnt
 ```
+
+### The third channel, which is not a refusal
+
+A **mutating** admission policy neither refuses synchronously nor fails at the
+kubelet. It admits the container and rewrites its `securityContext` on the way
+through — and since mutating admission runs before validating admission, nothing
+downstream is left with a `SYS_PTRACE` to object to. What lands is a root
+container with no capability, which is worse than rung 2: root that cannot
+ptrace cannot read `/proc/<pid>/root`, `maps` or `environ` either.
+
+Neither arm of the walk sees anything, so rung 1 "succeeds" and rungs 2 and 3 are
+never tried. The spec reads back afterwards as `runAsUser: 0` with nothing added,
+which is indistinguishable from rung 2 (issue #94) — the honest answer about such
+a seat is never its rung, only what `capreport` measured.
+
+`--max-rung` is the way out: it caps the walk so the rung that cannot work is
+never submitted, rather than detecting the strip afterwards. Detection is
+possible — the API server returns the mutated object in the response body, and a
+server-side dry-run would show it without storing anything — but a cap is what a
+person who knows their own cluster can state up front, and it spends no
+container name proving what they already know. Measured at DLS, 2026-08-18.
 
 ## Every cluster call, in order
 

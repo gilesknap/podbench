@@ -160,6 +160,60 @@ already-running process. See [Debug with gdb](debug-with-gdb.md).
 Two things it cannot do, so do not plan on them: `/proc/<pid>/mem` and
 `/proc/<pid>/syscall` use `PTRACE_MODE_ATTACH` and are denied.
 
+(stripped-sys-ptrace)=
+## When the cluster *strips* `SYS_PTRACE`
+
+The quieter case, and the one that needs a flag. A policy engine can enforce
+"no `SYS_PTRACE` here" two ways: by **refusing** the request, which is the
+section above and needs nothing from you, or by **mutating** it — admitting the
+container and rewriting its `capabilities` on the way through. Mutating
+admission runs *before* validating admission, so by the time anything could
+refuse the request there is no capability left in it to object to. The API
+server returns success.
+
+podbench drops a rung when something refuses it. Nothing refused this, so the
+walk stops on the full rung and you get a **root seat with no capability** —
+which is strictly worse than the degraded rung, because root that cannot ptrace
+cannot read `/proc/<pid>/root`, `maps` or `environ` either:
+
+```
+rung        full - root plus CAP_SYS_PTRACE
+ladder
+  full      landed   running since 2026-08-18T09:01:33Z
+measured
+  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
+  blocker     uid-mismatch
+```
+
+`capreport` measures the truth and says so — `CAP_SYS_PTRACE (eff) no
+[bounding: no]` at `uid 0` — but the rung line above it is the rung that was
+*asked for*. To confirm it is a mutation rather than anything about your image,
+read the landed spec back with `kubectl get pod <pod> -o jsonpath` over
+`.spec.ephemeralContainers[*].securityContext`. podbench submits exactly
+`{"add":["SYS_PTRACE"]}`; anything else in `add` — a list of `CHOWN`,
+`DAC_OVERRIDE`, `SETUID` and friends — is the cluster's house default, put there
+by a policy that replaced the field rather than refusing it.
+
+The way past it is `--max-rung`, which caps the walk instead of waiting for a
+refusal that will never come:
+
+```
+$ podbench attach bl47p-mo-ioc-01-0 --max-rung degraded
+```
+
+The full rung is then never submitted, the seat lands at the target's own UID,
+and the ptrace credentials match. Two things worth knowing:
+
+* It is a **ceiling, not a choice**. The rungs below it are still tried, so a
+  target podbench cannot author a degraded rung for — one running as root, or
+  one whose UID is not in the pod spec — still falls through to the seat rung.
+  Where the UID is missing, pass `--target-uid` as well; the ladder line says so.
+* A running seat the ceiling would not have landed is **not** reconnected to.
+  An ephemeral container's `securityContext` is fixed for the pod's lifetime, so
+  there is no reconnecting into a different one — podbench lands a new container
+  and says which one it declined and why. That name is spent either way, which
+  is the whole reason this is a flag rather than an automatic retry.
+
 ## When the reads are denied too
 
 The line under each tick is the measurement it was taken from, so the case above

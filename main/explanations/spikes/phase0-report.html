@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.3.0b2.dev3+gddd78cf83 documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.3.0b2.dev9+ge76102583 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=0b3926f1"></script>
+    <script src="../../_static/documentation_options.js?v=a377a171"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1276,7 +1276,12 @@ tarball origin (<code class="docutils literal notranslate"><span class="pre">upd
 downloaded 205 MiB in <strong>2.26 s</strong> — statistically identical to the x86 NUC. That claim was about
 image pulls.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp does not block <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code></strong> but <strong>does</strong> block
-<code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code> (S5): gdb warns <code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">disabling</span> <span class="pre">address</span> <span class="pre">space</span> <span class="pre">randomization:</span> <span class="pre">Operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> and leaves ASLR on, so addresses are non-reproducible run to run.</p></li>
+<code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code> (S5): gdb warns <code class="docutils literal notranslate"><span class="pre">Error</span> <span class="pre">disabling</span> <span class="pre">address</span> <span class="pre">space</span> <span class="pre">randomization:</span> <span class="pre">Operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> and leaves ASLR on, so addresses are non-reproducible run to run.
+<strong>Superseded in part, 2026-08-18.</strong> True of the runtimes S5 ran on, not of every node: a DLS
+node refused <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on a self-forked child from a seat at <code class="docutils literal notranslate"><span class="pre">Seccomp</span> <span class="pre">2</span></code>, where the same
+pod’s unfiltered root seat had made the same call. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> is a <em>name</em>, and what it
+denies is the runtime’s business — so podbench mirrors the target’s profile rather than
+imposing one. See R7.</p></li>
 <li><p><strong>A gdb built with Python hard-fails if its Python stdlib is missing</strong> (S5) — it does not degrade
 (<code class="docutils literal notranslate"><span class="pre">Python</span> <span class="pre">path</span> <span class="pre">configuration:</span> <span class="pre">…</span> <span class="pre">Python</span> <span class="pre">not</span> <span class="pre">initialized</span></code>). Ship <code class="docutils literal notranslate"><span class="pre">/usr/lib/pythonX.Y</span></code> (~19 MB) with
 <code class="docutils literal notranslate"><span class="pre">PYTHONHOME</span></code>/<code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code>, or select a gdb without Python support.</p></li>
@@ -1545,6 +1550,12 @@ whether the degraded rung is worth its complexity.</p>
 seccomp profile on a node (spike rules), so the “seccomp filter is rejecting ptrace” verdict path
 has never executed. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> was tested and <strong>allows</strong> ptrace. Treat that branch as
 unverified.</p>
+<p><strong>Closed, 2026-08-18, by the field rather than by a spike.</strong> The branch executed at DLS and named
+the right mechanism. The premise underneath it did not survive: that node’s <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code>
+denies <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code>, including on a child the tracer forked itself — so the profile cost the
+degraded rung live attach <em>and</em> <code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span></code>, and it was podbench’s own spec that applied it.
+The rungs now mirror the target’s <code class="docutils literal notranslate"><span class="pre">seccompProfile</span></code> and impose none
+(<code class="docutils literal notranslate"><span class="pre">spec.target_seccomp_profile</span></code>). The remaining untested path is <code class="docutils literal notranslate"><span class="pre">SECCOMP_MODE_STRICT</span></code>.</p>
 <p><strong>R8 — AppArmor uniformity is an assumption.</strong> Every container observed ran under
 <code class="docutils literal notranslate"><span class="pre">cri-containerd.apparmor.d</span> <span class="pre">(enforce)</span></code>, and ptrace worked only because that profile permits ptrace
 between peers <strong>in the same profile</strong>. A target with a <em>custom</em> AppArmor profile breaks this.

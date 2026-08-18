@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.3.0b2.dev3+gddd78cf83 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.3.0b2.dev9+ge76102583 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=0b3926f1"></script>
+    <script src="../_static/documentation_options.js?v=a377a171"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -631,6 +631,53 @@ already-running process. See <a class="reference internal" href="debug-with-gdb.
 <p>Two things it cannot do, so do not plan on them: <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/mem</span></code> and
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/syscall</span></code> use <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_ATTACH</span></code> and are denied.</p>
 </section>
+<section id="when-the-cluster-strips-sys-ptrace">
+<span id="stripped-sys-ptrace"></span><h2>When the cluster <em>strips</em> <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code><a class="headerlink" href="#when-the-cluster-strips-sys-ptrace" title="Link to this heading">#</a></h2>
+<p>The quieter case, and the one that needs a flag. A policy engine can enforce
+“no <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> here” two ways: by <strong>refusing</strong> the request, which is the
+section above and needs nothing from you, or by <strong>mutating</strong> it — admitting the
+container and rewriting its <code class="docutils literal notranslate"><span class="pre">capabilities</span></code> on the way through. Mutating
+admission runs <em>before</em> validating admission, so by the time anything could
+refuse the request there is no capability left in it to object to. The API
+server returns success.</p>
+<p>podbench drops a rung when something refuses it. Nothing refused this, so the
+walk stops on the full rung and you get a <strong>root seat with no capability</strong> —
+which is strictly worse than the degraded rung, because root that cannot ptrace
+cannot read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> or <code class="docutils literal notranslate"><span class="pre">environ</span></code> either:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>rung        full - root plus CAP_SYS_PTRACE
+ladder
+  full      landed   running since 2026-08-18T09:01:33Z
+measured
+  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
+  blocker     uid-mismatch
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> measures the truth and says so — <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span> <span class="pre">(eff)</span> <span class="pre">no</span> <span class="pre">[bounding:</span> <span class="pre">no]</span></code> at <code class="docutils literal notranslate"><span class="pre">uid</span> <span class="pre">0</span></code> — but the rung line above it is the rung that was
+<em>asked for</em>. To confirm it is a mutation rather than anything about your image,
+read the landed spec back with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">pod</span> <span class="pre">&lt;pod&gt;</span> <span class="pre">-o</span> <span class="pre">jsonpath</span></code> over
+<code class="docutils literal notranslate"><span class="pre">.spec.ephemeralContainers[*].securityContext</span></code>. podbench submits exactly
+<code class="docutils literal notranslate"><span class="pre">{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}</span></code>; anything else in <code class="docutils literal notranslate"><span class="pre">add</span></code> — a list of <code class="docutils literal notranslate"><span class="pre">CHOWN</span></code>,
+<code class="docutils literal notranslate"><span class="pre">DAC_OVERRIDE</span></code>, <code class="docutils literal notranslate"><span class="pre">SETUID</span></code> and friends — is the cluster’s house default, put there
+by a policy that replaced the field rather than refusing it.</p>
+<p>The way past it is <code class="docutils literal notranslate"><span class="pre">--max-rung</span></code>, which caps the walk instead of waiting for a
+refusal that will never come:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach bl47p-mo-ioc-01-0 --max-rung degraded
+</pre></div>
+</div>
+<p>The full rung is then never submitted, the seat lands at the target’s own UID,
+and the ptrace credentials match. Two things worth knowing:</p>
+<ul class="simple">
+<li><p>It is a <strong>ceiling, not a choice</strong>. The rungs below it are still tried, so a
+target podbench cannot author a degraded rung for — one running as root, or
+one whose UID is not in the pod spec — still falls through to the seat rung.
+Where the UID is missing, pass <code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> as well; the ladder line says so.</p></li>
+<li><p>A running seat the ceiling would not have landed is <strong>not</strong> reconnected to.
+An ephemeral container’s <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> is fixed for the pod’s lifetime, so
+there is no reconnecting into a different one — podbench lands a new container
+and says which one it declined and why. That name is spent either way, which
+is the whole reason this is a flag rather than an automatic retry.</p></li>
+</ul>
+</section>
 <section id="when-the-reads-are-denied-too">
 <h2>When the reads are denied too<a class="headerlink" href="#when-the-reads-are-denied-too" title="Link to this heading">#</a></h2>
 <p>The line under each tick is the measurement it was taken from, so the case above
@@ -941,6 +988,7 @@ would make an honest report look like a failure.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-and-re-attach">Attach, and re-attach</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-target-container">Choosing the target container</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-refuses-sys-ptrace">When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-strips-sys-ptrace">When the cluster <em>strips</em> <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-reads-are-denied-too">When the reads are denied too</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-and-cpu-headroom-first">Making memory and CPU headroom first</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#requests-move-with-limits">Requests move with limits</a></li>

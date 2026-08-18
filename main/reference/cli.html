@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.3.0b2.dev3+gddd78cf83 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.3.0b2.dev9+ge76102583 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=0b3926f1"></script>
+    <script src="../_static/documentation_options.js?v=a377a171"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -836,6 +836,14 @@ what that seat can actually do.</p>
 │ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
 │                                              image built from this launcher&#39;s version)           │
 │ --target-uid                UID              the target&#39;s uid, when its pod spec does not say    │
+│ --max-rung                  RUNG             highest rung of the capability ladder to try: full  │
+│                                              (default), degraded or seat. The ladder still falls │
+│                                              through the rungs below. Use `degraded` where a     │
+│                                              mutating admission policy strips SYS_PTRACE instead │
+│                                              of refusing it - there the full rung is admitted,   │
+│                                              lands as root without the capability, and the walk  │
+│                                              has nothing to act on. A running seat above the     │
+│                                              ceiling is not reused                               │
 │ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
 │                                              seat, named by claim or by volume name. MOUNTPATH   │
 │                                              defaults to the application container&#39;s own, which  │
@@ -923,6 +931,14 @@ over <code class="docutils literal notranslate"><span class="pre">PODBENCH_IMAGE
 ephemeral container, whose name is then burnt for the pod’s lifetime.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> matters only for the degraded rung, which must match the
 target’s UID exactly and never defaults to root.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--max-rung</span></code> caps the walk — the rungs above it are skipped, the ones below
+still tried. It is for a cluster whose policy <strong>mutates</strong> rather than refuses:
+there the full rung is admitted and quietly stripped of <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>, so the
+walk sees no refusal to act on and stops on a root seat that cannot ptrace
+anything. <code class="docutils literal notranslate"><span class="pre">--max-rung</span> <span class="pre">degraded</span></code> skips straight to the UID-matching rung. A
+running seat that the ceiling would not have landed is <strong>not</strong> reconnected to,
+since an ephemeral container’s <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> is fixed for the pod’s
+lifetime. See <a class="reference internal" href="../how-to/attach-to-a-pod.html#stripped-sys-ptrace"><span class="std std-ref">When the cluster strips SYS_PTRACE</span></a>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> is how a seat reaches a Hotfix-mode claim. An ephemeral container may
 mount the volumes its pod <strong>already declares</strong> and may not introduce one —
 <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name the pod does not

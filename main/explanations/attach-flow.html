@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.3.0b2.dev3+gddd78cf83 documentation</title>
+    <title>What attach does &#8212; podbench 0.3.0b2.dev9+ge76102583 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=0b3926f1"></script>
+    <script src="../_static/documentation_options.js?v=a377a171"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -653,6 +653,7 @@ than author one.</p>
                                   │
       pre-skipped, no API call, no name burnt:
         the pod or the container sets runAsNonRoot: true
+        or --max-rung named a lower rung as the ceiling
       refused synchronously, in kubectl&#39;s stderr:
         PSA — &#39;must not include &quot;SYS_PTRACE&quot; in ...capabilities.add&#39;
                                   │
@@ -697,6 +698,25 @@ around the API call:</p>
                  └── state.terminated → same, name burnt
 </pre></div>
 </div>
+<section id="the-third-channel-which-is-not-a-refusal">
+<h3>The third channel, which is not a refusal<a class="headerlink" href="#the-third-channel-which-is-not-a-refusal" title="Link to this heading">#</a></h3>
+<p>A <strong>mutating</strong> admission policy neither refuses synchronously nor fails at the
+kubelet. It admits the container and rewrites its <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> on the way
+through — and since mutating admission runs before validating admission, nothing
+downstream is left with a <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> to object to. What lands is a root
+container with no capability, which is worse than rung 2: root that cannot
+ptrace cannot read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> or <code class="docutils literal notranslate"><span class="pre">environ</span></code> either.</p>
+<p>Neither arm of the walk sees anything, so rung 1 “succeeds” and rungs 2 and 3 are
+never tried. The spec reads back afterwards as <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code> with nothing added,
+which is indistinguishable from rung 2 (issue #94) — the honest answer about such
+a seat is never its rung, only what <code class="docutils literal notranslate"><span class="pre">capreport</span></code> measured.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--max-rung</span></code> is the way out: it caps the walk so the rung that cannot work is
+never submitted, rather than detecting the strip afterwards. Detection is
+possible — the API server returns the mutated object in the response body, and a
+server-side dry-run would show it without storing anything — but a cap is what a
+person who knows their own cluster can state up front, and it spends no
+container name proving what they already know. Measured at DLS, 2026-08-18.</p>
+</section>
 </section>
 <section id="every-cluster-call-in-order">
 <h2>Every cluster call, in order<a class="headerlink" href="#every-cluster-call-in-order" title="Link to this heading">#</a></h2>
@@ -945,7 +965,10 @@ other term used here without explanation.</p></li>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-whole-flow">The whole flow</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-ladder">The capability ladder</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-ladder">The capability ladder</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-third-channel-which-is-not-a-refusal">The third channel, which is not a refusal</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#every-cluster-call-in-order">Every cluster call, in order</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-checks-and-what-each-one-prevents">The checks, and what each one prevents</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-seat-is-once-it-is-up">What the seat is, once it is up</a></li>

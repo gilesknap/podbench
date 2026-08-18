@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.3.0b2.dev3+gddd78cf83 documentation</title>
+    <title>Security model &#8212; podbench 0.3.0b2.dev9+ge76102583 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=0b3926f1"></script>
+    <script src="../_static/documentation_options.js?v=a377a171"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -651,7 +651,7 @@ first-class mode rather than an error state.</p>
 <td><p>attach to the workload’s live processes</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>degraded</strong></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">&lt;target's</span> <span class="pre">uid&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">&lt;target's</span> <span class="pre">gid&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">capabilities.drop:</span> <span class="pre">[ALL]</span></code>, <code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsNonRoot:</span> <span class="pre">true</span></code>, <code class="docutils literal notranslate"><span class="pre">seccompProfile:</span> <span class="pre">RuntimeDefault</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">&lt;target's</span> <span class="pre">uid&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">&lt;target's</span> <span class="pre">gid&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">capabilities.drop:</span> <span class="pre">[ALL]</span></code>, <code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code>, <code class="docutils literal notranslate"><span class="pre">runAsNonRoot:</span> <span class="pre">true</span></code>, and the target’s own <code class="docutils literal notranslate"><span class="pre">seccompProfile</span></code> where it has one</p></td>
 <td><p><strong>restricted</strong>, verified</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code>, <code class="docutils literal notranslate"><span class="pre">environ</span></code>, <code class="docutils literal notranslate"><span class="pre">exe</span></code>, <code class="docutils literal notranslate"><span class="pre">cwd</span></code>; full source-level debugging of processes gdb starts itself</p></td>
 </tr>
@@ -667,6 +667,31 @@ first-class mode rather than an error state.</p>
 rung it landed on. A degraded seat exits <code class="docutils literal notranslate"><span class="pre">0</span></code>: returning non-zero for “the
 cluster would not grant <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>” would make an honest report look like a
 failure.</p>
+<section id="the-seat-mirrors-the-target-s-seccomp-profile-and-imposes-none">
+<h3>The seat mirrors the target’s seccomp profile, and imposes none<a class="headerlink" href="#the-seat-mirrors-the-target-s-seccomp-profile-and-imposes-none" title="Link to this heading">#</a></h3>
+<p>The non-root rungs used to state <code class="docutils literal notranslate"><span class="pre">seccompProfile:</span> <span class="pre">RuntimeDefault</span></code> outright, to
+be restricted-PSS-shaped by construction. That is only <em>needed</em> where the
+workload complies with the same standard — a namespace enforcing <code class="docutils literal notranslate"><span class="pre">restricted</span></code>
+would have refused the workload without a profile of its own — and it is not
+free.</p>
+<p>Measured at DLS on 2026-08-18, on a pod declaring no <code class="docutils literal notranslate"><span class="pre">seccompProfile</span></code>: the seat
+landed at <code class="docutils literal notranslate"><span class="pre">Seccomp</span> <span class="pre">2</span> <span class="pre">(SECCOMP_MODE_FILTER)</span></code> and <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> was refused on a
+child the seat had <strong>forked itself</strong>. That call needs no capability, is exempt
+from Yama below <code class="docutils literal notranslate"><span class="pre">ptrace_scope=2</span></code>, and passes the credential check by
+construction — and the same pod’s earlier root seat, authored by the full rung
+and so carrying no profile at all, had made the same call successfully on the
+same node. The node’s <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> denies <code class="docutils literal notranslate"><span class="pre">ptrace</span></code>.</p>
+<p>So podbench was putting the seat under a filter the container it was there to
+debug did not have, and paying for it twice: live attach, and <code class="docutils literal notranslate"><span class="pre">dbg</span> <span class="pre">--launch</span></code> —
+the fallback recommended everywhere else precisely because it needs no
+privilege. What survived was read-only inspection, because <code class="docutils literal notranslate"><span class="pre">/proc</span></code> reads are
+gated on credentials rather than on the syscall.</p>
+<p>The rule now is to mirror: copy the target container’s profile if it names one,
+say nothing where the <em>pod</em> names one (an ephemeral container and a sidecar both
+inherit it), and impose nothing where neither does. The seat is then never more
+confined than the workload beside it, and stays admissible wherever compliance
+is genuinely enforced.</p>
+</section>
 <section id="there-is-no-middle-rung-and-this-matters">
 <h3>There is no middle rung, and this matters<a class="headerlink" href="#there-is-no-middle-rung-and-this-matters" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code> on a container with a non-zero <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> is a
@@ -743,9 +768,11 @@ them does not work in the degraded rung.</p>
 <li><p><strong>the capability itself</strong> being absent or ineffective;</p></li>
 <li><p><strong>Yama</strong> — <code class="docutils literal notranslate"><span class="pre">/proc/sys/kernel/yama/ptrace_scope</span></code>, a <em>node-level</em>, read-only
 knob. At <code class="docutils literal notranslate"><span class="pre">1</span></code> (Ubuntu’s default) attach to a non-descendant is denied;</p></li>
-<li><p><strong>seccomp</strong> — a filter rejecting <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code>. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> does <strong>not</strong>
-do this, though it does block <code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code>, so gdb cannot
-disable ASLR;</p></li>
+<li><p><strong>seccomp</strong> — a filter rejecting <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code>. Whether <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> does
+this is the <em>runtime’s</em> business, not the name’s: the spike nodes permitted
+it, a DLS node denied it even on a self-forked child (2026-08-18), so only
+<code class="docutils literal notranslate"><span class="pre">capreport</span></code> can say which node you are on. It blocks
+<code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code> either way, so gdb cannot disable ASLR;</p></li>
 <li><p><strong>AppArmor</strong> — a profile denying ptrace between the two domains. Everything
 observed ran under <code class="docutils literal notranslate"><span class="pre">cri-containerd.apparmor.d</span> <span class="pre">(enforce)</span></code>, which permits
 ptrace between peers <em>in the same profile</em>; a target with a custom profile
@@ -961,9 +988,11 @@ resolving out of it. The image says so beside the <code class="docutils literal 
 <h2>Unproven areas<a class="headerlink" href="#unproven-areas" title="Link to this heading">#</a></h2>
 <p>Stated so nobody relies on them:</p>
 <ul class="simple">
-<li><p>The <strong>seccomp branch</strong> of the capability probe has never executed — a
-<code class="docutils literal notranslate"><span class="pre">localhost/</span></code> profile could not be installed on a test node. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code>
-was tested and permits ptrace.</p></li>
+<li><p>The <strong><code class="docutils literal notranslate"><span class="pre">SECCOMP_MODE_STRICT</span></code> branch</strong> of the capability probe has never
+executed — a <code class="docutils literal notranslate"><span class="pre">localhost/</span></code> profile could not be installed on a test node. The
+filter branch itself is no longer unproven: it fired at DLS on 2026-08-18,
+under a <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> profile that denies ptrace, and named the right
+mechanism.</p></li>
 <li><p><strong>AppArmor uniformity is an assumption.</strong> Every container observed shared one
 profile, and ptrace worked because that profile permits ptrace between peers
 within it. A custom profile on the target breaks that, and the diagnostic text
@@ -1026,6 +1055,7 @@ transport measurement comes from a flat exec path.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-needs-from-the-cluster">What it needs from the cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-deliberately-does-not-need">What it deliberately does not need</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-two-rung-ladder">The two-rung ladder</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-seat-mirrors-the-target-s-seccomp-profile-and-imposes-none">The seat mirrors the target’s seccomp profile, and imposes none</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#there-is-no-middle-rung-and-this-matters">There is no middle rung, and this matters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#root-without-the-capability-is-worse-than-non-root">Root without the capability is <em>worse</em> than non-root</a></li>
 </ul>
