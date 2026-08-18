@@ -817,6 +817,10 @@ def _sidecar(
     seccomp_profile: Mapping[str, Any] | None = None,
     pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
+    # The identity shape is a non-root one whatever `ptrace` says, and it is the
+    # branch `ptrace` never reaches, so the mirroring below keys off the shape
+    # that was actually authored rather than off the flag.
+    root_ptrace_shape = identity is None and ptrace
     if identity is not None:
         # The identity wins over the capability, and cannot be reconciled with
         # it: SYS_PTRACE needs runAsUser 0 (anywhere else it reaches the
@@ -853,7 +857,7 @@ def _sidecar(
     # Mirrored from the origin's target rather than defaulted, on the non-root
     # shapes only: see :func:`target_seccomp_profile`. The ptrace shape above
     # never had one — it is the dev pod's full rung — so it is untouched.
-    if not ptrace and seccomp_profile is not None:
+    if not root_ptrace_shape and seccomp_profile is not None:
         security_context["seccompProfile"] = dict(seccomp_profile)
     validate_security_context(security_context)
 

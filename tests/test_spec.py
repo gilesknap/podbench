@@ -96,6 +96,11 @@ def origin_pod() -> dict[str, Any]:
 
 
 def devpod(**kwargs: Any) -> dict[str, Any]:
+    return devpod_from(origin_pod(), **kwargs)
+
+
+def devpod_from(origin: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """``devpod`` against an origin the caller has altered."""
     defaults: dict[str, Any] = {
         "name": "devpod",
         "target_container": "app",
@@ -103,7 +108,7 @@ def devpod(**kwargs: Any) -> dict[str, Any]:
         "target_port": 8080,
     }
     defaults.update(kwargs)
-    return dev_pod_spec(origin_pod(), **defaults)
+    return dev_pod_spec(origin, **defaults)
 
 
 def origin_with_identity(**spec_overrides: Any) -> dict[str, Any]:
@@ -683,6 +688,32 @@ def test_the_projected_identity_and_the_sidecar_are_the_same_user() -> None:
     # bounding set only, so it cannot be kept beside the identity's uid.
     assert "add" not in sidecar["securityContext"]["capabilities"]
     assert sidecar["securityContext"]["runAsNonRoot"] is True
+
+
+def test_an_identity_sidecar_mirrors_the_profile_even_with_ptrace_asked_for() -> None:
+    """``sidecar_ptrace=True`` is the default, and the identity still wins.
+
+    The shape authored is the non-root one, so it is a shape the target's
+    profile belongs on: keying the mirroring off the *flag* rather than off the
+    shape left this sidecar as the one restricted container in the pod with no
+    profile — unadmissible under an enforcing ``restricted`` namespace, and more
+    permissive than the workload it clones everywhere else.
+    """
+    profile = {"type": "Localhost", "localhostProfile": "audit.json"}
+    origin = origin_with_identity()
+    origin["spec"]["containers"][0]["securityContext"] = {"seccompProfile": profile}
+    sidecar = container(dev_pod_spec_with_identity(origin), "podbench")
+
+    assert sidecar["securityContext"]["seccompProfile"] == profile
+    assert sidecar["securityContext"]["runAsNonRoot"] is True
+    # The root shape is still exempt from the same origin's profile: it is the
+    # dev pod's full rung, and a filter denying ptrace costs it the capability
+    # it exists for.
+    unprepared = origin_pod()
+    unprepared["spec"]["containers"][0]["securityContext"] = {"seccompProfile": profile}
+    plain = container(devpod_from(unprepared), "podbench")
+    assert "seccompProfile" not in plain["securityContext"]
+    assert plain["securityContext"]["runAsUser"] == 0
 
 
 def test_the_home_the_identity_names_is_mounted_when_the_pod_has_one() -> None:
