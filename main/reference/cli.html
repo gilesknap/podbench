@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.2.0b3.dev14+gd7002b0b6 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.2.0b3.dev21+ge5c7794cc documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=b94d5a99"></script>
+    <script src="../_static/documentation_options.js?v=b6a447e3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -843,20 +843,35 @@ what that seat can actually do.</p>
 │ --new                                        add a container even if one is running (its name is │
 │                                              permanent)                                          │
 │ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
-│                                              an /etc/passwd entry for the target&#39;s uid, which is │
-│                                              what sshd needs to let anyone log in, and the only  │
-│                                              way to get one on a live pod. Off by default: it    │
-│                                              drops the target&#39;s own group                        │
+│                                              an /etc/passwd entry for the target&#39;s uid. Rarely   │
+│                                              needed: the seat registers its own record in        │
+│                                              /var/lib/extrausers/passwd without it, and what is  │
+│                                              left for this flag is a seat that database will not │
+│                                              serve - an image whose NSS does not consult it, or  │
+│                                              a uid or gid below 500. It drops the target&#39;s own   │
+│                                              group, and a seat whose gid no longer matches the   │
+│                                              target&#39;s cannot ptrace it - on a target whose gid   │
+│                                              is not 0 this buys ssh and takes the debugger       │
 │ --no-seat-identity                           do not mount the pod&#39;s podbench-home volume, which  │
 │                                              is otherwise mounted by convention when the pod     │
 │                                              declares it and keeps everything the seat writes    │
 │                                              off the workload&#39;s ephemeral-storage budget. The    │
 │                                              podbench-identity volume is never mounted by        │
 │                                              attach: it needs a subPath per file, which an       │
-│                                              ephemeral container may not have - use              │
-│                                              --seat-gid-root for the seat&#39;s /etc/passwd entry    │
+│                                              ephemeral container may not have - a live-pod seat  │
+│                                              registers its own NSS record instead, and needs no  │
+│                                              volume for it                                       │
 │ --no-probe                                   skip capreport; the report then says nothing was    │
 │                                              measured                                            │
+│ --pull                      POLICY           imagePullPolicy for the seat: IfNotPresent          │
+│                                              (default), Always or Never. Use Always when         │
+│                                              iterating on a tag that moves - `main`, or a branch │
+│                                              image - since a node that already has a copy will   │
+│                                              otherwise serve it. It cannot be the default:       │
+│                                              Always is the one policy that needs a registry, so  │
+│                                              it breaks an image side-loaded with `kind load` or  │
+│                                              `ctr import`                                        │
+│                                              [default: IfNotPresent]                             │
 │ --resize                    MEMORY           raise the target&#39;s memory in place first, as LIMIT  │
 │                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
 │                                              is raised too where a LimitRange bounds             │
@@ -962,20 +977,25 @@ at all. Mounting the volume whole is not an alternative either; a directory
 mount replaces the path, and over <code class="docutils literal notranslate"><span class="pre">/etc</span></code> it would take <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code> with it
 — the very lookup the identity exists to satisfy.</p>
 <ul class="simple">
-<li><p><strong>On a live pod, <code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is the route to the same identity.</strong> The
-debug image makes <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> group-writable (OpenShift’s convention) and
-the agent appends a record for whatever uid the seat turned out to run as,
-which needs <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code> and nothing else. Verified against a
-PSA-<code class="docutils literal notranslate"><span class="pre">restricted</span></code> pod: <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--no-seat-identity</span> <span class="pre">--seat-gid-root</span></code> landed the
-degraded rung and ssh logged in as <code class="docutils literal notranslate"><span class="pre">uid=1000(podbench)</span></code>.</p></li>
+<li><p><strong>On a live pod the seat writes its own record, and needs no volume and no
+flag to.</strong> The image installs <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code>, points <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">passwd</span></code> line at it and ships <code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> world-writable, so
+the agent appends a record for the uid <em>and gid</em> the seat turned out to run
+as. That is the whole mechanism: no capability, no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>, nothing in
+the workload’s manifest. The exception is a seat under that database’s
+compiled-in floors — it ignores a record whose uid or gid is below 500, gid
+100 excepted — which falls back to <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> and so to
+<code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code>.</p></li>
 <li><p>The volume is for a seat that is an <strong>ordinary</strong> container, which is what
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> authors — <code class="docutils literal notranslate"><span class="pre">subPath</span></code> is legal there and nothing is written at
 runtime. (The dev sidecar does not mount it yet; see the follow-up note in
 <code class="docutils literal notranslate"><span class="pre">Charts/podbench/values.yaml</span></code>.)</p></li>
 <li><p>The capability report says so where it matters: when the pod declares the
 volume, the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">seat</span></code> line explains that it cannot be projected into an
-ephemeral container and names <code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code>. Where a seat <em>does</em> carry
-the identity, the same line credits it.</p></li>
+ephemeral container and names the seat’s own record as the route instead, so
+that a pod somebody prepared for podbench does not read as one whose
+preparation failed. Where a seat <em>does</em> carry the identity, the same line
+credits it.</p></li>
 </ul>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> are opt-in and only partly proven, and need
@@ -984,12 +1004,17 @@ them; one that used either prints what it cost — including that the raised
 limit is on the pod and not on its controller, so a rollout reverts it.
 Both take <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> or <code class="docutils literal notranslate"><span class="pre">REQUEST:LIMIT</span></code>, and raise the request alongside the
 limit where a <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> bounds the ratio between them.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is <strong>the</strong> way to an ssh-able seat on a live pod, not a
-fallback from the identity volume: GID 0 lets the agent append its own
-<code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> record (the image makes the file group-writable for it), at the
-cost of the target’s own group. It is opt-in for that cost, not because a
-cluster would refuse it — the restricted Pod Security Standard does not
-constrain <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is a <strong>fallback</strong>, and one worth understanding before using.
+GID 0 lets the agent append to the image’s group-writable <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, which
+is what a seat had to do before <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code> shipped (issue #102) and
+what it still does when that database will not serve it — an image whose NSS
+does not consult it, or a uid or gid below its floor of 500. The cost is the
+target’s own group, and that group is not decoration: the kernel
+compares the gid as well as the uid when a process without <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code>
+ptraces another, and a mismatch denies in both directions (measured, issue
+#98). So against a target whose gid is not 0 — 36070 at Diamond — the flag buys
+ssh and takes the debugger. Admission is not what makes it opt-in: the
+restricted Pod Security Standard does not constrain <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code> at all.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--open</span></code></strong> takes the seat from “landed” to “bound breakpoint” in one
 command. It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH, and the local VS Code needs the
 <strong>Remote - SSH</strong> extension; both are checked at the point of use and named in
@@ -1842,12 +1867,16 @@ to the seat’s group, and a seat running as the target’s uid can chown nothin
 <li><p><strong>nss-identity</strong> is a no-op when NSS already resolves the seat’s uid — what a
 mounted <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> achieves for an ordinary container, and it stays a
 no-op even though the projected <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> is read-only. In an ephemeral
-seat, which cannot be given that file at all, it appends one instead, and that
-needs GID 0 (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code>).</p></li>
+seat, which cannot be given that file at all, it appends a record to
+<code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> instead, which needs no particular gid — or to
+<code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, for the seats that database will not serve. It is allowed to
+fail: the agent records the reason and idles, because a container that exits
+burns its name.</p></li>
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">--print-login-user</span></code> is how the launcher decides whether an ssh stanza is worth
-writing: the name on stdout, or exit 1 with the mechanism and the way out on
-stderr. It is a pure read and ensures nothing, so it reports the state sshd will
+writing: the name on stdout, or exit 1 with the mechanism and, on stderr, either
+the way out or the <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span></code> command that shows why the registration step
+failed. It is a pure read and ensures nothing, so it reports the state sshd will
 actually find.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--self-check</span></code> includes the fd-2 tripwire — a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> round trip with a
 delayed second line, which fails if anything in the path has broken the CRI exec

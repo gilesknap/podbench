@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.2.0b3.dev14+gd7002b0b6 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.2.0b3.dev21+ge5c7794cc documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=b94d5a99"></script>
+    <script src="../_static/documentation_options.js?v=b6a447e3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -745,9 +745,13 @@ window — on the connection already open to the <em>older</em> seat.</p></li>
 moves, such as <code class="docutils literal notranslate"><span class="pre">main</span></code> or a branch image: a node that already has a copy will
 otherwise serve it, and a seat older than the launcher that started it has no
 symptom at all. <code class="docutils literal notranslate"><span class="pre">attach</span></code> names the tag in its report when this applies.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ssh-user</span></code> — the login name. <code class="docutils literal notranslate"><span class="pre">root</span></code> on the full rung; on a degraded rung
-sshd resolves the name through NSS, so the image needs an account for that
-UID and you may need to say which.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ssh-user</span></code> — the login name. <code class="docutils literal notranslate"><span class="pre">root</span></code> on the full rung; <code class="docutils literal notranslate"><span class="pre">podbench</span></code> on a
+degraded one, which is the name in the record the seat registered for its own
+uid — unless that uid already has an account in the image, where it is whatever
+the image calls it (<code class="docutils literal notranslate"><span class="pre">nobody</span></code> at 65534). sshd resolves the name through NSS
+before it looks at a key, so a wrong value here fails as
+<code class="docutils literal notranslate"><span class="pre">Permission</span> <span class="pre">denied</span> <span class="pre">(publickey)</span></code> — the same message a missing key or an agent
+that will not sign gives. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> separates them.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--identity</span> <span class="pre">~/.ssh/id_work</span></code> — the key to offer, and the one whose public half
 is injected into the container.</p></li>
 </ul>

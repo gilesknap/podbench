@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.2.0b3.dev14+gd7002b0b6 documentation</title>
+    <title>What attach does &#8212; podbench 0.2.0b3.dev21+ge5c7794cc documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=b94d5a99"></script>
+    <script src="../_static/documentation_options.js?v=b6a447e3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -784,12 +784,16 @@ completely fresh rootfs and nothing may live only in the writable layer:</p>
         ├─ ensure $HOME                (/root, or the mounted home volume,
         │                               or /tmp/podbench-home for a non-root seat)
         ├─ ensure /run/sshd            (root layout only — sshd&#39;s privsep dir)
-        ├─ ensure an /etc/passwd record for its own uid
+        ├─ ensure an NSS record for its own uid
         │      before the host key, because ssh-keygen calls getpwuid()
         │      whatever it is asked to do, and fails on a uid NSS cannot
-        │      resolve.  A non-root seat can only write one with
-        │      --seat-gid-root, which pins runAsGroup: 0 against the
-        │      image&#39;s group-writable /etc/passwd
+        │      resolve.  It goes to /var/lib/extrausers/passwd, which the
+        │      image ships world-writable, so a seat running as the
+        │      target&#39;s uid *and gid* can append it with no flag and no
+        │      privilege.  /etc/passwd needs gid 0 and takes the seats
+        │      that database will not serve — it ignores a uid or gid
+        │      below 500 — at the price of the gid match ptrace makes
+        │      against the target (--seat-gid-root)
         ├─ ensure the host key         (ssh-keygen)
         ├─ ensure authorized_keys      (from the PODBENCH_PUBKEY env the spec carried)
         ├─ ensure the sshd config      (its own file, not the distro&#39;s)

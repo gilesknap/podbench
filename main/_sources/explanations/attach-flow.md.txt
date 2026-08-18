@@ -259,12 +259,16 @@ completely fresh rootfs and nothing may live only in the writable layer:
         ├─ ensure $HOME                (/root, or the mounted home volume,
         │                               or /tmp/podbench-home for a non-root seat)
         ├─ ensure /run/sshd            (root layout only — sshd's privsep dir)
-        ├─ ensure an /etc/passwd record for its own uid
+        ├─ ensure an NSS record for its own uid
         │      before the host key, because ssh-keygen calls getpwuid()
         │      whatever it is asked to do, and fails on a uid NSS cannot
-        │      resolve.  A non-root seat can only write one with
-        │      --seat-gid-root, which pins runAsGroup: 0 against the
-        │      image's group-writable /etc/passwd
+        │      resolve.  It goes to /var/lib/extrausers/passwd, which the
+        │      image ships world-writable, so a seat running as the
+        │      target's uid *and gid* can append it with no flag and no
+        │      privilege.  /etc/passwd needs gid 0 and takes the seats
+        │      that database will not serve — it ignores a uid or gid
+        │      below 500 — at the price of the gid match ptrace makes
+        │      against the target (--seat-gid-root)
         ├─ ensure the host key         (ssh-keygen)
         ├─ ensure authorized_keys      (from the PODBENCH_PUBKEY env the spec carried)
         ├─ ensure the sshd config      (its own file, not the distro's)

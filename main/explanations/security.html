@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.2.0b3.dev14+gd7002b0b6 documentation</title>
+    <title>Security model &#8212; podbench 0.2.0b3.dev21+ge5c7794cc documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=b94d5a99"></script>
+    <script src="../_static/documentation_options.js?v=b6a447e3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -842,19 +842,15 @@ application container cannot reach the debug toolchain.</p></li>
 <li><p><strong>The target’s filesystem is never written.</strong> <code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem</span></code> is
 common in production and podbench does not depend on writing into the target.
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a read path in every standard workflow.</p></li>
-<li><p><strong>An ssh-able seat on a live pod runs with <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code></strong>, and that is a
-deliberate opt-in (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code>). The degraded rung runs as the
-<em>target’s</em> uid, discovered at attach time, and sshd will not authenticate a
-user NSS cannot resolve; the debug image makes its own <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>
-group-writable so the agent can append a record for that uid, which needs GID
-0. Projecting the file instead — a ConfigMap over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> — is not
-available here: a <code class="docutils literal notranslate"><span class="pre">volumeMount</span></code> on an <em>ephemeral</em> container may not carry a
-<code class="docutils literal notranslate"><span class="pre">subPath</span></code>, and the API server refuses the whole request if one does. So the
-choice on a live pod is a seat in group 0 or a seat reachable only by
-<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. Group 0 is a group, not a capability: it grants nothing in the
-target container, whose files it does not own, and <code class="docutils literal notranslate"><span class="pre">restricted</span></code> PSA admits it
-(measured: uid 1000 / gid 0). <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>’s seat is an ordinary container
-and takes the projected identity instead, needing no group change.</p></li>
+<li><p><strong>An ssh-able seat on a live pod runs as the target’s own uid and gid</strong>, and
+changes no identity to get there. sshd will not authenticate a user NSS cannot
+resolve, and no account for a uid discovered at attach time can be pre-baked
+into an image, so the seat writes its own record — normally into an NSS
+database of its own rather than into <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, which it leaves as the image
+built it. That is the subject of the next section, because the
+file it writes to is world-writable and a reviewer should see the argument
+rather than the mode. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>’s seat is an ordinary container and takes
+a <em>projected</em> identity instead, writing nothing at all.</p></li>
 <li><p><strong>Ephemeral containers are an audit trail.</strong> They cannot be removed, so an
 attach is permanently visible in the pod spec, with the image, the
 securityContext and the container name. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">list</span></code> reads the same
@@ -876,6 +872,90 @@ podbench cannot reserve resources on a live pod, so the plausible incident is
 an OOM-killed or evicted workload, not a data breach. See the footgun section
 on the front page.</p></li>
 </ul>
+<section id="the-seat-s-login-and-the-world-writable-file-that-provides-it">
+<h3>The seat’s login, and the world-writable file that provides it<a class="headerlink" href="#the-seat-s-login-and-the-world-writable-file-that-provides-it" title="Link to this heading">#</a></h3>
+<p>This is the one mode bit in podbench that looks wrong at a glance, so here is the
+whole of it.</p>
+<p>The degraded rung runs the seat as the target’s uid <strong>and</strong> gid — 36070, say,
+discovered from the target’s <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> at attach time. sshd resolves the
+login name a client offers through NSS <em>before</em> it looks at any key, and
+<code class="docutils literal notranslate"><span class="pre">ssh-keygen</span></code> calls <code class="docutils literal notranslate"><span class="pre">getpwuid()</span></code> whatever it is asked to do, so a seat with no NSS
+record for its own uid has no ssh at all. Nothing can be pre-baked: the uid is
+not known until the attach.</p>
+<p>So the seat registers a record for itself, and where it registers it is the
+question:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> <strong>is not modified</strong>. It stays as the image built it: root-owned,
+group <code class="docutils literal notranslate"><span class="pre">root</span></code>, and mode 664 — <code class="docutils literal notranslate"><span class="pre">chmod</span> <span class="pre">g=u</span></code> makes it group-writable deliberately,
+in the OpenShift convention. Only a seat in group 0 can use that, and a seat in
+group 0 is no longer the target’s group, which is a credential <code class="docutils literal notranslate"><span class="pre">ptrace</span></code>
+compares: pinning
+<code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code> buys the transport and loses the debugger (measured, issue
+#98). That route survives as <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code> for images that need it
+and is not the default.</p></li>
+<li><p>Instead the image installs <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code>, points the <code class="docutils literal notranslate"><span class="pre">passwd</span></code> line of
+<code class="docutils literal notranslate"><span class="pre">/etc/nsswitch.conf</span></code> at it, and ships <code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> <strong>empty and
+mode 0666</strong>. The agent appends one line — <code class="docutils literal notranslate"><span class="pre">podbench:x:&lt;uid&gt;:&lt;gid&gt;:…</span></code> — and NSS
+resolves the uid with no capability, no gid and no change to the workload’s
+manifest. Not for every seat: this NSS source has floors compiled in (uid and
+gid 500, gid 100 exempted) and ignores a record below them, for <code class="docutils literal notranslate"><span class="pre">getpwnam</span></code> as
+well as <code class="docutils literal notranslate"><span class="pre">getpwuid</span></code>. A seat under a floor takes <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> instead, and the
+commonest one can write it — a target that sets <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no
+<code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code> leaves the seat pinning no group, so it runs with the image’s gid
+0. <code class="docutils literal notranslate"><span class="pre">agent.extrausers_serves</span></code> decides which file, and the mode never enters
+into it.</p></li>
+</ul>
+<p>Why a world-writable file is not a privilege boundary here:</p>
+<ul class="simple">
+<li><p><strong>The only writer is the seat’s own uid, which is already the seat.</strong> The file
+is in the seat container’s own read-write layer, in the debug image, not in the
+target’s filesystem and not on any volume. Anyone who can write it can already
+write the seat’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>, its <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code> and its sshd config — it is the
+same identity, reached through the same ssh session or the same
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, and both are gated by RBAC on <code class="docutils literal notranslate"><span class="pre">pods/exec</span></code> before any of this.
+A process in the <em>target</em> container cannot reach it at all: the seat has its own
+mount namespace, and traversing <code class="docutils literal notranslate"><span class="pre">/proc/&lt;seat-pid&gt;/root</span></code> is gated by the same
+<code class="docutils literal notranslate"><span class="pre">ptrace_may_access</span></code> check the debugger is subject to.</p></li>
+<li><p><strong>The sshd that reads it cannot act on a privileged record.</strong> On every rung
+whose seat is not root — <code class="docutils literal notranslate"><span class="pre">degraded</span></code> and <code class="docutils literal notranslate"><span class="pre">seat</span></code> — sshd runs <em>as the seat’s own uid</em>
+(<code class="docutils literal notranslate"><span class="pre">SshdLayout.for_uid(n)</span></code> with <code class="docutils literal notranslate"><span class="pre">run_as_root=False</span></code>): no privilege separation, no
+<code class="docutils literal notranslate"><span class="pre">setuid</span></code>. A record claiming uid 0 does not produce a root session, because the
+process serving it holds no privilege to hand over — it can only serve the uid
+it already is.</p></li>
+<li><p><strong>Setuid binaries are inert.</strong> Every rung sets
+<code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code>, so <code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code> is on for the whole
+container: <code class="docutils literal notranslate"><span class="pre">su</span></code> and friends cannot change uid from any passwd record, however
+written.</p></li>
+<li><p><strong>Nothing else consults the file.</strong> It exists for this and is otherwise empty,
+so a forged record is a forged answer to a question only the seat’s own NSS
+asks. <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, which the rest of the image does read, is left byte-for-byte
+as the image built it.</p></li>
+</ul>
+<p>The <strong>full</strong> rung is the exception to the second bullet and has to be argued
+separately, because it ships today: it is <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>, so
+<code class="docutils literal notranslate"><span class="pre">SshdLayout.for_uid(0)</span></code> gives it <code class="docutils literal notranslate"><span class="pre">run_as_root=True</span></code> — privilege separation on,
+and sshd <code class="docutils literal notranslate"><span class="pre">setuid</span></code>-ing into the session from whatever NSS answers with. The reason
+0666 is still not an escalation there is that a root seat has no unprivileged
+principal to forge with: every process in it, the <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> that carries the
+ssh transport included, is already uid 0, and writing a passwd record buys
+nothing over writing <code class="docutils literal notranslate"><span class="pre">/root/.ssh/authorized_keys</span></code>. Nor does a root seat ever
+append: <code class="docutils literal notranslate"><span class="pre">getpwuid(0)</span></code> resolves to <code class="docutils literal notranslate"><span class="pre">root</span></code> from the image’s own <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> and
+the registration step returns early.</p>
+<p>That argument holds by a property of the rung rather than by construction, so the
+agent closes the gap instead of resting on it: on a root seat the start-up path
+takes group and other write off the database (<code class="docutils literal notranslate"><span class="pre">agent.restrict_seat_nss_database</span></code>,
+the <code class="docutils literal notranslate"><span class="pre">nss-db-mode</span></code> step). An ephemeral container has its own copy of the image’s
+layers, so narrowing a root seat’s database leaves a degraded seat in the same pod
+its 0666.</p>
+<p>The combination that <em>would</em> be an escalation, stated so it is not discovered
+later: <strong>a root sshd that <code class="docutils literal notranslate"><span class="pre">setuid</span></code>s into a non-root session</strong> — one container
+holding both an unprivileged writer of this file and a privileged reader of it.
+That is the shape issue #98 proposes, and it is the one thing neither argument
+above covers. #98 and this mode must not both ship as they stand; whichever lands
+second has to close the other off, either by giving the database an owner and
+losing group/other write on that rung too, or by keeping the root sshd from
+resolving out of it. The image says so beside the <code class="docutils literal notranslate"><span class="pre">chmod</span></code>.</p>
+</section>
 </section>
 <section id="unproven-areas">
 <h2>Unproven areas<a class="headerlink" href="#unproven-areas" title="Link to this heading">#</a></h2>
@@ -953,7 +1033,10 @@ transport measurement comes from a flat exec path.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#four-ways-to-be-denied-one-errno">Four ways to be denied, one errno</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#living-without-the-capability">Living without the capability</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-organisational-escape-hatch">The organisational escape hatch</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#things-worth-knowing-before-you-approve-it">Things worth knowing before you approve it</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#things-worth-knowing-before-you-approve-it">Things worth knowing before you approve it</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-seat-s-login-and-the-world-writable-file-that-provides-it">The seat’s login, and the world-writable file that provides it</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unproven-areas">Unproven areas</a></li>
 </ul>
   </nav></div>
