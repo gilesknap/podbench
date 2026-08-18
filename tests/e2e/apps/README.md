@@ -155,6 +155,9 @@ admitted`, because the full rung is refused here, the degraded rung cannot be
 authored at uid 0 (`runAsNonRoot: true` contradicts it) and the seat rung is then
 refused by the kubelet. Reproducing #89 against a root target needs the file
 below instead — and both of them together, which is what `test_dls_ioc.py` binds.
+`test_nonroot_gid_identity.py` is the other half of that sentence: its target
+(`nonroot-gid.yaml`) *is* non-root, so this file alone is enough there and it
+binds no mutating policy at all.
 
 Native admission rather than Kyverno (which is what the real cluster runs)
 because it is core API: no controller to install, no CRDs to wait for, no

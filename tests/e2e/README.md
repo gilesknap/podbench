@@ -88,14 +88,20 @@ check, plus one labelled `pod-security.kubernetes.io/enforce=restricted` for
 S5. Deletion does not block; the API server has accepted it by the time the run
 ends.
 
-**One exception, and it is cluster-scoped.** `test_dls_ioc.py` binds two
-admission policies, which are not namespaced objects: it applies
+**One exception, and it is cluster-scoped.** Two modules bind admission
+policies, which are not namespaced objects. `test_dls_ioc.py` applies
 `podbench-strip-sys-ptrace` (a `MutatingAdmissionPolicy`) and
 `podbench-deny-sys-ptrace` (a `ValidatingAdmissionPolicy`), each with its
-binding, and deletes all four in a session-scoped `finally`. Neither does
-anything to a namespace that has not opted in by label, so a cluster that keeps
-them after a killed run is not silently changed — but they are the one thing
-this suite leaves outside `podbench-e2e-*`.
+binding, and deletes all four in a session-scoped `finally`;
+`test_nonroot_gid_identity.py` applies and deletes the *deny* pair only, which
+is all it needs against a non-root target. Both fixtures are session-scoped for
+the teardown rather than the setup: the names are fixed, so a concurrent apply
+is idempotent while a concurrent delete is not, and the two co-running leave
+nothing behind (measured on the k3s bed, whole suite in one session).
+
+No policy here does anything to a namespace that has not opted in by label, so a
+cluster that keeps them after a killed run is not silently changed — but they are
+the one thing this suite leaves outside `podbench-e2e-*`.
 
 If a run is killed hard enough to skip teardown:
 
