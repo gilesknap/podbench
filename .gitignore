@@ -75,3 +75,6 @@ lockfiles/
 .claude/worktrees/
 
 *.code-workspace
+
+# Scratch space for session working files — never committed.
+tmp/
