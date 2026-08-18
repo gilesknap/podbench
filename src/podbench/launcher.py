@@ -74,6 +74,7 @@ from .resize import (
     ResizeError,
     ResizePlan,
     Want,
+    explain_claim_refusal,
     namespace_limits,
     parse_want,
     plan_resize,
@@ -2161,9 +2162,17 @@ def try_resize(
             "pod", pod, plan.body, patch_type="strategic", subresource="resize"
         )
     except KubectlError as error:
+        refusal = error.stderr.strip() or str(error)
+        # The API server answers a claim-bearing container with a sentence about
+        # cpu and memory, which sends the reader after the numbers they just
+        # asked for. See resize.explain_claim_refusal.
+        explanation = explain_claim_refusal(
+            _container_resources(document, container), refusal
+        )
         return (
             f"in-place resize ({asked}) was refused, so podbench is sharing the "
-            f"pod's existing limits: {error.stderr.strip() or error}"
+            f"pod's existing limits: {refusal}"
+            + (f" {explanation}" if explanation else "")
         )
     return "\n".join(
         [

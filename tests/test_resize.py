@@ -22,6 +22,7 @@ from podbench.resize import (
     MEMORY,
     ResizeError,
     Want,
+    explain_claim_refusal,
     format_cpu,
     format_memory,
     namespace_limits,
@@ -256,3 +257,55 @@ def test_a_request_above_its_own_limit_is_refused_where_it_is_typed() -> None:
     with pytest.raises(ResizeError) as raised:
         parse_want("8Gi:6Gi", resource=MEMORY)
     assert "above its limit" in str(raised.value)
+
+
+# -- a container holding a resource claim -------------------------------------
+
+FLIPPER = {
+    "claims": [{"name": "bl01c-ea-flip-02"}],
+    "limits": {"cpu": "500m", "ephemeral-storage": "2Gi", "memory": "256Mi"},
+    "requests": {"cpu": "100m", "ephemeral-storage": "100Mi", "memory": "64Mi"},
+}
+"""``bl01c-ea-flip-02-0`` as the cluster carried it on 2026-08-18: a Diamond IOC
+whose claim attaches the usbip device its `fastcs-thorlabs` driver talks to."""
+
+MUTABLE = (
+    'The Pod "bl01c-ea-flip-02-0" is invalid: spec: Forbidden: '
+    "only cpu and memory resources are mutable"
+)
+"""What that pod answered to every patch tried against it, including a JSON
+patch rewriting its memory limit as the value it already had."""
+
+
+def test_a_claim_is_named_as_the_reason_the_api_server_would_not_name() -> None:
+    """The refusal says cpu and memory, and is about neither: the validator
+    drops `claims` from the container it compares, so nothing compares equal."""
+    explanation = explain_claim_refusal(FLIPPER, MUTABLE)
+
+    assert "bl01c-ea-flip-02" in explanation, "which claim, so it can be found"
+    assert "no released Kubernetes can resize" in explanation
+    assert "template" in explanation, "the one thing left to do"
+
+
+def test_the_same_refusal_without_a_claim_is_left_as_the_cluster_worded_it() -> None:
+    """This message is also the API server's answer to any other non-cpu/memory
+    change. Guessing at a claim would send the reader after the wrong thing."""
+    assert explain_claim_refusal(resources(limits={"memory": "256Mi"}), MUTABLE) == ""
+    assert explain_claim_refusal({"claims": []}, MUTABLE) == ""
+
+
+def test_a_claim_explains_nothing_about_some_other_refusal() -> None:
+    assert explain_claim_refusal(FLIPPER, "pods is forbidden: exceeded quota") == ""
+
+
+def test_a_claim_does_not_stop_a_patch_being_planned() -> None:
+    """Submitted rather than pre-empted: the fix is upstream on master, so a
+    1.36 cluster resizes this container and podbench must not refuse first."""
+    plan = plan_resize(
+        "bl01c-ea-flip-02",
+        current=FLIPPER,
+        wants={MEMORY: Want(limit=parse_quantity("6Gi"))},
+        limits=namespace_limits([ratio_limit_range(memory="10")]),
+    )
+
+    assert submitted(plan)["limits"]["memory"] == "6Gi"
