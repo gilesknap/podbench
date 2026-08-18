@@ -123,6 +123,7 @@ def pod_document(
     container: str = "app",
     uid: int | None = None,
     non_root: bool = False,
+    seccomp: Mapping[str, Any] | None = None,
     ephemeral: Sequence[dict[str, Any]] = (),
     ephemeral_statuses: Sequence[dict[str, Any]] = (),
     volumes: Sequence[dict[str, Any]] = (),
@@ -137,6 +138,8 @@ def pod_document(
         security["runAsUser"] = uid
     if non_root:
         security["runAsNonRoot"] = True
+    if seccomp is not None:
+        security["seccompProfile"] = dict(seccomp)
     workload: dict[str, Any] = {"name": container, "securityContext": security}
     if volume_mounts:
         workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
@@ -498,7 +501,6 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     assert session.uid == 1000
     assert security_contexts(cluster)[1] == {
         "capabilities": {"drop": ["ALL"]},
-        "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
         "privileged": False,
         "allowPrivilegeEscalation": False,
@@ -507,6 +509,37 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     steps = {step.rung: step for step in session.steps}
     assert not steps[Rung.FULL].admitted
     assert "Pod Security Admission" in steps[Rung.FULL].detail
+
+
+def test_the_seat_imposes_no_seccomp_profile_its_target_does_not_have() -> None:
+    """The DLS shape, 2026-08-18.
+
+    The target declares no ``seccompProfile``, so neither may the seat. Landing
+    it at ``RuntimeDefault`` put the seat under a filter the workload did not
+    have, and on that node the filter denied ``ptrace`` — including on a child
+    the seat forked itself, which costs the rung ``dbg --launch`` as well as
+    live attach.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
+    attach(talking_to(cluster), "target")
+
+    assert "seccompProfile" not in security_contexts(cluster)[1]
+
+
+def test_the_seat_mirrors_a_seccomp_profile_its_target_does_have() -> None:
+    """Which is what keeps the rung admissible under restricted PSA.
+
+    A namespace enforcing ``restricted`` would have refused the workload
+    without one, so mirroring the target is enough to comply wherever
+    compliance is actually required.
+    """
+    profile = {"type": "Localhost", "localhostProfile": "profiles/audit.json"}
+    cluster = FakeCluster(
+        pod_document(uid=1000, seccomp=profile), psa_denies_ptrace=True
+    )
+    attach(talking_to(cluster), "target")
+
+    assert security_contexts(cluster)[1]["seccompProfile"] == profile
 
 
 def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
@@ -584,6 +617,168 @@ def test_an_exhausted_ladder_raises_with_every_reason() -> None:
     assert "runAsNonRoot" in message
     assert "the target runs as root" in message
     assert "CreateContainerConfigError" in message
+
+
+# -- the ceiling ------------------------------------------------------------
+
+DLS_MUTATED_CAPABILITIES: dict[str, Any] = {
+    "add": [
+        "AUDIT_WRITE",
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "MKNOD",
+        "SETFCAP",
+        "SETPCAP",
+        "SETGID",
+        "SETUID",
+        "SYS_CHROOT",
+    ],
+    "drop": ["ALL"],
+}
+"""What a DLS namespace left behind after admitting the full rung, 2026-08-18.
+
+Verbatim from the pod. The policy *mutates* rather than refuses: it replaced
+`capabilities` wholesale with the house default, so `SYS_PTRACE` is simply gone
+while `runAsUser: 0` survived. Nothing in the walk sees a refusal, and the seat
+that lands reads back as the degraded rung while running as root (issue #94).
+"""
+
+
+def test_max_rung_skips_the_rungs_above_it() -> None:
+    plan = dict(plan_ladder(pod_document(uid=1000), "app", max_rung=Rung.DEGRADED))
+
+    full = plan[Rung.FULL]
+    assert full is not None
+    assert "--max-rung degraded" in full
+    assert plan[Rung.DEGRADED] is None
+    assert plan[Rung.SEAT] is None
+
+
+def test_a_ceiling_submits_no_capability_where_one_would_be_admitted() -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert session.rung is Rung.DEGRADED
+    assert session.uid == 1000
+    # The whole value of the flag on a mutating cluster: the full rung is never
+    # submitted, so no permanent name is spent finding out it lands neutered.
+    assert len(cluster.added) == 1
+    assert "add" not in security_contexts(cluster)[0].get("capabilities", {})
+
+
+def test_a_ceiling_is_a_ceiling_and_not_a_choice() -> None:
+    # A root target has no degraded rung to author, so the walk must still fall
+    # through to the one below rather than stop at the ceiling it was given.
+    cluster = FakeCluster(pod_document(uid=0))
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert session.rung is Rung.SEAT
+
+
+def test_a_stripped_full_seat_is_not_reused_under_a_ceiling() -> None:
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {
+            "runAsUser": 0,
+            "privileged": False,
+            "allowPrivilegeEscalation": False,
+            "capabilities": DLS_MUTATED_CAPABILITIES,
+        },
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert not session.reused
+    assert session.seat.container == "podbench-2"
+    assert session.uid == 1000
+    # The seat it declined reads back as the degraded rung, so the rung label
+    # cannot be what decided — the uid is.
+    assert seats(cluster.pod)[0].rung is Rung.DEGRADED
+    declined = [note for note in session.warnings if "podbench-1" in note]
+    assert declined and "uid 0" in declined[0]
+
+
+def test_a_stripped_full_seat_is_not_reused_against_a_root_target() -> None:
+    # The same mutated seat as above, but the target is root too, so there is no
+    # uid for the pin comparison to disagree with. Judged on `runAsUser: 0`
+    # alone, which no rung below full authors: the degraded rung refuses a root
+    # target and the seat rung drops the uid rather than pin it.
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {
+            "runAsUser": 0,
+            "privileged": False,
+            "allowPrivilegeEscalation": False,
+            "capabilities": DLS_MUTATED_CAPABILITIES,
+        },
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=0,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert not session.reused
+    assert session.seat.container == "podbench-2"
+    assert session.rung is Rung.SEAT
+    declined = [note for note in session.warnings if "podbench-1" in note]
+    assert declined and "uid 0" in declined[0]
+
+
+def test_a_seat_ceiling_reuses_the_seat_it_would_have_landed() -> None:
+    # The seat rung honours a non-zero target uid too, so the seat rung and the
+    # degraded rung are indistinguishable through `rung_of_spec` - both read
+    # back as `degraded`. Declining this one would burn a container name on
+    # every reconnect, and land the same securityContext again.
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {"runAsUser": 1000, "runAsNonRoot": True},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.SEAT)
+
+    assert session.reused
+    assert cluster.added == []
+
+
+def test_a_seat_that_honours_the_ceiling_is_still_reused() -> None:
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {"runAsUser": 1000},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert session.reused
+    assert cluster.added == [], "a seat at the target's uid is what was asked for"
 
 
 # -- reconnection -----------------------------------------------------------
@@ -1768,7 +1963,6 @@ def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
     assert session.rung is Rung.DEGRADED
     assert security_contexts(cluster)[0] == {
         "capabilities": {"drop": ["ALL"]},
-        "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
         "privileged": False,
         "allowPrivilegeEscalation": False,

@@ -96,6 +96,11 @@ def origin_pod() -> dict[str, Any]:
 
 
 def devpod(**kwargs: Any) -> dict[str, Any]:
+    return devpod_from(origin_pod(), **kwargs)
+
+
+def devpod_from(origin: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """``devpod`` against an origin the caller has altered."""
     defaults: dict[str, Any] = {
         "name": "devpod",
         "target_container": "app",
@@ -103,7 +108,7 @@ def devpod(**kwargs: Any) -> dict[str, Any]:
         "target_port": 8080,
     }
     defaults.update(kwargs)
-    return dev_pod_spec(origin_pod(), **defaults)
+    return dev_pod_spec(origin, **defaults)
 
 
 def origin_with_identity(**spec_overrides: Any) -> dict[str, Any]:
@@ -224,6 +229,13 @@ def test_which_references_can_point_somewhere_else_tomorrow(
 
 
 def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
+    """With the target's own profile mirrored in, which is where it comes from.
+
+    ``seccomp_profile`` is passed rather than defaulted because a namespace
+    enforcing ``restricted`` requires the *workload* to carry one too — so
+    mirroring the target reproduces the compliant shape exactly where it is
+    demanded, and imposes nothing where it is not.
+    """
     spec = ephemeral_container_spec(
         name="podbench-2",
         image="podbench:dev",
@@ -231,6 +243,7 @@ def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
         target_container="app",
         target_uid=1000,
         target_gid=3000,
+        seccomp_profile={"type": "RuntimeDefault"},
     )
     assert spec["securityContext"] == {
         "capabilities": {"drop": ["ALL"]},
@@ -241,6 +254,25 @@ def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
         "runAsUser": 1000,
         "runAsGroup": 3000,
     }
+
+
+def test_no_rung_imposes_a_seccomp_profile_of_its_own() -> None:
+    """Measured at DLS, 2026-08-18: an imposed filter cost the rung both routes.
+
+    The seat landed at ``Seccomp 2`` beside a target that declared no profile,
+    and ``PTRACE_ATTACH`` was then refused even on a child the seat had forked
+    itself — so live attach *and* ``dbg --launch`` were gone, on a node where
+    the same pod's unfiltered root seat had managed the same call.
+    """
+    for rung in (Rung.DEGRADED, Rung.SEAT):
+        spec = ephemeral_container_spec(
+            name="podbench-2",
+            image="podbench:dev",
+            rung=rung,
+            target_container="app",
+            target_uid=1000,
+        )
+        assert "seccompProfile" not in spec["securityContext"], rung
 
 
 def test_a_target_with_no_run_as_group_lands_a_seat_in_group_0() -> None:
@@ -603,7 +635,6 @@ def test_the_sidecar_can_be_authored_without_the_capability() -> None:
     assert sidecar["securityContext"] == {
         "capabilities": {"drop": ["ALL"]},
         "allowPrivilegeEscalation": False,
-        "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
     }
 
@@ -657,6 +688,32 @@ def test_the_projected_identity_and_the_sidecar_are_the_same_user() -> None:
     # bounding set only, so it cannot be kept beside the identity's uid.
     assert "add" not in sidecar["securityContext"]["capabilities"]
     assert sidecar["securityContext"]["runAsNonRoot"] is True
+
+
+def test_an_identity_sidecar_mirrors_the_profile_even_with_ptrace_asked_for() -> None:
+    """``sidecar_ptrace=True`` is the default, and the identity still wins.
+
+    The shape authored is the non-root one, so it is a shape the target's
+    profile belongs on: keying the mirroring off the *flag* rather than off the
+    shape left this sidecar as the one restricted container in the pod with no
+    profile — unadmissible under an enforcing ``restricted`` namespace, and more
+    permissive than the workload it clones everywhere else.
+    """
+    profile = {"type": "Localhost", "localhostProfile": "audit.json"}
+    origin = origin_with_identity()
+    origin["spec"]["containers"][0]["securityContext"] = {"seccompProfile": profile}
+    sidecar = container(dev_pod_spec_with_identity(origin), "podbench")
+
+    assert sidecar["securityContext"]["seccompProfile"] == profile
+    assert sidecar["securityContext"]["runAsNonRoot"] is True
+    # The root shape is still exempt from the same origin's profile: it is the
+    # dev pod's full rung, and a filter denying ptrace costs it the capability
+    # it exists for.
+    unprepared = origin_pod()
+    unprepared["spec"]["containers"][0]["securityContext"] = {"seccompProfile": profile}
+    plain = container(devpod_from(unprepared), "podbench")
+    assert "seccompProfile" not in plain["securityContext"]
+    assert plain["securityContext"]["runAsUser"] == 0
 
 
 def test_the_home_the_identity_names_is_mounted_when_the_pod_has_one() -> None:

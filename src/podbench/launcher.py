@@ -88,6 +88,7 @@ from .spec import (
     ephemeral_container_spec,
     moves,
     runs_as_non_root,
+    target_seccomp_profile,
     target_uid_gid,
 )
 from .sshcfg import (
@@ -109,6 +110,7 @@ __all__ = [
     "DEFAULT_IMAGE",
     "EDITOR_PROBE_REMINDER",
     "HOST_KEY_ARGV",
+    "LADDER",
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
     "OOM_WARNING",
@@ -122,6 +124,7 @@ __all__ = [
     "SeatInfo",
     "Session",
     "SshSeat",
+    "above_ceiling",
     "attach",
     "capability_report_from_json",
     "choose_pod",
@@ -689,6 +692,61 @@ def rung_of_spec(container: Mapping[str, Any]) -> Rung:
     return Rung.SEAT
 
 
+def above_ceiling(
+    seat: SeatInfo, ceiling: Rung, *, target_uid: int | None
+) -> str | None:
+    """Why ``seat`` is not a seat ``--max-rung ceiling`` would have landed.
+
+    ``None`` means it is one, and a reconnect may reuse it.
+
+    Deliberately not ``LADDER.index(seat.rung) < LADDER.index(ceiling)``:
+    :func:`rung_of_spec` cannot tell a stripped full rung from a genuine
+    degraded one — which is the very reason this flag exists — and the stripped
+    one reads back as ``degraded`` while running as root (issue #94). So the
+    *uid* decides, because the uid is what a rung below full is for: those rungs
+    pin the target's own, and it is the pin rather than the label that buys the
+    ptrace credential match.
+
+    Root is judged on its own, before the pin is compared, because a root
+    target has no uid to compare against: ``uid 0`` is the one pin no rung
+    below full ever writes.
+
+    >>> seat = SeatInfo("podbench-1", Rung.DEGRADED, "running", "", uid=0)
+    >>> above_ceiling(seat, Rung.FULL, target_uid=37887) is None
+    True
+    >>> above_ceiling(seat, Rung.DEGRADED, target_uid=37887)
+    'it runs as uid 0, which no rung below full authors'
+    >>> above_ceiling(seat, Rung.DEGRADED, target_uid=0)
+    'it runs as uid 0, which no rung below full authors'
+    >>> other = SeatInfo("podbench-2", Rung.DEGRADED, "running", "", uid=1000)
+    >>> above_ceiling(other, Rung.DEGRADED, target_uid=37887)
+    "it runs as uid 1000, not the target's uid 37887"
+    >>> seat_rung = SeatInfo("podbench-3", Rung.SEAT, "running", "", uid=None)
+    >>> above_ceiling(seat_rung, Rung.DEGRADED, target_uid=0) is None
+    True
+    """
+    if ceiling is Rung.FULL:
+        return None
+    if seat.rung is Rung.FULL:
+        return f"it carries SYS_PTRACE, which is above the {ceiling.value} rung"
+    if seat.uid == 0:
+        # The full rung is the only one that writes `runAsUser: 0`: the degraded
+        # rung refuses a root target outright and the seat rung drops uid 0
+        # rather than pin it, because `runAsNonRoot: true` beside it is admitted
+        # and then refused by the kubelet (report 3.18, `_rung_security_context`).
+        # So a root seat below the full label is a *stripped* full rung, which is
+        # exactly the seat this flag exists to get away from (issue #94) - and
+        # against a root target it is the one the pin comparison below cannot
+        # catch, there being no non-zero uid for it to disagree with.
+        return "it runs as uid 0, which no rung below full authors"
+    # A target at uid 0 has no rung that pins one (`spec._rung_security_context`
+    # refuses both), so an unpinned seat has nothing to disagree with.
+    if target_uid and seat.uid != target_uid:
+        ran_as = "the image's own user" if seat.uid is None else f"uid {seat.uid}"
+        return f"it runs as {ran_as}, not the target's uid {target_uid}"
+    return None
+
+
 def _phase_of(status: Mapping[str, Any]) -> tuple[str, str]:
     state = as_dict(status.get("state"))
     running = as_dict(state.get("running"))
@@ -719,16 +777,37 @@ class LadderStep:
     container: str | None = None
 
 
+LADDER: tuple[Rung, ...] = (Rung.FULL, Rung.DEGRADED, Rung.SEAT)
+"""The rungs in the order the walk tries them, highest first.
+
+Stated once so that ``--max-rung`` can express "at or below" as an index
+comparison. :class:`~podbench.model.Rung` deliberately does not order itself:
+its members describe securityContexts, and only the walk knows that more
+capability is tried first.
+"""
+
+
 def plan_ladder(
     pod_json: Mapping[str, Any],
     container: str,
     *,
     target_uid: int | None = None,
+    max_rung: Rung | None = None,
 ) -> tuple[tuple[Rung, str | None], ...]:
     """Order the rungs, pre-skipping the ones that cannot possibly land.
 
     The second element of each pair is ``None`` to mean "attempt it", or the
     reason it was skipped.
+
+    ``max_rung`` is a ceiling, not a choice: everything above it is skipped and
+    the walk still falls through the rungs below. It exists because a rung is
+    only dropped when something *refuses* it, and a **mutating** admission
+    policy does not refuse — it rewrites. A cluster that strips
+    ``capabilities.add`` admits the full rung and leaves a root seat with no
+    capability, which no signal the walk reads distinguishes from a granted one
+    (issue #94; measured at DLS 2026-08-18). ``--max-rung degraded`` is how
+    somebody who knows their cluster does that skips the rung that cannot work
+    there, instead of spending a permanent container name to find out.
 
     Two skips are pre-emptive rather than reactive. A pod with
     ``runAsNonRoot: true`` accepts a root ephemeral container at the API server
@@ -749,7 +828,9 @@ def plan_ladder(
         uid = target_uid
 
     full: str | None = None
-    if runs_as_non_root(pod_json, container):
+    if max_rung is not None and LADDER.index(max_rung) > 0:
+        full = f"--max-rung {max_rung.value} was given, so it was not attempted"
+    elif runs_as_non_root(pod_json, container):
         full = (
             "the pod sets runAsNonRoot: true, so the kubelet would refuse a root "
             "container with CreateContainerConfigError after the API server had "
@@ -757,7 +838,9 @@ def plan_ladder(
         )
 
     degraded: str | None = None
-    if uid is None:
+    if max_rung is not None and LADDER.index(max_rung) > 1:
+        degraded = f"--max-rung {max_rung.value} was given, so it was not attempted"
+    elif uid is None:
         degraded = (
             "the target's uid is not in the pod spec, so this rung cannot be "
             "authored without guessing; re-run with --target-uid once the "
@@ -859,6 +942,7 @@ def attach(
     image: str = DEFAULT_IMAGE,
     public_key: str | None = None,
     target_uid: int | None = None,
+    max_rung: Rung | None = None,
     mounts: Sequence[str] = (),
     force_new: bool = False,
     seat_gid_root: bool = False,
@@ -880,6 +964,13 @@ def attach(
     carries; they are resolved before anything is submitted, so a claim the pod
     does not have refuses without burning a container name. See
     :func:`resolve_mounts` for why podbench cannot simply add the volume.
+
+    ``max_rung`` caps the walk: the rungs above it are skipped and the ones
+    below still tried. It is for the cluster whose policy *mutates* rather than
+    refuses, where the full rung is admitted and silently stripped of the
+    capability it exists for, so no signal the walk reads says to drop a rung
+    (issue #94). A running seat above the ceiling is not reused, because an
+    ephemeral container's securityContext is fixed for the pod's lifetime.
 
     ``seat_gid_root`` lands the non-root rungs with ``runAsGroup: 0``, which is
     what lets a seat append to ``/etc/passwd``. It is no longer how a seat gets
@@ -925,6 +1016,26 @@ def attach(
     identity_declared = SEAT_IDENTITY_VOLUME in declared_volumes(pod_json)
 
     existing = running_seat(pod_json)
+    if existing is not None and max_rung is not None:
+        wanted_uid, _ = target_uid_gid(pod_json, workload)
+        if target_uid is not None:
+            wanted_uid = target_uid
+        above = above_ceiling(existing, max_rung, target_uid=wanted_uid)
+        if above is not None:
+            # A ceiling is about the securityContext, which is fixed for an
+            # ephemeral container's lifetime: there is no reconnecting into a
+            # different one. Reusing the seat here would silently ignore the
+            # flag - and the seat it would reuse is, on the cluster this flag
+            # exists for, exactly the root seat the user is trying to get away
+            # from.
+            warnings.append(
+                f"{existing.name} is running but was not reused because "
+                f"{above}. --max-rung {max_rung.value} cannot be honoured by "
+                "reconnecting, since an ephemeral container's securityContext "
+                "is fixed for the pod's lifetime, so a new container is being "
+                "landed - and its name is spent whether or not it works out"
+            )
+            existing = None
     if existing is not None and not force_new:
         session = Session(
             seat=ContainerRef(PodRef(kubectl.namespace, pod), existing.name),
@@ -969,6 +1080,7 @@ def attach(
             image=image,
             public_key=public_key,
             target_uid=target_uid,
+            max_rung=max_rung,
             volume_mounts=volume_mounts,
             seat_gid_root=seat_gid_root,
             pull_policy=pull_policy,
@@ -1019,6 +1131,7 @@ def _walk_ladder(
     image: str,
     public_key: str | None,
     target_uid: int | None,
+    max_rung: Rung | None,
     volume_mounts: Sequence[Mapping[str, Any]],
     seat_gid_root: bool,
     pull_policy: str,
@@ -1032,7 +1145,9 @@ def _walk_ladder(
     name = next_container_name(pod_json, CONTAINER_BASE)
     steps: list[LadderStep] = []
 
-    for rung, skip in plan_ladder(pod_json, workload, target_uid=target_uid):
+    for rung, skip in plan_ladder(
+        pod_json, workload, target_uid=target_uid, max_rung=max_rung
+    ):
         if skip is not None:
             steps.append(LadderStep(rung, False, skip))
             continue
@@ -1052,6 +1167,11 @@ def _walk_ladder(
                 ),
                 volume_mounts=volume_mounts,
                 seat_gid_root=seat_gid_root,
+                # The target's own, never RuntimeDefault by default: a filter
+                # the workload does not have is one podbench inflicted, and a
+                # node whose RuntimeDefault denies ptrace turns it into the
+                # blocker for a rung that has no capability to fall back on.
+                seccomp_profile=target_seccomp_profile(pod_json, workload),
                 pull_policy=pull_policy,
             )
         except InvalidSpecError as error:
@@ -3119,6 +3239,20 @@ def _build_app(
                 help="the target's uid, when its pod spec does not say",
             ),
         ] = None,
+        max_rung: Annotated[
+            Rung | None,
+            typer.Option(
+                "--max-rung",
+                metavar="RUNG",
+                help="highest rung of the capability ladder to try: full "
+                "(default), degraded or seat. The ladder still falls through "
+                "the rungs below. Use `degraded` where a mutating admission "
+                "policy strips SYS_PTRACE instead of refusing it - there the "
+                "full rung is admitted, lands as root without the capability, "
+                "and the walk has nothing to act on. A running seat above the "
+                "ceiling is not reused",
+            ),
+        ] = None,
         mount: Annotated[
             list[str] | None,
             typer.Option(
@@ -3277,6 +3411,7 @@ def _build_app(
             image=chosen,
             public_key=public_key,
             target_uid=target_uid,
+            max_rung=max_rung,
             mounts=mount or (),
             force_new=force_new,
             seat_gid_root=seat_gid_root,

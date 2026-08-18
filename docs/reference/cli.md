@@ -291,6 +291,14 @@ what that seat can actually do.
 │ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
 │                                              image built from this launcher's version)           │
 │ --target-uid                UID              the target's uid, when its pod spec does not say    │
+│ --max-rung                  RUNG             highest rung of the capability ladder to try: full  │
+│                                              (default), degraded or seat. The ladder still falls │
+│                                              through the rungs below. Use `degraded` where a     │
+│                                              mutating admission policy strips SYS_PTRACE instead │
+│                                              of refusing it - there the full rung is admitted,   │
+│                                              lands as root without the capability, and the walk  │
+│                                              has nothing to act on. A running seat above the     │
+│                                              ceiling is not reused                               │
 │ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
 │                                              seat, named by claim or by volume name. MOUNTPATH   │
 │                                              defaults to the application container's own, which  │
@@ -378,6 +386,14 @@ Notes:
   ephemeral container, whose name is then burnt for the pod's lifetime.
 * `--target-uid` matters only for the degraded rung, which must match the
   target's UID exactly and never defaults to root.
+* `--max-rung` caps the walk — the rungs above it are skipped, the ones below
+  still tried. It is for a cluster whose policy **mutates** rather than refuses:
+  there the full rung is admitted and quietly stripped of `SYS_PTRACE`, so the
+  walk sees no refusal to act on and stops on a root seat that cannot ptrace
+  anything. `--max-rung degraded` skips straight to the UID-matching rung. A
+  running seat that the ceiling would not have landed is **not** reconnected to,
+  since an ephemeral container's `securityContext` is fixed for the pod's
+  lifetime. See {ref}`When the cluster strips SYS_PTRACE <stripped-sys-ptrace>`.
 * `--mount` is how a seat reaches a Hotfix-mode claim. An ephemeral container may
   mount the volumes its pod **already declares** and may not introduce one —
   `spec.volumes` is immutable once the pod exists — so a name the pod does not

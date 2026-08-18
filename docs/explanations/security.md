@@ -86,13 +86,41 @@ first-class mode rather than an error state.
 | Rung | securityContext | Admitted under | Buys |
 |---|---|---|---|
 | **full** | `runAsUser: 0`, `capabilities.add: [SYS_PTRACE]` | privileged / exempted namespaces, or a targeted policy | attach to the workload's live processes |
-| **degraded** | `runAsUser: <target's uid>`, `runAsGroup: <target's gid>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, `seccompProfile: RuntimeDefault` | **restricted**, verified | `/proc/<pid>/root`, `maps`, `environ`, `exe`, `cwd`; full source-level debugging of processes gdb starts itself |
+| **degraded** | `runAsUser: <target's uid>`, `runAsGroup: <target's gid>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, and the target's own `seccompProfile` where it has one | **restricted**, verified | `/proc/<pid>/root`, `maps`, `environ`, `exe`, `cwd`; full source-level debugging of processes gdb starts itself |
 | *(seat)* | whatever the cluster will admit | anything | editor, shell, git, uv |
 
 The launcher tries them in order and falls down on refusal, then reports the
 rung it landed on. A degraded seat exits `0`: returning non-zero for "the
 cluster would not grant `SYS_PTRACE`" would make an honest report look like a
 failure.
+
+### The seat mirrors the target's seccomp profile, and imposes none
+
+The non-root rungs used to state `seccompProfile: RuntimeDefault` outright, to
+be restricted-PSS-shaped by construction. That is only *needed* where the
+workload complies with the same standard — a namespace enforcing `restricted`
+would have refused the workload without a profile of its own — and it is not
+free.
+
+Measured at DLS on 2026-08-18, on a pod declaring no `seccompProfile`: the seat
+landed at `Seccomp 2 (SECCOMP_MODE_FILTER)` and `PTRACE_ATTACH` was refused on a
+child the seat had **forked itself**. That call needs no capability, is exempt
+from Yama below `ptrace_scope=2`, and passes the credential check by
+construction — and the same pod's earlier root seat, authored by the full rung
+and so carrying no profile at all, had made the same call successfully on the
+same node. The node's `RuntimeDefault` denies `ptrace`.
+
+So podbench was putting the seat under a filter the container it was there to
+debug did not have, and paying for it twice: live attach, and `dbg --launch` —
+the fallback recommended everywhere else precisely because it needs no
+privilege. What survived was read-only inspection, because `/proc` reads are
+gated on credentials rather than on the syscall.
+
+The rule now is to mirror: copy the target container's profile if it names one,
+say nothing where the *pod* names one (an ephemeral container and a sidecar both
+inherit it), and impose nothing where neither does. The seat is then never more
+confined than the workload beside it, and stays admissible wherever compliance
+is genuinely enforced.
 
 ### There is no middle rung, and this matters
 
@@ -145,9 +173,11 @@ Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
 1. **the capability itself** being absent or ineffective;
 2. **Yama** — `/proc/sys/kernel/yama/ptrace_scope`, a *node-level*, read-only
    knob. At `1` (Ubuntu's default) attach to a non-descendant is denied;
-3. **seccomp** — a filter rejecting `ptrace(2)`. `RuntimeDefault` does **not**
-   do this, though it does block `personality(ADDR_NO_RANDOMIZE)`, so gdb cannot
-   disable ASLR;
+3. **seccomp** — a filter rejecting `ptrace(2)`. Whether `RuntimeDefault` does
+   this is the *runtime's* business, not the name's: the spike nodes permitted
+   it, a DLS node denied it even on a self-forked child (2026-08-18), so only
+   `capreport` can say which node you are on. It blocks
+   `personality(ADDR_NO_RANDOMIZE)` either way, so gdb cannot disable ASLR;
 4. **AppArmor** — a profile denying ptrace between the two domains. Everything
    observed ran under `cri-containerd.apparmor.d (enforce)`, which permits
    ptrace between peers *in the same profile*; a target with a custom profile
@@ -370,9 +400,11 @@ resolving out of it. The image says so beside the `chmod`.
 
 Stated so nobody relies on them:
 
-* The **seccomp branch** of the capability probe has never executed — a
-  `localhost/` profile could not be installed on a test node. `RuntimeDefault`
-  was tested and permits ptrace.
+* The **`SECCOMP_MODE_STRICT` branch** of the capability probe has never
+  executed — a `localhost/` profile could not be installed on a test node. The
+  filter branch itself is no longer unproven: it fired at DLS on 2026-08-18,
+  under a `RuntimeDefault` profile that denies ptrace, and named the right
+  mechanism.
 * **AppArmor uniformity is an assumption.** Every container observed shared one
   profile, and ptrace worked because that profile permits ptrace between peers
   within it. A custom profile on the target breaks that, and the diagnostic text

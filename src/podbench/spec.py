@@ -63,6 +63,7 @@ __all__ = [
     "runs_as_non_root",
     "seat_identity_volume_mounts",
     "service_selector_patch",
+    "target_seccomp_profile",
     "target_uid_gid",
     "validate_ephemeral_volume_mounts",
     "validate_security_context",
@@ -336,6 +337,7 @@ def ephemeral_container_spec(
     env: Mapping[str, str] | None = None,
     volume_mounts: Sequence[Mapping[str, Any]] | None = None,
     seat_gid_root: bool = False,
+    seccomp_profile: Mapping[str, Any] | None = None,
     pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
     """Author one ephemeral container for a rung of the capability ladder.
@@ -358,6 +360,12 @@ def ephemeral_container_spec(
     entry carrying ``subPath`` is refused here — see
     :func:`validate_ephemeral_volume_mounts`.
 
+    ``seccomp_profile`` is the target's own, from
+    :func:`target_seccomp_profile`, and ``None`` states none. The non-root rungs
+    do not default it to ``RuntimeDefault``: that is a filter the workload does
+    not necessarily have, and a node whose ``RuntimeDefault`` denies ``ptrace``
+    turns it into the blocker (measured at DLS, 2026-08-18).
+
     ``seat_gid_root`` pins ``runAsGroup: 0`` on the non-root rungs, which is
     what lets the agent write ``/etc/passwd``. It stopped being the difference
     between a seat with ssh and one reachable only by ``kubectl exec`` in #102 -
@@ -372,7 +380,11 @@ def ephemeral_container_spec(
         "command": list(command),
         "terminationMessagePolicy": "File",
         "securityContext": _rung_security_context(
-            rung, target_uid, target_gid, seat_gid_root=seat_gid_root
+            rung,
+            target_uid,
+            target_gid,
+            seat_gid_root=seat_gid_root,
+            seccomp_profile=seccomp_profile,
         ),
     }
     if target_container is not None:
@@ -463,6 +475,7 @@ def _rung_security_context(
     target_gid: int | None,
     *,
     seat_gid_root: bool = False,
+    seccomp_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if rung is Rung.FULL:
         if target_uid not in (None, 0):
@@ -478,10 +491,15 @@ def _rung_security_context(
 
     restricted: dict[str, Any] = {
         "capabilities": {"drop": ["ALL"]},
-        "seccompProfile": {"type": "RuntimeDefault"},
         "runAsNonRoot": True,
         **_NOT_PRIVILEGED,
     }
+    # Mirrored from the target, never defaulted to RuntimeDefault: a filter the
+    # workload does not have is one podbench inflicted, and on a node whose
+    # RuntimeDefault denies ptrace it costs this rung both of its debuggers.
+    # See :func:`target_seccomp_profile` for the measurement.
+    if seccomp_profile is not None:
+        restricted["seccompProfile"] = dict(seccomp_profile)
     if rung is Rung.SEAT:
         # Whatever the cluster will admit. The seat needs nothing from the
         # target, so it pins no uid of its own and the image's user will do; a
@@ -765,6 +783,7 @@ def dev_pod_spec(
             resources=resources,
             env=env,
             identity=identity,
+            seccomp_profile=target_seccomp_profile(origin_pod_json, target_container),
             # The home the identity's passwd record *names*, mounted when the
             # pod declares a volume for it. sshd puts a session in the home NSS
             # gives it, and an ssh login that lands on `Could not chdir to home
@@ -795,8 +814,13 @@ def _sidecar(
     env: Mapping[str, str] | None,
     identity: tuple[int, int] | None = None,
     seat_home: bool = False,
+    seccomp_profile: Mapping[str, Any] | None = None,
     pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
+    # The identity shape is a non-root one whatever `ptrace` says, and it is the
+    # branch `ptrace` never reaches, so the mirroring below keys off the shape
+    # that was actually authored rather than off the flag.
+    root_ptrace_shape = identity is None and ptrace
     if identity is not None:
         # The identity wins over the capability, and cannot be reconciled with
         # it: SYS_PTRACE needs runAsUser 0 (anywhere else it reaches the
@@ -808,7 +832,6 @@ def _sidecar(
         security_context: dict[str, Any] = {
             "capabilities": {"drop": ["ALL"]},
             "allowPrivilegeEscalation": False,
-            "seccompProfile": {"type": "RuntimeDefault"},
             "runAsNonRoot": True,
             "runAsUser": seat_uid,
             "runAsGroup": seat_gid,
@@ -829,9 +852,13 @@ def _sidecar(
         security_context = {
             "capabilities": {"drop": ["ALL"]},
             "allowPrivilegeEscalation": False,
-            "seccompProfile": {"type": "RuntimeDefault"},
             "runAsNonRoot": True,
         }
+    # Mirrored from the origin's target rather than defaulted, on the non-root
+    # shapes only: see :func:`target_seccomp_profile`. The ptrace shape above
+    # never had one — it is the dev pod's full rung — so it is untouched.
+    if not root_ptrace_shape and seccomp_profile is not None:
+        security_context["seccompProfile"] = dict(seccomp_profile)
     validate_security_context(security_context)
 
     environment = {
@@ -922,6 +949,49 @@ def target_uid_gid(
         return None
 
     return pick("runAsUser"), pick("runAsGroup")
+
+
+def target_seccomp_profile(
+    pod_json: Mapping[str, Any], container: str
+) -> dict[str, Any] | None:
+    """The ``seccompProfile`` a podbench container beside ``container`` needs.
+
+    ``None`` means "state none", which is not the same as "run unconfined": a
+    profile set at *pod* level applies to an ephemeral container and to a
+    sidecar already, so restating it changes nothing, and where nobody sets one
+    the seat has none to mirror.
+
+    Mirroring, rather than the ``RuntimeDefault`` these rungs used to hardcode.
+    That default was chosen to satisfy the restricted Pod Security Standard, but
+    it is only *needed* where the workload itself complies with it — a namespace
+    enforcing ``restricted`` would have refused the workload otherwise — and it
+    is not free. Measured at DLS on 2026-08-18, on a pod with no seccompProfile
+    of its own: the seat landed at ``Seccomp 2 (SECCOMP_MODE_FILTER)`` and
+    ``PTRACE_ATTACH`` failed on a child the seat had forked itself, which is
+    credential-free, Yama-free and needs no capability. The same node's earlier
+    root seat, authored by the full rung and so carrying no profile at all,
+    reported ``scratch attach (own child) OK``.
+
+    So the node's ``RuntimeDefault`` denies ``ptrace``, and podbench was putting
+    the seat under a filter the container it was there to debug did not have —
+    costing live attach *and* ``dbg --launch``, which is the route recommended
+    everywhere precisely because it needs no privilege. Both halves of report
+    R7's "RuntimeDefault demonstrably allows ptrace" are true only of the
+    runtimes it was measured on.
+
+    >>> profile = {"type": "Localhost", "localhostProfile": "a.json"}
+    >>> app = {"name": "app", "securityContext": {"seccompProfile": profile}}
+    >>> target_seccomp_profile({"spec": {"containers": [app]}}, "app")
+    {'type': 'Localhost', 'localhostProfile': 'a.json'}
+    >>> bare = {"spec": {"containers": [{"name": "app"}]}}
+    >>> target_seccomp_profile(bare, "app") is None
+    True
+    """
+    spec = as_dict(pod_json.get("spec"))
+    profile = as_dict(_find_container(spec, container).get("securityContext")).get(
+        "seccompProfile"
+    )
+    return dict(as_dict(profile)) if isinstance(profile, Mapping) else None
 
 
 def runs_as_non_root(pod_json: Mapping[str, Any], container: str) -> bool:
