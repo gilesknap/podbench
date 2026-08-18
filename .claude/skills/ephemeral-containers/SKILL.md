@@ -186,6 +186,15 @@ Two consequences already bitten:
 The honest answer to "what can this seat do" is never the rung. It is what the probe
 measured; see issue #89 and `flavour.can_ptrace_target`.
 
+`--max-rung` (`launcher.plan_ladder`) is the way past it, and it is a **ceiling**: the
+rungs above are skipped, the ones below still tried. It exists because there is no
+signal to react to — the walk drops a rung only when something refuses one — so on such
+a cluster the user states the cap up front instead of spending a permanent container
+name discovering the strip. A running seat above the ceiling is deliberately not reused:
+`above_ceiling` decides that on the seat's **uid**, never on `rung_of_spec`, because the
+stripped full rung reads back as `degraded` and reusing it would silently ignore the
+flag. Measured at DLS, 2026-08-18.
+
 ### A root target may have no admissible rung at all
 
 Worth checking before assuming the walk lands anywhere. With `target_uid == 0`,

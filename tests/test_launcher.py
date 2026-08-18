@@ -586,6 +586,114 @@ def test_an_exhausted_ladder_raises_with_every_reason() -> None:
     assert "CreateContainerConfigError" in message
 
 
+# -- the ceiling ------------------------------------------------------------
+
+DLS_MUTATED_CAPABILITIES: dict[str, Any] = {
+    "add": [
+        "AUDIT_WRITE",
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "MKNOD",
+        "SETFCAP",
+        "SETPCAP",
+        "SETGID",
+        "SETUID",
+        "SYS_CHROOT",
+    ],
+    "drop": ["ALL"],
+}
+"""What a DLS namespace left behind after admitting the full rung, 2026-08-18.
+
+Verbatim from the pod. The policy *mutates* rather than refuses: it replaced
+`capabilities` wholesale with the house default, so `SYS_PTRACE` is simply gone
+while `runAsUser: 0` survived. Nothing in the walk sees a refusal, and the seat
+that lands reads back as the degraded rung while running as root (issue #94).
+"""
+
+
+def test_max_rung_skips_the_rungs_above_it() -> None:
+    plan = dict(plan_ladder(pod_document(uid=1000), "app", max_rung=Rung.DEGRADED))
+
+    full = plan[Rung.FULL]
+    assert full is not None
+    assert "--max-rung degraded" in full
+    assert plan[Rung.DEGRADED] is None
+    assert plan[Rung.SEAT] is None
+
+
+def test_a_ceiling_submits_no_capability_where_one_would_be_admitted() -> None:
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert session.rung is Rung.DEGRADED
+    assert session.uid == 1000
+    # The whole value of the flag on a mutating cluster: the full rung is never
+    # submitted, so no permanent name is spent finding out it lands neutered.
+    assert len(cluster.added) == 1
+    assert "add" not in security_contexts(cluster)[0].get("capabilities", {})
+
+
+def test_a_ceiling_is_a_ceiling_and_not_a_choice() -> None:
+    # A root target has no degraded rung to author, so the walk must still fall
+    # through to the one below rather than stop at the ceiling it was given.
+    cluster = FakeCluster(pod_document(uid=0))
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert session.rung is Rung.SEAT
+
+
+def test_a_stripped_full_seat_is_not_reused_under_a_ceiling() -> None:
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {
+            "runAsUser": 0,
+            "privileged": False,
+            "allowPrivilegeEscalation": False,
+            "capabilities": DLS_MUTATED_CAPABILITIES,
+        },
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert not session.reused
+    assert session.seat.container == "podbench-2"
+    assert session.uid == 1000
+    # The seat it declined reads back as the degraded rung, so the rung label
+    # cannot be what decided — the uid is.
+    assert seats(cluster.pod)[0].rung is Rung.DEGRADED
+    declined = [note for note in session.warnings if "podbench-1" in note]
+    assert declined and "uid 0" in declined[0]
+
+
+def test_a_seat_that_honours_the_ceiling_is_still_reused() -> None:
+    existing = {
+        "name": "podbench-1",
+        "targetContainerName": "app",
+        "securityContext": {"runAsUser": 1000},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[existing],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
+
+    assert session.reused
+    assert cluster.added == [], "a seat at the target's uid is what was asked for"
+
+
 # -- reconnection -----------------------------------------------------------
 
 
