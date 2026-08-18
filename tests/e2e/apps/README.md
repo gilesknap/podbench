@@ -109,6 +109,37 @@ keep its coverage where those policies cannot run. Running both puts two copies
 on the node, which the paragraph above says is silent — harmless for a debugger
 assertion, and the reason neither module asserts on a PV.
 
+## `nonroot-gid.yaml` — the non-zero-gid target
+
+`{runAsUser: 36070, runAsGroup: 36070}`, read off
+`b01-1-beamline/bl01c-di-dcam-04-0` at Diamond, and the fixture for issue #102:
+a seat on the degraded rung runs as the target's uid **and gid**, so on this
+target it could not append to the image's GID-0-writable `/etc/passwd` and landed
+with no ssh at all. `test_nonroot_gid_identity.py` is the only module that asserts
+a seat gets a login here.
+
+The numbers are the measured ones and both are above libnss-extrausers' floors
+(`MINUID`/`MINGID` 500) — which is the case the field target is, and the case the
+fix has to serve. Below-floor credentials are probed separately, inside the seat,
+rather than by a second target pod.
+
+Two things it deliberately does *not* set:
+
+* **No `runAsNonRoot: true`.** With it, `spec.rung_of_spec` refuses the full rung
+  before the API server sees it and burns no container name (report 3.18) — a
+  different path from the one this fixture is for. Without it podbench asks for
+  the full rung, `deny-sys-ptrace.yaml` refuses it, and the ladder walks down to
+  `degraded`. **That walk is the whole setup: on an unrestricted cluster the full
+  rung lands, the seat is root, `/etc/passwd` is writable and #102 cannot appear
+  at all.** Bind the policy with this target or the module asserts nothing.
+* **No `hostNetwork`.** Unlike `dls-ioc.yaml`, nothing here needs Channel Access,
+  so this target does not own the node's port space and can share a node (issue
+  #87 is about the pods that cannot).
+
+It is also the target where `deny-sys-ptrace.yaml` behaves as the section below
+describes it for a *non-root* uid: the full rung is refused and the degraded rung
+is authorable, so a seat does land.
+
 ## `deny-sys-ptrace.yaml` — not a workload
 
 The odd one out: a `ValidatingAdmissionPolicy` and its binding, refusing any
@@ -124,6 +155,9 @@ admitted`, because the full rung is refused here, the degraded rung cannot be
 authored at uid 0 (`runAsNonRoot: true` contradicts it) and the seat rung is then
 refused by the kubelet. Reproducing #89 against a root target needs the file
 below instead — and both of them together, which is what `test_dls_ioc.py` binds.
+`test_nonroot_gid_identity.py` is the other half of that sentence: its target
+(`nonroot-gid.yaml`) *is* non-root, so this file alone is enough there and it
+binds no mutating policy at all.
 
 Native admission rather than Kyverno (which is what the real cluster runs)
 because it is core API: no controller to install, no CRDs to wait for, no

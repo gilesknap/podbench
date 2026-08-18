@@ -57,6 +57,7 @@ __all__ = [
     "NSS_WAY_OUT",
     "PASSWD_PATH",
     "PUBKEY_ENV",
+    "SEAT_NSS_PATH",
     "VSCODE_SETTINGS_WAY_OUT",
     "CheckResult",
     "CommandRunner",
@@ -70,6 +71,7 @@ __all__ = [
     "ensure_privsep_dir",
     "ensure_sshd_config",
     "ensure_vscode_settings",
+    "extrausers_serves",
     "fd2_check",
     "idle",
     "login_name",
@@ -79,6 +81,7 @@ __all__ = [
     "read_host_public_key",
     "reap_children",
     "reaper_status",
+    "restrict_seat_nss_database",
     "run_command",
     "proxy_shape_check",
     "session_home",
@@ -227,7 +230,62 @@ def ensure_home_dir(layout: SshdLayout) -> bool:
 
 
 PASSWD_PATH = "/etc/passwd"
-"""The NSS ``files`` database sshd resolves a login name in."""
+"""The NSS ``files`` database sshd resolves a login name in.
+
+Also the file a seat writes its own record to when :data:`SEAT_NSS_PATH` is not
+an option. It has no uid or gid floor, and it is group-writable by GID 0 - which
+is what ``attach --seat-gid-root`` asks for, and what a seat under those floors
+usually turns out to carry anyway (:func:`extrausers_serves`).
+
+This constant is also the *mount point* the launcher projects a ``podbench dev``
+sidecar's identity onto (``launcher.SEAT_IDENTITY_MOUNTS``), so it names
+``/etc/passwd`` and nothing else, whatever the append target becomes.
+"""
+
+SEAT_NSS_PATH = "/var/lib/extrausers/passwd"
+"""Where a seat registers its own passwd record: libnss-extrausers' database.
+
+The image installs ``libnss-extrausers`` and points ``nsswitch.conf``'s
+``passwd`` line at ``files extrausers``, so a record appended here is resolved
+by ``getpwuid`` exactly as one in :data:`PASSWD_PATH` would be - and the file is
+mode 0666, so the append needs no capability, no particular gid and no edit to
+the workload's manifest. That is the whole point: the degraded rung runs as the
+target's uid **and gid**, and ``/etc/passwd`` is writable only by GID 0, which a
+seat gets only from ``--seat-gid-root`` - a flag that pins ``runAsGroup: 0`` and
+so breaks the credential match ptrace needs against a non-zero-gid target
+(issue #102, measured; #98).
+
+Not every seat, though: libnss-extrausers ignores a record whose uid or gid is
+below 500 (gid 100 excepted), so which of the two files a seat appends to is
+:func:`extrausers_serves`' decision and not the mode's.
+
+A *second* path rather than a new value for :data:`PASSWD_PATH`, because that
+constant is load-bearing elsewhere: it is the mount point for the ``podbench
+dev`` sidecar's projected passwd file, a different and already working
+mechanism, and repointing it would move that mount to a path nothing consults
+for a sidecar.
+
+World-writable is not an escalation. On the rungs that append here sshd is
+:meth:`podbench.sshcfg.SshdLayout.for_uid` with ``run_as_root=False``: it skips
+privilege separation and never ``setuid``s out of a passwd record, so a forged
+record buys the forger the uid it already has, and ``NoNewPrivs`` has already
+made the seat's setuid binaries inert. The full rung's sshd *is* root, and there
+the mode is closed rather than argued about -
+:func:`restrict_seat_nss_database`. What must not ship is the combination in
+between, a root sshd that ``setuid``s into a *non-root* session (#98): there an
+unprivileged writer and a privileged reader would exist in the one container.
+"""
+
+_EXTRAUSERS_MIN_UID = 500
+_EXTRAUSERS_MIN_GID = 500
+_EXTRAUSERS_USERS_GID = 100
+"""libnss-extrausers' compiled-in floors, from Debian 0.6-4.1 ``s_config.h``.
+
+``MINUID``, ``MINGID`` and ``USERSGID``, and there is no configuration file that
+moves them - the numbers are in the shared object the image installs. Named here
+because :func:`extrausers_serves` is the only thing that reads them and the
+values are not guessable from the outside.
+"""
 
 GROUP_PATH = "/etc/group"
 """The NSS ``files`` database ``getgrgid`` answers from.
@@ -254,26 +312,43 @@ is `executable file not found`, in the message that was meant to be the way out.
 NSS_WAY_OUT = (
     "sshd resolves the login name through NSS before it will look at a key, so "
     "ssh into this seat cannot work. Everything reached by kubectl exec - "
-    f"{EXEC_HALF_COMMANDS}, a shell - is unaffected. A seat that reads "
-    "this is almost always an ephemeral container, and the way out for one is "
-    "GID 0: land it again with "
-    "`podbench attach <pod> --new --seat-gid-root` and it registers its "
-    f"own record in the image's group-writable {PASSWD_PATH}. Failing that, run "
-    "the target as a uid the debug image already has an account for. A "
+    f"{EXEC_HALF_COMMANDS}, a shell - is unaffected. A seat normally registers "
+    f"its own record in {SEAT_NSS_PATH}, the world-writable libnss-extrausers "
+    "database the current image installs and lists in nsswitch.conf beside "
+    "files: that route needs no capability, no particular gid and no edit to "
+    "the workload, but libnss-extrausers ignores a record whose uid or gid is "
+    "below 500 (gid 100 excepted), so it does not serve every seat. A uid or "
+    "gid under that floor, an image built before the database existed, or one "
+    f"whose nsswitch does not consult it, leaves only {PASSWD_PATH} "
+    "- writable by gid 0, which is what "
+    "`podbench attach <pod> --new --seat-gid-root` asks for, at a price worth "
+    "knowing before you pay it: the flag pins runAsGroup: 0, so the seat's gid "
+    "no longer matches a target whose gid is not 0, and that match is a "
+    "credential ptrace checks - it buys ssh and takes the debugger. Failing "
+    "both, run the target as a uid the debug image already has an account for. A "
     f"{SEAT_IDENTITY_VOLUME!r} volume does not help here, however plainly the "
     "pod declares one: projecting a passwd file takes a subPath per mount and "
     "an ephemeral container may not have one. That volume is the identity a "
     "`podbench dev` sidecar gets, which is an ordinary container."
 )
 """Named mechanism, then the way out - the shape :class:`podbench.model.Blocker`
-uses, because "No user exists for uid 1000" names neither.
+uses, because "No user exists for uid 36070" names neither.
 
 Written for the container it is *read* in. Every path that quotes it - the
 registration failure, ``nss-identity``, and the launcher, which prints it
 verbatim under the missing ssh stanza - is reached from a seat that got here by
 running as a uid it has no account for, and on a live pod that seat is an
-ephemeral container. So the ephemeral route leads and the volume is named only
-to stop somebody deploying it in the hope it fixes this."""
+ephemeral container. So the routes are ordered by what they cost the reader:
+extrausers first, because it costs nothing and is what the current image does;
+then GID 0 *with* its price, because offering ``--seat-gid-root`` without saying
+that it forfeits ptrace is how issue #102 sent the same seat round twice. The
+volume is named only to stop somebody deploying it in the hope it fixes this.
+
+Neither route is asserted of the reader's own image, and the extrausers sentence
+is careful about that: one way to be reading this text is to be standing in an
+image built before the database existed, or behind a site mirror pinned to one,
+and being told "this image consults it" would send that reader off to conclude
+their image is broken rather than old."""
 
 HOME_WAY_OUT = (
     f"The usual cause is a missing fsGroup. A {SEAT_HOME_VOLUME!r} volume is "
@@ -325,8 +400,108 @@ def _home_for_uid(uid: int | None = None) -> str | None:
 
 
 def passwd_line(*, uid: int, gid: int, home: str, user: str = SEAT_USER) -> str:
-    """One ``/etc/passwd`` record for the seat's own uid."""
+    """One passwd record for the seat's own uid.
+
+    The format is the same whichever database it is appended to: libnss-extrausers
+    parses :data:`SEAT_NSS_PATH` with the same seven colon-separated fields as
+    NSS's ``files`` source parses :data:`PASSWD_PATH`.
+    """
     return f"{user}:x:{uid}:{gid}:{user}:{home}:{LOGIN_SHELL}\n"
+
+
+def extrausers_serves(uid: int, gid: int) -> bool:
+    """Whether libnss-extrausers would answer a lookup for this uid and gid.
+
+    It refuses records below compiled-in floors, and that is not documented
+    anywhere a reader of :data:`SEAT_NSS_PATH` would look: Debian's 0.6-4.1
+    ``passwd.c`` applies them twice, returning ``NSS_STATUS_NOTFOUND`` before it
+    opens the file when the queried uid is under ``MINUID``, and then skipping
+    any record whose own uid is under ``MINUID`` or whose gid is under ``MINGID``
+    and is not ``USERSGID``. ``getpwnam`` goes through the same search, so a
+    rejected record is invisible to *every* lookup - the append succeeds, the
+    file has the line in it, and nothing resolves.
+
+    Which is why this decides the append target and the file's mode does not. The
+    seats below the floors are ordinary rather than exotic, and the commonest of
+    them is the default shape of a hardened workload: a target that sets
+    ``runAsUser`` and no ``runAsGroup`` gives
+    :func:`podbench.spec.target_uid_gid` a gid of ``None``, so the seat pins no
+    group and runs with the image's gid 0. ``--seat-gid-root`` asks for gid 0
+    outright. For all of those :data:`PASSWD_PATH` is writable and has no floor,
+    so this check costs nothing and its absence would have cost them their ssh -
+    the #102 bug over again, inside the fix for it.
+
+    A target that runs as a low-numbered uid *and* a low-numbered non-zero gid
+    (grafana's 472:472) is below the floors and cannot write ``/etc/passwd``
+    either, so it has no route but ``--seat-gid-root``. That is what it had before
+    this change too: returning :data:`PASSWD_PATH` for it gets the refusal that
+    names a file whose mode is the actual obstacle, instead of a silent append to
+    a database that will never answer.
+
+    >>> extrausers_serves(36070, 36070)   # bl01c-di-dcam-04-0 at Diamond
+    True
+    >>> extrausers_serves(1000, 0)        # any --seat-gid-root seat
+    False
+    >>> extrausers_serves(472, 472)       # grafana; nginx-unprivileged is 101
+    False
+    >>> extrausers_serves(1000, 100)      # gid 100 is `users`, exempted
+    True
+
+    The boundary, spelled from both sides because a floor that *moved* is the
+    failure this function cannot detect for itself. ``_container.yml`` asserts
+    these same six points against the library in a built image, so if the two
+    ever disagree it is this function that is wrong.
+
+    >>> extrausers_serves(500, 500)       # uid == MINUID, gid == MINGID
+    True
+    >>> extrausers_serves(499, 500)       # one below MINUID
+    False
+    >>> extrausers_serves(501, 499)       # one below MINGID, uid clear
+    False
+    """
+    if uid < _EXTRAUSERS_MIN_UID:
+        return False
+    return gid >= _EXTRAUSERS_MIN_GID or gid == _EXTRAUSERS_USERS_GID
+
+
+def _nss_append_target(uid: int, gid: int, passwd_path: str | None = None) -> Path:
+    """Which passwd database this container should append its own record to.
+
+    :data:`SEAT_NSS_PATH` when the image has one *and* libnss-extrausers would
+    serve this seat's uid and gid from it, and :data:`PASSWD_PATH` otherwise. The
+    fallback is deliberate: this route was *added* by issue #102 and the GID 0 one
+    it replaces as the default still works, so an older or hand-built image - or
+    one whose nsswitch was rewritten by a mount - should take the old route rather
+    than be told "there is no /var/lib/extrausers/passwd to add one to", which
+    names a file the reader has never heard of and offers nothing to do about it.
+    Every message downstream reports the path this returned, so the diagnostic
+    always names the file that was actually tried.
+
+    Writability, not just existence, decides the file half: an extrausers file
+    that exists but cannot be written (an image that created it 0644, say) would
+    otherwise mask a perfectly good ``--seat-gid-root`` seat behind a refusal.
+    :func:`extrausers_serves` decides the credentials half, and it has to be
+    asked *here* rather than after the append, because a record the floors reject
+    is written and silently unresolvable - there is no error to react to.
+
+    There is no third attempt if the chosen file turns out not to resolve. On the
+    image podbench ships there could not be one: ``/etc/passwd`` is 0664
+    ``root:root``, so the only seat that can write it is a gid 0 seat, and a gid 0
+    seat is already sent here. A retry would be a branch that cannot succeed.
+
+    ``passwd_path`` overrides both, and is how the unit tests point registration
+    at a temporary file.
+    """
+    if passwd_path is not None:
+        return Path(passwd_path)
+    seat_nss = Path(SEAT_NSS_PATH)
+    if (
+        extrausers_serves(uid, gid)
+        and seat_nss.is_file()
+        and os.access(seat_nss, os.W_OK)
+    ):
+        return seat_nss
+    return Path(PASSWD_PATH)
 
 
 def _registration_blocker(uid: int, gid: int, path: Path) -> str | None:
@@ -338,9 +513,17 @@ def _registration_blocker(uid: int, gid: int, path: Path) -> str | None:
         # sshd resolves the *name* the client offered, so a second record for
         # the same name would never be reached: the first one wins and the login
         # would be attempted as the wrong uid.
+        #
+        # The name is resolved through NSS and not read out of `path`, and since
+        # #102 those are different files - the realistic collision is a `dev`
+        # sidecar whose projected /etc/passwd names `podbench` at a uid the
+        # sidecar does not actually run as. Naming `path` here sent that reader
+        # to cat an empty extrausers database.
         return (
-            f"the login name {SEAT_USER!r} already belongs to uid {taken} in "
-            f"{path}, and sshd resolves the name before the uid"
+            f"the login name {SEAT_USER!r} already resolves to uid {taken} "
+            f"through this container's NSS (`getent passwd {SEAT_USER}` shows "
+            "it), and sshd resolves the name before the uid, so a record for "
+            f"uid {uid} in {path} would never be reached"
         )
     if not os.access(path, os.W_OK):
         return f"{path} is not writable by uid {uid} / gid {gid}"
@@ -368,8 +551,9 @@ def ensure_passwd_entry(
     * an **ephemeral** seat - ``attach``, and so the common case - can be given
       no passwd file at all: projecting one takes a ``subPath`` per mount and the
       API server forbids ``subPath`` on an ephemeral container. Registration
-      here is its *only* route, and it needs GID 0
-      (``attach --new --seat-gid-root``);
+      here is its *only* route, and it usually goes to :data:`SEAT_NSS_PATH`,
+      which the image leaves world-writable precisely so that a seat running as
+      the target's uid *and gid* can take it (issue #102);
     * a **``podbench dev``** sidecar is an ordinary container, so
       :func:`podbench.spec.dev_pod_spec` mounts
       :data:`podbench.model.SEAT_IDENTITY_VOLUME` read-only over ``/etc/passwd``
@@ -380,10 +564,10 @@ def ensure_passwd_entry(
     carries the identity is the *success* case, and treating it as a refusal
     would report the one shape that works as the one that does not.
 
-    The registration convention is the one containers running as an arbitrary
-    uid already use (OpenShift's): ``/etc/passwd`` is group-writable by GID 0
-    and the entrypoint appends its own record. That works only when the seat
-    really does run with GID 0, so this step is *allowed to fail* - it raises,
+    Where the record lands is :func:`_nss_append_target`'s decision, and for a
+    seat libnss-extrausers will not serve - or on an image that has no such
+    database - it is still :data:`PASSWD_PATH`, group-writable by GID 0 in the
+    OpenShift convention. So this step is *allowed to fail* - it raises,
     :func:`ensure_all` records the reason, and the container lands without ssh
     rather than not landing at all.
 
@@ -395,7 +579,7 @@ def ensure_passwd_entry(
     if login_name(own_uid) is not None:
         return False
 
-    path = Path(PASSWD_PATH if passwd_path is None else passwd_path)
+    path = _nss_append_target(own_uid, own_gid, passwd_path)
     blocker = _registration_blocker(own_uid, own_gid, path)
     if blocker is not None:
         raise RuntimeError(
@@ -408,10 +592,15 @@ def ensure_passwd_entry(
     if entry.strip() in existing.splitlines():
         # Written by a previous run and still not resolving: appending a second
         # copy would not help, and a second attach must not grow the file.
+        #
+        # Which of the two reasons it is stays open, and the way out below names
+        # both: nsswitch.conf may not list the source, or the source may be
+        # refusing the record. `nsswitch does not consult it` alone sent one
+        # reader to inspect a line that was correct.
         raise RuntimeError(
             f"{path} already carries {entry.strip()!r} and NSS still does not "
-            f"resolve uid {own_uid}; this image's nsswitch.conf does not appear "
-            f"to consult {path}. {NSS_WAY_OUT}"
+            f"resolve uid {own_uid}; this image does not appear to answer passwd "
+            f"lookups from {path}. {NSS_WAY_OUT}"
         )
     with path.open("a", encoding="utf-8") as handle:
         handle.write(("" if existing.endswith("\n") or not existing else "\n") + entry)
@@ -423,6 +612,51 @@ def ensure_passwd_entry(
     return True
 
 
+def restrict_seat_nss_database(layout: SshdLayout) -> bool:
+    """Close the seat database's world-writable bit wherever sshd runs as root.
+
+    Mode 0666 on :data:`SEAT_NSS_PATH` is what makes the degraded rung work at
+    all - the seat runs as the target's uid *and* gid, both discovered at attach
+    time, so no owner and no group the image could bake in would be writable by
+    it - and it is safe there because sshd on that rung holds no privilege to
+    hand to a forged record.
+
+    On the ``full`` rung sshd *is* root: ``SshdLayout.for_uid(0)`` turns
+    privilege separation on and sshd ``setuid``s into the session from whatever
+    NSS answers with. The argument that 0666 is still not an escalation there is
+    that a root seat has no unprivileged principal to forge with - every process
+    in it, including the ``kubectl exec`` that carries the ssh transport, is
+    already uid 0. That happens to be true, which is a weaker thing than being
+    enforced, so this enforces it: a root seat resolves its own uid from the
+    image's ``/etc/passwd`` and appends nothing, so it has no use for the write
+    bit and can afford to drop it.
+
+    Narrowing one seat narrows no other. An ephemeral container gets a fresh copy
+    of the image's layers, so a root seat and a degraded seat in the same pod each
+    have their own database, and the degraded one keeps its 0666.
+
+    A missing file, an already-narrow mode and a refused ``chmod`` are all
+    success. The refusal worth naming is a read-only rootfs, which denies the
+    forger the same write it denies this call - the property holds by another
+    route, and recording a failure would put an alarming line under a seat that is
+    in fact tighter than the one this step was written for.
+    """
+    if not layout.run_as_root:
+        return False
+    database = Path(SEAT_NSS_PATH)
+    if not database.is_file():
+        return False
+    mode = database.stat().st_mode & 0o777
+    narrowed = mode & ~0o022
+    if narrowed == mode:
+        return False
+    try:
+        database.chmod(narrowed)
+    except OSError:
+        return False
+    return True
+
+
 def nss_identity_check(
     *, uid: int | None = None, gid: int | None = None, passwd_path: str | None = None
 ) -> CheckResult:
@@ -431,6 +665,20 @@ def nss_identity_check(
     Re-derived from the platform rather than remembered, so it is the same
     answer whether it is reached through the start-up path or through
     ``podbench agent --self-check`` over ``kubectl exec`` seconds later.
+
+    A failure names the database :func:`ensure_passwd_entry` would have written -
+    :data:`SEAT_NSS_PATH` for a seat extrausers will serve, :data:`PASSWD_PATH`
+    for one it will not - because a reader asked to check a file's mode has to be
+    given the file that was actually tried.
+
+    The "writable and still no entry" branch is the one the launcher relays most
+    often now that the usual append target is 0666, and it is the one branch that
+    cannot say why: the reason was raised inside :func:`ensure_passwd_entry`
+    minutes earlier and recorded by :func:`ensure_all` into the container's
+    start-up output, which the launcher does not relay. So it names the command
+    that shows that output. It deliberately does not repeat
+    :data:`NSS_WAY_OUT` - the routes there are for a seat that could not write,
+    and this seat could.
     """
     own_uid = os.geteuid() if uid is None else uid
     own_gid = os.getegid() if gid is None else gid
@@ -439,15 +687,16 @@ def nss_identity_check(
         return CheckResult(
             "nss-identity", True, f"uid {own_uid} resolves to the login name {name!r}"
         )
-    path = Path(PASSWD_PATH if passwd_path is None else passwd_path)
+    path = _nss_append_target(own_uid, own_gid, passwd_path)
     blocker = _registration_blocker(own_uid, own_gid, path)
     if blocker is None:
         return CheckResult(
             "nss-identity",
             False,
             f"uid {own_uid} has no NSS entry even though {path} is writable - "
-            "the agent's registration step failed; its reason is in the "
-            "container's start-up output",
+            "the agent's registration step failed and said why in this "
+            "container's start-up log: `kubectl logs <pod> -c <this container> "
+            "-n <namespace>`",
         )
     return CheckResult(
         "nss-identity",
@@ -740,11 +989,19 @@ def ensure_all(
         f"created {layout.privsep_dir}",
         lambda: ensure_privsep_dir(layout),
     )
+    # Before the registration, not after: this one only ever *removes* a write
+    # bit, and on the rung it applies to nothing is going to be registered.
+    step(
+        "nss-db-mode",
+        f"took group and other write off {SEAT_NSS_PATH}",
+        lambda: restrict_seat_nss_database(layout),
+    )
     # Before the host key, not after: ssh-keygen calls getpwuid() whatever it is
     # asked to do, so on a uid NSS cannot resolve it fails before writing a byte.
     step(
         "nss-identity",
-        f"registered uid {os.geteuid()} as {SEAT_USER!r} in {PASSWD_PATH}",
+        f"registered uid {os.geteuid()} as {SEAT_USER!r} in "
+        f"{_nss_append_target(os.geteuid(), os.getegid())}",
         lambda: ensure_passwd_entry(layout),
     )
     step(

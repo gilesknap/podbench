@@ -34,7 +34,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from podbench.agent import GROUP_PATH, PASSWD_PATH
+from podbench.agent import GROUP_PATH, PASSWD_PATH, SEAT_NSS_PATH
 from podbench.doctor import FEATURES, RbacFeature
 from podbench.hotfix import identity_configmap, values_snippet
 from podbench.launcher import SEAT_IDENTITY_MOUNTS, seat_identity_mounts
@@ -179,6 +179,24 @@ def test_the_identity_layout_names_the_keys_the_chart_emits(
     """
     assert [path for path, _ in SEAT_IDENTITY_MOUNTS] == [PASSWD_PATH, GROUP_PATH]
     assert {key for _, key in SEAT_IDENTITY_MOUNTS} == set(configmap["data"])
+
+
+def test_the_two_identity_mechanisms_do_not_share_a_path() -> None:
+    """``PASSWD_PATH`` is a mount point; ``SEAT_NSS_PATH`` is an append target.
+
+    They look like the same fact and are not, and one prototype of issue #102
+    conflated them: repointing ``PASSWD_PATH`` at the ``extrausers`` database
+    moves the ``podbench dev`` sidecar's *projection* to a path no sidecar
+    consults, so that seat silently loses the identity the ConfigMap was rendered
+    for - while every test about registration goes on passing, because
+    registration is exactly the half that was meant to change.
+
+    So: the mount point stays ``/etc/passwd``, the database the agent writes is
+    somewhere else, and nothing projects over the file the seat appends to.
+    """
+    assert PASSWD_PATH == "/etc/passwd"
+    assert SEAT_NSS_PATH != PASSWD_PATH
+    assert SEAT_NSS_PATH not in [path for path, _ in SEAT_IDENTITY_MOUNTS]
 
 
 def test_the_launcher_mounts_what_the_snippet_declares_and_attach_may_carry(

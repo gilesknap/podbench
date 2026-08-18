@@ -88,14 +88,20 @@ check, plus one labelled `pod-security.kubernetes.io/enforce=restricted` for
 S5. Deletion does not block; the API server has accepted it by the time the run
 ends.
 
-**One exception, and it is cluster-scoped.** `test_dls_ioc.py` binds two
-admission policies, which are not namespaced objects: it applies
+**One exception, and it is cluster-scoped.** Two modules bind admission
+policies, which are not namespaced objects. `test_dls_ioc.py` applies
 `podbench-strip-sys-ptrace` (a `MutatingAdmissionPolicy`) and
 `podbench-deny-sys-ptrace` (a `ValidatingAdmissionPolicy`), each with its
-binding, and deletes all four in a session-scoped `finally`. Neither does
-anything to a namespace that has not opted in by label, so a cluster that keeps
-them after a killed run is not silently changed — but they are the one thing
-this suite leaves outside `podbench-e2e-*`.
+binding, and deletes all four in a session-scoped `finally`;
+`test_nonroot_gid_identity.py` applies and deletes the *deny* pair only, which
+is all it needs against a non-root target. Both fixtures are session-scoped for
+the teardown rather than the setup: the names are fixed, so a concurrent apply
+is idempotent while a concurrent delete is not, and the two co-running leave
+nothing behind (measured on the k3s bed, whole suite in one session).
+
+No policy here does anything to a namespace that has not opted in by label, so a
+cluster that keeps them after a killed run is not silently changed — but they are
+the one thing this suite leaves outside `podbench-e2e-*`.
 
 If a run is killed hard enough to skip teardown:
 
@@ -160,6 +166,7 @@ policy on the cluster.
 | `test_s5_ladder.py` | S5 | the two-rung ladder under `restricted` PSA, and the invalid rung never being authored |
 | `test_uvx_detached.py` | #1 | that a seat outlives the launcher. The obvious tidy-up — routing the ProxyCommand through `podbench proxy` — leaves every other test green and breaks `uvx`, because a developer running from a clone has podbench on `PATH` and the user it breaks does not |
 | `test_dls_ioc.py` | #89 | nothing else can tell whether a verb answers from the probe or from the capability bit. Every unit test here builds the `Seat` itself, so it can only check that a stated field is read; that a seat lands capless *and attaches anyway* takes a real admission policy and a real kernel. Delete it and `debug-config` can go back to refusing an injection that works, and `status` to calling a live-attaching seat "read-only", against every Diamond-shaped cluster and no test |
+| `test_nonroot_gid_identity.py` | #102 | that a seat on a target with a non-zero *gid* gets a login at all. Every unit test injects the passwd path and fakes NSS, so none of them can see the two things that actually decide it: that the image really installs a second NSS source and consults it, and that the real `libnss-extrausers` has the `MINUID`/`MINGID` 500 floors `agent.extrausers_serves` carries as literals. Delete it and a rebuild that shipped different floors would route seats to a database that will not answer them — the append succeeds, the record is in the file, and nothing resolves — or the fallback that keeps `--seat-gid-root` working at gid 0 could go and only Diamond would find out |
 | `test_shadowed_exec_file.py` | #90 | the one assertion that gdb read the *target's* interpreter and not the seat's copy at the same absolute path. It is checked by content — three checksums — because the defect is invisible in the command sequence: podbench names a plausible path, gdb canonicalises `/proc/<pid>/root` away and opens the seat's file, and on two builds close enough not to error there is no message at all, just the wrong symbols |
 
 ### Why CI runs this directory twice

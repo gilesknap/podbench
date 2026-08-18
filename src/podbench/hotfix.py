@@ -1590,14 +1590,14 @@ def values_snippet(
 
     The identity volume is emitted beside it and is **not** what gives a live-pod
     seat its login: projecting a passwd *file* takes a ``subPath`` per mount and
-    an ephemeral container may not have one, so ``attach`` never mounts it and
-    uses ``--seat-gid-root`` instead. It is emitted because it is the identity a
-    seat that is an *ordinary* container can be given, which is what ``podbench
-    dev`` authors — and the comments say exactly that, so nobody deploys it
-    expecting it to fix an ssh they cannot get. ``uid``/``gid`` default to
-    placeholders rather than to plausible numbers: a wrong uid pasted unread is
-    a seat that authenticates as nobody, and a snippet that fails at ``helm
-    install`` beats one that fails at 3am.
+    an ephemeral container may not have one, so ``attach`` never mounts it and a
+    live-pod seat registers its own record instead. It is emitted because it is
+    the identity a seat that is an *ordinary* container can be given, which is
+    what ``podbench dev`` authors — and the comments say exactly that, so nobody
+    deploys it expecting it to fix an ssh they cannot get. ``uid``/``gid``
+    default to placeholders rather than to plausible numbers: a wrong uid pasted
+    unread is a seat that authenticates as nobody, and a snippet that fails at
+    ``helm install`` beats one that fails at 3am.
     """
     claim = f"{app}-venv"
     configmap = identity_configmap(app)
@@ -1619,10 +1619,11 @@ def values_snippet(
             "  # It serves a seat that is an *ordinary* container. `attach` does",
             "  # not use it: landing the two files takes a subPath per mount and",
             "  # the API server forbids subPath on an ephemeral container, so a",
-            "  # live-pod seat registers its own record instead —",
-            "  # `podbench attach ... --new --seat-gid-root`. It is enabled",
-            "  # here because Hotfix mode's seat is one; set it false if this",
-            "  # application only ever gets live-pod `attach` sessions.",
+            "  # live-pod seat registers its own record at start-up instead, in",
+            "  # the image's own NSS database and with no help from this chart.",
+            "  # It is enabled here because Hotfix mode's seat is an ordinary",
+            "  # container; set it false if this application only ever gets",
+            "  # live-pod `attach` sessions.",
             "  enabled: true",
             "  apps:",
             f"    - name: {app}",
@@ -1646,7 +1647,8 @@ def values_snippet(
             f"  # {SEAT_IDENTITY_VOLUME} is the one `attach` cannot use — it needs a",
             "  # subPath per file, which an ephemeral container may not have. It",
             "  # is here for a seat that is an ordinary container; drop it if you",
-            "  # only ever attach to live pods (and use --seat-gid-root there).",
+            "  # only ever attach to live pods, whose seats register a record of",
+            "  # their own and need nothing declared for it.",
             f"  - name: {SEAT_IDENTITY_VOLUME}",
             "    configMap:",
             f"      name: {configmap}",

@@ -100,9 +100,10 @@ absolute path for exactly this reason. If you add a file there, do the same.
 
 ## sshd needs an NSS identity
 
-sshd resolves the login name through NSS **before** it looks at a key, so a uid with no
-`/etc/passwd` entry fails as `Permission denied (publickey)` — pointing at the key, which
-is not the problem. `ssh-keygen` cannot even mint a host key (`No user exists for uid
+sshd resolves the login name through NSS **before** it looks at a key, so a uid no NSS
+source has a record for fails as `Permission denied (publickey)` — pointing at the key,
+which is not the problem. Which *source* supplies that record is the subject of the other
+skill and is deliberately not `/etc/passwd` for a live-pod seat. `ssh-keygen` cannot even mint a host key (`No user exists for uid
 1000`), and `-C` does not help: it calls `getpwuid()` regardless.
 
 See the `ephemeral-containers` skill for the two mechanisms that supply an identity and

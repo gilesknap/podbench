@@ -292,9 +292,13 @@ Useful flags:
   moves, such as `main` or a branch image: a node that already has a copy will
   otherwise serve it, and a seat older than the launcher that started it has no
   symptom at all. `attach` names the tag in its report when this applies.
-* `--ssh-user` — the login name. `root` on the full rung; on a degraded rung
-  sshd resolves the name through NSS, so the image needs an account for that
-  UID and you may need to say which.
+* `--ssh-user` — the login name. `root` on the full rung; `podbench` on a
+  degraded one, which is the name in the record the seat registered for its own
+  uid — unless that uid already has an account in the image, where it is whatever
+  the image calls it (`nobody` at 65534). sshd resolves the name through NSS
+  before it looks at a key, so a wrong value here fails as
+  `Permission denied (publickey)` — the same message a missing key or an agent
+  that will not sign gives. `podbench doctor` separates them.
 * `--identity ~/.ssh/id_work` — the key to offer, and the one whose public half
   is injected into the container.
 

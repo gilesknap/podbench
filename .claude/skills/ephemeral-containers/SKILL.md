@@ -36,15 +36,69 @@ spec.ephemeralContainers[0].volumeMounts[0].subPath:
   Forbidden: cannot be set for an Ephemeral Container
 ```
 
-The API server refuses the whole request. There is no workaround: mounting the volume
-somewhere else does not help, because NSS reads `/etc/passwd` and nothing else.
+The API server refuses the whole request. Before #102 there was no way round it either:
+the only paths NSS consulted were `/etc/passwd` and `/etc/nsswitch.conf`, and a
+whole-volume mount destroys whichever it lands on — over `/etc/passwd` it replaces the
+file with a directory, and over `/etc` it takes `nsswitch.conf` with it, which is the
+lookup the identity existed to satisfy.
+
+**That is now a statement about `attach`'s mount contract and not about what is
+possible.** `nsswitch.conf` reads `files extrausers`, so `/var/lib/extrausers` is a
+second directory NSS consults, it holds nothing else, and a whole-volume mount there
+destroys nothing — no `subPath` needed. `attach` still does not mount the pod's
+identity volume, by convention and not because the API forbids it
+(`launcher.seat_identity_mounts`), so a live-pod seat registers its own record instead.
+Worth knowing because it is the missing half of the follow-up on #102: with a writable
+NSS source *and* a mountable one, the two identity mechanisms below stop needing to be
+two.
 
 This is why the seat's identity has two mechanisms, split by container kind:
 
 | | mechanism |
 |---|---|
-| `attach` (ephemeral) | the agent registers its own passwd record, against the image's group-writable `/etc/passwd`, under `--seat-gid-root` |
-| `podbench dev` (ordinary pod) | the projected identity from the chart's `seatIdentity`, mounted with `subPath` — better, since nothing is written and no group 0 is needed |
+| `attach` (ephemeral) | the agent registers a passwd record for its own uid at start-up, in `/var/lib/extrausers/passwd` — a second NSS source the image installs `libnss-extrausers` for and ships **mode 0666**, which is what permits the append: the seat's credentials are discovered at attach time, so no owner or group baked into the image could be the writable one |
+| `podbench dev` (ordinary pod) | the projected identity from the chart's `seatIdentity`, mounted with `subPath` — better, since the identity is declared rather than written and nothing in the seat has to be writable |
+
+The image's group-writable `/etc/passwd` is the *fallback*, reached by `--seat-gid-root`
+and by any seat `extrausers` will not serve, and it is not free: `__ptrace_may_access`
+compares the gid as well as the uid, so pinning `runAsGroup: 0` against a target whose
+gid is not 0 buys ssh and takes the debugger (#102, measured — it is how one seat was
+sent round the loop twice). Do not "fix" a seat with no login by reaching for that flag.
+
+**0666 means every process in the seat, not "the seat's uid".** Matching the target's
+credentials is not what grants the write — the mode is, and that is the point, since the
+credentials are not known until the attach. It is safe on the rungs that append there
+because sshd runs as the seat's own uid (`SshdLayout.for_uid(n)`, `run_as_root=False`):
+it never `setuid`s out of a passwd record, so a forged one buys its author the uid it
+already had. It is the image *default*, and the `full` rung — whose sshd is root — has
+it taken off at start-up by `agent.restrict_seat_nss_database`. The argument in full,
+for both rungs, is in `docs/explanations/security.md`; #98's shape (a root sshd that
+`setuid`s into a non-root session) is the one that must not join it.
+
+**`extrausers` has floors and they are compiled in.** `MINUID 500`, `MINGID 500`, with
+gid 100 exempted (`s_config.h`, Debian 0.6-4.1), and a record below them is ignored by
+`getpwnam` as well as `getpwuid` — the append succeeds, the line is in the file, and
+nothing resolves. So the append target is chosen on the seat's uid and gid
+(`agent.extrausers_serves`) and never on the file's mode. A prototype of #102 skipped
+that check, and would have taken ssh away from the commonest shape there is: a target
+that sets `runAsUser` and no `runAsGroup` leaves `target_uid_gid` returning a gid of
+`None`, so the seat pins no group and runs with the image's **gid 0**. Also from every
+`--seat-gid-root` seat, and from every target on a low-numbered system uid (grafana
+472, nginx-unprivileged 101).
+
+The package is installed unversioned, so those two numbers are an assumption about a
+build, and they are checked rather than pinned: a pinned apt version rots as soon as the
+archive supersedes it, and a version string only implies the behaviour the code depends
+on. `tests/e2e/test_nonroot_gid_identity.py` writes a record below both floors into a
+landed seat's database and asserts the real library ignores it for `getpwnam` as well as
+`getpwuid`, against an image built from the same commit. If it goes red,
+`agent.extrausers_serves` is what needs updating, not the test.
+
+It fires *after* `container` has published, though, because that is the job order. A
+copy of the same assertion as a smoke step in `_container.yml` would fail before an
+image with moved floors is ever tagged; it is worth adding and is not in this branch,
+because pushing a workflow change needs a token scope the agent that wrote this did not
+have.
 
 `spec.validate_ephemeral_volume_mounts` enforces it at the authoring layer so it cannot
 recur.

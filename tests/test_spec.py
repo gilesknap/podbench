@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from podbench.agent import extrausers_serves
 from podbench.model import (
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
@@ -242,15 +243,49 @@ def test_degraded_rung_matches_the_restricted_psa_shape() -> None:
     }
 
 
+def test_a_target_with_no_run_as_group_lands_a_seat_in_group_0() -> None:
+    """The gid half is only pinned when the manifest supplies one.
+
+    Which is the shape most hardened workloads have — ``runAsUser`` beside
+    ``runAsNonRoot`` and no ``runAsGroup`` — so ``target_uid_gid`` returns
+    ``None`` for the gid, nothing is pinned, and the seat runs with the image's
+    own group, which is 0.
+
+    Asserted here rather than left implicit because the agent reads it: gid 0 is
+    below ``libnss-extrausers``' floor, so this is the seat whose passwd record
+    goes to ``/etc/passwd`` and not to the seat's own database
+    (:func:`podbench.agent.extrausers_serves`). A prototype of #102 chose the
+    append target on the file's mode alone and took ssh away from exactly these
+    seats — the common case, not an edge one.
+    """
+    spec = ephemeral_container_spec(
+        name="podbench-2",
+        image="podbench:dev",
+        rung=Rung.DEGRADED,
+        target_container="app",
+        target_uid=1000,
+        target_gid=None,
+    )
+    assert "runAsGroup" not in spec["securityContext"]
+    assert extrausers_serves(1000, 0) is False
+
+
 def test_seat_gid_root_is_opt_in_and_keeps_everything_else() -> None:
-    """GID 0 is what lets the seat give itself the NSS identity sshd needs.
+    """GID 0 buys a seat one thing only, and it is no longer the NSS identity.
 
     The target's uid is discovered at attach time, so no image can carry an
-    account for it; the seat registers one in a group-writable ``/etc/passwd``
-    instead, which needs gid 0 and nothing else. It stays opt-in because it
-    drops the target's own group, and the API server has no objection either
-    way — the restricted Pod Security Standard does not constrain
-    ``runAsGroup`` (measured: uid 1000 / gid 0 admitted under ``restricted``).
+    account for it and the seat registers one for itself — but it registers it in
+    the ``extrausers`` database, which is world-writable and so needs no
+    particular gid (#102). What ``--seat-gid-root`` is left for is an image that
+    predates that database, where the only writable passwd file is the
+    group-writable ``/etc/passwd``.
+
+    Which is why the *default* is the assertion that matters here: gid 0 drops
+    the target's own group, and ptrace compares the gid as well as the uid, so a
+    seat that quietly took gid 0 to make ssh work would have paid for it with the
+    debugger. Admission is not what keeps it opt-in — the restricted Pod Security
+    Standard does not constrain ``runAsGroup`` at all (measured: uid 1000 / gid 0
+    admitted under ``restricted``).
     """
     for rung in (Rung.DEGRADED, Rung.SEAT):
         default = ephemeral_container_spec(
@@ -381,8 +416,15 @@ def test_a_sub_path_mount_is_refused_before_the_api_server_sees_it() -> None:
                 }
             ],
         )
-    # The way out on a live pod, named where the refusal is read.
-    assert "--seat-gid-root" in str(raised.value)
+    # The way out on a live pod, named where the refusal is read - and it is not
+    # a flag: the seat writes its own record at whatever uid and gid it turned
+    # out to run as, so the mount was never needed. Offering ``--seat-gid-root``
+    # here would send a user who has already prepared a volume off to pin
+    # ``runAsGroup: 0`` and lose the ptrace credential match with it (#102).
+    message = str(raised.value)
+    assert "registers its own NSS record" in message
+    assert "uid and gid" in message
+    assert "--seat-gid-root" not in message
 
 
 def test_a_sub_path_expr_mount_is_refused_too() -> None:

@@ -101,7 +101,7 @@ def test_an_explicit_home_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_both_halves_agree_on_the_seat_login_name() -> None:
     """The one string the agent and the launcher must spell identically.
 
-    The agent writes an ``/etc/passwd`` record under this name for whatever uid
+    The agent writes a passwd record under this name for whatever uid and gid
     the seat turned out to run as; the client stanza puts the same name in
     ``User``. sshd resolves what the client offered through NSS *before* it
     looks at a key, so a disagreement is not a wrong username in a prompt — it
