@@ -17,6 +17,7 @@ built byte by byte, and ``shutil.which`` is injected.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ from podbench.flavour import (
     Flavour,
     Language,
     Mode,
+    PtraceEvidence,
     Seat,
     Target,
     Which,
@@ -37,6 +39,7 @@ from podbench.flavour import (
     injection_command,
     inspect_target,
     inventory,
+    ptrace_evidence,
     survey_seat,
 )
 from test_elf import EM_AARCH64, EM_X86_64, build_elf
@@ -58,8 +61,18 @@ def make_proc(
     site_packages: str | None = None,
     target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = False,
+    ptrace_readable: bool = True,
 ) -> Path:
-    """A ``/proc`` with one target process and a rootfs behind it."""
+    """A ``/proc`` with one target process and a rootfs behind it.
+
+    ``ptrace_readable=False`` models a seat the kernel refuses
+    ``PTRACE_MODE_READ`` on, as a ``root`` link that resolves to nothing. It
+    takes the whole rootfs with it, which is the point: exe, maps and every
+    path under ``/proc/<pid>/root`` are gated on that one check, so a target
+    this seat may not read has no site-packages it can find either. Modelled by
+    the link rather than by a mode bit, because the suite runs as uid 0 and a
+    mode bit stops nothing there.
+    """
     status = tmp_path / "self"
     status.mkdir()
     # Bit 19 is CAP_SYS_PTRACE; the mask is read exactly as the kernel prints it,
@@ -69,14 +82,17 @@ def make_proc(
     )
     entry = tmp_path / str(PID)
     entry.mkdir()
+    if not ptrace_readable:
+        (entry / "root").symlink_to(tmp_path / "unreadable")
     if exe is not None:
         (entry / "exe").symlink_to(exe)
-        binary = entry / "root" / exe.lstrip("/")
-        binary.parent.mkdir(parents=True)
-        binary.write_bytes(build_elf(sections or [".text"], machine=machine))
+        if ptrace_readable:
+            binary = entry / "root" / exe.lstrip("/")
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(build_elf(sections or [".text"], machine=machine))
     (entry / "cmdline").write_text(cmdline.replace(" ", "\x00"))
     (entry / "cwd").symlink_to(cwd)
-    if site_packages is not None:
+    if site_packages is not None and ptrace_readable:
         # With the helpers by default, because that is what a wheel unpacks to.
         # The tree the injection loads is the target's, so a target debugpy with
         # no helper in it models a *broken* install rather than an ordinary one.
@@ -95,6 +111,7 @@ def python_proc(
     site_packages: str | None = None,
     target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = True,
+    ptrace_readable: bool = True,
 ) -> Path:
     """``podbench-demo/demo-service``, as a synthetic tree."""
     return make_proc(
@@ -105,6 +122,7 @@ def python_proc(
         site_packages=site_packages,
         target_helpers=target_helpers,
         cap_sys_ptrace=cap_sys_ptrace,
+        ptrace_readable=ptrace_readable,
     )
 
 
@@ -740,19 +758,100 @@ def test_a_measured_attach_offers_the_injection_without_the_capability(
 
 
 def test_an_unmeasured_attach_leaves_the_capability_deciding(tmp_path: Path) -> None:
-    """No probe result is not a probe result saying yes.
+    """With nothing measured at all, the capability is what is left.
 
-    The regression that would do real harm: an unmeasured attach reported as a
-    working one sends someone to an F5 that fails four subsystems down, which is
-    the whole failure mode #18 and S5 were about.
+    A ``Seat`` whose readability was never asked — a synthetic tree, or one a
+    caller assembled by hand — is the only place the bit still decides, and it
+    decides towards a refusal because nothing here has any evidence either way.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
+    target = inspect_target(PID, proc=proc)
+    seat = replace(injectable(tmp_path, proc, target), target_ptrace_readable=None)
+    assert seat.target_attach_ok is None
+    assert ptrace_evidence(seat) is PtraceEvidence.UNKNOWN
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" in result.reason
+
+
+def test_a_readable_target_is_not_refused_to_a_capless_unmeasured_seat(
+    tmp_path: Path,
+) -> None:
+    """#89's shape, without a probe: not measured is not the same as refused.
+
+    ``--print-config`` measures nothing by design, and a capless seat that can
+    read ``/proc/<pid>/root`` has passed the same credential comparison the
+    attach takes, one mode weaker. Refusing it there is the Diamond defect
+    again, arrived at from the other side.
     """
     proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
     target = inspect_target(PID, proc=proc)
     seat = injectable(tmp_path, proc, target)
-    assert seat.target_attach_ok is None
+    assert not seat.cap_sys_ptrace and seat.target_attach_ok is None
+    assert ptrace_evidence(seat) is PtraceEvidence.CREDENTIALS
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert result.available, result.message()
+
+
+def test_an_unmeasured_offer_says_it_measured_nothing(tmp_path: Path) -> None:
+    """The overclaim half of the same rule, which is the one that does harm.
+
+    The configuration may be emitted on the credential check; the sentence
+    beside it may not say an attach was made, because nobody made one. An F5
+    that fails four subsystems down is what #18 and S5 were about.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
+    target = inspect_target(PID, proc=proc)
+    result = verdict(
+        assess(target, Mode.OBSERVE, injectable(tmp_path, proc, target)),
+        Flavour.DEBUGPY,
+    )
+    assert f"ptrace to pid {PID} was not measured" in result.reason
+    assert f"/proc/{PID}/root" in result.reason
+    # The word the measured path uses for itself, and the one an unmeasured
+    # offer must never borrow.
+    assert "succeeded" not in result.reason
+
+
+def test_a_denied_credential_check_refuses_and_names_the_credentials(
+    tmp_path: Path,
+) -> None:
+    """A denial is conclusive, and the capability is not what said no.
+
+    ``PTRACE_MODE_ATTACH`` is strictly stronger than the read, so nothing that
+    refuses ``/proc/<pid>/root`` permits ``gdb --pid``. Naming CAP_SYS_PTRACE
+    there would send the reader after a bit that changes nothing.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
+    target = inspect_target(PID, proc=proc)
+    seat = replace(injectable(tmp_path, proc, target), target_ptrace_readable=False)
+    assert ptrace_evidence(seat) is PtraceEvidence.DENIED
     result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
     assert not result.available
-    assert "CAP_SYS_PTRACE is not in this seat's effective set" in result.reason
+    assert f"may not read /proc/{PID}/root" in result.reason
+    assert "CAP_SYS_PTRACE" not in result.message()
+    assert "--max-rung full" in result.message()
+
+
+def test_a_measurement_outranks_the_credential_check(tmp_path: Path) -> None:
+    """Both directions: an attach that was made settles it either way.
+
+    The read is a fallback for the unasked case and nothing more — a seat that
+    attached is offered the injection whatever the read said, and one that was
+    refused is not offered it however readable the target is.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False)
+    target = inspect_target(PID, proc=proc)
+    attached = replace(
+        injectable(tmp_path, proc, target, target_attach_ok=True),
+        target_ptrace_readable=False,
+    )
+    assert verdict(assess(target, Mode.OBSERVE, attached), Flavour.DEBUGPY).available
+    refused = injectable(tmp_path, proc, target, target_attach_ok=False)
+    assert refused.target_ptrace_readable
+    result = verdict(assess(target, Mode.OBSERVE, refused), Flavour.DEBUGPY)
+    assert not result.available
+    assert "refused when this seat measured it" in result.reason
 
 
 def test_a_measured_refusal_names_the_measurement_and_not_the_bit(

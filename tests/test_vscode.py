@@ -1012,11 +1012,12 @@ def test_a_synthetic_proc_is_never_ptraced(
 
     A unit test injects a ``/proc`` whose pids name unrelated processes on the
     machine running the suite, so an attach there would measure something else
-    entirely and SIGSTOP somebody's editor. The capability mask written into the
-    tree stays the answer.
+    entirely and SIGSTOP somebody's editor. What the tree says about the seat's
+    capabilities and about the target's readability stays the answer, and the
+    run says which of the two it answered from.
     """
     attacher = RecordingAttacher(AttachOutcome(ok=True))
-    code = main(
+    main(
         [str(PID), "--print-config"],
         proc=python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False),
         which=which_of("gdb", "gdb-podbench"),
@@ -1025,10 +1026,11 @@ def test_a_synthetic_proc_is_never_ptraced(
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert attacher.attached == []
-    assert code != 0
-    assert (
-        "CAP_SYS_PTRACE is not in this seat's effective set" in capsys.readouterr().err
-    )
+    printed = capsys.readouterr().err
+    assert f"ptrace to pid {PID} was not measured" in printed
+    # The sentence the *probed* path prints. Nothing that skipped the probe may
+    # borrow it, whichever way the run then went.
+    assert "measured ptrace to pid" not in printed
 
 
 def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
@@ -1073,7 +1075,14 @@ def test_printing_a_configuration_measures_nothing(
     )
     assert measured is None
     assert attacher.attached == []
-    assert "--print-config" in capsys.readouterr().err
+    warned = capsys.readouterr().err
+    assert "--print-config" in warned
+    # It names the mechanism that decides in the probe's absence. Saying
+    # "CapEff alone" there sent the reader after the bit that decides nothing
+    # on this path, which is #89's error in a warning rather than a refusal.
+    assert f"ptrace to pid {PID} was not measured" in warned
+    assert f"/proc/{PID}/root" in warned
+    assert "CapEff" not in warned
 
 
 def test_a_refused_attach_is_measured_as_a_refusal_not_as_silence() -> None:
@@ -1536,17 +1545,50 @@ def test_provision_refuses_to_guess_the_targets_version(
     assert "--provision-python X.Y" in capsys.readouterr().err
 
 
-def test_provision_without_ptrace_says_so_and_still_installs(
+def test_provision_on_a_capless_but_readable_seat_installs_and_emits(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The DLS run of #89, as a unit test: the command, the seat and the exit.
+
+    ``debug-config --provision --print-config`` from a seat whose policy engine
+    strips SYS_PTRACE, against a target it may read. Nothing is measured —
+    ``--print-config`` touches nothing — so the run must neither refuse the
+    injection for want of a capability nor claim an attach it never made.
+    """
+    proc = python_proc(tmp_path, cap_sys_ptrace=False)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    captured = capsys.readouterr()
+    assert uv.argv[:3] == ["uv", "pip", "install"]
+    assert code == 0, captured.err
+    assert captured.out.strip()
+    # The two sentences tests/e2e/test_dls_ioc.py matches on, in the same run
+    # that installs. Both are about a capability that decides nothing here.
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" not in captured.err
+    assert "cannot be driven from here" not in captured.err
+    # And no attach was claimed either: the run probed nothing, so the sentence
+    # the probed path prints must be nowhere in it.
+    assert "measured ptrace to pid" not in captured.err
+
+
+def test_provision_into_an_unreadable_target_names_the_credentials(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Not a refusal, unlike arm64: the copy outlives the seat.
 
-    It goes into the *target's* rootfs, so a relaunch on the ``full`` rung picks
-    it up rather than repeating the install — but the run ends in
-    "CAP_SYS_PTRACE is not in this seat's effective set", and the two have to be
-    joined up or the install reads as having been spent for nothing.
+    A seat the kernel refuses ``PTRACE_MODE_READ`` on cannot drive the
+    injection — the attach takes strictly more than the read — and the note has
+    to name that rather than the capability, which is not what said no. The
+    install is still attempted and still spoken for: the tree lands in the
+    target's own rootfs, so a relaunch picks it up rather than repeating it.
     """
-    proc = python_proc(tmp_path, cap_sys_ptrace=False)
+    proc = python_proc(tmp_path, cap_sys_ptrace=False, ptrace_readable=False)
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
@@ -1558,8 +1600,8 @@ def test_provision_without_ptrace_says_so_and_still_installs(
     assert code != 0
     captured = capsys.readouterr()
     assert "outlives this seat" in captured.err
-    assert "CAP_SYS_PTRACE is not in this seat's effective set" in captured.err
-    assert uv.argv[:3] == ["uv", "pip", "install"]
+    assert f"may not read /proc/{PID}/root" in captured.err
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" not in captured.err
 
 
 def test_two_candidates_with_one_basename_get_two_names(

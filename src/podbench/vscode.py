@@ -78,6 +78,7 @@ from .flavour import (
     Flavour,
     Language,
     Mode,
+    PtraceEvidence,
     Seat,
     Target,
     Which,
@@ -86,6 +87,7 @@ from .flavour import (
     detect_mode,
     injection_command,
     inspect_target,
+    ptrace_evidence,
     survey_seat,
 )
 from .gdbcmd import (
@@ -1114,10 +1116,12 @@ def measured_attach(
 
     So it is asked, with the probe ``capreport`` uses — a ``PTRACE_SEIZE``,
     which answers the same permission question without stopping the workload.
-    It stays narrowed to the case that would otherwise be refused wrongly (a
+    It stays narrowed to the case that would otherwise be decided without one (a
     Python target, in attach mode, with nothing already listening, in a seat
     whose capability bit is clear) because a measurement that costs nothing is
-    still an answer nobody asked for anywhere else.
+    still an answer nobody asked for anywhere else. Narrow, not redundant: the
+    free credential check `flavour.ptrace_evidence` falls back to is a reason
+    not to *refuse* that seat, and only an attach is a reason to say it works.
 
     ``probe=False`` is ``--print-config``: printing what *would* be written must
     not touch the workload, however cheap touching it has become.
@@ -1125,7 +1129,8 @@ def measured_attach(
     A synthetic ``/proc`` is never probed. Its pids name unrelated processes on
     whatever machine is running, so an attach there would measure something
     else entirely — and the unit tests that inject one must keep answering from
-    the capability mask they wrote into it.
+    what they wrote into the tree: the capability mask, and whether they gave
+    the target a ``root`` that resolves.
     """
     if proc != DEFAULT_PROC:
         return None
@@ -1140,11 +1145,18 @@ def measured_attach(
         # Said only here, where the answer would otherwise have differed: every
         # return above is `None` whether or not a probe was allowed, so warning
         # earlier would be a paragraph about nothing on most runs.
+        #
+        # It names the credential check rather than CapEff because that is what
+        # decides the injection on this path (`flavour.ptrace_evidence`), and a
+        # warning that named the bit would send the reader after the mechanism
+        # that is not deciding - which is #89 in miniature.
         _warn(
             f"--print-config touches nothing, so ptrace to pid {target.pid} was "
-            "not measured and the debugpy injection is judged on CapEff alone. "
-            "Re-run `podbench debug-config` without --print-config, or "
-            "`podbench capreport`, to measure it"
+            "not measured; the debugpy injection is judged on whether this seat "
+            f"may read /proc/{target.pid}/root, which the kernel gates on the "
+            "same credentials an attach takes. Re-run `podbench debug-config` "
+            f"without --print-config, or `podbench capreport {target.pid}`, to "
+            "measure the attach itself"
         )
         return None
     outcome = (default_attacher() if attacher is None else attacher).attach(target.pid)
@@ -1219,6 +1231,28 @@ def _inject(
     for message in injected.messages:
         _warn(f"--provision: {message}")
     return injected.ok
+
+
+def _no_ptrace_clause(target: Target, evidence: PtraceEvidence) -> str:
+    """Why the injection cannot be driven from here, in the reader's terms.
+
+    One clause per mechanism, because the reader's next move differs: a measured
+    refusal has four candidate mechanisms and `capreport` names which, while a
+    credential denial is the seat's own uid against the target's and no
+    capability will move it.
+
+    >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
+    >>> _no_ptrace_clause(target, PtraceEvidence.DENIED)
+    'this seat may not read /proc/7/root, which takes the credentials an attach takes'
+    """
+    if evidence is PtraceEvidence.REFUSED:
+        return "ptrace to the target was refused when this seat measured it"
+    if evidence is PtraceEvidence.DENIED:
+        return (
+            f"this seat may not read /proc/{target.pid}/root, which takes the "
+            "credentials an attach takes"
+        )
+    return "this seat cannot ptrace the target"
 
 
 def _provision(
@@ -1317,21 +1351,28 @@ def _provision(
             "pass --provision-python X.Y (`python -V` in the target names it)"
         )
         return False
-    # Asked of the same predicate `assess` uses, not of the bit: this sentence
+    # Asked of the same evidence `assess` uses, not of the bit: this sentence
     # and the refusal it prepares the reader for are two spellings of one fact,
     # and a seat that measured an attach reads "the injection cannot be driven
     # from here" immediately before the injection is driven from here (#89).
+    # Said at all only where the injection is really withdrawn: an unmeasured
+    # seat that passes the credential check is offered it, and the caveat it is
+    # owed - that nothing attached - is `assess`'s to print beside the emission.
     if not can_ptrace_target(seat):
         # Said, not refused - unlike the arm64 gate above. The tree lands in the
         # *target's* rootfs, which outlives this seat, so provisioning now and
         # relaunching on the `full` rung still works; what would be wrong is
         # letting the install land and then reading "CAP_SYS_PTRACE is not in
         # this seat's effective set" two lines later with nothing joining them.
+        # The clause names the mechanism that said no, because the remedy
+        # differs: a measured refusal is one of four mechanisms and a credential
+        # denial is the seat's uid.
         _warn(
-            "--provision: this seat cannot ptrace the target, so the injection "
-            "cannot be driven from here whatever gets installed - the copy goes "
-            "into the target's own rootfs and outlives this seat, so a relaunch "
-            "on the `full` rung picks it up rather than repeating the install"
+            f"--provision: {_no_ptrace_clause(target, ptrace_evidence(seat))}, so the "
+            "injection cannot be driven from here whatever gets installed - the "
+            "copy goes into the target's own rootfs and outlives this seat, so "
+            "a relaunch on the `full` rung with `podbench attach --max-rung "
+            "full` picks it up rather than repeating the install"
         )
     # Announced before it runs: uv's output is captured for the failure message,
     # so a resolve against an index with no route is several silent seconds

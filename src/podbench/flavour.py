@@ -22,8 +22,11 @@ That last one is the weakest of them, and only ever a fallback: the injection
 needs *ptrace*, which the capability is one of four ways to have — a same-uid
 attach under ``ptrace_scope=0`` needs none of it. So where an attach has really
 been tried, :attr:`Seat.target_attach_ok` decides and the bit does not (issue
-#89); where it has not, the bit still decides, because an unmeasured attach is
-no evidence that attach works.
+#89); where it has not, the bit is not the last word either, because a clear
+bit is no evidence that attach *fails*. :func:`ptrace_evidence` keeps the three
+answers apart — attached, refused, and nobody asked — and an unasked attach
+falls back to whether this seat may read ``/proc/<pid>/root``, which the kernel
+gates on the same credential comparison the attach takes.
 
 **Nothing here decides for the user.** :func:`assess` returns a verdict for
 every flavour, so ``debug-config`` can emit each configuration that applies and
@@ -64,6 +67,7 @@ from pathlib import Path
 from .elf import ElfInfo, debugpy_helper_name, debugpy_helper_published, read_elf
 from .proc import (
     DEFAULT_PROC,
+    ptrace_readable,
     read_cmdline,
     read_comm,
     read_exe,
@@ -82,6 +86,7 @@ __all__ = [
     "Flavour",
     "Language",
     "Mode",
+    "PtraceEvidence",
     "Seat",
     "Target",
     "Which",
@@ -92,6 +97,7 @@ __all__ = [
     "format_inventory",
     "inspect_target",
     "inventory",
+    "ptrace_evidence",
     "survey_seat",
 ]
 
@@ -193,6 +199,58 @@ class Mode(enum.Enum):
     """A process in *this* container — a ``podbench dev`` pod, where the seat
     owns PID 1. Launch rather than attach, and no mappings at all, because the
     editor and the interpreter share the same inodes."""
+
+
+class PtraceEvidence(enum.Enum):
+    """What is known about ptracing the target, and how it came to be known.
+
+    Six answers rather than a boolean, because "may this seat ptrace" and "did
+    anyone find out" are different questions and the second one decides what may
+    be *said*. Two of these permit the injection with no attach having been
+    made, and one refuses it with no capability at fault; a caller that
+    collapsed them into yes/no would print a sentence for the wrong mechanism.
+    """
+
+    ATTACHED = "attached"
+    """A real attach was made from this seat and succeeded. Proof."""
+
+    REFUSED = "refused"
+    """A real attach was made from this seat and was refused. Also proof, and
+    the capability is not necessarily what said no."""
+
+    CAPABILITY = "capability"
+    """Nobody attached, and this seat holds CAP_SYS_PTRACE."""
+
+    CREDENTIALS = "credentials"
+    """Nobody attached, and this seat may take ``PTRACE_MODE_READ`` on the
+    target — the same ``ptrace_may_access()`` comparison, one mode weaker.
+
+    Enough not to refuse, never enough to claim: Yama and the LSMs gate attach
+    and not read, so a seat here may still be refused by one of them. Anything
+    printed on this evidence has to say the attach was not measured."""
+
+    DENIED = "denied"
+    """Nobody attached, and ``PTRACE_MODE_READ`` on the target is denied.
+
+    Conclusive, in the one direction the implication runs: ``PTRACE_MODE_ATTACH``
+    is strictly stronger, so nothing that refuses the read permits the attach."""
+
+    UNKNOWN = "unknown"
+    """Nobody attached, no capability, and readability was never measured — a
+    synthetic ``/proc``, or a ``Seat`` a caller assembled by hand."""
+
+    @property
+    def permits(self) -> bool:
+        """Whether the injection may be offered on this evidence.
+
+        >>> [e.name for e in PtraceEvidence if e.permits]
+        ['ATTACHED', 'CAPABILITY', 'CREDENTIALS']
+        """
+        return self in (
+            PtraceEvidence.ATTACHED,
+            PtraceEvidence.CAPABILITY,
+            PtraceEvidence.CREDENTIALS,
+        )
 
 
 @dataclass(frozen=True)
@@ -366,9 +424,26 @@ class Seat:
     all (issue #89).
 
     ``None`` means nobody measured it — which is **not** the same as ``False``.
-    :func:`assess` falls back to the capability bit in that case, because an
-    unmeasured attach is not evidence that attach works, and reporting one as if
-    it were is the overclaim spike S5 and issue #51 exist to prevent.
+    :func:`ptrace_evidence` falls back to the capability bit and then to
+    :attr:`target_ptrace_readable` in that case, because an unmeasured attach is
+    not evidence that attach works, and reporting one as if it were is the
+    overclaim spike S5 and issue #51 exist to prevent.
+    """
+
+    target_ptrace_readable: bool | None = None
+    """Whether this seat may take ``PTRACE_MODE_READ`` on the target.
+
+    Free, and so read on every survey: opening ``/proc/<pid>/root`` is gated on
+    the ``ptrace_may_access()`` credential comparison an attach takes, with no
+    ptrace syscall, no signal and no stop
+    (:func:`podbench.proc.ptrace_readable`).
+
+    It is read in one direction only, because the implication runs in one
+    direction only. ``PTRACE_MODE_ATTACH`` is strictly stronger than
+    ``PTRACE_MODE_READ``, so a denial here is conclusive and a success is merely
+    encouraging: Yama and the LSMs gate attach and not read. That is enough to
+    stop *refusing* an unmeasured attach and never enough to *claim* one, which
+    is the whole distinction :func:`ptrace_evidence` exists to keep.
     """
 
     def has(self, name: str) -> bool:
@@ -679,8 +754,10 @@ def survey_seat(
     outlives the seize that made the attach free. So the three facts that cost
     something to learn — ``listening_port``, ``program_load_error`` and
     ``target_attach_ok`` — are handed in by a caller that decided each was worth
-    its price. What is read here costs a stat and a read of
-    ``/proc/self/status``.
+    its price. What is read here costs a stat, a read of ``/proc/self/status``
+    and one ``listdir`` of ``/proc/<pid>/root``: the last is a *credential*
+    check and not an attach, so it obeys the same rule — it touches the target
+    not at all.
     """
     here = _debugpy_dir(debugpy_root)
     there = _target_debugpy(
@@ -705,6 +782,7 @@ def survey_seat(
         provision_dest=provision_dest,
         program_load_error=program_load_error,
         target_attach_ok=target_attach_ok,
+        target_ptrace_readable=ptrace_readable(target.pid, proc=proc),
     )
 
 
@@ -988,6 +1066,40 @@ _IMAGE_REMEDY = (
 )
 
 
+def _injection_reason(target: Target, seat: Seat) -> str:
+    """Why the debugpy entry is being emitted, including what was not measured.
+
+    The prerequisite list is a set of yes/no gates, and one of them can be
+    passed on evidence that is short of proof: a seat with no CAP_SYS_PTRACE
+    that nobody attached from is offered the injection because it may *read*
+    the target, which is one ptrace mode weaker than the attach. That is a good
+    enough reason to emit a configuration and not a good enough reason to say
+    the attach works, so the sentence beside it says which of the two happened.
+    Reading "every prerequisite is met" from a seat that measured nothing is how
+    a user reaches an F5 that fails four subsystems down (S5, issue #51).
+
+    >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
+    >>> reason = _injection_reason(target, Seat(machine="x86_64",
+    ...     cap_sys_ptrace=False, target_ptrace_readable=True))
+    >>> "ptrace to pid 7 was not measured" in reason
+    True
+    """
+    if ptrace_evidence(seat) is not PtraceEvidence.CREDENTIALS:
+        return (
+            "every pid-injection prerequisite is met; start the server with the "
+            "command printed below, then connect"
+        )
+    return (
+        "every pid-injection prerequisite is met, but ptrace to pid "
+        f"{target.pid} was not measured: this seat may read "
+        f"/proc/{target.pid}/root, which the kernel gates on the same "
+        "credentials an attach takes, so nothing here refuses the injection - "
+        f"it is not a claim that it works. `podbench capreport {target.pid}` "
+        "attaches for real and settles it. Start the server with the command "
+        "printed below, then connect"
+    )
+
+
 def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
     if target.language is not Language.PYTHON:
         return Assessment(
@@ -1022,8 +1134,7 @@ def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
         return Assessment(
             Flavour.DEBUGPY,
             True,
-            "every pid-injection prerequisite is met; start the server with the "
-            "command printed below, then connect",
+            _injection_reason(target, seat),
         )
     # Live-failure order, except that a structural blocker is promoted: every
     # other prerequisite has a remedy inside this pod, and the architecture one
@@ -1053,24 +1164,71 @@ def _provision_paste(target: Target, seat: Seat) -> str:
     )
 
 
+def ptrace_evidence(seat: Seat) -> PtraceEvidence:
+    """What this seat knows about ptracing the target, in order of strength.
+
+    A measurement first, because it is the only thing that settles the question
+    either way; then the capability, which grants ptrace where it is held; and
+    only then the free ``PTRACE_MODE_READ`` check, which speaks *last* and is
+    consulted at all only where the two above have said nothing. That ordering
+    is what keeps it from taking anything away: no seat this returns
+    :attr:`~PtraceEvidence.DENIED` for would have been permitted before, since
+    an unmeasured capless seat was refused outright.
+
+    >>> capless = Seat(machine="x86_64", cap_sys_ptrace=False)
+    >>> ptrace_evidence(capless)  # nobody asked anything at all
+    <PtraceEvidence.UNKNOWN: 'unknown'>
+    >>> ptrace_evidence(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                      target_attach_ok=True, target_ptrace_readable=False))
+    <PtraceEvidence.ATTACHED: 'attached'>
+    >>> ptrace_evidence(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                      target_ptrace_readable=True))
+    <PtraceEvidence.CREDENTIALS: 'credentials'>
+    >>> ptrace_evidence(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                      target_ptrace_readable=False))
+    <PtraceEvidence.DENIED: 'denied'>
+    """
+    if seat.target_attach_ok is not None:
+        return (
+            PtraceEvidence.ATTACHED if seat.target_attach_ok else PtraceEvidence.REFUSED
+        )
+    if seat.cap_sys_ptrace:
+        return PtraceEvidence.CAPABILITY
+    if seat.target_ptrace_readable is None:
+        return PtraceEvidence.UNKNOWN
+    return (
+        PtraceEvidence.CREDENTIALS
+        if seat.target_ptrace_readable
+        else PtraceEvidence.DENIED
+    )
+
+
 def can_ptrace_target(seat: Seat) -> bool:
-    """Whether this seat may ptrace the target — measured wherever it was.
+    """Whether the injection may be offered — which is not "attach works".
 
     The one place that decision is made, because it is made twice: the debugpy
     pid-injection prerequisite here, and ``--provision``'s note about what the
     install will and will not buy. Two spellings of it drifted apart once
     already (issue #89), and the reader sees both sentences in one run.
 
+    ``True`` on unmeasured evidence means *nothing here refuses it*, and the
+    text printed alongside must say so: :func:`ptrace_evidence` is what tells
+    the two apart, and every caller that prints a sentence asks it and not this.
+
     >>> capless = Seat(machine="x86_64", cap_sys_ptrace=False)
-    >>> can_ptrace_target(capless)  # nobody attached, so the bit is all there is
+    >>> can_ptrace_target(capless)  # nothing measured, no capability, no read
     False
     >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=False,
     ...                        target_attach_ok=True))
     True
+    >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                        target_ptrace_readable=True))  # not refused
+    True
+    >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=True,
+    ...                        target_attach_ok=False))  # the measurement wins
+    False
     """
-    if seat.target_attach_ok is not None:
-        return seat.target_attach_ok
-    return seat.cap_sys_ptrace
+    return ptrace_evidence(seat).permits
 
 
 def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str, str]]:
@@ -1167,12 +1325,19 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     # the remedy the refusal offered, relaunching on the `full` rung, lands the
     # same capless seat again, because the policy strips it every time.
     #
-    # So the measurement wins where there is one. Where there is not, the
-    # answer is still the capability bit: an unmeasured attach is not evidence,
-    # and inferring one from the accounting is the overclaim spike S5 and issue
-    # #51 exist to prevent.
+    # So the measurement wins where there is one. Where there is not, an
+    # unmeasured attach is still not evidence that attach *works* - inferring
+    # one from the accounting is the overclaim spike S5 and issue #51 exist to
+    # prevent - but a clear capability bit is not evidence that it fails
+    # either, and refusing on it is the same #89 error in the other direction.
+    # So the fallback is the free credential check: `/proc/<pid>/root` opens
+    # under `ptrace_may_access(PTRACE_MODE_READ_FSCREDS)`, one mode weaker than
+    # the attach and no ptrace syscall at all. A denial there is conclusive and
+    # refuses; a success only declines to refuse, and every sentence printed on
+    # it says the attach was not measured.
     if not can_ptrace_target(seat):
-        if seat.target_attach_ok is False:
+        evidence = ptrace_evidence(seat)
+        if evidence is PtraceEvidence.REFUSED:
             unmet.append(
                 (
                     False,
@@ -1183,16 +1348,32 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                     "names is worth changing",
                 )
             )
+        elif evidence is PtraceEvidence.DENIED:
+            unmet.append(
+                (
+                    False,
+                    f"this seat may not read /proc/{target.pid}/root, which the "
+                    "kernel gates on the same ptrace_may_access() credentials "
+                    "an attach takes - and PTRACE_MODE_ATTACH is strictly "
+                    "stronger than the read, so the injection's `gdb --pid` "
+                    "would be refused too. Not the capability: the credentials",
+                    f"`podbench capreport {target.pid}` names which of the four "
+                    "mechanisms says no; where it is a uid mismatch, "
+                    "`podbench attach --max-rung full` lands a seat that runs "
+                    "as root",
+                )
+            )
         else:
             unmet.append(
                 (
                     False,
                     "CAP_SYS_PTRACE is not in this seat's effective set, and "
                     "the injection drives gdb to attach to the target",
-                    "relaunch on the `full` rung (root + SYS_PTRACE); "
-                    "`capreport` names which rung this seat landed on, and "
-                    "measures whether this seat can attach without the "
-                    "capability at all",
+                    "relaunch on the `full` rung with `podbench attach "
+                    "--max-rung full` (root + SYS_PTRACE); "
+                    f"`podbench capreport {target.pid}` names which rung this "
+                    "seat landed on, and measures whether this seat can attach "
+                    "without the capability at all",
                 )
             )
     # Last, because it is the last wall in live-failure order: the driver starts
