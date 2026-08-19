@@ -142,7 +142,7 @@ measured
   blocker     none
   node        kind-worker
   yama        1
-  uids        seat 0, target 0
+  ids         seat 0:0, target 0:0
 ```
 
 Four lines are worth learning to read:

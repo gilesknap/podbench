@@ -55,6 +55,7 @@ __all__ = [
     "read_cmdline",
     "read_comm",
     "read_exe",
+    "read_gid",
     "read_ppid",
     "read_status_field",
     "read_tracer_pid",
@@ -216,7 +217,34 @@ def read_status_field(
 
 def read_uid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
     """The process's real UID — the first of the four on the ``Uid:`` line."""
-    field = read_status_field(pid, "Uid", proc=proc)
+    return _first_of(read_status_field(pid, "Uid", proc=proc))
+
+
+def read_gid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
+    """The process's real GID — the first of the four on the ``Gid:`` line.
+
+    The peer of :func:`read_uid`, and needed for the same reason: the kernel's
+    ``__ptrace_may_access()`` compares ``gid``, ``egid`` and ``sgid`` exactly as
+    it compares the three user ids, so a seat that knows only the uids cannot
+    say whether the credential check will pass.
+
+    It is also the *only* source of the truth in the common case. A manifest
+    that sets ``runAsUser`` and no ``runAsGroup`` leaves
+    :func:`podbench.spec.target_uid_gid` returning a gid of ``None`` while the
+    process runs in whatever group the image's user carries — p47-blueapi-0 sets
+    ``runAsUser: 1000`` and runs at gid 1000. ``status`` is world-readable and
+    needs no ptrace permission, so a seat landed at the *wrong* ids can still
+    read it, which is what makes the correction possible at all.
+    """
+    return _first_of(read_status_field(pid, "Gid", proc=proc))
+
+
+def _first_of(field: str | None) -> int | None:
+    """The first whitespace-separated number of a ``Uid:``/``Gid:`` line.
+
+    Both lines carry real, effective, saved and filesystem ids in that order,
+    and the *real* one is what the credential check compares.
+    """
     if field is None:
         return None
     parts = field.split()

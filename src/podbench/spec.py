@@ -341,7 +341,6 @@ def ephemeral_container_spec(
     command: Sequence[str] = AGENT_COMMAND,
     env: Mapping[str, str] | None = None,
     volume_mounts: Sequence[Mapping[str, Any]] | None = None,
-    seat_gid_root: bool = False,
     seccomp_profile: Mapping[str, Any] | None = None,
     pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
@@ -371,12 +370,13 @@ def ephemeral_container_spec(
     not necessarily have, and a node whose ``RuntimeDefault`` denies ``ptrace``
     turns it into the blocker (measured at DLS, 2026-08-18).
 
-    ``seat_gid_root`` pins ``runAsGroup: 0`` on the non-root rungs, which is
-    what lets the agent write ``/etc/passwd``. It stopped being the difference
-    between a seat with ssh and one reachable only by ``kubectl exec`` in #102 -
-    the agent registers its record in :data:`podbench.agent.SEAT_NSS_PATH`
-    instead, whatever gid the seat carries - and against a non-zero-gid target it
-    now costs more than it buys. See :func:`_seat_gid`.
+    ``target_gid`` is pinned as ``runAsGroup`` on the non-root rungs, and it is
+    not decoration beside ``target_uid``: ``__ptrace_may_access()`` compares
+    ``gid``, ``egid`` and ``sgid`` as peers of the three user ids, so a seat that
+    mirrors the uid and leaves the group at the image's gid 0 is denied every
+    ptrace-gated operation exactly as one that mirrors neither (#103, measured on
+    p47-blueapi-0). Where the manifest is silent the caller has to have measured
+    it - :func:`target_uid_gid` returns ``None`` and only ``/proc`` knows.
     """
     spec: dict[str, Any] = {
         "name": name,
@@ -388,7 +388,6 @@ def ephemeral_container_spec(
             rung,
             target_uid,
             target_gid,
-            seat_gid_root=seat_gid_root,
             seccomp_profile=seccomp_profile,
         ),
     }
@@ -414,34 +413,6 @@ def ephemeral_container_spec(
 
     validate_security_context(as_dict(spec["securityContext"]))
     return spec
-
-
-def _seat_gid(context: dict[str, Any], gid_root: bool) -> dict[str, Any]:
-    """Apply the opt-in ``runAsGroup: 0`` override to a non-root rung.
-
-    GID 0 *was* how a container running as an arbitrary uid registered itself in
-    NSS: the debug image makes ``/etc/passwd`` group-writable (OpenShift's
-    convention) and the agent appends a record for whatever uid it turned out to
-    be. Since #102 that is the fallback, not the route - the record goes to
-    :data:`podbench.agent.SEAT_NSS_PATH`, which the image ships world-writable,
-    so a seat that database will serve needs no gid pinned to get a login.
-
-    The flag stays because the fallback stays reachable, and for more seats than
-    an old image: ``extrausers`` ignores a record whose uid or gid is under its
-    compiled-in floor of 500, so a target running as a low-numbered system uid
-    needs the old route as much as an image whose ``nsswitch.conf`` never named
-    the database (:func:`podbench.agent.extrausers_serves`). Pod Security
-    Admission does not constrain
-    ``runAsGroup`` at any level, so it remains admissible wherever the rung
-    itself is - measured on a ``restricted`` namespace, uid 1000 / gid 0. What it
-    costs is not admission but the debugger: ``__ptrace_may_access`` compares the
-    gid as well as the uid, and a mismatch denies in both directions (measured on
-    #98), so pinning group 0 against a target in group 36070 leaves a seat that
-    can log in and cannot trace.
-    """
-    if gid_root:
-        context["runAsGroup"] = 0
-    return context
 
 
 _NOT_PRIVILEGED = {
@@ -479,7 +450,6 @@ def _rung_security_context(
     target_uid: int | None,
     target_gid: int | None,
     *,
-    seat_gid_root: bool = False,
     seccomp_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if rung is Rung.FULL:
@@ -527,7 +497,7 @@ def _rung_security_context(
         # halves to match (#98), and the uid half is already gone.
         if target_uid and target_gid is not None:
             restricted["runAsGroup"] = target_gid
-        return _seat_gid(restricted, seat_gid_root)
+        return restricted
 
     if target_uid is None:
         raise InvalidSpecError(
@@ -543,17 +513,16 @@ def _rung_security_context(
             "namespace admits SYS_PTRACE, otherwise Rung.SEAT."
         )
     restricted["runAsUser"] = target_uid
-    # The target's own gid is the default and is worth defending, because it used
-    # to look like a cost: it is what stops the seat writing /etc/passwd, and
-    # until #102 that read as "this rung has no ssh". The gid was still right and
-    # the append was wrong — ptrace compares the gid as well as the uid, so a seat
-    # in another group can log in and not trace (measured, #98) — and the seat now
-    # registers its record somewhere a non-zero gid can write. `seat_gid_root`
-    # keeps the old route one flag away for the seats that database will not
-    # serve: an image without it, or a target under its uid/gid floors.
+    # The target's own gid, and it is half the rung rather than a refinement of
+    # it: __ptrace_may_access() wants six equalities, so a seat at the target's
+    # uid in the image's group 0 reads /proc/<pid>/root, maps, environ and exe
+    # exactly as well as a seat at the wrong uid does, which is not at all
+    # (#103). `None` here means nobody has measured it yet - the manifest does
+    # not say and no seat has read /proc - and pinning a guess would be worse
+    # than pinning nothing.
     if target_gid is not None:
         restricted["runAsGroup"] = target_gid
-    return _seat_gid(restricted, seat_gid_root)
+    return restricted
 
 
 def seat_identity_volume_mounts() -> list[dict[str, Any]]:
@@ -940,7 +909,17 @@ def target_uid_gid(
 
     ``None`` means the manifest does not say, and the effective id comes from
     the image — which only the running process knows, so the caller must read
-    ``/proc/<pid>/status`` instead of assuming root.
+    ``/proc/<pid>/status`` (:func:`podbench.proc.read_uid`,
+    :func:`podbench.proc.read_gid`) instead of assuming root.
+
+    A ``None`` **gid beside a stated uid is the common case, not the exotic
+    one**: ``runAsUser`` with no ``runAsGroup`` is what a hardened workload
+    usually declares, and the group then comes from the image's own user.
+    Measured on p47-blueapi-0 (2026-08-19), whose manifest sets ``runAsUser:
+    1000`` and nothing else while the process runs at gid 1000. A seat that
+    treats that ``None`` as "no group to mirror" pins none, runs at the debug
+    image's gid 0, and fails the credential check on the group half alone
+    (#103).
     """
     spec = as_dict(pod_json.get("spec"))
     pod_context = as_dict(spec.get("securityContext"))

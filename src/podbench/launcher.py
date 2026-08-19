@@ -116,6 +116,7 @@ __all__ = [
     "DEFAULT_IMAGE",
     "EDITOR_PROBE_REMINDER",
     "HOST_KEY_ARGV",
+    "ID_CORRECTION_WARNING",
     "LADDER",
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
@@ -152,6 +153,7 @@ __all__ = [
     "format_seats",
     "format_session",
     "host_alias_in",
+    "id_correction",
     "identity_paths",
     "kubectl_for",
     "list_seats",
@@ -657,6 +659,15 @@ class SeatInfo:
     Read back from the spec rather than remembered, because it decides which
     sshd layout the ProxyCommand must name."""
 
+    gid: int | None = None
+    """The gid pinned in its securityContext, ``None`` for an unpinned seat.
+
+    Read back for a reason the uid does not have: an ephemeral container's
+    securityContext is fixed for its lifetime, so a seat landed in the wrong
+    group can never be corrected in place, and :func:`running_seat` uses this to
+    decline reusing one - which is what keeps the id correction to a single
+    extra container name per pod rather than one per attach."""
+
     image: str | None = None
     target: str | None = None
     home: str | None = None
@@ -703,6 +714,9 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
                 phase=phase,
                 detail=detail,
                 uid=_as_int(as_dict(container.get("securityContext")).get("runAsUser")),
+                gid=_as_int(
+                    as_dict(container.get("securityContext")).get("runAsGroup")
+                ),
                 image=_as_str(container.get("image")),
                 target=_as_str(container.get("targetContainerName")),
                 home=spec_env(container).get("HOME"),
@@ -713,12 +727,45 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
 
 
 def running_seat(
-    pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE
+    pod_json: Mapping[str, Any],
+    *,
+    base: str = CONTAINER_BASE,
+    ids: tuple[int, int] | None = None,
 ) -> SeatInfo | None:
-    """The podbench container a reconnect should reuse, if there is one."""
+    """The podbench container a reconnect should reuse, if there is one.
+
+    ``ids`` is the ``(uid, gid)`` pair a seat must already be pinned to for a
+    reconnect to be honest about it. An ephemeral container's securityContext is
+    fixed for the pod's lifetime, so a seat in the wrong group cannot be
+    corrected in place and reusing it would silently ignore the ids the caller
+    asked for - the same reasoning as :func:`above_ceiling`, and the same
+    currency, a permanent name.
+
+    It is also what **bounds the automatic correction to one extra name per
+    pod**. The first attach on a target whose manifest states no ``runAsGroup``
+    lands a seat at the image's gid, measures the target's real gid and lands a
+    corrected one; every later attach reaches the same first seat, wants the same
+    corrected ids, and *finds the corrected seat already running* here instead of
+    landing a third.
+
+    >>> spec = {"spec": {"ephemeralContainers": [
+    ...     {"name": "podbench-1", "securityContext": {"runAsUser": 1000}},
+    ...     {"name": "podbench-2",
+    ...      "securityContext": {"runAsUser": 1000, "runAsGroup": 1000}}]},
+    ...  "status": {"ephemeralContainerStatuses": [
+    ...     {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
+    ...     {"name": "podbench-2", "state": {"running": {"startedAt": "t"}}}]}}
+    >>> running_seat(spec).name
+    'podbench-1'
+    >>> running_seat(spec, ids=(1000, 1000)).name
+    'podbench-2'
+    """
     for seat in seats(pod_json, base=base):
-        if seat.running:
-            return seat
+        if not seat.running:
+            continue
+        if ids is not None and (seat.uid, seat.gid) != ids:
+            continue
+        return seat
     return None
 
 
@@ -994,6 +1041,15 @@ class Session:
     """``runAsUser`` as actually pinned in the container's securityContext —
     ``None`` when the seat rung pinned nothing and the image's own user wins."""
 
+    gid: int | None = None
+    """``runAsGroup`` as actually pinned, ``None`` when the image's group wins.
+
+    Its own field rather than a detail of :attr:`uid`, because the two are
+    pinned separately and the kernel checks them separately: a manifest stating
+    ``runAsUser`` and no ``runAsGroup`` lands a seat with this ``None``, running
+    at the debug image's gid 0 against a target in another group, and
+    ``__ptrace_may_access()`` denies on the group half alone (#103)."""
+
     home: str | None = None
     """``$HOME`` as pinned in the container's env, ``None`` for the image's own.
     :func:`seat_layout` derives every path the ProxyCommand names from it."""
@@ -1051,10 +1107,11 @@ def attach(
     image: str = DEFAULT_IMAGE,
     public_key: str | None = None,
     target_uid: int | None = None,
+    target_gid: int | None = None,
     max_rung: Rung | None = None,
     mounts: Sequence[str] = (),
     force_new: bool = False,
-    seat_gid_root: bool = False,
+    correct_ids: bool = True,
     seat_identity: bool = True,
     pull_policy: str = DEFAULT_PULL_POLICY,
     probe: bool = True,
@@ -1081,17 +1138,26 @@ def attach(
     (issue #94). A running seat above the ceiling is not reused, because an
     ephemeral container's securityContext is fixed for the pod's lifetime.
 
-    ``seat_gid_root`` lands the non-root rungs with ``runAsGroup: 0``, which is
-    what lets a seat append to ``/etc/passwd``. It is no longer how a seat gets
-    its login: since #102 the agent registers its own record in
-    :data:`podbench.agent.SEAT_NSS_PATH` wherever that database will serve it,
-    which needs no particular gid. What is left for the flag is a seat that
-    database refuses - an image whose NSS does not consult it, or a uid or gid
-    under its floors, which includes every low-numbered system uid. It is opt-in
-    because of what it costs, not because a cluster would refuse it — pinning
-    group 0 breaks the gid half of the credential match ptrace makes against a
-    target whose gid is not 0, so on such a target it buys ssh and takes the
-    debugger (measured, #98).
+    ``target_uid`` and ``target_gid`` override what the pod spec says, for the
+    manifest that states neither or only one of them. They are *pins*: an id
+    given here is not corrected against the measurement, because a flag the
+    launcher quietly overrode would be worse than a wrong seat.
+
+    ``correct_ids`` is what makes the gid right without a flag at all. The
+    manifest usually states ``runAsUser`` and no ``runAsGroup``, so the seat
+    lands in the debug image's group 0 against a target in its image's own
+    group, and ``__ptrace_may_access()`` compares the group ids as peers of the
+    user ids - the seat can log in and cannot trace (#103, measured on
+    p47-blueapi-0: seat 1000:0, target 1000:1000). Only the seat can read the
+    truth, from the target's world-readable ``/proc/<pid>/status``, and only a
+    *new* container can act on it, since an ephemeral container's
+    securityContext is fixed for its lifetime. So podbench lands the corrected
+    seat itself, **once**: :func:`id_correction` decides, the second attach
+    carries ``correct_ids=False``, and :func:`running_seat` finds the corrected
+    container on every later attach instead of landing another. A manifest that
+    states both ids costs one name as it always did; one that states only the
+    uid costs two, and only ever two. ``probe=False`` measures nothing, so it
+    corrects nothing either.
 
     ``seat_identity`` mounts the pod's home volume when it has one
     (:func:`seat_identity_mounts`). It is on by default and has no effect on a
@@ -1124,11 +1190,38 @@ def attach(
         volume_mounts = _merge_mounts(volume_mounts, convention)
     identity_declared = SEAT_IDENTITY_VOLUME in declared_volumes(pod_json)
 
-    existing = running_seat(pod_json)
+    manifest_uid, _ = target_uid_gid(pod_json, workload)
+    wanted_uid = target_uid if target_uid is not None else manifest_uid
+    # Only when a *gid was asked for* - by flag, or by the correction below -
+    # and never off the manifest alone. A pod stating both ids would otherwise
+    # make this reject a running full-rung seat, which pins uid 0 and no group
+    # by construction and is the best seat there is. The rule enforced here is
+    # "honour the ids the caller named", which is the rule `--max-rung` gets,
+    # and a manifest names nothing.
+    #
+    # `wanted_uid` truthy rather than merely not None: uid 0 is the one pin no
+    # rung below full ever writes, so filtering on (0, gid) would reject every
+    # seat that could exist and land a fresh one on every attach.
+    wanted_ids = (
+        (wanted_uid, target_gid) if target_gid is not None and wanted_uid else None
+    )
+    existing = running_seat(pod_json, ids=wanted_ids)
+    if existing is None and wanted_ids is not None and correct_ids:
+        # Said only on the path a human asked for: the correction below runs
+        # with `correct_ids=False` and carries its own one-line account of the
+        # name it is spending, and two warnings for one event is how a report
+        # becomes mostly warnings.
+        stale = running_seat(pod_json)
+        if stale is not None:
+            warnings.append(
+                f"{stale.name} is running but was not reused because it is "
+                f"pinned to {_ids(stale.uid, stale.gid)}, not the "
+                f"{_ids(wanted_uid, target_gid)} asked for: an ephemeral "
+                "container's securityContext is fixed for the pod's lifetime, "
+                "so a new container is being landed - and its name is spent "
+                "whether or not it works out"
+            )
     if existing is not None and max_rung is not None:
-        wanted_uid, _ = target_uid_gid(pod_json, workload)
-        if target_uid is not None:
-            wanted_uid = target_uid
         above = above_ceiling(existing, max_rung, target_uid=wanted_uid)
         if above is not None:
             # A ceiling is about the securityContext, which is fixed for an
@@ -1152,6 +1245,7 @@ def attach(
             rung=existing.rung,
             reused=True,
             uid=existing.uid,
+            gid=existing.gid,
             home=existing.home,
             identity_mounted=existing.identity_mounted,
             steps=(
@@ -1174,12 +1268,6 @@ def attach(
                 "volumeMounts are fixed when it is created and cannot be added "
                 "to, so --mount only takes effect on a seat landed with --new"
             )
-        if seat_gid_root:
-            warnings.append(
-                "reconnected to an existing container: its securityContext is "
-                "fixed for the pod's lifetime, so --seat-gid-root only takes "
-                "effect on a seat landed with --new"
-            )
     else:
         session = _walk_ladder(
             kubectl,
@@ -1189,9 +1277,9 @@ def attach(
             image=image,
             public_key=public_key,
             target_uid=target_uid,
+            target_gid=target_gid,
             max_rung=max_rung,
             volume_mounts=volume_mounts,
-            seat_gid_root=seat_gid_root,
             pull_policy=pull_policy,
             timeout=timeout,
             poll_interval=poll_interval,
@@ -1236,8 +1324,137 @@ def attach(
         report, probe_warnings = run_capreport(kubectl, session.seat)
         session = replace(session, report=report)
         warnings.extend(probe_warnings)
+        correction = (
+            id_correction(report, pinned_uid=target_uid, pinned_gid=target_gid)
+            if correct_ids
+            else None
+        )
+        if report is not None and correction is not None:
+            corrected_uid, corrected_gid = correction
+            corrected = attach(
+                kubectl,
+                pod_reference,
+                target=target,
+                image=image,
+                public_key=public_key,
+                target_uid=corrected_uid,
+                target_gid=corrected_gid,
+                max_rung=max_rung,
+                mounts=mounts,
+                seat_identity=seat_identity,
+                pull_policy=pull_policy,
+                probe=probe,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                # Once, and the recursion is the whole guard: this call cannot
+                # ask for a third seat however wrong the second one turns out to
+                # be. A seat that still disagrees is reported instead - the
+                # GID_MISMATCH arm names it and `--target-gid` pins it by hand.
+                correct_ids=False,
+            )
+            return replace(
+                corrected,
+                warnings=(
+                    ID_CORRECTION_WARNING.format(
+                        first=session.seat.container,
+                        was=_ids(report.self_uid, report.self_gid),
+                        now=_ids(corrected_uid, corrected_gid),
+                    ),
+                    *corrected.warnings,
+                ),
+            )
 
     return replace(session, warnings=(*session.warnings, *warnings))
+
+
+ID_CORRECTION_WARNING = (
+    "{first} ran as {was} against a target measured at {now}, and "
+    "__ptrace_may_access compares the group ids as well as the user ids, so a "
+    "corrected seat was landed at {now} - {first}'s name is spent, because an "
+    "ephemeral container's securityContext is fixed for the pod's lifetime. "
+    "--no-correct-ids keeps the first seat; --target-gid <gid> pins the group "
+    "up front and costs one name instead of two"
+)
+"""One line, and the only one this event gets.
+
+The reader has just had a permanent container name spent on their behalf, so it
+says which name, what was wrong with it, and the two flags that make the choice
+theirs next time. The mechanism - why six ids and not three - belongs to
+:attr:`podbench.model.Blocker.GID_MISMATCH`, which the same report prints
+whenever the correction could not be made."""
+
+
+def id_correction(
+    report: CapabilityReport | None,
+    *,
+    pinned_uid: int | None = None,
+    pinned_gid: int | None = None,
+) -> tuple[int, int] | None:
+    """The ``(uid, gid)`` a corrected seat should pin, or ``None`` for none needed.
+
+    The measurement is the seat's own: ``self_uid``/``self_gid`` are what the
+    kubelet actually gave it, ``target_uid``/``target_gid`` come from the
+    target's world-readable ``/proc/<pid>/status``. Comparing those two rather
+    than the authored spec is deliberate - it also catches a mutating admission
+    policy that rewrote what podbench asked for (#94), which reading the spec
+    back cannot.
+
+    Four ``None`` results, each for its own reason:
+
+    * **an id the caller pinned.** ``--target-uid``/``--target-gid`` are
+      instructions, and a launcher that quietly overrode one would be the
+      ``--max-rung`` mistake again. A pin is carried into the comparison, so
+      pinning the *right* value stops the correction too.
+    * **a seat that reports no gid of its own.** An image older than this
+      question sends ``self_gid: null``, and "unknown" must not be read as gid 0
+      and spent a container name on.
+    * **a root target.** No rung below ``full`` pins uid 0, so there is no
+      corrected seat to land; the ladder already says so.
+    * **a root seat.** The ``full`` rung is root by construction and holds
+      CAP_SYS_PTRACE, which is exempt from the credential check entirely -
+      "correcting" it would trade a capability for a group.
+
+    >>> from podbench.model import Blocker, CapabilityReport, Verdict
+    >>> def report(**kw):
+    ...     return CapabilityReport(
+    ...         verdict=Verdict.NONE, blocker=Blocker.GID_MISMATCH,
+    ...         cap_sys_ptrace=False, cap_bounding_sys_ptrace=False,
+    ...         yama_scope=0, seccomp_mode=0, no_new_privs=False,
+    ...         apparmor_profile=None, target_pid=1, **kw)
+    >>> id_correction(report(self_uid=1000, self_gid=0,
+    ...                      target_uid=1000, target_gid=1000))
+    (1000, 1000)
+    >>> id_correction(report(self_uid=1000, self_gid=1000,
+    ...                      target_uid=1000, target_gid=1000)) is None
+    True
+    >>> id_correction(report(self_uid=1000, self_gid=0,
+    ...                      target_uid=1000, target_gid=1000),
+    ...               pinned_gid=0) is None
+    True
+    >>> id_correction(report(self_uid=1000, self_gid=None,
+    ...                      target_uid=1000, target_gid=None)) is None
+    True
+    """
+    if report is None or report.self_gid is None:
+        return None
+    if report.self_uid == 0:
+        return None
+    uid = pinned_uid if pinned_uid is not None else report.target_uid
+    gid = pinned_gid if pinned_gid is not None else report.target_gid
+    if not uid or gid is None:
+        return None
+    if (report.self_uid, report.self_gid) == (uid, gid):
+        return None
+    return uid, gid
+
+
+def _ids(uid: int | None, gid: int | None) -> str:
+    """``uid:gid`` for a report line, with ``?`` for an id nobody measured.
+
+    One helper because the pair is printed in three places and a bare number
+    that silently meant "unknown" is what the gid half of this was for.
+    """
+    return f"{uid if uid is not None else '?'}:{gid if gid is not None else '?'}"
 
 
 def _walk_ladder(
@@ -1249,9 +1466,9 @@ def _walk_ladder(
     image: str,
     public_key: str | None,
     target_uid: int | None,
+    target_gid: int | None,
     max_rung: Rung | None,
     volume_mounts: Sequence[Mapping[str, Any]],
-    seat_gid_root: bool,
     pull_policy: str,
     timeout: float,
     poll_interval: float,
@@ -1259,6 +1476,8 @@ def _walk_ladder(
     uid, gid = target_uid_gid(pod_json, workload)
     if target_uid is not None:
         uid = target_uid
+    if target_gid is not None:
+        gid = target_gid
     cid = container_id(pod_json, workload)
     name = next_container_name(pod_json, CONTAINER_BASE)
     steps: list[LadderStep] = []
@@ -1294,7 +1513,6 @@ def _walk_ladder(
                     pod_json, public_key, rung, home=_seat_home(volume_mounts, rung)
                 ),
                 volume_mounts=volume_mounts,
-                seat_gid_root=seat_gid_root,
                 # The target's own, never RuntimeDefault by default: a filter
                 # the workload does not have is one podbench inflicted, and a
                 # node whose RuntimeDefault denies ptrace turns it into the
@@ -1386,6 +1604,7 @@ def _walk_ladder(
             # whatever the target is, and the seat rung drops a root target's
             # uid rather than pair it with runAsNonRoot.
             uid=_as_int(as_dict(spec.get("securityContext")).get("runAsUser")),
+            gid=_as_int(as_dict(spec.get("securityContext")).get("runAsGroup")),
             home=spec_env(spec).get("HOME"),
             identity_mounted=_mounts_volume(spec, SEAT_IDENTITY_VOLUME),
             steps=tuple(steps),
@@ -1695,6 +1914,13 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         apparmor_profile=_as_str(payload.get("apparmor_profile")),
         self_uid=_as_int(payload.get("self_uid")) or 0,
         target_uid=_as_int(payload.get("target_uid")),
+        # Absent from an image older than #103, and `None` has to survive that:
+        # read as 0 it would be a mismatch against every non-zero-gid target,
+        # and the correction would spend a permanent container name on a seat
+        # nobody had measured. `id_correction` declines on `None` for this
+        # reason and not out of caution.
+        self_gid=_as_int(payload.get("self_gid")),
+        target_gid=_as_int(payload.get("target_gid")),
         target_pid=_as_int(payload.get("target_pid")),
         node_name=_as_str(payload.get("node_name")),
         child_attach_ok=_as_bool(payload.get("child_attach_ok")),
@@ -1883,8 +2109,7 @@ def _identity_note(session: Session, *, usable: bool) -> str:
     :data:`podbench.agent.SEAT_NSS_PATH` sent readers to ``cat`` an empty file.
 
     Neither branch names a flag. The route on a live pod is the seat's own
-    record and it needs none, and where that route failed the reason - with
-    ``--seat-gid-root`` in it, for an image predating the database - is
+    record and it needs none, and where that route failed the reason is
     :data:`podbench.agent.NSS_WAY_OUT`, printed immediately under this line as
     the feature's reason. Saying it twice is the paragraph-length warning the
     report was cut back from.
@@ -2000,9 +2225,12 @@ def format_session(session: Session) -> str:
         lines.append(f"  blocker     {report.blocker.value}")
         lines.append(f"  node        {report.node_name or 'unknown'}")
         lines.append(f"  yama        {_yama(report.yama_scope)}")
+        # uid *and* gid, because the credential check wants both and a report
+        # that showed only the uid is how a seat at 1000:0 against a target at
+        # 1000:1000 read as a match for a year (#103).
         lines.append(
-            f"  uids        seat {report.self_uid}, target "
-            f"{report.target_uid if report.target_uid is not None else '?'}"
+            f"  ids         seat {_ids(report.self_uid, report.self_gid)}, "
+            f"target {_ids(report.target_uid, report.target_gid)}"
         )
         if report.notes:
             lines.append("notes")
@@ -2122,19 +2350,20 @@ def ssh_unavailable_note(session: Session) -> str:
             f"      {SEAT_NSS_PATH}; the line above is why this",
             "      one did not, and only one of the two reasons it can give is",
             "      fixable from here. A uid or gid under that database's floors",
-            "      is not: take the gid 0 route below. An image that has no such",
-            "      database is - the launcher names the image, so upgrade it with",
+            f"      is not: this image answers those from {PASSWD_PATH}, which",
+            "      it pre-seeds for every free uid below 500, so a seat saying",
+            "      otherwise is older than those records. An image that has no",
+            "      such database is - the launcher names the image, so upgrade it",
             "      `uvx podbench@latest`, or point --image at a tag that has one.",
             "      Note that --pull always changes nothing unless your tag moves",
             "      (main, a branch image), and --new burns another container name",
             "      on this pod for good - so re-running this attach unchanged",
             "      costs a name and fixes nothing",
-            f"    - or take {PASSWD_PATH}, which needs gid 0:",
-            f"        podbench attach {seat.pod.name} "
-            f"-n {seat.pod.namespace} --new --seat-gid-root",
-            "      it pins runAsGroup: 0, so the seat's gid stops matching a target",
-            "      whose gid is not 0 - and ptrace checks that match, so this buys",
-            "      ssh and takes the debugger, or",
+            "    - or run the target in a group of 500 or more (or gid 100),",
+            "      which is what the database asks of it. Pinning the seat to",
+            "      gid 0 to win the write is the one thing not offered here:",
+            "      ptrace compares the group ids as well as the user ids, so it",
+            "      buys ssh and takes the debugger, or",
             "    - run the target as a uid the debug image has an account for, or",
             "    - debug in a dev pod (`podbench dev`), whose seat is an ordinary",
             "      container and can be given files.",
@@ -3612,6 +3841,20 @@ def _build_app(
                 help="the target's uid, when its pod spec does not say",
             ),
         ] = None,
+        target_gid: Annotated[
+            int | None,
+            typer.Option(
+                "--target-gid",
+                metavar="GID",
+                help="the target's gid, when its pod spec does not say. The "
+                "seat must share it: __ptrace_may_access compares the group "
+                "ids as peers of the user ids, so a seat at the target's uid "
+                "in another group can log in and cannot trace. Rarely needed - "
+                "podbench measures the target's real gid from /proc and lands "
+                "a corrected seat itself - but it costs one container name "
+                "instead of two, and it is not overridden by the measurement",
+            ),
+        ] = None,
         max_rung: Annotated[
             Rung | None,
             typer.Option(
@@ -3645,19 +3888,16 @@ def _build_app(
                 help="add a container even if one is running (its name is permanent)",
             ),
         ] = False,
-        seat_gid_root: Annotated[
+        no_correct_ids: Annotated[
             bool,
             typer.Option(
-                "--seat-gid-root",
-                help=f"land the seat with runAsGroup: 0 so it can register an "
-                f"{PASSWD_PATH} entry for the target's uid. Rarely needed: the "
-                f"seat registers its own record in {SEAT_NSS_PATH} without it, "
-                "and what is left for this flag is a seat that database will "
-                "not serve - an image whose NSS does not consult it, or a uid "
-                "or gid below 500. It drops the target's own group, and a seat "
-                "whose gid no longer matches the target's cannot ptrace it - on "
-                "a target whose gid is not 0 this buys ssh and takes the "
-                "debugger",
+                "--no-correct-ids",
+                help="keep the first seat even when it landed in the wrong "
+                "group. Without this, a seat whose measured uid:gid disagrees "
+                "with the target's is replaced once by a corrected one, which "
+                "spends a second container name for the pod's lifetime - an "
+                "ephemeral container's securityContext cannot be changed in "
+                "place. Use --target-gid to get it right on the first name",
             ),
         ] = False,
         no_seat_identity: Annotated[
@@ -3787,8 +4027,9 @@ def _build_app(
             target_uid=target_uid,
             max_rung=max_rung,
             mounts=mount or (),
+            target_gid=target_gid,
             force_new=force_new,
-            seat_gid_root=seat_gid_root,
+            correct_ids=not no_correct_ids,
             seat_identity=not no_seat_identity,
             pull_policy=_pull_policy(pull),
             probe=not no_probe,

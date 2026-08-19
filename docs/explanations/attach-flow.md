@@ -321,10 +321,10 @@ completely fresh rootfs and nothing may live only in the writable layer:
         │      resolve.  It goes to /var/lib/extrausers/passwd, which the
         │      image ships world-writable, so a seat running as the
         │      target's uid *and gid* can append it with no flag and no
-        │      privilege.  /etc/passwd needs gid 0 and takes the seats
-        │      that database will not serve — it ignores a uid or gid
-        │      below 500 — at the price of the gid match ptrace makes
-        │      against the target (--seat-gid-root)
+        │      privilege.  That database ignores a uid or gid below 500;
+        │      the image pre-seeds /etc/passwd with a static record for
+        │      every free uid under 500, so those seats resolve without
+        │      writing anything at all
         ├─ ensure the host key         (ssh-keygen)
         ├─ ensure authorized_keys      (from the PODBENCH_PUBKEY env the spec carried)
         ├─ ensure the sshd config      (its own file, not the distro's)

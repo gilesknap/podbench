@@ -118,10 +118,11 @@ seat identity
   `/var/lib/extrausers/passwd`, which the image ships world-writable so that a seat
   running as the target's uid *and gid* can, needing no flag and no cooperation from
   the pod. A `dev` sidecar is given a projected `/etc/passwd` file instead and writes
-  nothing. `--seat-gid-root` is the older route, over the group-writable
-  `/etc/passwd`, and is still the only one for a seat that database will not serve —
-  it ignores records below uid or gid 500 — at the cost of the {term}`ptrace`
-  credential match against a target whose gid is not 0.
+  nothing. A seat that database will not serve — it ignores records below uid or
+  gid 500 — falls back to `/etc/passwd`, which the image pre-seeds with a static
+  record for every free uid under 500 so that no write is needed. Pinning the
+  seat to group 0 to make that file writable is not offered: the gid is half of
+  the {term}`ptrace` credential match.
 
 sidecar
   An ordinary container added beside the application in a {term}`dev pod`. Unlike an
@@ -428,9 +429,11 @@ ptrace
   The system call debuggers use to attach to and inspect a running process. Whether it
   is permitted is the single question the {term}`capability ladder` and
   {term}`capreport` exist to answer. Without {term}`CAP_SYS_PTRACE` the kernel compares
-  credentials, and it compares the **gid** as well as the uid — a mismatch denies in
-  both directions, measured — which is why a seat runs as the target's group and why
-  `--seat-gid-root`, which replaces it with group 0, costs the debugger.
+  credentials, and `__ptrace_may_access()` compares six ids and not three — `gid`,
+  `egid` and `sgid` are peers of `uid`, `euid` and `suid`, and one differing pair
+  denies in both directions, measured. That is why a seat runs as the target's
+  group, why the report prints `uid:gid` for both sides, and why podbench lands a
+  corrected seat when the measurement disagrees with what it authored.
 
 reaping
   Collecting the exit status of terminated child processes so they do not accumulate

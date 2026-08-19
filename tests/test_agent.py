@@ -400,12 +400,11 @@ def test_a_seat_the_extrausers_floors_reject_takes_etc_passwd_instead(
     for it, get "NSS still does not resolve" and land with no ssh, where before
     #102 the same seat appended to ``/etc/passwd`` and logged in.
 
-    gid 0 is the case that matters, not a curiosity. A target that sets
-    ``runAsUser`` and no ``runAsGroup`` — the default shape of a hardened
-    workload — gives :func:`podbench.spec.target_uid_gid` a gid of ``None``, so
-    the seat pins no group and runs with the image's gid 0; and that is also
-    exactly what ``--seat-gid-root`` asks for. Both can write ``/etc/passwd``,
-    which has no floor.
+    gid 0 is the case that matters, not a curiosity. It is what a seat carries
+    when nobody supplied a group — before #103, every target that set
+    ``runAsUser`` and no ``runAsGroup``; since it, a target whose own group
+    really is 0. Either way ``/etc/passwd`` has no floor and gid 0 can write it,
+    which is what this asserts.
     """
     layout = make_layout(tmp_path, root=False)
 
@@ -431,9 +430,9 @@ def test_a_seat_carrying_the_targets_gid_registers_its_own_record(
     it as well as the uid. ``/etc/passwd`` in the image is writable by GID 0 and
     nothing else, so the append this seat needs went to a file it had no write
     permission on, ``ssh-keygen`` died with "No user exists for uid 36070", and
-    the seat landed with no ssh at all. The documented way out
-    (``--seat-gid-root``) pins ``runAsGroup: 0`` and so pays for ssh with the
-    debugger.
+    the seat landed with no ssh at all. The documented way out then was to pin
+    ``runAsGroup: 0``, which pays for ssh with the debugger and was retired in
+    #103 for saying so too quietly.
 
     So ``/etc/passwd`` is denied here on purpose: this test fails the moment
     registration goes back to a file only GID 0 can write.
@@ -562,7 +561,8 @@ def test_registration_is_skipped_with_a_reason_when_neither_database_is_writable
     assert "not writable" in message
     assert f"{passwd.path} is not writable" in message, "the path actually tried"
     assert str(passwd.nss_path) not in message, "not the one it fell back from"
-    assert "--seat-gid-root" in message, "the way out has to be in the message"
+    assert "group of 500 or more" in message, "the way out has to be in it"
+    assert "--seat-gid-root" not in message, "that flag retired with #103"
     assert "kubectl exec" in message
     assert passwd.name_for(UNKNOWN_UID) is None
 
@@ -620,7 +620,7 @@ def test_the_check_on_a_writable_database_blames_the_step_not_the_gid(
     database *is* writable at that gid, so an unresolved uid can only be the
     registration step having failed for some other reason: the check says so and
     sends the reader to the start-up output, because telling them to re-attach
-    with ``--seat-gid-root`` would cost them the debugger for nothing.
+    into group 0 would cost them the debugger for nothing.
 
     Which makes this the branch the launcher relays most often, and it is the one
     branch that cannot state the reason — that was raised inside the seat minutes
@@ -761,20 +761,22 @@ def test_the_way_out_is_the_one_the_container_reading_it_can_take() -> None:
     deploy in the hope it fixes this.
     """
     text = agent.NSS_WAY_OUT
-    assert "--seat-gid-root" in text
     assert "kubectl exec" in text, "what still works belongs in the message"
     assert "subPath" in text, "the reason the volume cannot help has to be given"
     assert "podbench dev" in text, "and where the volume *is* used"
     # The advice this replaced: it told an ephemeral seat to mount the volume
     # over /etc/passwd, which is the one thing that container may not do.
     assert "which the seat mounts read-only" not in text
-    assert text.index("--seat-gid-root") < text.index(SEAT_IDENTITY_VOLUME)
-    # Issue #102 sent one seat round this loop twice, because the flag was
-    # offered as *the* way out with none of what it costs: the free route has to
-    # come first, and the flag cannot be named without its price beside it.
     assert REAL_SEAT_NSS_PATH in text
-    assert text.index(REAL_SEAT_NSS_PATH) < text.index("--seat-gid-root")
-    assert "takes the debugger" in text, "the price of gid 0, where it is offered"
+    assert text.index(REAL_SEAT_NSS_PATH) < text.index(SEAT_IDENTITY_VOLUME)
+    # Issue #102 sent one seat round this loop twice, because gid 0 was offered
+    # as *the* way out with none of what it costs. #103 removed the flag
+    # entirely: __ptrace_may_access() compares the group ids as peers of the
+    # user ids, so the seat that took it could log in and not trace. A reader
+    # who cannot get a login will pay any price for one, so this text must not
+    # grow it back - not even as a footnote.
+    assert "--seat-gid-root" not in text
+    assert "runAsGroup: 0" not in text
 
 
 def test_the_image_provides_the_database_this_module_appends_to() -> None:
@@ -793,8 +795,8 @@ def test_the_image_provides_the_database_this_module_appends_to() -> None:
     package has to be installed, ``nsswitch.conf``'s ``passwd`` line has to name
     ``extrausers`` (a database NSS does not consult is a file the agent writes and
     nothing reads), and ``chmod g=u /etc/passwd`` has to *stay* — a ``podbench
-    dev`` sidecar's projection and ``--seat-gid-root`` both still rest on it, so
-    this change adds a route and removes none.
+    dev`` sidecar's projection rests on it, and so does the one seat whose group
+    genuinely is 0, so this change adds a route and removes none.
     """
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
 
@@ -807,6 +809,45 @@ def test_the_image_provides_the_database_this_module_appends_to() -> None:
         "nsswitch's passwd line must consult extrausers, after files"
     )
     assert "chmod g=u /etc/passwd" in dockerfile, "the GID 0 fallback is not retired"
+
+
+def test_the_image_pre_seeds_the_uids_the_database_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, passwd: FakePasswd
+) -> None:
+    """The sub-500 range, which had no route at all before #103.
+
+    ``libnss-extrausers`` ignores a record whose uid is below 500, and a seat at
+    such a uid is almost always in a group below 500 too (grafana 472:472,
+    nginx-unprivileged 101:101), so it cannot write ``/etc/passwd`` either. It
+    landed with no ssh whatever podbench did. A record baked at build time needs
+    no writable surface at all, and the range is small enough to enumerate -
+    which the range above 500 is not, and is what the database is for.
+
+    Checked against the Dockerfile as text for the same reason the extrausers
+    contract above is: every unit test here points the paths at a temporary file,
+    so nothing else in this suite can see the image drift away from the code.
+    And checked against the *reason* as well - the seats this serves are exactly
+    the ones :func:`agent.extrausers_serves` refuses.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+
+    assert "seq 1 499" in dockerfile, "the range extrausers refuses"
+    assert "getent passwd" in dockerfile, (
+        "a uid the distribution already uses must be skipped, not shadowed"
+    )
+    assert ">> /etc/passwd" in dockerfile, "and the records go in the files database"
+    assert agent.extrausers_serves(472, 472) is False, "which is why they are needed"
+
+    # And once such a record exists, registration does nothing at all: no file
+    # is opened, no mode is consulted, and the way-out text is never reached.
+    make_unwritable(monkeypatch, passwd.path)
+    layout = make_layout(tmp_path, root=False)
+
+    def resolves(uid: int | None = None) -> str | None:
+        return "podbench-472"
+
+    monkeypatch.setattr(agent, "login_name", resolves)
+    assert agent.ensure_passwd_entry(layout, uid=472, gid=472) is False
 
 
 @pytest.mark.parametrize("verb", ["capreport", "pids", "dbg"])
@@ -992,7 +1033,7 @@ def test_self_check_names_a_missing_nss_identity_and_the_way_out(
     assert not check.ok
     assert check.name == "nss-identity"
     assert "no NSS entry" in check.detail
-    assert "--seat-gid-root" in check.detail
+    assert "group of 500 or more" in check.detail
 
 
 def test_print_login_user_reports_the_name_or_the_reason(
@@ -1024,7 +1065,7 @@ def test_print_login_user_reports_the_name_or_the_reason(
     assert agent.main(["--print-login-user"]) == 1
     captured = capsys.readouterr()
     assert captured.out.strip() == ""
-    assert "--seat-gid-root" in captured.err
+    assert "group of 500 or more" in captured.err
 
 
 def test_self_check_passes_on_a_prepared_container(

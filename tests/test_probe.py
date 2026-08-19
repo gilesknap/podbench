@@ -36,6 +36,7 @@ from podbench.proc import (
     list_processes,
     no_new_privs,
     proc_read_matrix,
+    read_gid,
     read_status_field,
     read_uid,
     scan_processes,
@@ -68,11 +69,17 @@ def make_status(
     seccomp: int,
     nnp: int,
     tracer_pid: int = 0,
+    gid: int | None = None,
 ) -> str:
+    # The gid defaults to the uid because that is the shape of nearly every
+    # workload, and because a fixture whose two ids differed by accident would
+    # make every credential test ambiguous. Where a test means them to differ it
+    # says so - that difference is the whole of #103.
+    group = uid if gid is None else gid
     return (
         "Name:\tpython3\n"
         f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
-        f"Gid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+        f"Gid:\t{group}\t{group}\t{group}\t{group}\n"
         f"TracerPid:\t{tracer_pid}\n"
         "CapPrm:\t0000000000000000\n"
         f"CapEff:\t{capeff}\n"
@@ -97,13 +104,22 @@ def make_proc(
     target_uid: int = 1000,
     target_reads: bool = True,
     target_tracer_pid: int = 0,
+    self_gid: int | None = None,
+    target_gid: int | None = None,
 ) -> Path:
     """A synthetic /proc with our own container (pid 42) and a target (pid 1)."""
     proc = tmp_path / "proc"
 
     write(
         proc / "self" / "status",
-        make_status(self_uid, capeff=capeff, capbnd=capbnd, seccomp=seccomp, nnp=nnp),
+        make_status(
+            self_uid,
+            capeff=capeff,
+            capbnd=capbnd,
+            seccomp=seccomp,
+            nnp=nnp,
+            gid=self_gid,
+        ),
     )
     write(proc / "self" / "comm", "capreport\n")
     write(proc / "self" / "cgroup", OWN_CGROUP + "\n")
@@ -123,6 +139,7 @@ def make_proc(
             seccomp=0,
             nnp=0,
             tracer_pid=target_tracer_pid,
+            gid=target_gid,
         ),
     )
     write(proc / "1" / "comm", "python3\n")
@@ -182,6 +199,22 @@ def test_read_status_field_and_uid(tmp_path: Path) -> None:
     assert read_uid("self", proc=proc) == 1000
     assert read_status_field("self", "CapAmb", proc=proc) == "0000000000000000"
     assert read_status_field("self", "Nonesuch", proc=proc) is None
+
+
+def test_read_gid_is_the_real_gid_and_not_the_uid(tmp_path: Path) -> None:
+    """Both ids, read separately, because the kernel compares them separately.
+
+    ``__ptrace_may_access()`` wants six equalities and not three, so a seat that
+    could only read uids could not say whether the credential check passes -
+    which is how a seat at 1000:0 against a target at 1000:1000 was reported as
+    a match (#103). ``status`` is world-readable, so this works from a seat that
+    can do nothing else to the target: it is where the truth lives when the
+    manifest sets ``runAsUser`` and no ``runAsGroup``.
+    """
+    proc = make_proc(tmp_path, self_uid=1000, self_gid=0, target_uid=1000)
+    assert (read_uid("self", proc=proc), read_gid("self", proc=proc)) == (1000, 0)
+    assert (read_uid(1, proc=proc), read_gid(1, proc=proc)) == (1000, 1000)
+    assert read_gid(1, proc=tmp_path / "empty") is None
 
 
 def test_readers_tolerate_missing_paths(tmp_path: Path) -> None:
@@ -514,6 +547,8 @@ def test_an_existing_tracer_outranks_a_uid_mismatch(tmp_path: Path) -> None:
         apparmor_target="custom",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         tracer_pid=8123,
         child=OK,
@@ -601,12 +636,81 @@ def test_structural_classification(
         apparmor_target=apparmor,
         self_uid=1000,
         target_uid=1000,
+        self_gid=1000,
+        target_gid=1000,
         target_pid=1,
         child=EPERM,
         target_attach=EPERM,
         proc_reads={"maps": True},
     )
     assert blocker is expected
+
+
+def test_a_matching_uid_in_another_group_is_named_as_the_gid(tmp_path: Path) -> None:
+    """#103: the arm between the uid check and Yama, because the kernel puts it there.
+
+    ``__ptrace_may_access()`` compares ``gid``/``egid``/``sgid`` as peers of the
+    three user ids and returns before Yama is consulted, so this seat is denied
+    on the group alone. Before this arm existed it fell through to ``UNKNOWN``,
+    whose text sends the reader off to check AppArmor and user namespaces - past
+    a Yama line printed six rows above, on a node where Yama was not the answer.
+
+    The fixture is p47-blueapi-0 as measured on 2026-08-19: manifest ``runAsUser:
+    1000`` and no ``runAsGroup``, real gid 1000, seat at 1000:0.
+    """
+    report = probe(
+        1,
+        proc=make_proc(
+            tmp_path,
+            self_uid=1000,
+            self_gid=0,
+            target_uid=1000,
+            target_gid=1000,
+            yama=1,
+        ),
+        attacher=attacher(),
+    )
+    assert report.blocker is Blocker.GID_MISMATCH
+    assert report.self_gid == 0
+    assert report.target_gid == 1000
+    prose = " ".join(report.notes)
+    assert "tracer gid=0, target gid=1000" in prose
+    assert "PTRACE_MODE_READ" in prose, "the reads go with it, and they are the loss"
+    # Yama is set in this fixture and is not the answer: naming it would send
+    # the reader to a node sysctl no securityContext change can reach.
+    assert "ptrace_scope" not in prose
+
+
+def test_matching_ids_still_reach_yama(tmp_path: Path) -> None:
+    """The arm above must not swallow the one below it.
+
+    A seat whose uid *and* gid match the target has passed the credential check,
+    so a denial there is Yama's - and that verdict is the one with the
+    ``PR_SET_PTRACER`` way out in it.
+    """
+    report = probe(
+        1,
+        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=1),
+        attacher=attacher(),
+    )
+    assert report.blocker is Blocker.YAMA_SCOPE
+
+
+def test_an_unreadable_target_gid_is_not_reported_as_a_mismatch(
+    tmp_path: Path,
+) -> None:
+    """``None`` is "nobody looked", and it must not be compared against 0.
+
+    Reading it as a gid would name this seat's group as the blocker on a target
+    whose ``status`` could not be read at all - and the correction the launcher
+    makes off the back of the blocker would spend a permanent container name on
+    it.
+    """
+    proc = make_proc(tmp_path, self_uid=1000, self_gid=0, target_uid=1000, yama=0)
+    (proc / "1" / "status").write_text("Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\n")
+    report = probe(1, proc=proc, attacher=attacher())
+    assert report.target_gid is None
+    assert report.blocker is not Blocker.GID_MISMATCH
 
 
 def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
@@ -624,6 +728,8 @@ def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
         apparmor_target="unconfined",
         self_uid=1000,
         target_uid=1000,
+        self_gid=1000,
+        target_gid=1000,
         target_pid=1,
         child=EPERM,
         target_attach=EPERM,
@@ -641,6 +747,8 @@ def test_no_reads_but_our_own_child_attaches_is_launch_only() -> None:
         apparmor_target="unconfined",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=OK,
         target_attach=EPERM,
@@ -662,6 +770,8 @@ def test_no_reads_and_no_ptrace_at_all_is_verdict_none() -> None:
         apparmor_target="unconfined",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=EPERM,
         target_attach=EPERM,
@@ -686,6 +796,8 @@ def test_a_partly_denied_matrix_still_points_at_the_sysroot() -> None:
         apparmor_target="unconfined",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=OK,
         target_attach=EPERM,
@@ -708,6 +820,8 @@ def test_read_only_does_not_claim_gdb_launch_it_never_measured() -> None:
         apparmor_target="unconfined",
         self_uid=1000,
         target_uid=1000,
+        self_gid=1000,
+        target_gid=1000,
         target_pid=1,
         child=AttachOutcome.skip("no libc"),
         target_attach=AttachOutcome.skip("no libc"),
@@ -728,6 +842,8 @@ def test_an_unmeasured_scratch_attach_does_not_claim_launch_only() -> None:
         apparmor_target="unconfined",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=AttachOutcome.skip("no libc"),
         target_attach=AttachOutcome.skip("no libc"),
@@ -840,6 +956,11 @@ JSON_KEYS = {
     "apparmor_profile",
     "self_uid",
     "target_uid",
+    # Peers of the two above, not refinements of them: __ptrace_may_access()
+    # compares the group ids as well, so a payload carrying only the uids
+    # cannot say whether the credential check passes (#103).
+    "self_gid",
+    "target_gid",
     "target_pid",
     "node_name",
     "child_attach_ok",
@@ -870,6 +991,8 @@ def test_json_shape_is_stable(tmp_path: Path) -> None:
     assert payload["blocker"] == "yama-scope"
     assert payload["yama_scope"] == 1
     assert payload["node_name"] == "nuc2"
+    assert payload["self_gid"] == 1000
+    assert payload["target_gid"] == 1000
     assert payload["child_attach_ok"] is True
     assert payload["target_attach_ok"] is False
     assert payload["proc_reads"]["root"] is True

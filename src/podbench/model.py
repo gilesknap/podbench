@@ -468,6 +468,17 @@ class Blocker(enum.Enum):
     UID_MISMATCH = "uid-mismatch"
     """The debug container runs as a different UID than the target."""
 
+    GID_MISMATCH = "gid-mismatch"
+    """The UIDs match and the GIDs do not.
+
+    A peer of :attr:`UID_MISMATCH` rather than a footnote to it, because
+    ``__ptrace_may_access()`` compares six ids and not three: ``gid``, ``egid``
+    and ``sgid`` are checked exactly as ``uid``, ``euid`` and ``sgid`` are, and
+    any one of the six differing denies every ptrace-gated operation. Without
+    this arm the commonest shape at Diamond — a seat at the target's uid and the
+    image's gid 0 — fell through to :attr:`UNKNOWN`, which sends the reader off
+    to check AppArmor and user namespaces (#103)."""
+
     ALREADY_TRACED = "already-traced"
     """Another process is already tracing the target. A tracee has exactly one
     tracer, so this refusal is indistinguishable from a policy one by errno."""
@@ -504,6 +515,16 @@ class Blocker(enum.Enum):
             Blocker.UID_MISMATCH: (
                 "this container's UID differs from the target's and it has no "
                 "CAP_SYS_PTRACE. Relaunch with runAsUser matching the target."
+            ),
+            Blocker.GID_MISMATCH: (
+                "this container's GID differs from the target's and it has no "
+                "CAP_SYS_PTRACE. The uid matching is not enough: "
+                "__ptrace_may_access() compares gid, egid and sgid as peers of "
+                "uid, euid and suid, and one differing pair denies the whole "
+                "check - live attach and the PTRACE_MODE_READ paths with it. "
+                "podbench lands a corrected seat itself unless "
+                "--no-correct-ids was given; `podbench attach <pod> --new "
+                "--target-gid <gid>` pins it by hand."
             ),
             Blocker.ALREADY_TRACED: (
                 "the target already has a tracer, and a process can have only "
@@ -644,6 +665,24 @@ class CapabilityReport:
     self_uid: int
     target_uid: int | None
     target_pid: int | None
+    self_gid: int | None = None
+    """This container's real GID, ``None`` only from a seat too old to report it.
+
+    Measured beside :attr:`self_uid` because the credential check needs both:
+    ``__ptrace_may_access()`` compares the three group ids as well as the three
+    user ids, so a seat that mirrors the uid alone is denied exactly as one that
+    mirrors neither. ``None`` is "an older image did not say", which is not
+    "gid 0" and must not be reported as a mismatch."""
+
+    target_gid: int | None = None
+    """The target's real GID, ``None`` when unreadable or unasked.
+
+    Read from ``/proc/<pid>/status``, which is world-readable, so a seat landed
+    at the wrong ids still learns the truth on arrival - and that is the only
+    place the truth lives when the manifest sets ``runAsUser`` and no
+    ``runAsGroup`` and the image's own user supplies the group (measured on
+    p47-blueapi-0: manifest uid 1000, real gid 1000)."""
+
     node_name: str | None = None
     child_attach_ok: bool | None = None
     """Whether attaching to the probe's own forked child worked. Yama always

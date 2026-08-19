@@ -328,25 +328,30 @@ not known until the attach.
 So the seat registers a record for itself, and where it registers it is the
 question:
 
-* `/etc/passwd` **is not modified**. It stays as the image built it: root-owned,
-  group `root`, and mode 664 — `chmod g=u` makes it group-writable deliberately,
-  in the OpenShift convention. Only a seat in group 0 can use that, and a seat in
-  group 0 is no longer the target's group, which is a credential `ptrace`
-  compares: pinning
-  `runAsGroup: 0` buys the transport and loses the debugger (measured, issue
-  #98). That route survives as `attach --seat-gid-root` for images that need it
-  and is not the default.
+* `/etc/passwd` **is not modified by a seat that mirrors its target**. It stays
+  as the image built it: root-owned, group `root`, and mode 664 — `chmod g=u`
+  makes it group-writable deliberately, in the OpenShift convention. Only a seat
+  in group 0 can use that, and pinning `runAsGroup: 0` to get there is no longer
+  offered at all: the gid is a credential `ptrace` compares, so it buys the
+  transport and loses the debugger (measured, issue #98; the flag that did it
+  retired in #103). The mode remains for the one seat whose group genuinely *is*
+  0 — a target that really runs there — and for a `dev` sidecar's projection.
+  The image also pre-seeds this file with a static record for every free uid
+  below 500, which is the range the database below refuses; those seats resolve
+  with nothing writable anywhere.
 * Instead the image installs `libnss-extrausers`, points the `passwd` line of
   `/etc/nsswitch.conf` at it, and ships `/var/lib/extrausers/passwd` **empty and
   mode 0666**. The agent appends one line — `podbench:x:<uid>:<gid>:…` — and NSS
   resolves the uid with no capability, no gid and no change to the workload's
   manifest. Not for every seat: this NSS source has floors compiled in (uid and
   gid 500, gid 100 exempted) and ignores a record below them, for `getpwnam` as
-  well as `getpwuid`. A seat under a floor takes `/etc/passwd` instead, and the
-  commonest one can write it — a target that sets `runAsUser` and no
-  `runAsGroup` leaves the seat pinning no group, so it runs with the image's gid
-  0. `agent.extrausers_serves` decides which file, and the mode never enters
-  into it.
+  well as `getpwuid`. A seat under a floor takes `/etc/passwd` instead, where the
+  static records above already answer for it. The shape that used to dominate
+  that fallback has gone: a target setting `runAsUser` and no `runAsGroup` left
+  the seat pinning no group and running with the image's gid 0, and podbench now
+  measures the target's real gid from `/proc` and pins it (#103).
+  `agent.extrausers_serves` decides which file, and the mode never enters into
+  it.
 
 Why a world-writable file is not a privilege boundary here:
 

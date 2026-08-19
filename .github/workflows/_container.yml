@@ -141,8 +141,10 @@ jobs:
       # gives the same answer - while `extrausers_serves` sent a uid-300 seat to
       # /etc/passwd, which on a non-zero gid it cannot write. So the pair 500 and
       # 499 pins MINUID from both sides, 501:499 pins MINGID without moving the
-      # uid, 502:100 pins the exemption, and 36071:0 keeps the `--seat-gid-root`
-      # shape explicit because it is the one whose mis-routing costs a user ssh.
+      # uid, 502:100 pins the exemption, and 36071:0 keeps the gid 0 shape
+      # explicit because it is the one whose mis-routing costs a user ssh - a
+      # target whose own group really is 0 is routed to /etc/passwd on the
+      # strength of this refusal.
       #
       # The wiring proof is what makes every refusal mean something: 36070:36070
       # resolving out of the same file in the same run says the database is
@@ -173,7 +175,7 @@ jobs:
             refused pbuidbelow  "uid 499 must be below MINUID, so MINUID has moved"
             refused pbgidbelow  "gid 499 must be below MINGID, so MINGID has moved"
             served  pbgidusers  "gid 100 must stay the USERSGID exemption"
-            refused pbgidzero   "gid 0 must be refused, or --seat-gid-root routing is now wrong"
+            refused pbgidzero   "gid 0 must be refused, or the /etc/passwd routing for a gid 0 target is now wrong"
             [ "$fail" = 0 ] || { echo "agent.extrausers_serves needs updating to match this build"; exit 1; }
             echo "floors pinned: MINUID 500, MINGID 500, USERSGID 100 - as agent.extrausers_serves assumes"
           '

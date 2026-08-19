@@ -233,9 +233,16 @@ PASSWD_PATH = "/etc/passwd"
 """The NSS ``files`` database sshd resolves a login name in.
 
 Also the file a seat writes its own record to when :data:`SEAT_NSS_PATH` is not
-an option. It has no uid or gid floor, and it is group-writable by GID 0 - which
-is what ``attach --seat-gid-root`` asks for, and what a seat under those floors
-usually turns out to carry anyway (:func:`extrausers_serves`).
+an option. It has no uid or gid floor, and it is group-writable by GID 0, which
+is what a seat mirroring a target that really runs in group 0 carries anyway.
+
+Since #103 the image also **pre-seeds it with a static record for every unused
+uid below 500**, which is the range :func:`extrausers_serves` refuses. Those
+seats need no write at all: the record is already there, ``getpwuid`` answers,
+and :func:`ensure_passwd_entry` returns having done nothing. A pre-baked line is
+the one identity mechanism that costs no writable surface, and it is available
+here precisely because the range is small and bounded - which is not true of the
+uids above it.
 
 This constant is also the *mount point* the launcher projects a ``podbench dev``
 sidecar's identity onto (``launcher.SEAT_IDENTITY_MOUNTS``), so it names
@@ -251,9 +258,10 @@ by ``getpwuid`` exactly as one in :data:`PASSWD_PATH` would be - and the file is
 mode 0666, so the append needs no capability, no particular gid and no edit to
 the workload's manifest. That is the whole point: the degraded rung runs as the
 target's uid **and gid**, and ``/etc/passwd`` is writable only by GID 0, which a
-seat gets only from ``--seat-gid-root`` - a flag that pins ``runAsGroup: 0`` and
-so breaks the credential match ptrace needs against a non-zero-gid target
-(issue #102, measured; #98).
+seat mirroring a non-zero-gid target does not have - and must not be given, since
+``__ptrace_may_access()`` compares the group ids as peers of the user ids and
+pinning group 0 to win the write forfeits the debugger (issue #102, measured;
+#98, #103).
 
 Not every seat, though: libnss-extrausers ignores a record whose uid or gid is
 below 500 (gid 100 excepted), so which of the two files a seat appends to is
@@ -317,19 +325,18 @@ NSS_WAY_OUT = (
     "database the current image installs and lists in nsswitch.conf beside "
     "files: that route needs no capability, no particular gid and no edit to "
     "the workload, but libnss-extrausers ignores a record whose uid or gid is "
-    "below 500 (gid 100 excepted), so it does not serve every seat. A uid or "
-    "gid under that floor, an image built before the database existed, or one "
-    f"whose nsswitch does not consult it, leaves only {PASSWD_PATH} "
-    "- writable by gid 0, which is what "
-    "`podbench attach <pod> --new --seat-gid-root` asks for, at a price worth "
-    "knowing before you pay it: the flag pins runAsGroup: 0, so the seat's gid "
-    "no longer matches a target whose gid is not 0, and that match is a "
-    "credential ptrace checks - it buys ssh and takes the debugger. Failing "
-    "both, run the target as a uid the debug image already has an account for. A "
-    f"{SEAT_IDENTITY_VOLUME!r} volume does not help here, however plainly the "
-    "pod declares one: projecting a passwd file takes a subPath per mount and "
-    "an ephemeral container may not have one. That volume is the identity a "
-    "`podbench dev` sidecar gets, which is an ordinary container."
+    "below 500 (gid 100 excepted), so it does not serve every seat. Under that "
+    f"floor the current image answers from {PASSWD_PATH} instead, which it "
+    "pre-seeds with a static record for every free uid below 500 - so a seat "
+    "reading this at such a uid is standing in an image that predates those "
+    "records, or in one whose account for this uid is taken. Above the floor, "
+    "the shape left is a uid of 500 or more in a group below it: run the target "
+    "in a group of 500 or more, or in gid 100, and the database serves the seat "
+    f"as it stands. A {SEAT_IDENTITY_VOLUME!r} volume does not help here, "
+    "however plainly the pod declares one: projecting a passwd file takes a "
+    "subPath per mount and an ephemeral container may not have one. That volume "
+    "is the identity a `podbench dev` sidecar gets, which is an ordinary "
+    "container."
 )
 """Named mechanism, then the way out - the shape :class:`podbench.model.Blocker`
 uses, because "No user exists for uid 36070" names neither.
@@ -340,9 +347,15 @@ verbatim under the missing ssh stanza - is reached from a seat that got here by
 running as a uid it has no account for, and on a live pod that seat is an
 ephemeral container. So the routes are ordered by what they cost the reader:
 extrausers first, because it costs nothing and is what the current image does;
-then GID 0 *with* its price, because offering ``--seat-gid-root`` without saying
-that it forfeits ptrace is how issue #102 sent the same seat round twice. The
-volume is named only to stop somebody deploying it in the hope it fixes this.
+then the static ``/etc/passwd`` records, which cost nothing either and are the
+answer for every seat under the floors.
+
+What is *not* offered any more is gid 0. ``--seat-gid-root`` pinned
+``runAsGroup: 0`` to win the write, and ``__ptrace_may_access()`` compares the
+group ids as peers of the user ids, so it bought ssh and took the debugger -
+which is how issue #102 sent the same seat round the loop twice. The flag is
+gone (#103) and the text must not grow it back: a reader who cannot get a login
+is exactly the reader who will pay any price for one.
 
 Neither route is asserted of the reader's own image, and the extrausers sentence
 is careful about that: one way to be reading this text is to be standing in an
@@ -422,25 +435,35 @@ def extrausers_serves(uid: int, gid: int) -> bool:
     file has the line in it, and nothing resolves.
 
     Which is why this decides the append target and the file's mode does not. The
-    seats below the floors are ordinary rather than exotic, and the commonest of
-    them is the default shape of a hardened workload: a target that sets
-    ``runAsUser`` and no ``runAsGroup`` gives
-    :func:`podbench.spec.target_uid_gid` a gid of ``None``, so the seat pins no
-    group and runs with the image's gid 0. ``--seat-gid-root`` asks for gid 0
-    outright. For all of those :data:`PASSWD_PATH` is writable and has no floor,
-    so this check costs nothing and its absence would have cost them their ssh -
-    the #102 bug over again, inside the fix for it.
+    seats below the floors are ordinary rather than exotic: a target genuinely
+    running in group 0, and every low-numbered system uid there is.
+
+    The shape that used to dominate this list has gone. A target setting
+    ``runAsUser`` and no ``runAsGroup`` gave
+    :func:`podbench.spec.target_uid_gid` a gid of ``None``, so the seat pinned no
+    group and ran with the image's gid 0 - which reached this function as
+    ``(1000, 0)`` and was routed, correctly, to :data:`PASSWD_PATH`. It was
+    correct about the database and wrong about the seat: that gid 0 was never the
+    target's, and the seat could log in and not trace. Since #103 the launcher
+    measures the target's real gid from ``/proc`` and lands a seat carrying it,
+    so such a seat now arrives here as ``(1000, 1000)`` and this database serves
+    it.
 
     A target that runs as a low-numbered uid *and* a low-numbered non-zero gid
-    (grafana's 472:472) is below the floors and cannot write ``/etc/passwd``
-    either, so it has no route but ``--seat-gid-root``. That is what it had before
-    this change too: returning :data:`PASSWD_PATH` for it gets the refusal that
-    names a file whose mode is the actual obstacle, instead of a silent append to
-    a database that will never answer.
+    (grafana's 472:472) is below both floors and cannot write ``/etc/passwd``
+    either. It needs no write: the image pre-seeds :data:`PASSWD_PATH` with a
+    static record for every free uid under 500, so ``getpwuid`` answers before
+    :func:`ensure_passwd_entry` looks at a file at all. Returning
+    :data:`PASSWD_PATH` for it is still the honest answer for the case where that
+    record was taken by a real account - a refusal naming a file whose mode is the
+    actual obstacle, rather than a silent append to a database that will never
+    answer.
 
     >>> extrausers_serves(36070, 36070)   # bl01c-di-dcam-04-0 at Diamond
     True
-    >>> extrausers_serves(1000, 0)        # any --seat-gid-root seat
+    >>> extrausers_serves(1000, 1000)     # p47-blueapi-0, once its gid is mirrored
+    True
+    >>> extrausers_serves(1000, 0)        # a target whose own group really is 0
     False
     >>> extrausers_serves(472, 472)       # grafana; nginx-unprivileged is 101
     False
@@ -479,7 +502,7 @@ def _nss_append_target(uid: int, gid: int, passwd_path: str | None = None) -> Pa
 
     Writability, not just existence, decides the file half: an extrausers file
     that exists but cannot be written (an image that created it 0644, say) would
-    otherwise mask a perfectly good ``--seat-gid-root`` seat behind a refusal.
+    otherwise mask a perfectly good gid 0 seat behind a refusal.
     :func:`extrausers_serves` decides the credentials half, and it has to be
     asked *here* rather than after the append, because a record the floors reject
     is written and silently unresolvable - there is no error to react to.
@@ -488,6 +511,10 @@ def _nss_append_target(uid: int, gid: int, passwd_path: str | None = None) -> Pa
     image podbench ships there could not be one: ``/etc/passwd`` is 0664
     ``root:root``, so the only seat that can write it is a gid 0 seat, and a gid 0
     seat is already sent here. A retry would be a branch that cannot succeed.
+
+    Nothing routed here is reached at all when the image's static sub-500 records
+    already answer for the seat's uid - :func:`ensure_passwd_entry` returns on the
+    ``login_name`` check above this call.
 
     ``passwd_path`` overrides both, and is how the unit tests point registration
     at a temporary file.

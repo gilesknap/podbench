@@ -291,6 +291,15 @@ what that seat can actually do.
 │ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
 │                                              image built from this launcher's version)           │
 │ --target-uid                UID              the target's uid, when its pod spec does not say    │
+│ --target-gid                GID              the target's gid, when its pod spec does not say.   │
+│                                              The seat must share it: __ptrace_may_access         │
+│                                              compares the group ids as peers of the user ids, so │
+│                                              a seat at the target's uid in another group can log │
+│                                              in and cannot trace. Rarely needed - podbench       │
+│                                              measures the target's real gid from /proc and lands │
+│                                              a corrected seat itself - but it costs one          │
+│                                              container name instead of two, and it is not        │
+│                                              overridden by the measurement                       │
 │ --max-rung                  RUNG             highest rung of the capability ladder to try: full, │
 │                                              degraded or seat. It is where the walk starts, and  │
 │                                              the ladder still falls through the rungs below.     │
@@ -307,16 +316,14 @@ what that seat can actually do.
 │                                              Hotfix mode requires it to equal. Repeatable        │
 │ --new                                        add a container even if one is running (its name is │
 │                                              permanent)                                          │
-│ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
-│                                              an /etc/passwd entry for the target's uid. Rarely   │
-│                                              needed: the seat registers its own record in        │
-│                                              /var/lib/extrausers/passwd without it, and what is  │
-│                                              left for this flag is a seat that database will not │
-│                                              serve - an image whose NSS does not consult it, or  │
-│                                              a uid or gid below 500. It drops the target's own   │
-│                                              group, and a seat whose gid no longer matches the   │
-│                                              target's cannot ptrace it - on a target whose gid   │
-│                                              is not 0 this buys ssh and takes the debugger       │
+│ --no-correct-ids                             keep the first seat even when it landed in the      │
+│                                              wrong group. Without this, a seat whose measured    │
+│                                              uid:gid disagrees with the target's is replaced     │
+│                                              once by a corrected one, which spends a second      │
+│                                              container name for the pod's lifetime - an          │
+│                                              ephemeral container's securityContext cannot be     │
+│                                              changed in place. Use --target-gid to get it right  │
+│                                              on the first name                                   │
 │ --no-seat-identity                           do not mount the pod's podbench-home volume, which  │
 │                                              is otherwise mounted by convention when the pod     │
 │                                              declares it and keeps everything the seat writes    │
@@ -456,8 +463,9 @@ Notes:
     as. That is the whole mechanism: no capability, no `runAsGroup`, nothing in
     the workload's manifest. The exception is a seat under that database's
     compiled-in floors — it ignores a record whose uid or gid is below 500, gid
-    100 excepted — which falls back to `/etc/passwd` and so to
-    `--seat-gid-root`.
+    100 excepted — which falls back to `/etc/passwd`, where the image has
+    pre-seeded a static record for every free uid below 500 so that nothing
+    needs to be written.
   * The volume is for a seat that is an **ordinary** container, which is what
     `podbench dev` authors — `subPath` is legal there and nothing is written at
     runtime. (The dev sidecar does not mount it yet; see the follow-up note in
@@ -474,17 +482,27 @@ Notes:
   limit is on the pod and not on its controller, so a rollout reverts it.
   Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
   limit where a `LimitRange` bounds the ratio between them.
-* `--seat-gid-root` is a **fallback**, and one worth understanding before using.
-  GID 0 lets the agent append to the image's group-writable `/etc/passwd`, which
-  is what a seat had to do before `libnss-extrausers` shipped (issue #102) and
-  what it still does when that database will not serve it — an image whose NSS
-  does not consult it, or a uid or gid below its floor of 500. The cost is the
-  target's own group, and that group is not decoration: the kernel
-  compares the gid as well as the uid when a process without `CAP_SYS_PTRACE`
-  ptraces another, and a mismatch denies in both directions (measured, issue
-  #98). So against a target whose gid is not 0 — 36070 at Diamond — the flag buys
-  ssh and takes the debugger. Admission is not what makes it opt-in: the
-  restricted Pod Security Standard does not constrain `runAsGroup` at all.
+* **`--target-gid` and the automatic correction** are one mechanism seen from
+  two ends. `__ptrace_may_access()` compares `gid`, `egid` and `sgid` as peers
+  of `uid`, `euid` and `suid`, so a seat that mirrors the target's uid and
+  leaves the group at the debug image's `0` is denied every ptrace-gated
+  operation — live attach, and `/proc/<pid>/root`, `maps`, `environ` and `exe`
+  with it. That is the *usual* shape, because a manifest usually states
+  `runAsUser` and no `runAsGroup` and the real group comes from the workload
+  image's own user (p47-blueapi-0: `runAsUser: 1000`, real gid 1000).
+  * Nothing laptop-side can read that gid. `/proc/<pid>/status` can, it is
+    world-readable, and a seat at the wrong ids can still read it — so podbench
+    measures it *after* landing and, where it disagrees with what was authored,
+    lands one corrected seat by itself. An ephemeral container's
+    `securityContext` cannot be changed in place, so this spends a second
+    container name, permanently, and says so in one line.
+  * It happens **once**: the corrected attach cannot correct itself, and a later
+    attach finds the corrected seat instead of landing a third. A manifest that
+    states both ids costs one name as it always did.
+  * `--target-gid` states the group up front and costs one name instead of two.
+    It is a pin, not a hint: the measurement never overrides it. `--no-correct-ids`
+    keeps the first seat and leaves the mismatch reported as the
+    `gid-mismatch` blocker.
 * **`--open`** takes the seat from "landed" to "bound breakpoint" in one
   command. It needs `code` on your PATH, and the local VS Code needs the
   **Remote - SSH** extension; both are checked at the point of use and named in

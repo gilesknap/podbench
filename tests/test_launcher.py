@@ -220,6 +220,11 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "apparmor_profile": "cri-containerd.apparmor.d (enforce)",
         "self_uid": 0,
         "target_uid": 1000,
+        # Peers of the two above: __ptrace_may_access() compares the group ids
+        # as well, and a payload with only the uids cannot answer the question
+        # the launcher's id correction asks (#103).
+        "self_gid": 0,
+        "target_gid": 1000,
         "target_pid": 17,
         "node_name": "node02",
         "child_attach_ok": True,
@@ -1274,11 +1279,11 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     to the same identity is the seat's own record in
     :data:`podbench.agent.SEAT_NSS_PATH`, which asks nothing of the pod.
 
-    That route needs no flag, so the note names none. ``--seat-gid-root`` is the
-    fallback for an image predating the database and it costs the ptrace gid
-    match (#102), which is a price the *reason* line below states — offering it
-    here, on the line about a volume, would be the second half of the trap issue
-    #102 walked into.
+    That route needs no flag, so the note names none — and in particular it must
+    not name a group. Pinning the seat to gid 0 to win a writable
+    ``/etc/passwd`` costs the ptrace credential match (#102, #103), so offering
+    it here, on the line about a volume, would be the second half of the trap
+    issue #102 walked into.
     """
     cluster = FakeCluster(identity_pod(), login_user=None)
     session = attach(talking_to(cluster), "target")
@@ -1293,11 +1298,11 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     text = format_session(session)
     assert SEAT_IDENTITY_VOLUME in text
     assert SEAT_NSS_PATH in text
-    # The flag is not in the report at all now. Where it survives is the agent's
-    # own reason - NSS_WAY_OUT, relayed verbatim, and abridged by this fake -
-    # and the ways-out block `main` prints under the missing stanza, which
-    # test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza asserts.
+    # The retired flag is nowhere in the report, and nor is the thing it did:
+    # a reader who cannot get a login will take any offer, so the group-0 route
+    # is not one this verb makes (#103).
     assert "--seat-gid-root" not in text
+    assert "runAsGroup: 0" not in text
 
     # …and a pod without the volume says nothing of the sort.
     plain = attach(talking_to(FakeCluster(pod_document(uid=1000))), "target")
@@ -1945,7 +1950,8 @@ def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
     assert not (tmp_path / "cfg" / "config.d").exists()
     # Named mechanism, then the way out, then what does work today.
     assert "not writable" in out
-    assert "--seat-gid-root" in out
+    assert "group of 500 or more" in out
+    assert "--seat-gid-root" not in out, "the flag retired with #103"
     # Every remedy offered has to be able to work. A released launcher computes
     # its image tag from its own version, so `--new --pull always` re-pulls the
     # identical tag and lands the identical seat - having burnt a second
@@ -2213,20 +2219,169 @@ def test_a_webhook_that_did_not_answer_is_still_an_error() -> None:
         attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
 
-def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
-    """Opt-in, and the only difference it makes to the spec is the group."""
+def test_target_gid_pins_the_group_the_manifest_did_not_state() -> None:
+    """``--target-gid`` for the manifest that names a uid and no group.
+
+    Which is the shape that costs the debugger: the seat lands in the debug
+    image's group 0 against a target in its own image's group, and
+    ``__ptrace_may_access()`` compares the group ids as peers of the user ids.
+    The flag is the way to spend one container name instead of two - podbench
+    measures the gid and lands a corrected seat by itself, but only after the
+    first one has landed and been probed.
+    """
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
-    session = attach(talking_to(cluster), "target", seat_gid_root=True)
+    session = attach(talking_to(cluster), "target", target_gid=1000)
 
     assert session.rung is Rung.DEGRADED
+    assert session.gid == 1000
     assert security_contexts(cluster)[0] == {
         "capabilities": {"drop": ["ALL"]},
         "runAsNonRoot": True,
         "privileged": False,
         "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
-        "runAsGroup": 0,
+        "runAsGroup": 1000,
     }
+
+
+MISMATCHED = capreport_payload(
+    verdict="none",
+    exit_code=20,
+    blocker="gid-mismatch",
+    cap_sys_ptrace=False,
+    self_uid=1000,
+    self_gid=0,
+    target_uid=1000,
+    target_gid=1000,
+    target_attach_ok=False,
+    proc_reads={"root": False, "maps": False, "environ": False},
+)
+"""The seat #103 was reported for: the uid mirrors, the group does not.
+
+Measured on p47-blueapi-0 (2026-08-19), whose manifest sets ``runAsUser: 1000``
+and no ``runAsGroup`` while the process runs at gid 1000 out of its image's own
+``ubuntu`` user. The seat lands at 1000:0 and reads nothing."""
+
+
+def test_a_seat_in_the_wrong_group_is_replaced_by_a_corrected_one() -> None:
+    """The whole of #103's remedy, and it costs the second name deliberately.
+
+    The manifest states a uid and no group, so nothing laptop-side knows the
+    target's gid: only ``/proc/<pid>/status`` does, and only a landed seat can
+    read it. The securityContext of an ephemeral container is fixed for its
+    lifetime, so acting on that measurement means a new container - which
+    podbench lands itself, because leaving it to the user means printing a
+    warning nobody reads and a seat that cannot trace.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.seat.container == "podbench-2", "the corrected seat, not the first"
+    assert session.gid == 1000
+    assert [context.get("runAsGroup") for context in security_contexts(cluster)] == [
+        None,
+        1000,
+    ]
+    warning = next(w for w in session.warnings if "corrected seat" in w)
+    assert "podbench-1" in warning, "which name was spent"
+    assert "1000:0" in warning and "1000:1000" in warning
+    assert "--no-correct-ids" in warning, "every remedy names its flag"
+    assert "--target-gid" in warning
+
+
+def test_the_correction_is_made_once_and_never_recurses() -> None:
+    """One extra name, whatever the second seat measures.
+
+    The fake answers every probe with the same mismatch, so a correction that
+    corrected its own correction would spend names until the container list was
+    refused. The recursion carries ``correct_ids=False`` for exactly that.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target")
+
+    assert len(cluster.added) == 2
+    assert session.seat.container == "podbench-2"
+    assert sum("corrected seat" in w for w in session.warnings) == 1
+
+
+def test_a_later_attach_finds_the_corrected_seat_instead_of_landing_another() -> None:
+    """The bound that matters, and it is across invocations rather than within one.
+
+    The first seat is still *running* - an ephemeral container cannot be stopped
+    - so every later attach reconnects to it, measures the same mismatch and
+    wants the same corrected ids. Without :func:`running_seat`'s ``ids`` filter
+    that is one permanent name per attach, for ever.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    attach(talking_to(cluster), "target")
+    assert len(cluster.added) == 2
+
+    again = attach(talking_to(cluster), "target")
+    assert len(cluster.added) == 2, "the corrected seat was found, not landed again"
+    assert again.seat.container == "podbench-2"
+    assert again.reused
+
+
+def test_no_correct_ids_leaves_the_first_seat_alone() -> None:
+    """The opt-out, for the user who would rather keep the name than the group."""
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", correct_ids=False)
+
+    assert len(cluster.added) == 1
+    assert session.seat.container == "podbench-1"
+    assert not any("corrected seat" in w for w in session.warnings)
+    # The reason is still stated - the seat reported the blocker and the report
+    # prints it - so the user is told what they are keeping.
+    assert session.report is not None
+    assert session.report.blocker is Blocker.GID_MISMATCH
+
+
+def test_a_pinned_gid_is_not_overridden_by_the_measurement() -> None:
+    """``--target-gid`` is an instruction, not a hint.
+
+    A launcher that quietly re-authored a seat the user had pinned would be the
+    ``--max-rung`` mistake again: the flag exists for the cluster or the target
+    podbench reads wrongly, so the measurement disagreeing with it is the
+    expected case rather than the surprising one.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", target_gid=0)
+
+    assert len(cluster.added) == 1
+    assert security_contexts(cluster)[0]["runAsGroup"] == 0
+    assert not any("corrected seat" in w for w in session.warnings)
+
+
+def test_a_seat_too_old_to_report_its_gid_is_not_corrected() -> None:
+    """The versioning rule the capreport JSON shape carries.
+
+    ``self_gid`` was added after the shape was published, so an older image
+    sends a payload without it. ``None`` there means "this seat cannot answer",
+    which is not "gid 0" - reading it as 0 would spend a permanent container
+    name on a seat that may well be right already.
+    """
+    old = capreport_payload(self_uid=1000, target_uid=1000)
+    del old["self_gid"]
+    del old["target_gid"]
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=old)
+    session = attach(talking_to(cluster), "target")
+
+    assert len(cluster.added) == 1
+    assert session.report is not None
+    assert session.report.self_gid is None
+    assert "ids         seat 1000:?, target 1000:?" in format_session(session)
+
+
+def test_the_report_prints_both_ids_for_both_sides() -> None:
+    """The line that made #103 invisible for a year.
+
+    It said ``uids  seat 1000, target 1000`` over a seat that could not read a
+    single ptrace-gated path, because the half that differed was not printed.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", correct_ids=False)
+
+    assert "ids         seat 1000:0, target 1000:1000" in format_session(session)
 
 
 def test_the_default_seat_keeps_the_targets_group() -> None:
@@ -2235,7 +2390,15 @@ def test_the_default_seat_keeps_the_targets_group() -> None:
     assert "runAsGroup" not in security_contexts(cluster)[0]
 
 
-def test_reconnecting_cannot_change_the_seats_group_and_says_so() -> None:
+def test_reconnecting_cannot_change_the_seats_group_so_it_is_not_reused() -> None:
+    """An ephemeral container's group is fixed, so the running seat is refused.
+
+    The precedent is ``--max-rung``: a flag that cannot be honoured by
+    reconnecting must not be honoured by pretending. Here the currency is the
+    same and the reason is the kernel's - a seat pinned to another group can log
+    in and cannot trace - so the warning names the seat, both id pairs, and what
+    the new container costs.
+    """
     existing = {
         "name": "podbench-1",
         "securityContext": {"runAsUser": 1000},
@@ -2247,9 +2410,12 @@ def test_reconnecting_cannot_change_the_seats_group_and_says_so() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(talking_to(cluster), "target", seat_gid_root=True)
-    assert session.reused
-    assert any("--seat-gid-root" in warning for warning in session.warnings)
+    session = attach(talking_to(cluster), "target", target_gid=1000)
+    assert not session.reused
+    warning = next(w for w in session.warnings if "podbench-1 is running" in w)
+    assert "1000:?" in warning, "what the running seat is pinned to"
+    assert "1000:1000" in warning, "and what was asked for"
+    assert session.gid == 1000
 
 
 def test_ssh_config_without_a_session_says_so(

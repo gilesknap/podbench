@@ -656,7 +656,7 @@ def check_ssh_agent(
     ssh matches the identity to a key the agent holds, asks the agent to sign,
     the agent refuses, and what reaches the user is ``Permission denied
     (publickey,keyboard-interactive)`` — which sends them to the seat's passwd
-    record, the authorised key or ``--seat-gid-root``, none of which are in play.
+    record or the authorised key, neither of which is in play.
     Membership is inferred rather than a signature demanded, so this is a
     ``WARN``: it names what would be asked, not what it would answer.
 

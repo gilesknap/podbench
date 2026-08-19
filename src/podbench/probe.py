@@ -51,6 +51,7 @@ from .proc import (
     env_target_container_id,
     no_new_privs,
     proc_read_matrix,
+    read_gid,
     read_tracer_pid,
     read_uid,
     scan_processes,
@@ -266,6 +267,14 @@ def probe(
     if self_uid is None:
         self_uid = os.getuid()
         notes.append("could not read our own uid from /proc; used getuid()")
+    # Asked for beside the uid, never derived from it. The seat's gid is a
+    # separate pin (`runAsGroup`) that a manifest silent about it leaves at the
+    # image's - gid 0 on podbench's - so the two ids disagree far more often
+    # than they look like they would (#103).
+    self_gid = read_gid("self", proc=proc)
+    if self_gid is None:
+        self_gid = os.getgid()
+        notes.append("could not read our own gid from /proc; used getgid()")
 
     seccomp = seccomp_mode(proc=proc)
     if seccomp is None:
@@ -280,11 +289,16 @@ def probe(
     aa_self = apparmor_profile("self", proc=proc)
     aa_target: str | None = None
     target_uid: int | None = None
+    target_gid: int | None = None
     tracer_pid: int | None = None
     reads: dict[str, bool] = {}
     if target_pid is not None:
         aa_target = apparmor_profile(target_pid, proc=proc)
         target_uid = read_uid(target_pid, proc=proc)
+        # `status` needs no ptrace permission, so this is readable from a seat
+        # that can do nothing else to the target - which is the whole point:
+        # it is how a seat landed at the wrong gid reports the right one.
+        target_gid = read_gid(target_pid, proc=proc)
         tracer_pid = read_tracer_pid(target_pid, proc=proc)
         reads = proc_read_matrix(target_pid, proc=proc)
 
@@ -315,6 +329,8 @@ def probe(
         apparmor_target=aa_target,
         self_uid=self_uid,
         target_uid=target_uid,
+        self_gid=self_gid,
+        target_gid=target_gid,
         target_pid=target_pid,
         tracer_pid=tracer_pid,
         child=child,
@@ -334,6 +350,8 @@ def probe(
         apparmor_profile=aa_self,
         self_uid=self_uid,
         target_uid=target_uid,
+        self_gid=self_gid,
+        target_gid=target_gid,
         target_pid=target_pid,
         node_name=node_name if node_name is not None else _node_name_from_env(),
         child_attach_ok=child.measured_ok,
@@ -414,6 +432,8 @@ def derive_verdict(
     apparmor_target: str | None,
     self_uid: int,
     target_uid: int | None,
+    self_gid: int,
+    target_gid: int | None,
     target_pid: int | None,
     child: AttachOutcome,
     target_attach: AttachOutcome | None,
@@ -469,6 +489,8 @@ def derive_verdict(
         blocker, denial_notes = _classify_denial(
             self_uid=self_uid,
             target_uid=target_uid,
+            self_gid=self_gid,
+            target_gid=target_gid,
             tracer_pid=tracer_pid,
             yama=yama,
             apparmor_self=apparmor_self,
@@ -556,6 +578,8 @@ def _classify_denial(
     *,
     self_uid: int,
     target_uid: int | None,
+    self_gid: int,
+    target_gid: int | None,
     tracer_pid: int | None,
     yama: int | None,
     apparmor_self: str | None,
@@ -597,16 +621,32 @@ def _classify_denial(
             "also lose /proc/<pid>/root, maps, environ and exe, which need "
             "PTRACE_MODE_READ and are gated by the same credential check"
         ]
+    if target_gid is not None and self_gid != target_gid:
+        # Between the uid arm and Yama because that is where the kernel puts it.
+        # `__ptrace_may_access()` requires six equalities - uid/euid/suid and
+        # gid/egid/sgid - and returns before Yama is consulted if any of them
+        # fails, so a seat that matched the uid alone was being sent off to
+        # investigate AppArmor and user namespaces by the UNKNOWN arm below
+        # (#103, measured on p47-blueapi-0: seat 1000:0, target 1000:1000).
+        return Blocker.GID_MISMATCH, [
+            f"tracer gid={self_gid}, target gid={target_gid}: the uids match "
+            "but __ptrace_may_access() compares the group ids as peers of the "
+            "user ids, so the credential check still fails - and with it "
+            "/proc/<pid>/root, maps, environ and exe, which need "
+            "PTRACE_MODE_READ and are gated by the same check"
+        ]
     if yama not in (None, 0):
         return Blocker.YAMA_SCOPE, [
-            "both processes have the same uid so the credential check passes; "
+            "both processes have the same uid and gid so the credential check "
+            "passes; "
             "ptrace_scope is a node sysctl and /proc/sys is read-only in the "
             "container, so no securityContext change fixes it. The target can "
             "opt in with prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)"
         ]
     return Blocker.UNKNOWN, [
-        "same uid, no existing tracer, no Yama restriction and no capability in "
-        "play, yet attach was refused; check AppArmor and user namespaces"
+        "same uid and gid, no existing tracer, no Yama restriction and no "
+        "capability in play, yet attach was refused; check AppArmor and user "
+        "namespaces"
     ]
 
 
@@ -656,6 +696,12 @@ def _json_payload(
         "apparmor_profile": report.apparmor_profile,
         "self_uid": report.self_uid,
         "target_uid": report.target_uid,
+        # Added after the shape was published, so every consumer must treat a
+        # missing key as "this seat is older than the question" and not as a
+        # gid of 0 - `capability_report_from_json` does, and the correction the
+        # launcher makes off the back of it declines to act on `None`.
+        "self_gid": report.self_gid,
+        "target_gid": report.target_gid,
         "target_pid": report.target_pid,
         "node_name": report.node_name,
         "child_attach_ok": report.child_attach_ok,
@@ -680,6 +726,7 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
 
     lines.append("TRACER")
     kv("uid", report.self_uid)
+    kv("gid", report.self_gid if report.self_gid is not None else "?")
     kv(
         "CAP_SYS_PTRACE (eff)",
         f"{_yn(report.cap_sys_ptrace)}   "
@@ -698,6 +745,7 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
     if report.target_pid is not None:
         lines.append(f"TARGET (pid {report.target_pid})")
         kv("uid", report.target_uid if report.target_uid is not None else "?")
+        kv("gid", report.target_gid if report.target_gid is not None else "?")
         ok = sum(1 for value in report.proc_reads.values() if value)
         detail = " ".join(
             f"{name}={'ok' if value else 'DENIED'}"

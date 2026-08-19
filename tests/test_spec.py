@@ -279,19 +279,20 @@ def test_no_rung_imposes_a_seccomp_profile_of_its_own() -> None:
 
 
 def test_a_target_with_no_run_as_group_lands_a_seat_in_group_0() -> None:
-    """The gid half is only pinned when the manifest supplies one.
+    """The gid half is only pinned when *somebody* supplies one.
 
-    Which is the shape most hardened workloads have — ``runAsUser`` beside
-    ``runAsNonRoot`` and no ``runAsGroup`` — so ``target_uid_gid`` returns
-    ``None`` for the gid, nothing is pinned, and the seat runs with the image's
-    own group, which is 0.
+    Which the manifest usually does not — ``runAsUser`` beside ``runAsNonRoot``
+    and no ``runAsGroup`` — so ``target_uid_gid`` returns ``None`` for the gid,
+    nothing is pinned, and the seat runs with the image's own group, which is 0.
 
-    Asserted here rather than left implicit because the agent reads it: gid 0 is
-    below ``libnss-extrausers``' floor, so this is the seat whose passwd record
-    goes to ``/etc/passwd`` and not to the seat's own database
-    (:func:`podbench.agent.extrausers_serves`). A prototype of #102 chose the
-    append target on the file's mode alone and took ssh away from exactly these
-    seats — the common case, not an edge one.
+    Asserted here rather than left implicit because it is the shape that costs
+    the debugger: ``__ptrace_may_access()`` compares the group ids as peers of
+    the user ids, so this seat can log in and cannot trace (#103, measured on
+    p47-blueapi-0 at 1000:0 against a target at 1000:1000). Nothing in this layer
+    can fix it — only ``/proc`` knows the target's real gid, and only a seat can
+    read it — so what this asserts is that no gid is *invented* here. The
+    launcher measures it and re-authors this spec with
+    ``target_gid``; see :func:`podbench.launcher.id_correction`.
     """
     spec = ephemeral_container_spec(
         name="podbench-2",
@@ -305,44 +306,36 @@ def test_a_target_with_no_run_as_group_lands_a_seat_in_group_0() -> None:
     assert extrausers_serves(1000, 0) is False
 
 
-def test_seat_gid_root_is_opt_in_and_keeps_everything_else() -> None:
-    """GID 0 buys a seat one thing only, and it is no longer the NSS identity.
+def test_a_measured_gid_is_pinned_on_both_non_root_rungs() -> None:
+    """What the correction re-authors, and that it changes nothing else.
 
-    The target's uid is discovered at attach time, so no image can carry an
-    account for it and the seat registers one for itself — but it registers it in
-    the ``extrausers`` database, which is world-writable and so needs no
-    particular gid (#102). What ``--seat-gid-root`` is left for is an image that
-    predates that database, where the only writable passwd file is the
-    group-writable ``/etc/passwd``.
+    The gid the launcher measured arrives here as ``target_gid`` and must land as
+    ``runAsGroup`` on ``degraded`` *and* ``seat`` — the seat rung is the one a
+    restrictive cluster leaves, and a seat that mirrors the uid and not the group
+    is denied exactly as one that mirrors neither.
 
-    Which is why the *default* is the assertion that matters here: gid 0 drops
-    the target's own group, and ptrace compares the gid as well as the uid, so a
-    seat that quietly took gid 0 to make ssh work would have paid for it with the
-    debugger. Admission is not what keeps it opt-in — the restricted Pod Security
-    Standard does not constrain ``runAsGroup`` at all (measured: uid 1000 / gid 0
-    admitted under ``restricted``).
+    The second assertion is the one that would catch a regression quietly: only
+    the group may move. Every restricted-PSS field this rung carries has to
+    survive being given a gid, or the corrected seat is refused by admission and
+    the correction costs a name and delivers nothing.
     """
     for rung in (Rung.DEGRADED, Rung.SEAT):
-        default = ephemeral_container_spec(
+        without = ephemeral_container_spec(
             name="podbench-2",
             image="podbench:dev",
             rung=rung,
             target_uid=1000,
-            target_gid=3000,
         )["securityContext"]
-        assert default["runAsGroup"] == 3000, "the default must not change silently"
+        assert "runAsGroup" not in without, rung
 
-        opted_in = ephemeral_container_spec(
+        pinned = ephemeral_container_spec(
             name="podbench-2",
             image="podbench:dev",
             rung=rung,
             target_uid=1000,
             target_gid=3000,
-            seat_gid_root=True,
         )["securityContext"]
-        assert opted_in["runAsGroup"] == 0
-        # Only the group moves: the uid, and every restricted-PSS field, stay.
-        assert opted_in == {**default, "runAsGroup": 0}
+        assert pinned == {**without, "runAsGroup": 3000}, rung
 
 
 def test_degraded_rung_refuses_to_default_to_root() -> None:
@@ -494,7 +487,7 @@ def test_a_sub_path_mount_is_refused_before_the_api_server_sees_it() -> None:
         )
     # The way out on a live pod, named where the refusal is read - and it is not
     # a flag: the seat writes its own record at whatever uid and gid it turned
-    # out to run as, so the mount was never needed. Offering ``--seat-gid-root``
+    # out to run as, so the mount was never needed. Offering a gid 0 seat
     # here would send a user who has already prepared a volume off to pin
     # ``runAsGroup: 0`` and lose the ptrace credential match with it (#102).
     message = str(raised.value)
