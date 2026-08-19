@@ -428,10 +428,15 @@ def test_etc_passwd_is_neither_written_nor_writable(
     have written it and happened not to. This asserts the condition that used to
     end the attach — the file is not writable by this uid and gid — while the seat
     has ssh regardless.
+
+    The match is anchored to ``podbench:`` because the image now ships a static
+    ``podbench-<uid>`` record for every uid below extrausers' floor of 500 (#103).
+    Those are records for other uids, not for this seat at 36070, and an
+    unanchored grep counts all 482 of them.
     """
     # `|| true` because grep exits 1 on no match, which is the expected answer
     # here and would otherwise be raised as a failed command rather than asserted.
-    found = _in_seat(gid_kubectl, f"grep -c '{SEAT_USER}' {PASSWD_PATH} || true")
+    found = _in_seat(gid_kubectl, f"grep -c '^{SEAT_USER}:' {PASSWD_PATH} || true")
     assert int(found.strip() or 0) == 0
     writable = _in_seat(
         gid_kubectl, f"test -w {PASSWD_PATH} && echo writable || echo refused"
