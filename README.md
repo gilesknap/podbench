@@ -101,13 +101,20 @@ where the change came from.
 
 Not fine print — each of these has bitten a spike on a real cluster.
 
-* **podbench can get your workload OOM-killed.** An ephemeral container may not
-  declare `resources` at all, so on a live pod the seat shares the workload's
-  memory and ephemeral-storage limits and **cannot reserve its own** — and a VS
-  Code session is a 1.1–1.3 GB working set. Exceed memory and the kernel
-  OOM-kills something in the pod cgroup; exceed ephemeral storage and the
-  kubelet evicts the whole pod. Anything heavier than looking belongs in a dev
-  pod, which is immune. `attach --resize` buys headroom in place, opt-in.
+* **A seat shares the pod's limits and cannot reserve its own — and it is a VS
+  Code session, not the seat, that spends them.** An ephemeral container may not
+  declare `resources` at all, so the seat lives in the pod's cgroup: exceed
+  memory and the kernel OOM-kills something in it, exceed ephemeral storage and
+  the kubelet evicts the whole pod. How much that matters is now measured rather
+  than assumed. Ten live seats on a Diamond beamline (2026-08-19) cost
+  **13–23 MiB** each, against **170–3858 MiB** of headroom per pod, three seats
+  to a pod, no OOM anywhere — so `attach` reads *this* pod's headroom, prints it
+  on the report's `memory` row, and warns only when it is genuinely thin. A
+  **vscode-server** is the case that still bites: 1215 MiB live with a single
+  extension, which does not fit in most of those pods, so `--open` is checked
+  against the same number. `attach --resize MEMORY` raises the target's limit in
+  place, and `podbench dev` gives the seat limits of its own. One beamline at one
+  moment: that falsifies "always warn", it does not prove no cluster is tight.
 * **Being refused `SYS_PTRACE` is normal, not an error.** It is outside both the
   baseline and the restricted Pod Security Standards, so podbench walks a ladder
   with two valid rungs and lands the better one the cluster admits. Four

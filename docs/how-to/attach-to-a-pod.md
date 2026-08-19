@@ -15,11 +15,12 @@ the first PyPI release, as
 :::{warning}
 On a live pod podbench shares the workload's memory and ephemeral-storage limits
 and **cannot reserve its own** — an ephemeral container may not declare
-`resources` at all. A VS Code session is a 1.1–1.3 GB working set, so attaching
-to a tightly limited pod can get the workload OOM-killed or the whole pod
-evicted, and an OOM inside an ephemeral container is unrecoverable. Anything
-heavier than looking belongs in a dev pod
-([Iterate on Python](iterate-on-python.md)).
+`resources` at all. What that costs is measured, and the seat is not the
+expensive half: ten live seats on the Diamond p47 beamline (2026-08-19) were
+**13–23 MiB** each. A **vscode-server** is, at **1215 MiB** live with one
+extension, and that is what gets a workload OOM-killed or a pod evicted — an OOM
+inside an ephemeral container being unrecoverable. Anything heavier than looking
+belongs in a dev pod ([Iterate on Python](iterate-on-python.md)).
 :::
 
 :::{warning}
@@ -307,6 +308,45 @@ uses, where the tracee exists to be stopped and is killed a line later.
 `--no-probe` skips the exec entirely, on `attach` and on `status` alike. Reach
 for it when the pod must not be touched at all rather than when a pause would
 be expensive: since the seize there is no pause to avoid.
+
+## How much room this pod actually has
+
+Every attach reads it, and prints it as a row of the `measured` block:
+
+```
+measured    --no-probe skips this block
+  ...
+  memory      170Mi free of 256Mi (86Mi in use)
+```
+
+The ceiling is the sum of the pod's container memory limits — a seat is charged
+against it and contributes nothing to it — and what the pod is using comes from
+`kubectl top pod`, so it needs a metrics-server and `get` on
+`pods.metrics.k8s.io`. Neither is required: without them the row reads
+
+```
+  memory      limit 256Mi; in use not measured (no metrics API here)
+```
+
+which says **unmeasured** and not *fine*. A pod where some container declares no
+memory limit gets `no pod memory limit, so no ceiling for the seat to share`,
+because the kubelet leaves that pod's cgroup unbounded.
+
+**podbench warns about this only when the margin is genuinely thin** — under
+64 MiB free, which is three of the largest seat measured. The number that
+decides is the *headroom*, not the limit: p47's three smallest limits are 100Mi
+socat containers, and they sit in the pod with the most room per byte used
+(300 MiB limit, 15 MiB in use). Across fifteen pods there, headroom ran from
+170 MiB to 3858 MiB, with up to three seats in one pod at once and no OOM in any
+of them. That is one beamline at one moment, so the threshold stays — a 100Mi
+pod really using 80 is a real case — but it does not fire on a pod that is fine.
+
+`--open` is checked against the other number. vscode-server measured 1215 MiB
+live with a single extension, which does not fit in most of those pods, so
+opening an editor into a pod with less headroom than that says so. Connecting
+VS Code by hand afterwards gets no warning, because there is no moment at which
+podbench learns you did — see
+[VS Code over Remote-SSH](vscode-remote-ssh.md).
 
 ## Making memory and CPU headroom first
 

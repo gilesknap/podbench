@@ -30,7 +30,6 @@ from podbench.kubectl import (
 )
 from podbench.launcher import (
     NO_TARGET_CONTAINER,
-    RESIZE_WARNING,
     UNKNOWN_SEAT_VERSION,
     VERSION_SKEW_WARNING,
     LauncherError,
@@ -80,6 +79,7 @@ from podbench.model import (
     Verdict,
     describe_pause,
 )
+from podbench.resize import Headroom
 from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
@@ -288,6 +288,7 @@ class FakeCluster:
         ssh_probe_err: str = "",
         limit_ranges: Sequence[dict[str, Any]] = (),
         seat_version: str | None = __version__,
+        top: str | None = None,
         mutate: Callable[[dict[str, Any]], None] | None = None,
         allowed_uids: Sequence[int] = (),
         seat_status: str | None = None,
@@ -307,6 +308,11 @@ class FakeCluster:
         # A policy that allow-lists runAsUser, which refuses every rung rather
         # than one: the ladder has no lower rung that fixes a uid.
         self.allowed_uids = tuple(allowed_uids)
+        # What `kubectl top pod` answers, and `None` for the ordinary cluster
+        # with no metrics-server: the headroom read has to degrade to
+        # "unmeasured" rather than to "fine", so the default here is the
+        # unmeasured one.
+        self.top = top
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
         self.capreport = capreport if capreport is not None else capreport_payload()
@@ -379,6 +385,10 @@ class FakeCluster:
             return _ok("demo\n")
         if rest[:2] == ["get", "pods"]:
             return _ok(json.dumps({"items": [self.pod, *self.others]}))
+        if rest[:2] == ["top", "pod"]:
+            if self.top is None:
+                return _fail("error: Metrics API not available", returncode=1)
+            return _ok(self.top)
         if rest[:2] == ["get", "limitranges"]:
             return _ok(json.dumps({"items": list(self.limit_ranges)}))
         if rest[:2] == ["get", "pod"]:
@@ -619,6 +629,20 @@ def security_contexts(cluster: FakeCluster) -> list[dict[str, Any]]:
     return [
         cast(dict[str, Any], spec.get("securityContext", {})) for spec in cluster.added
     ]
+
+
+def limited_pod(memory: str, *, name: str = "target") -> dict[str, Any]:
+    """A pod whose cgroup has a ceiling, which is what makes headroom a number.
+
+    The default fixture declares no limits at all, so the kubelet leaves the pod
+    cgroup unbounded and there is nothing for a seat to share. Every pod on the
+    beamline C19 was calibrated against does declare one - 19 containers, 19
+    limits - so the tests that read headroom say so explicitly.
+    """
+    pod = pod_document(uid=1000, name=name)
+    containers = cast(list[dict[str, Any]], pod["spec"]["containers"])
+    containers[0]["resources"] = {"limits": {"memory": memory}}
+    return pod
 
 
 def running_status(name: str) -> dict[str, Any]:
@@ -1665,7 +1689,11 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     text = format_session(session)
     assert "ptrace_scope" in text
     assert "node02" in text
-    assert "OOM-kill" in text, "the shared-limits warning is not optional"
+    # And the pod's memory is stated as a measurement rather than as a caution:
+    # this fixture declares no limit, so there is no ceiling for the seat to
+    # share and nothing to warn about (C19, finding 18).
+    assert "memory      no pod memory limit" in text
+    assert "OOM" not in text
 
 
 DIAMOND_READS = {
@@ -4273,14 +4301,36 @@ def test_the_resize_warning_keeps_the_quota_caveats_it_has_not_narrowed() -> Non
     assert "ResourceQuota" in note
     assert "partly proven" in note
     assert "ReplicaSet" in note
-    # …and the line an attach that did not resize prints is an offer, not this.
-    assert "partly proven" in RESIZE_WARNING
-    assert "ResourceQuota" not in RESIZE_WARNING
 
 
-def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
+def test_a_refused_resize_says_once_that_it_probably_did_not_matter() -> None:
+    """Detecting the refusal was always right; the alarm around it was not.
+
+    The sweep filed this as "not podbench" - the service account lacked
+    `pods/resize`, podbench printed the API error and carried on - but a reader
+    who is told only that a mutation failed goes looking for the RBAC to make it
+    succeed. Naming what a seat actually costs is what stops that, and it is
+    said on this path only, where somebody just asked for the resize.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), patch_error="pods is forbidden")
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+
+    assert "was refused" in note
+    assert "13-23 MiB" in note, "the measured cost, so the refusal can be sized"
+    assert "2026-08-19" in note, "dated, because it is one beamline at one moment"
+    assert "vscode-server" in note, "the one cost that is still worth acting on"
+
+
+def test_an_attach_that_changed_no_limits_never_offers_the_flag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Issue #54, and the measurement that made it safe to close.
+
+    The report used to spend two warnings on memory: an offer of a mode nobody
+    had asked for, and a caution written against an assumption. Ten live seats
+    on DLS p47 (2026-08-19) cost 13-23 MiB against 170-3858 MiB of pod headroom,
+    so both are gone and what is left is a row stating the number.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     code = main(
         [
@@ -4296,10 +4346,136 @@ def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
         runner=cluster,
     )
     assert code == 0
-    # The report wraps warnings, so match words rather than phrases.
     out = capsys.readouterr().out
-    assert "OOM-kill" in out, "the limits it cannot reserve are the point"
-    assert "--resize" in out, "and the one flag that buys headroom on a live pod"
+    assert "resize" not in out
+    assert "WARNING" not in out
+    assert "memory      " in out, "the fact stays; only the alarm goes"
+
+
+def test_a_pod_with_room_gets_the_number_and_no_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`bl47p-ea-simdet-03-0`: the *tightest* pod on the beamline, and fine.
+
+    256Mi of limit against 86Mi in use, carrying a seat already. A threshold
+    keyed on the container's limit - which is how the plan worded it - would
+    have flagged p47's three 100Mi socat containers, which sit in the pod with
+    the most room per byte used. Headroom is the number that decides.
+    """
+    cluster = FakeCluster(limited_pod("256Mi"), top="target   1m   86Mi\n")
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "memory      170Mi free of 256Mi (86Mi in use)" in out
+    assert "WARNING" not in out
+
+
+def test_a_pod_with_no_room_left_is_warned_about_with_its_own_numbers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The case the threshold is kept for: a 100Mi pod really using 80.
+
+    No pod on p47 is in this state, which is the point - the warning has to be
+    able to fire, and has to stay silent on every pod that was measured.
+    """
+    cluster = FakeCluster(limited_pod("100Mi"), top="target   1m   80Mi\n")
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "WARNING only 20Mi of memory headroom" in out
+    assert "13-23 MiB" in out, "what a seat costs, so 20Mi can be judged"
+    assert "--resize MEMORY" in out, "the flag that buys headroom in place"
+
+
+def test_an_unreadable_headroom_reads_as_unmeasured_and_warns_about_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No metrics-server is ordinary, and it is not evidence of anything.
+
+    Both halves matter and they have bitten this branch twice already (#89's
+    `/proc` path, C14's address space): a missing measurement must not be
+    reported as a good one, and it must not be turned into a caution either -
+    that would put the always-on memory warning straight back on every cluster
+    without a metrics API.
+    """
+    cluster = FakeCluster(limited_pod("256Mi"))
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "memory      limit 256Mi; in use not measured (no metrics API here)" in out
+    assert "WARNING" not in out
+
+
+def test_the_metrics_api_is_not_asked_about_a_pod_with_no_ceiling() -> None:
+    """An unbounded pod cgroup has no headroom question, so it costs no call."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target")
+
+    assert session.headroom == Headroom(limit=None, used=None)
+    assert not [call for call in cluster.calls if "top" in call]
+
+
+def test_opening_an_editor_is_measured_against_vscode_and_not_against_the_seat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one memory cost that survived the measurement, on the flag that spends it.
+
+    1024Mi of headroom carries a 13-23 MiB seat with room to spare and says
+    nothing about it; vscode-server measured 1215 MiB live with a single
+    extension (2026-08-16), which is the case that still OOMs a pod. So the
+    warning is keyed on `--open` rather than on the attach.
+    """
+    cluster = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "memory 1Gi free of 4Gi (3Gi in use)" in out
+    assert "vscode-server here and it measured 1215Mi" in out
+
+    # …and the same pod, attached without the editor, spends no warning on it.
+    plain = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
+    assert main(attach_argv(tmp_path, "--no-prompt"), runner=plain) == 0
+    assert "vscode-server" not in capsys.readouterr().out
 
 
 def test_current_namespace_falls_back_to_default() -> None:

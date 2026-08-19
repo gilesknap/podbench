@@ -50,7 +50,11 @@ from .model import as_dict
 __all__ = [
     "MEMORY",
     "CPU",
+    "EDITOR_HEADROOM",
     "MUTABLE_RESOURCES_REFUSAL",
+    "SEAT_FOOTPRINT",
+    "SEAT_HEADROOM",
+    "Headroom",
     "ResizeError",
     "ResizePlan",
     "Want",
@@ -59,8 +63,10 @@ __all__ = [
     "format_memory",
     "namespace_limits",
     "parse_quantity",
+    "parse_top_memory",
     "parse_want",
     "plan_resize",
+    "pod_memory_limit",
 ]
 
 MEMORY = "memory"
@@ -442,3 +448,208 @@ def _ratio(value: Fraction) -> str:
     if value.denominator == 1:
         return str(value.numerator)
     return f"{float(value):g}"
+
+
+# -- headroom ---------------------------------------------------------------
+
+SEAT_FOOTPRINT = "13-23 MiB"
+"""What a podbench seat actually costs the pod it landed in.
+
+Ten live seats across eight pods on the Diamond p47 beamline, 2026-08-19:
+13, 13, 14, 14, 14, 15, 15, 16, 16 and 23 MiB. It is a *measurement* and it
+replaces an assumption — the report used to warn about the pod's memory on
+every attach, and the beamline it was written for has 170-3858 MiB of headroom
+per pod, three seats in one pod at once and no OOM in any of them.
+
+One beamline at one moment, so it falsifies "always warn" without proving that
+no cluster anywhere is tight. Which is why the warning it calibrates still
+exists, and reads *this* pod rather than quoting these numbers at it.
+"""
+
+SEAT_HEADROOM = Fraction(64 * MI)
+"""Below this much free pod memory, a seat is worth a word.
+
+Three times the largest seat measured (23 MiB), because three concurrent seats
+in one pod is the most that has been seen. It is deliberately far below the
+tightest pod on p47 (170 MiB): every pod there is fine, and a threshold that
+fired on any of them would be the fear this replaced. A 100Mi-limited pod
+really using 80 is the case it is for.
+"""
+
+EDITOR_HEADROOM = Fraction(1215 * MI)
+"""The one memory cost that is still a hazard at these headrooms.
+
+vscode-server plus a single extension measured 1215 MiB live (2026-08-16,
+report R2), which does not fit in most of the beamline's pods. So the seat's
+own footprint stopped earning a warning and this did not: ``--open`` asks for
+both, and only this one has to be checked against the pod.
+"""
+
+
+@dataclass(frozen=True)
+class Headroom:
+    """How much of the pod's memory ceiling is not already spoken for.
+
+    Headroom rather than the limit, because the limit alone answers the wrong
+    question: p47's *smallest* limits are three 100Mi socat containers, and
+    they sit in the pod with the most room per byte used (300 MiB limit, 15 MiB
+    used). What a seat has to fit in is the gap.
+
+    Both halves are optional and they mean different things. ``limit`` is
+    ``None`` when some container declares no memory limit, which leaves the pod
+    cgroup unbounded — there is no ceiling to share. ``used`` is ``None`` when
+    the metrics API would not answer, which is *unmeasured* and not the same as
+    fine; :attr:`summary` says which, on the report's own line.
+    """
+
+    limit: Fraction | None
+    used: Fraction | None
+
+    @property
+    def free(self) -> Fraction | None:
+        """Bytes a seat can grow into, or ``None`` when that is not knowable.
+
+        >>> Headroom(Fraction(256 * MI), Fraction(86 * MI)).free / MI
+        Fraction(170, 1)
+        >>> Headroom(Fraction(256 * MI), None).free is None
+        True
+        >>> Headroom(None, Fraction(86 * MI)).free is None
+        True
+        """
+        if self.limit is None or self.used is None:
+            return None
+        # Clamped at zero: a pod momentarily over its own ceiling is reported as
+        # having nothing left rather than as owing memory, and the warning that
+        # reads this only ever asks whether it is small.
+        return max(Fraction(0), self.limit - self.used)
+
+    @property
+    def summary(self) -> str:
+        """This pod's memory ceiling as one report row.
+
+        >>> Headroom(Fraction(256 * MI), Fraction(86 * MI)).summary
+        '170Mi free of 256Mi (86Mi in use)'
+        >>> Headroom(Fraction(256 * MI), None).summary
+        'limit 256Mi; in use not measured (no metrics API here)'
+        >>> Headroom(None, None).summary
+        'no pod memory limit, so no ceiling for the seat to share'
+        """
+        if self.limit is None:
+            return "no pod memory limit, so no ceiling for the seat to share"
+        limit = format_memory(self.limit)
+        if self.used is None:
+            # Named as unmeasured, never left to read as fine. The metrics API
+            # is an add-on and its absence is ordinary; a row that quietly
+            # showed the limit alone would be the same mistake as #89's
+            # unreadable /proc path and C14's unreadable address space.
+            return f"limit {limit}; in use not measured (no metrics API here)"
+        free = self.free
+        assert free is not None  # noqa: S101 - both halves are present here
+        return (
+            f"{format_memory(free)} free of {limit} ({format_memory(self.used)} in use)"
+        )
+
+    def below(self, needed: Fraction) -> bool:
+        """Whether the measured headroom is under ``needed``.
+
+        False when there is nothing to compare, which is both the unbounded pod
+        and the unmeasured one: neither is evidence of a thin margin, and the
+        unmeasured one is reported as unmeasured by :attr:`summary` instead of
+        being turned into a caution that would fire on every cluster without a
+        metrics-server.
+
+        >>> Headroom(Fraction(256 * MI), Fraction(240 * MI)).below(SEAT_HEADROOM)
+        True
+        >>> Headroom(Fraction(256 * MI), Fraction(86 * MI)).below(SEAT_HEADROOM)
+        False
+        >>> Headroom(Fraction(256 * MI), None).below(SEAT_HEADROOM)
+        False
+        """
+        free = self.free
+        return free is not None and free < needed
+
+
+def pod_memory_limit(pod_json: Mapping[str, Any]) -> Fraction | None:
+    """The pod cgroup's memory ceiling, or ``None`` when it has none.
+
+    The sum of the workload containers' limits, because that is what a seat
+    lives under: an ephemeral container may not declare ``resources`` at all
+    (report 3.9), so it is charged against the pod's ceiling and contributes
+    nothing to it. A sidecar — an init container with ``restartPolicy:
+    Always`` — runs for the pod's whole life and counts; an ordinary init
+    container has exited by the time a seat lands and does not.
+
+    ``None`` as soon as one container declares no memory limit, since the
+    kubelet then leaves the pod cgroup unbounded and the sum of the rest is not
+    a ceiling. Guessing one from the containers that did declare would invent a
+    number smaller than the truth, which is the direction that produces a
+    warning nobody needs.
+
+    >>> pod = {"spec": {"containers": [
+    ...     {"resources": {"limits": {"memory": "100Mi"}}},
+    ...     {"resources": {"limits": {"memory": "200Mi"}}}]}}
+    >>> pod_memory_limit(pod) == 300 * MI
+    True
+    >>> pod["spec"]["containers"].append({"name": "unbounded"})
+    >>> pod_memory_limit(pod) is None
+    True
+    """
+    spec = as_dict(pod_json.get("spec"))
+    total = Fraction(0)
+    for entry in _containers(spec.get("containers")):
+        limit = as_dict(as_dict(entry.get("resources")).get("limits")).get(MEMORY)
+        if limit is None:
+            return None
+        try:
+            total += parse_quantity(str(limit))
+        except ResizeError:
+            # A quantity the API server accepted and this parser did not says
+            # nothing about the ceiling, and reporting a smaller one would be a
+            # confident wrong number.
+            return None
+    for entry in _containers(spec.get("initContainers")):
+        if entry.get("restartPolicy") != "Always":
+            continue
+        limit = as_dict(as_dict(entry.get("resources")).get("limits")).get(MEMORY)
+        if limit is None:
+            return None
+        try:
+            total += parse_quantity(str(limit))
+        except ResizeError:
+            return None
+    return total if total > 0 else None
+
+
+def _containers(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [as_dict(entry) for entry in cast(list[Any], value)]
+
+
+def parse_top_memory(text: str) -> Fraction | None:
+    """The memory column of ``kubectl top pod --no-headers``, in bytes.
+
+    ``NAME  CPU(cores)  MEMORY(bytes)``, one row for the pod. Parsed rather
+    than asked for as JSON because ``kubectl top`` has no ``-o json``: it
+    renders the metrics API itself, and the columns are its whole output.
+
+    ``None`` for anything that is not that shape — including the empty output a
+    pod with no sample yet produces — because the caller reports *unmeasured*
+    and a misparse would report a number instead.
+
+    >>> parse_top_memory("target   1m   67Mi\\n") == 67 * MI
+    True
+    >>> parse_top_memory("") is None
+    True
+    >>> parse_top_memory("target   1m") is None
+    True
+    """
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        try:
+            return parse_quantity(fields[2])
+        except ResizeError:
+            return None
+    return None

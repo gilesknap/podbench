@@ -29,6 +29,17 @@ silent.
   container spec, read the matching skill. Removing `sshd -e`, emitting
   `SYS_PTRACE` beside a non-root uid, or giving a debug container a short-lived
   command each fail *silently* or as something misleading.
+- **The seat's memory cost is measured, and the report is calibrated to it.**
+  Ten live seats on a Diamond beamline (2026-08-19) were 13–23 MiB against
+  170–3858 MiB of pod headroom, three seats to a pod, no OOM — the repo's own
+  "where the brief and the report disagree, the report wins" rule, applied to
+  newer evidence. So `attach` warns on **this** pod's headroom
+  (`resize.Headroom`, `launcher.headroom_note`) and says nothing when it is
+  ample. Do not restore an unconditional memory warning, and do not key one on
+  the container's *limit*: the beamline's three smallest limits sit in its
+  roomiest pod. A headroom that could not be read is reported as **unmeasured**
+  on the `memory` row, never as fine. vscode-server, at a measured 1215 MiB, is
+  the one cost that still earns a warning, and only under `--open`.
 - **Never join a Service silently.** A dev pod carrying the origin's selector
   labels takes production traffic. Opt-in, behind an explicit flag, always.
 - **What a laptop verb prints is laid out by `console.py`, and a warning is one

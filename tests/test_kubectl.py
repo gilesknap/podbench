@@ -451,3 +451,19 @@ def test_the_default_runner_really_executes(tmp_path: Path) -> None:
         kubectl.run("--boom")
     assert caught.value.returncode == 7
     assert caught.value.stderr.strip() == "it went wrong"
+
+
+def test_top_pod_returns_the_columns_and_treats_no_metrics_api_as_no_answer() -> None:
+    """The metrics API is an add-on, so its absence is data and not a failure.
+
+    ``None`` rather than an empty string, because the caller has to be able to
+    tell "nothing is using memory" from "nobody would say" - podbench has twice
+    reported an unreadable thing as a good one (issue #89, C14) and this read
+    decides whether to stay quiet about a pod's memory.
+    """
+    runner = FakeRunner(ok("target   1m   67Mi\n"))
+    assert Kubectl("demo", runner=runner).top_pod("target") == "target   1m   67Mi\n"
+    assert runner.argv[-4:] == ("top", "pod", "target", "--no-headers")
+
+    refused = FakeRunner(fail("error: Metrics API not available"))
+    assert Kubectl("demo", runner=refused).top_pod("target") is None

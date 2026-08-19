@@ -485,6 +485,29 @@ class Kubectl:
             if isinstance(item, dict)
         ]
 
+    def top_pod(self, name: str) -> str | None:
+        """What ``kubectl top`` says this pod is using, or ``None`` if it will not.
+
+        ``check=False`` and a ``None`` rather than an error: the metrics API is
+        an add-on, ``pods.metrics.k8s.io`` is a resource of its own that
+        podbench's chart does not grant, and a pod the sampler has not reached
+        yet answers with nothing at all. Every one of those is ordinary on a
+        working cluster.
+
+        The distinction the caller must keep is that ``None`` means *unmeasured*
+        and never *fine*: podbench has now twice reported an unreadable thing as
+        a good one (issue #89's ``/proc`` path, C14's address-space check), and
+        this is read to decide whether to stay quiet about memory.
+
+        Text, not JSON: ``kubectl top`` has no ``-o json`` — it renders the
+        metrics API itself — so :func:`podbench.resize.parse_top_memory` reads
+        the column.
+        """
+        result = self.run("top", "pod", name, "--no-headers", check=False)
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:
         """A pod subresource's JSON, e.g. ``ephemeralcontainers``."""
         result = self.run(

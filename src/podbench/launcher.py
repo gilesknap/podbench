@@ -34,6 +34,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -83,14 +84,21 @@ from .model import (
 from .proc import Credentials
 from .resize import (
     CPU,
+    EDITOR_HEADROOM,
     MEMORY,
+    SEAT_FOOTPRINT,
+    SEAT_HEADROOM,
+    Headroom,
     ResizeError,
     ResizePlan,
     Want,
     explain_claim_refusal,
+    format_memory,
     namespace_limits,
+    parse_top_memory,
     parse_want,
     plan_resize,
+    pod_memory_limit,
 )
 from .spec import (
     AGENT_COMMAND,
@@ -135,8 +143,8 @@ __all__ = [
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
     "NO_TARGET_CONTAINER",
-    "OOM_WARNING",
-    "RESIZE_WARNING",
+    "EDITOR_HEADROOM_WARNING",
+    "MEMORY_HEADROOM_WARNING",
     "SEAT_IDENTITY_MOUNTS",
     "SEAT_STATUS_ARGV",
     "UNKNOWN_SEAT_VERSION",
@@ -169,6 +177,8 @@ __all__ = [
     "format_pod_choices",
     "format_seats",
     "format_session",
+    "headroom_note",
+    "measure_headroom",
     "host_alias_in",
     "id_correction",
     "identity_paths",
@@ -290,19 +300,48 @@ target's uid, so the agent registers one at start-up when it can (see
 :func:`podbench.agent.ensure_passwd_entry`). ``--ssh-user`` overrides it when
 the image names that account something else."""
 
-OOM_WARNING = (
-    "this seat shares the pod's memory and ephemeral-storage limits and cannot "
-    "reserve its own (report 3.9): a 1.1-1.3 GB VS Code session can OOM-kill "
-    "the workload or get the pod evicted, and an ephemeral container does not "
-    "come back. `podbench dev` for anything heavier than looking."
+MEMORY_HEADROOM_WARNING = (
+    "only {free} of memory headroom here ({used} in use of {limit}), and an "
+    "ephemeral container may not reserve its own. A seat measured {footprint} "
+    "(DLS p47, 2026-08-19); `--resize MEMORY` raises the target's limit in "
+    "place, and `podbench dev` gives the seat its own."
 )
-"""Why a seat can kill the pod it landed in, in one line.
+"""Printed only where *this* pod's measured headroom is genuinely thin.
+
+It replaces a warning printed on every attach, and the measurement is why: ten
+live seats on DLS p47 (2026-08-19) cost 13-23 MiB against 170-3858 MiB of pod
+headroom, three seats to a pod and no OOM anywhere. Warning about that is a
+fear the data does not support, and it was half of what this report printed.
+
+Headroom rather than the container's limit, because the limit answers the wrong
+question - the beamline's smallest limits (three 100Mi containers) are in the
+pod with the most room per byte used. And measured rather than assumed in both
+directions: where the headroom could not be read the report says so on the
+`memory` row and this line stays silent, since a caution fired on every cluster
+without a metrics-server is the thing being removed.
 
 Every warning the report prints is one line by rule. The mechanism behind each
 - which is what the paragraphs these replaced were spending their length on -
 is in ``docs/how-to/attach-to-a-pod.md``, said once, where somebody reading
 about the mode will meet it; a terminal is where you find out *that* it applies
 to the pod in front of you.
+"""
+
+EDITOR_HEADROOM_WARNING = (
+    "--open lands vscode-server here and it measured {needed} live with one "
+    "extension, against {free} of headroom ({used} in use of {limit}): the "
+    "overflow OOM-kills something in the pod cgroup and an ephemeral container "
+    "does not come back. `--resize MEMORY` first, or `podbench dev`."
+)
+"""The memory cost that survived the measurement, on the flag that spends it.
+
+A bare seat is 13-23 MiB and no longer earns a word; an editor is three orders
+of magnitude more (1215 MiB with one extension, 2026-08-16, report R2) and does
+not fit in most of the pods measured. So this is keyed on ``--open``, which is
+podbench asking for the editor itself, and on the same reading of this pod that
+the seat's own line uses. Somebody who connects VS Code by hand afterwards is
+told by ``docs/how-to/vscode-remote-ssh.md`` instead - a warning cannot be
+printed for a decision that has not been made yet.
 """
 
 EDITOR_PROBE_REMINDER = (
@@ -323,19 +362,6 @@ still decide, and because it is not obviously part of a "pause" at all: the
 seat bounds each fetch and withdraws the server when it cannot be reached
 (:func:`podbench.agent.check_debuginfod`), but a reachable, slow one is charged
 to this budget. The mechanism is in ``docs/how-to/attach-to-a-pod.md``.
-"""
-
-RESIZE_WARNING = (
-    "--resize MEMORY and --resize-cpu CPU raise the target's limits in place "
-    "before the seat lands, which is the only headroom a live pod can be given; "
-    "opt-in, and only partly proven (report R13)."
-)
-"""Printed when neither resize flag was given, so it is an offer and not a
-caution.
-
-What R13 leaves unproven belongs on the other path and is printed there, by
-:func:`try_resize`: a caveat about a mutation is worth reading by the person who
-just made it, and worth skipping by the person who did not.
 """
 
 VERSION_SKEW_WARNING = (
@@ -1262,6 +1288,15 @@ class Session:
     The evidence behind :attr:`rung`, kept rather than reduced to it, because
     the report cites it and two decisions turn on the uid alone."""
 
+    headroom: Headroom | None = None
+    """How much of the pod's memory ceiling was free when the seat landed.
+
+    ``None`` where nothing looked - a ``podbench dev`` pod, whose sidecar has
+    limits of its own and no ceiling to share - which is not the same as a
+    :class:`podbench.resize.Headroom` whose halves are ``None``. The report
+    prints the row only for the first kind of caller, so a mode the question
+    does not apply to is not answered "unmeasured"."""
+
     @property
     def pod(self) -> PodRef:
         return self.seat.pod
@@ -1509,7 +1544,19 @@ def attach(
             warnings.append(stale)
     elif seat_version != __version__:
         warnings.append(VERSION_SKEW_WARNING)
-    warnings.append(OOM_WARNING)
+    # Measured, not feared. The unconditional memory warning this replaces was
+    # written against an assumption that 2026-08-19 falsified on DLS p47: ten
+    # live seats cost 13-23 MiB against 170-3858 MiB of pod headroom, three
+    # seats to a pod, no OOM in any of them. What decides is the headroom and
+    # not the container's limit - the beamline's three smallest limits are in
+    # its roomiest pod - and where the headroom cannot be read the report says
+    # unmeasured on its own row rather than warning anyway.
+    headroom = measure_headroom(kubectl, pod, pod_json)
+    memory_note = headroom_note(
+        headroom, needed=SEAT_HEADROOM, template=MEMORY_HEADROOM_WARNING
+    )
+    if memory_note is not None:
+        warnings.append(memory_note)
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
     # a caution about probed pods. It is not a warning of its own, though: the
@@ -1525,6 +1572,7 @@ def attach(
     # seat's line carries for exactly this reason.
     session = replace(
         session,
+        headroom=headroom,
         identity_declared=identity_declared,
         probes=budgets,
         seat_version=seat_version,
@@ -2643,6 +2691,13 @@ def format_session(session: Session) -> str:
             f"  pause       "
             f"{describe_pause(report.attach_method, report.target_attach_ok)}"
         )
+        # A row, not a warning. It is a measurement of this pod and it belongs
+        # with the measurements: an ample margin - which is every pod on the
+        # beamline this was calibrated against - is worth a number and not a
+        # caution, and a margin that could not be read has to read as
+        # *unmeasured* here rather than be passed off as fine by silence.
+        if session.headroom is not None:
+            lines.append(f"  memory      {session.headroom.summary}")
         if report.notes:
             lines.append("notes")
             for note in report.notes:
@@ -3249,6 +3304,63 @@ def emit_ssh_config(
     )
 
 
+# -- memory headroom --------------------------------------------------------
+
+
+def measure_headroom(
+    kubectl: Kubectl, pod: str, pod_json: Mapping[str, Any]
+) -> Headroom:
+    """What is left of this pod's memory ceiling, as far as it can be read.
+
+    Two reads, and either may come back empty. The ceiling is arithmetic on the
+    pod spec already in hand; what the pod is *using* needs the metrics API,
+    which is an add-on and a separate RBAC resource, so it is asked for with
+    ``check=False`` and its absence recorded as unmeasured.
+
+    The usage read is skipped entirely where there is no ceiling: a pod cgroup
+    the kubelet left unbounded has no headroom question to answer, and spending
+    an API call to find out how much of nothing is free is not worth an attach's
+    latency.
+
+    Taken after the seat has landed, so the sum includes it - which is the
+    number the reader wants, since what they are about to do is grow it. A
+    metrics sample older than the seat simply reports the pod without it, which
+    errs towards more room rather than less; the warning this feeds is about the
+    order of magnitude, not the megabyte.
+    """
+    limit = pod_memory_limit(pod_json)
+    if limit is None:
+        return Headroom(limit=None, used=None)
+    top = kubectl.top_pod(pod)
+    return Headroom(limit=limit, used=None if top is None else parse_top_memory(top))
+
+
+def headroom_note(
+    headroom: Headroom | None, *, needed: Fraction, template: str
+) -> str | None:
+    """The warning ``headroom`` earns against ``needed``, or ``None``.
+
+    Silent on an ample margin *and* silent on one that could not be read, which
+    are different answers and only one of them is good news. The unmeasured case
+    is not dropped: :attr:`podbench.resize.Headroom.summary` states it as
+    unmeasured on the report's ``memory`` row, which is where a fact that is not
+    a hazard belongs. Turning it into a caution instead would fire on every
+    cluster without a metrics-server, and an always-on memory warning is exactly
+    what the p47 measurement retired.
+    """
+    if headroom is None or not headroom.below(needed):
+        return None
+    limit, used, free = headroom.limit, headroom.used, headroom.free
+    assert limit is not None and used is not None and free is not None  # noqa: S101
+    return template.format(
+        free=format_memory(free),
+        used=format_memory(used),
+        limit=format_memory(limit),
+        needed=format_memory(needed),
+        footprint=SEAT_FOOTPRINT,
+    )
+
+
 # -- in-place resize --------------------------------------------------------
 
 
@@ -3320,6 +3432,14 @@ def try_resize(
             f"in-place resize ({asked}) was refused, so podbench is sharing the "
             f"pod's existing limits: {refusal}"
             + (f" {explanation}" if explanation else "")
+            # Said once, here, so nobody goes hunting for RBAC they do not need:
+            # the refusal is usually the end of it. A seat costs 13-23 MiB, and
+            # the tightest pod on the beamline this was measured against had
+            # 170 MiB free. The `memory` row above says what *this* pod has.
+            + f" A seat itself measured {SEAT_FOOTPRINT} across ten live seats "
+            "(DLS p47, 2026-08-19), so sharing the existing limits is usually "
+            "the end of it - unless this session runs vscode-server, which "
+            "measured 1215 MiB with one extension."
         )
     return "\n".join(
         [
@@ -4517,9 +4637,17 @@ def _build_app(
 
         # Resize before attaching, not after: the headroom has to exist before
         # vscode-server starts allocating into a limit podbench cannot reserve.
-        if resize is None and resize_cpu is None:
-            resize_note = RESIZE_WARNING
-        else:
+        #
+        # And nothing at all when neither flag was given (#54). The line that
+        # used to stand here was an offer of a mode the user had not asked for,
+        # printed on every attach, in a report the sweep found was more than
+        # half warnings - and the premise under it, that a seat's memory is a
+        # live hazard, is what the p47 measurement retired. `--resize` is
+        # documented in `--help` and in docs/how-to/attach-to-a-pod.md, and the
+        # one place it is still named unasked is the warning that reads a
+        # genuinely thin pod.
+        resize_note: str | None = None
+        if resize is not None or resize_cpu is not None:
             pod_json = kube.get_pod(name)
             workload = target_container_name(pod_json, target)
             resize_note = try_resize(
@@ -4548,7 +4676,21 @@ def _build_app(
             probe=not no_probe,
             timeout=timeout,
         )
-        session = replace(session, warnings=(*session.warnings, resize_note))
+        if resize_note is not None:
+            session = replace(session, warnings=(*session.warnings, resize_note))
+        # Checked here rather than in `attach`, because it is a question about
+        # this invocation and not about the seat: a bare seat is 13-23 MiB and
+        # earns no word at these headrooms, and an editor is a measured 1215 MiB
+        # that does not fit in most of the pods that were measured. `--open` is
+        # the only point at which podbench itself decides to spend that.
+        if editor is not None:
+            editor_note = headroom_note(
+                session.headroom,
+                needed=EDITOR_HEADROOM,
+                template=EDITOR_HEADROOM_WARNING,
+            )
+            if editor_note is not None:
+                session = replace(session, warnings=(*session.warnings, editor_note))
         emit(format_session(session))
         print()
         wiring = _wire(
