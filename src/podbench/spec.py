@@ -36,6 +36,7 @@ from .model import (
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
     TARGET_CID_ENV,
+    TARGET_NAME_ENV,
     Rung,
     as_dict,
 )
@@ -837,7 +838,7 @@ def _sidecar(
 
     environment = {
         "HOME": WORKSPACE_MOUNT_PATH,
-        "PODBENCH_TARGET": target_container,
+        TARGET_NAME_ENV: target_container,
         **dict(env or {}),
     }
     return {

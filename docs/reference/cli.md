@@ -31,7 +31,7 @@ $ podbench --help
 ╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
 │ agent          prepare the container for ssh and idle as its PID 1                               │
 │ capreport      name the mechanism that denies ptrace in this container                           │
-│ pids           list the pod's processes                                                          │
+│ pids           list the target container's processes                                             │
 │ dbg            debug a process                                                                   │
 │ debug-config   write VS Code's launch.json for this seat                                         │
 │ dev-bootstrap  clone, sync and editable-install a checkout                                       │
@@ -980,14 +980,17 @@ arm64 the package is present and the mechanism is not.
 
 ### `pids`
 
-List the processes in the pod's shared PID namespace and say which container
-owns each.
+List the processes in the target container's PID namespace and say which
+container owns each. The listing is headed with the container the seat is in,
+and with the pod's other containers where there are any: defaulting to the first
+container matches `kubectl exec`, but a listing that says only "the pod's
+processes" leaves a three-container pod reading as a one-container pod.
 
 ```
 
  Usage: podbench pids [OPTIONS]
 
- List the processes in this pod's shared PID namespace, and say which container owns each one.
+ List the processes in the target container's PID namespace, and say which container owns each one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --container-id        ID  target container id (default: $PODBENCH_TARGET_CID)                    │
@@ -1454,6 +1457,8 @@ stream.
 | `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides. Both override the default, which is `ghcr.io/gilesknap/podbench:` plus the launcher's own version (`main` for a dev build) |
 | `PODBENCH_CONFIG_DIR` | launcher, `dev` | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
 | `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `run` | the target container's runtime ID, injected at attach time |
+| `PODBENCH_TARGET` | `pids` | the target container's *name*, injected at attach time. What the listing is headed with |
+| `PODBENCH_POD_CONTAINERS` | `pids` | every container in the pod, comma-separated, injected at attach time. How the listing names the containers the seat is not in |
 | `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected into the seat's spec by `attach` and by `dev` |
 | `PODBENCH_SSH_PUBKEY_FILE` | agent | read it from a file instead. Default mount `/etc/podbench/ssh/authorized_keys` |
 | `PODBENCH_SSH_HOST_KEY` | agent | host private key, rather than minting one |

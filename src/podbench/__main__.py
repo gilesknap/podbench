@@ -152,7 +152,7 @@ ENTRY_POINTS: dict[str, Verb] = {
         "name the mechanism that denies ptrace in this container",
         IN_POD,
     ),
-    "pids": Verb(_gdbcmd, True, "list the pod's processes", IN_POD),
+    "pids": Verb(_gdbcmd, True, "list the target container's processes", IN_POD),
     "dbg": Verb(_gdbcmd, True, "debug a process", IN_POD),
     "debug-config": Verb(
         _vscode, False, "write VS Code's launch.json for this seat", IN_POD

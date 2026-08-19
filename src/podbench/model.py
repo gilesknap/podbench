@@ -33,7 +33,9 @@ __all__ = [
     "SEAT_PASSWD_KEY",
     "IMAGE_ENV",
     "HOST_NETWORK_ENV",
+    "POD_CONTAINERS_ENV",
     "TARGET_CID_ENV",
+    "TARGET_NAME_ENV",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
@@ -42,6 +44,7 @@ __all__ = [
     "ProcInfo",
     "Rung",
     "Verdict",
+    "and_list",
     "as_dict",
     "describe_credentials",
     "describe_gated_fallback",
@@ -193,6 +196,33 @@ carries no such variable, and reading its absence as "no hostNetwork" would put
 back the very claim this exists to stop.
 """
 
+TARGET_NAME_ENV = "PODBENCH_TARGET"
+"""Env var carrying the *name* of the container the seat was pointed at.
+
+The id in :data:`TARGET_CID_ENV` is what attribution matches on, and it is not
+a name anybody recognises: twelve hex digits identify the container to the
+runtime and to nothing else. ``podbench pids`` heads its listing with this
+instead, because "container X's processes" is the sentence that stops a
+one-container reading of a three-container pod (finding 15).
+
+The dev pod's sidecar has carried it since dev pods existed
+(:func:`podbench.spec.dev_pod_spec`); this is the same variable, spelled once.
+"""
+
+POD_CONTAINERS_ENV = "PODBENCH_POD_CONTAINERS"
+"""Env var carrying every container name in the pod, comma-separated.
+
+Comma-separated because sshd's ``SetEnv`` ends a value at the first space
+(:func:`podbench.sshcfg.unsafe_set_env`), and container names are DNS labels so
+no name can contain one.
+
+The seat cannot work this out for itself - it can see its own namespaces and
+nothing of the pod object - and without it ``pids`` can name the container it is
+showing but not the ones it is not, which is half of the answer a reader of a
+multi-container pod needs. Absent means **unknown**, never "this pod has one
+container": a seat landed by an older launcher carries no such variable.
+"""
+
 TARGET_CID_ENV = "PODBENCH_TARGET_CID"
 """Env var carrying the target's container id into the debug container.
 
@@ -309,12 +339,12 @@ def describe_reads(proc_reads: Mapping[str, bool]) -> str:
     readable = [name for name in ordered if proc_reads[name]]
     denied = [name for name in ordered if not proc_reads[name]]
     if not readable:
-        return f"{_names(denied)} all denied"
+        return f"{and_list(denied)} all denied"
     if not denied:
-        return f"{_names(readable)} readable"
+        return f"{and_list(readable)} readable"
     gated = [name for name in readable if name in PTRACE_READ_PATHS]
     kept = "readable" if gated else "only"
-    return f"{_names(readable)} {kept}; {_names(denied)} denied"
+    return f"{and_list(readable)} {kept}; {and_list(denied)} denied"
 
 
 def describe_gated_fallback(proc_reads: Mapping[str, bool]) -> str:
@@ -343,13 +373,22 @@ def describe_gated_fallback(proc_reads: Mapping[str, bool]) -> str:
     tail = (
         "a sysroot on root still will"
         if "root" in kept
-        else f"{_names([f'`{name}`' for name in kept])} still opens"
+        else f"{and_list([f'`{name}`' for name in kept])} still opens"
     )
-    return f"so {_names([f'`{name}`' for name in lost])} will not open, but {tail}"
+    return f"so {and_list([f'`{name}`' for name in lost])} will not open, but {tail}"
 
 
-def _names(names: Sequence[str]) -> str:
-    """``a, b and c`` — the report is read by people, not parsed."""
+def and_list(names: Sequence[str]) -> str:
+    """``a, b and c`` — the report is read by people, not parsed.
+
+    Public, and in this module, because both halves say it: the launcher names
+    the containers an attach did not enter, and ``pids`` names them again from
+    inside the seat (finding 15). Two spellings of the same list is the kind of
+    difference a reader takes for a difference in meaning.
+
+    >>> and_list(["ca", "pva"])
+    'ca and pva'
+    """
     # An empty list is no caller's case today, but `names[-1]` on the way to a
     # diagnostic is a crash in the one code path that must never crash.
     if len(names) < 2:

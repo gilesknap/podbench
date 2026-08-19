@@ -24,6 +24,7 @@ from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
 from podbench.kubectl import CommandResult, Kubectl, KubectlError
 from podbench.launcher import (
+    NO_TARGET_CONTAINER,
     RESIZE_WARNING,
     UNKNOWN_SEAT_VERSION,
     VERSION_SKEW_WARNING,
@@ -31,6 +32,7 @@ from podbench.launcher import (
     Session,
     attach,
     capability_report_from_json,
+    container_names,
     current_namespace,
     default_host_alias,
     emit_ssh_config,
@@ -43,6 +45,7 @@ from podbench.launcher import (
     kubectl_for,
     main,
     match_pod_names,
+    other_containers,
     parse_mount,
     plan_ladder,
     pod_choices,
@@ -53,6 +56,8 @@ from podbench.launcher import (
     seat_layout,
     seats,
     ssh_config_path,
+    target_container_name,
+    target_fact,
     try_resize,
 )
 from podbench.model import (
@@ -169,6 +174,7 @@ def pod_document(
     ready: bool = True,
     probes: Mapping[str, Any] | None = None,
     host_network: bool = False,
+    siblings: Sequence[str] = (),
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -196,7 +202,7 @@ def pod_document(
             # seat has to read a missing key as "no" and a missing *variable* as
             # "unknown", and those are not the same absence.
             **({"hostNetwork": True} if host_network else {}),
-            "containers": [workload],
+            "containers": [workload, *({"name": name} for name in siblings)],
             "volumes": [dict(volume) for volume in volumes],
             "ephemeralContainers": [dict(entry) for entry in ephemeral],
         },
@@ -611,6 +617,106 @@ def security_contexts(cluster: FakeCluster) -> list[dict[str, Any]]:
 
 def running_status(name: str) -> dict[str, Any]:
     return {"name": name, "state": {"running": {"startedAt": "2026-08-15T09:00:00Z"}}}
+
+
+# -- which container the seat entered ---------------------------------------
+
+
+def test_the_first_container_wins_and_a_named_one_has_to_exist() -> None:
+    pod = pod_document(container="ca-gateway", siblings=["pva-gateway"])
+
+    assert container_names(pod) == ["ca-gateway", "pva-gateway"]
+    assert target_container_name(pod) == "ca-gateway"
+    assert target_container_name(pod, "pva-gateway") == "pva-gateway"
+    # Only a *requested* name can be wrong: the default is whatever the spec
+    # puts first, which is the rule `kubectl exec` follows.
+    with pytest.raises(LauncherError, match="not in pod"):
+        target_container_name(pod, "gateway")
+    with pytest.raises(LauncherError, match="no containers"):
+        target_container_name({"spec": {"containers": []}})
+
+
+def test_a_three_container_pod_names_every_one_it_did_not_enter() -> None:
+    """``p47-proxy``, where the default target is one container of three.
+
+    The flag is spelled out per sibling rather than described, because a reader
+    who has to work out the invocation from a name is the reader who does not.
+    """
+    pod = pod_document(container="panda80", siblings=["panda8080", "pmac1025"])
+
+    assert other_containers(pod, "panda80") == ("panda8080", "pmac1025")
+    assert target_fact("panda80", other_containers(pod, "panda80")) == (
+        "panda80; this pod also has panda8080 and pmac1025 - reach one with "
+        "`--target panda8080` or `--target pmac1025`"
+    )
+
+
+def test_a_single_container_pod_gains_no_line_at_all() -> None:
+    """The common case, and the reason this is a value and not a warning.
+
+    Twelve of the fifteen pods on the beamline have one container; a sentence
+    about the default on each of them is a report growing a line to say nothing.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    text = format_session(attach(talking_to(cluster), "target"))
+
+    assert "target      app" in text
+    assert "this pod also has" not in text
+
+
+def test_the_report_names_the_sibling_and_the_flag_that_reaches_it() -> None:
+    cluster = FakeCluster(
+        pod_document(uid=1000, container="ca-gateway", siblings=["pva-gateway"])
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert session.workload == "ca-gateway"
+    assert session.siblings == ("pva-gateway",)
+    # Flattened: the row wraps, and the fact is the sentence rather than any
+    # one line of it.
+    assert (
+        "target ca-gateway; this pod also has pva-gateway - reach it with "
+        "`--target pva-gateway`"
+    ) in " ".join(format_session(session).split())
+
+
+def test_the_seat_carries_the_container_it_entered_and_the_pods_others() -> None:
+    """Neither fact is derivable in the seat: it sees namespaces, not the pod.
+
+    Without them ``pids`` can only offer "the pod's processes" over one
+    container's namespace, which is the reading finding 15 is about.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000, container="ca-gateway", siblings=["pva-gateway"])
+    )
+    attach(talking_to(cluster), "target")
+
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["PODBENCH_TARGET"] == "ca-gateway"
+    assert env["PODBENCH_POD_CONTAINERS"] == "ca-gateway,pva-gateway"
+
+
+def test_a_reconnect_reports_the_container_the_seat_is_really_in() -> None:
+    """``--target`` cannot move a seat, so the report must not say it did.
+
+    An ephemeral container's ``targetContainerName`` is fixed for its lifetime.
+    A reconnect that was handed another name is still in the first container,
+    and the siblings named beside it have to be that container's.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="ca-gateway",
+            siblings=["pva-gateway"],
+            ephemeral=[{"name": "podbench-1", "targetContainerName": "pva-gateway"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", target="ca-gateway")
+
+    assert session.reused
+    assert session.workload == "pva-gateway"
+    assert session.siblings == ("ca-gateway",)
 
 
 # -- the ladder -------------------------------------------------------------
@@ -3686,6 +3792,33 @@ def test_a_listing_that_measured_nothing_claims_no_version(tmp_path: Path) -> No
 
     assert "version   not probed" in text
     assert "ghcr.io/x/podbench:main" not in text
+
+
+def test_a_listing_says_which_container_each_seat_is_in(tmp_path: Path) -> None:
+    """Two seats on one pod can be in different containers, so it is per seat.
+
+    An ephemeral container with no ``targetContainerName`` is in none of them -
+    it runs in the pod's own namespaces - and that is a third answer rather
+    than a synonym for the first container.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="ca-gateway",
+            siblings=["pva-gateway"],
+            ephemeral=[
+                {"name": "podbench-1", "targetContainerName": "pva-gateway"},
+                {"name": "podbench-2"},
+            ],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "target    pva-gateway" in text
+    assert f"target    {NO_TARGET_CONTAINER}" in text
 
 
 def test_list_finds_pods_carrying_a_seat(

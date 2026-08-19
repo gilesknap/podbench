@@ -57,11 +57,13 @@ from .model import (
     HOST_NETWORK_ENV,
     IMAGE_ENV,
     NOT_PROBED,
+    POD_CONTAINERS_ENV,
     SEAT_GROUP_KEY,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
     SEAT_PASSWD_KEY,
+    TARGET_NAME_ENV,
     Blocker,
     CapabilityReport,
     ContainerRef,
@@ -69,6 +71,7 @@ from .model import (
     PodRef,
     Rung,
     Verdict,
+    and_list,
     as_dict,
     describe_credentials,
     describe_pause,
@@ -128,6 +131,7 @@ __all__ = [
     "LADDER",
     "LOGIN_USER_ARGV",
     "NON_ROOT_HOME",
+    "NO_TARGET_CONTAINER",
     "OOM_WARNING",
     "RESIZE_WARNING",
     "SEAT_IDENTITY_MOUNTS",
@@ -148,6 +152,7 @@ __all__ = [
     "capability_report_from_json",
     "choose_pod",
     "client_dir",
+    "container_names",
     "current_namespace",
     "declared_volumes",
     "default_host_alias",
@@ -169,6 +174,7 @@ __all__ = [
     "main",
     "match_pod_choices",
     "match_pod_names",
+    "other_containers",
     "parse_mount",
     "plan_ladder",
     "pod_choices",
@@ -195,6 +201,7 @@ __all__ = [
     "ssh_include_line",
     "ssh_stanza",
     "target_container_name",
+    "target_fact",
     "try_resize",
     "write_known_hosts",
     "write_ssh_config",
@@ -387,15 +394,16 @@ def resolve_pod_name(reference: str) -> str:
     return name
 
 
-def target_container_name(
-    pod_json: Mapping[str, Any], requested: str | None = None
-) -> str:
-    """The workload container podbench points at.
+def container_names(pod_json: Mapping[str, Any]) -> list[str]:
+    """The pod's workload containers, in spec order.
 
-    With no ``--target`` the first container wins, matching ``kubectl exec``,
-    so the common single-container pod needs no flag.
+    Spec order because the first of them is the default target: that is
+    ``kubectl exec``'s rule and so :func:`target_container_name`'s.
+
+    >>> container_names({"spec": {"containers": [{"name": "ca"}, {"name": "pva"}]}})
+    ['ca', 'pva']
     """
-    names = [
+    return [
         name
         for name in (
             _entry_name(entry)
@@ -403,6 +411,21 @@ def target_container_name(
         )
         if name is not None
     ]
+
+
+def target_container_name(
+    pod_json: Mapping[str, Any], requested: str | None = None
+) -> str:
+    """The workload container podbench points at.
+
+    With no ``--target`` the first container wins, matching ``kubectl exec``,
+    so the common single-container pod needs no flag. Which container that was
+    is then reported rather than left implied — see :func:`other_containers`.
+
+    >>> target_container_name({"spec": {"containers": [{"name": "ca"}]}})
+    'ca'
+    """
+    names = container_names(pod_json)
     if not names:
         raise LauncherError("pod has no containers")
     if requested is None:
@@ -410,6 +433,22 @@ def target_container_name(
     if requested not in names:
         raise LauncherError(f"container {requested!r} not in pod (has {names})")
     return requested
+
+
+def other_containers(pod_json: Mapping[str, Any], workload: str) -> tuple[str, ...]:
+    """The pod's containers ``workload`` is not, in spec order.
+
+    Defaulting to the first container is right; saying nothing about it is not.
+    Three of the fifteen pods on the p47 beamline carry two or three containers,
+    and on each of them a silent default leaves the report describing a pod that
+    does not exist — one third of ``p47-proxy``'s processes read as all of them
+    (finding 15).
+
+    >>> pod = {"spec": {"containers": [{"name": "ca"}, {"name": "pva"}]}}
+    >>> other_containers(pod, "ca")
+    ('pva',)
+    """
+    return tuple(name for name in container_names(pod_json) if name != workload)
 
 
 def parse_mount(text: str) -> tuple[str, str | None]:
@@ -1087,6 +1126,20 @@ class Session:
     """
 
     reused: bool
+    siblings: tuple[str, ...] = ()
+    """The pod's other workload containers, which this seat did not enter.
+
+    Carried on the session rather than looked up when the report is laid out,
+    because the two containers are chosen at different times: an ``attach`` that
+    reconnects takes the workload from the seat's own ``targetContainerName``,
+    and the siblings have to be the siblings of *that* one rather than of
+    whatever this run would have picked.
+
+    Empty is "none", and it is also what a dev pod's session says: its sidecar
+    is a container of that pod too, but ``--target`` is ``attach``'s flag and
+    naming it under ``podbench dev`` would offer a remedy that does not exist.
+    """
+
     uid: int | None = None
     """``runAsUser`` as actually pinned in the container's securityContext —
     ``None`` when the seat rung pinned nothing and the image's own user wins."""
@@ -1319,9 +1372,15 @@ def attach(
             )
             existing = None
     if existing is not None and not force_new:
+        # The reused seat's own target, not this run's: an ephemeral container's
+        # targetContainerName is fixed when it is created, so a reconnect that
+        # was given a different `--target` is still in the first one - and the
+        # siblings named beside it have to be that container's.
+        reconnected = existing.target or workload
         session = Session(
             seat=ContainerRef(PodRef(kubectl.namespace, pod), existing.name),
-            workload=existing.target or workload,
+            workload=reconnected,
+            siblings=other_containers(pod_json, reconnected),
             rung=existing.rung,
             reused=True,
             uid=existing.uid,
@@ -1603,7 +1662,11 @@ def _walk_ladder(
                 target_uid=None if rung is Rung.FULL else uid,
                 target_gid=None if rung is Rung.FULL else gid,
                 env=_container_env(
-                    pod_json, public_key, rung, home=_seat_home(volume_mounts, rung)
+                    pod_json,
+                    public_key,
+                    rung,
+                    workload=workload,
+                    home=_seat_home(volume_mounts, rung),
                 ),
                 volume_mounts=volume_mounts,
                 # The target's own, never RuntimeDefault by default: a filter
@@ -1701,6 +1764,7 @@ def _walk_ladder(
         return Session(
             seat=ContainerRef(PodRef(kubectl.namespace, pod), name),
             workload=workload,
+            siblings=other_containers(pod_json, workload),
             rung=rung,
             reused=False,
             # What was *pinned*, not what was asked for: the full rung is root
@@ -1912,9 +1976,16 @@ def _container_env(
     public_key: str | None,
     rung: Rung,
     *,
+    workload: str,
     home: str | None,
 ) -> dict[str, str]:
     env: dict[str, str] = {}
+    # Which container this seat is in, and what else is in the pod. Both are
+    # laptop-side facts - the seat sees namespaces, never the pod object - and
+    # `pids` needs them to head its listing with the container whose processes
+    # those are, and to name the ones whose processes are not there (finding 15).
+    env[TARGET_NAME_ENV] = workload
+    env[POD_CONTAINERS_ENV] = ",".join(container_names(pod_json))
     if home is not None:
         # Root already has a writable home the agent's layout knows about; a
         # non-root seat has none, so both halves are pointed at the same one.
@@ -2417,12 +2488,43 @@ def seat_version_fact(seat_version: str | None) -> str:
     return f"{seat_version} in the seat, {__version__} in this launcher"
 
 
+def target_fact(workload: str, siblings: Sequence[str] = ()) -> str:
+    """The ``target`` row's value: which container was entered, and which not.
+
+    A single-container pod says only the name, because there was nothing else to
+    have chosen and a sentence about the default would be a line of report per
+    attach saying so. Where there *are* siblings the default stops being
+    invisible: each of them is named, with the whole invocation that reaches it
+    rather than a description of one, so that the reader is not left to find out
+    from ``kubectl get pod -o json`` that podbench picked one of three
+    (finding 15).
+
+    >>> print(target_fact("api"))
+    api
+    >>> print(target_fact("gateway-ca", ["gateway-pva"]))
+    gateway-ca; this pod also has gateway-pva - reach it with `--target gateway-pva`
+    """
+    if not siblings:
+        return workload
+    names = and_list(siblings)
+    flags = " or ".join(f"`--target {name}`" for name in siblings)
+    reach = "reach it with" if len(siblings) == 1 else "reach one with"
+    return f"{workload}; this pod also has {names} - {reach} {flags}"
+
+
 def format_session(session: Session) -> str:
     """The capability report, which is the product of an attach."""
     lines = [
         f"seat        {session.seat}"
         + ("  (reconnected)" if session.reused else "  (new)"),
-        f"target      {session.workload}",
+        # Through `paragraph` rather than as a bare row: with a sibling to name
+        # this value is a sentence, and the report's own rule is that a wrapped
+        # value stays under its label.
+        *paragraph(
+            target_fact(session.workload, session.siblings),
+            first="target      ",
+            indent=" " * 12,
+        ),
         # Above the rung, not in `measured` below it: `--no-probe` skips that
         # block entirely, and which build is answering is exactly the thing a
         # user needs when a fix appears not to have worked.
@@ -3301,6 +3403,17 @@ def host_alias_in(stanza: str) -> str | None:
 _SEAT_FACT = " " * 4
 """Where everything said about one seat is indented to, under its row."""
 
+NO_TARGET_CONTAINER = "none - it runs in the pod's own namespaces"
+"""What a seat's ``target`` row says when it names no container.
+
+Not "unknown", and not the pod's first container either: an ephemeral container
+with no ``targetContainerName`` is not pointed at one at all, and runs in the
+namespaces the *pod* is configured with. Nothing podbench lands is authored that
+way (:func:`podbench.spec.ephemeral_container_spec` is always given the
+workload), so this is here for a seat somebody else's ``kubectl debug`` put in
+the pod.
+"""
+
 _FACT_INDENT = " " * 14
 """Where a fact's value starts, and stays on a wrap.
 
@@ -3485,6 +3598,11 @@ def format_seats(
     for seat in present:
         lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
         lines.extend(_fact("state", seat.detail))
+        # Per seat and not per pod: two seats on one pod may target different
+        # containers, and a listing that says only which pod they are in leaves
+        # the reader of a multi-container pod to guess which of them either seat
+        # can actually see (finding 15).
+        lines.extend(_fact("target", seat.target or NO_TARGET_CONTAINER))
         lines.extend(
             _fact(
                 "version",
@@ -4375,6 +4493,7 @@ def _build_app(
         session = Session(
             seat=reference,
             workload=workload,
+            siblings=other_containers(pod_json, workload),
             rung=_measured_or_asked(
                 seat.rung, credentials, target_uid=target_uid_gid(pod_json, workload)[0]
             ),

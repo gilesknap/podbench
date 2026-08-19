@@ -47,7 +47,13 @@ import typer
 from .cli import new_app, require_subcommand, run
 from .elf import read_elf
 from .execfile import gdb_exec_file
-from .model import CapabilityReport, ProcInfo, Verdict, describe_gated_fallback
+from .model import (
+    CapabilityReport,
+    ProcInfo,
+    Verdict,
+    and_list,
+    describe_gated_fallback,
+)
 from .probe import Attacher, probe
 from .proc import (
     DEFAULT_PROC,
@@ -56,6 +62,8 @@ from .proc import (
     ProcessListing,
     candidate_note,
     debug_candidates,
+    env_pod_containers,
+    env_target_container,
     env_target_container_id,
     is_shell,
     read_exe,
@@ -76,6 +84,7 @@ __all__ = [
     "command_file_text",
     "exec_gdb",
     "format_process_table",
+    "listing_heading",
     "gdb_argv",
     "launch_commands",
     "main",
@@ -145,7 +154,7 @@ ptrace at all — see :func:`podbench.proc.ptrace_readable`.
 """
 
 _PIDS_DESCRIPTION = (
-    "List the processes in this pod's shared PID namespace, and say which "
+    "List the processes in the target container's PID namespace, and say which "
     "container owns each one."
 )
 _DBG_DESCRIPTION = (
@@ -520,6 +529,49 @@ def format_process_table(listing: ProcessListing, *, targets_only: bool = False)
     )
 
 
+def listing_heading(target: str | None, containers: Sequence[str] = ()) -> list[str]:
+    """The lines above the table: whose PID namespace this listing is of.
+
+    ``pids`` used to offer "the pod's processes" while showing one container's
+    namespace. On ``p47-proxy``, three containers deep, that is a third of them,
+    and the reader concludes the pod holds three socats and nothing else
+    (finding 15). So the container is named, and so are the ones the seat is not
+    in - with the flag that lands a seat in each, because a name on its own
+    leaves the reader to guess how to get there.
+
+    Both facts are the launcher's to supply
+    (:data:`~podbench.model.TARGET_NAME_ENV`,
+    :data:`~podbench.model.POD_CONTAINERS_ENV`) and a seat landed by an older
+    one has neither. Missing, it says nothing at all rather than guessing: the
+    old listing with no heading is honest, and "this pod has one container" is
+    a claim this must never make from an absent variable.
+
+    Neither line says what is *not* below, which would be a claim about the
+    other containers' namespaces this seat cannot check: under
+    ``shareProcessNamespace: true`` the pod's containers share one namespace and
+    their processes are all here.
+
+    >>> for line in listing_heading("ca-gw", ["ca-gw", "pva-gw"]):
+    ...     print(line)
+    container ca-gw: the processes in its PID namespace
+    this pod also has pva-gw - re-attach with `--target pva-gw` for a seat in that one
+    >>> listing_heading(None, ["ca-gw"])
+    []
+    """
+    if target is None:
+        return []
+    lines = [f"container {target}: the processes in its PID namespace"]
+    others = [name for name in containers if name != target]
+    if others:
+        flags = " or ".join(f"`--target {name}`" for name in others)
+        one = "that one" if len(others) == 1 else "one of those"
+        lines.append(
+            f"this pod also has {and_list(others)} - re-attach with {flags} "
+            f"for a seat in {one}"
+        )
+    return lines
+
+
 def pids_payload(
     listing: ProcessListing, *, targets_only: bool = False
 ) -> dict[str, object]:
@@ -742,6 +794,11 @@ def _run_pids(
     else:
         if listing.warning is not None:
             _warn(listing.warning)
+        # Above the table rather than under it, and on stdout with it: this is
+        # the sentence the table is an answer to, and a reader who stops after
+        # the first screen is exactly the one it is for.
+        for line in listing_heading(env_target_container(), env_pod_containers()):
+            print(line)
         print(format_process_table(listing, targets_only=targets_only))
     return 0
 

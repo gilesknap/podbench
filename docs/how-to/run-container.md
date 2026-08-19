@@ -159,6 +159,8 @@ dbg`, `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
 | `PODBENCH_SSH_PUBKEY_FILE` | read it from a file instead (default mount `/etc/podbench/ssh/authorized_keys`) |
 | `PODBENCH_SSH_HOST_KEY` / `..._FILE` | supply a host key rather than minting one; the file default is `/etc/podbench/ssh/ssh_host_ed25519_key` |
 | `PODBENCH_TARGET_CID` | the target container's runtime ID, injected at attach time; how `podbench pids` and `podbench dbg` find the workload |
+| `PODBENCH_TARGET` | the target container's name, injected at attach time; what `podbench pids` heads its listing with |
+| `PODBENCH_POD_CONTAINERS` | every container in the pod, comma-separated, injected at attach time; how `podbench pids` names the containers this seat is not in |
 | `DEBUGINFOD_URLS` | defaults to `https://debuginfod.debian.net`; point it at a mirror. The agent connects to it once at start-up and drops it from ssh sessions when nothing answers |
 | `DEBUGINFOD_TIMEOUT` | seconds gdb will wait on that server, per file. Defaults to `2`; gdb's own default is 90, spent after the attach with the workload stopped |
 

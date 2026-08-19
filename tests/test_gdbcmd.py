@@ -29,13 +29,19 @@ from podbench.gdbcmd import (
     format_process_table,
     gdb_argv,
     launch_commands,
+    listing_heading,
     main,
     read_exe,
     resolve_target_pid,
     resolve_target_pids,
     strip_deleted,
 )
-from podbench.model import Blocker, Verdict
+from podbench.model import (
+    POD_CONTAINERS_ENV,
+    TARGET_NAME_ENV,
+    Blocker,
+    Verdict,
+)
 from podbench.probe import AttachOutcome, SkippedAttacher
 from proc_samples import CID, sample, write_tree
 
@@ -332,6 +338,97 @@ def test_resolve_target_pid_reports_an_unmatched_container(tmp_path: Path) -> No
 
 
 # --- pids -------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def no_inherited_seat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scrub the two variables the listing's heading is built from.
+
+    They are set in a real seat, and this suite is sometimes run in one. Every
+    test that wants a heading sets them itself; the rest see what a seat landed
+    by a launcher older than them prints, which is no heading at all.
+    """
+    monkeypatch.delenv(TARGET_NAME_ENV, raising=False)
+    monkeypatch.delenv(POD_CONTAINERS_ENV, raising=False)
+
+
+def test_the_listing_says_whose_processes_it_is_showing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "The pod's processes" over one container's namespace is finding 15.
+
+    The sibling is named with the whole invocation that reaches it, and neither
+    line claims anything about what is *not* below: under
+    ``shareProcessNamespace: true`` the other container's processes are here too,
+    and this seat cannot tell from in here.
+    """
+    monkeypatch.setenv(TARGET_NAME_ENV, "ca-gateway")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "ca-gateway,pva-gateway")
+    proc = make_proc(tmp_path)
+
+    assert main(["pids", "--container-id", TARGET_CID], proc=proc) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "container ca-gateway: the processes in its PID namespace"
+    assert lines[1] == (
+        "this pod also has pva-gateway - re-attach with `--target pva-gateway` "
+        "for a seat in that one"
+    )
+    assert lines[2].split()[0] == "PID"
+
+
+def test_a_one_container_pod_is_headed_but_offered_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(TARGET_NAME_ENV, "app")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "app")
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "container app: the processes in its PID namespace"
+    assert lines[1].split()[0] == "PID"
+
+
+def test_a_seat_that_was_never_told_heads_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Absence is "an older launcher landed me", never "one container".
+
+    Guessing the pod's shape from a missing variable is the claim this heading
+    exists to stop, so the listing goes back to what it printed before.
+    """
+    assert listing_heading(None, ["ca-gateway", "pva-gateway"]) == []
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    assert capsys.readouterr().out.splitlines()[0].split()[0] == "PID"
+
+
+def test_the_json_form_is_not_headed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A heading is prose for a reader, and `--json` has neither."""
+    monkeypatch.setenv(TARGET_NAME_ENV, "ca-gateway")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "ca-gateway,pva-gateway")
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID, "--json"], proc=proc)
+    json.loads(capsys.readouterr().out)
+
+
+def test_three_containers_offer_the_flag_for_each(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``p47-proxy``, where the seat holds a third of the pod's processes."""
+    monkeypatch.setenv(TARGET_NAME_ENV, "panda80")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "panda80,panda8080,pmac1025")
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    assert capsys.readouterr().out.splitlines()[1] == (
+        "this pod also has panda8080 and pmac1025 - re-attach with "
+        "`--target panda8080` or `--target pmac1025` for a seat in one of those"
+    )
 
 
 def test_pids_table_marks_only_the_target(

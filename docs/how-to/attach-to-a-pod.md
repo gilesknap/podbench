@@ -133,9 +133,21 @@ to match:
 $ podbench attach web --target api
 ```
 
-Without `--target` it picks the pod's first container. On a multi-container pod,
-name it — the target choice determines the sysroot, the UID of the degraded
-rung, and what `podbench pids` calls a target process.
+Without `--target` it picks the pod's first container, which is what `kubectl
+exec` does. It does not do so silently — the report's `target` row names the
+container it entered, and every other container the pod has, with the
+invocation that reaches each:
+
+```
+target      p47-epics-gateways-ca-gateway; this pod also has
+            p47-epics-gateways-pva-gateway - reach it with `--target
+            p47-epics-gateways-pva-gateway`
+```
+
+`podbench pids` heads its listing the same way, so a three-container pod does
+not read as a one-container pod from inside the seat either. The target choice
+determines the sysroot, the UID of the degraded rung, and what `podbench pids`
+calls a target process.
 
 If the pod spec does not state a `runAsUser` for the target (so the UID comes
 from the image), tell podbench with `--target-uid 1000`. The degraded rung must
@@ -473,7 +485,11 @@ $ podbench status web -n demo  # every seat in one pod
 $ podbench list -n demo        # every pod in the namespace carrying one
 ```
 
-Each seat is listed with the rung it was admitted on and, under it, a `verdict`.
+Each seat is listed with the rung it was admitted on and, under it, a `target`
+and a `verdict`. The `target` is the container that seat's namespaces are those
+of: two seats on one pod may have entered different containers, and an
+ephemeral container's `targetContainerName` is fixed for its lifetime, so this
+is read back from the spec rather than assumed.
 The verdict is measured: `status` runs `capreport` in every *running* seat, on
 the node, exactly as `attach` did. It is not derived from the rung, which says
 only what was asked for — a mutating webhook that strips `capabilities.add`

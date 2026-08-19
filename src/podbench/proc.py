@@ -30,8 +30,10 @@ from pathlib import Path, PurePosixPath
 
 from .model import (
     HOST_NETWORK_ENV,
+    POD_CONTAINERS_ENV,
     PTRACE_READ_PATHS,
     TARGET_CID_ENV,
+    TARGET_NAME_ENV,
     WORLD_READ_PATHS,
     Lsm,
     ProcInfo,
@@ -53,6 +55,9 @@ __all__ = [
     "debug_candidates",
     "env_host_network",
     "parse_host_network",
+    "env_pod_containers",
+    "parse_pod_containers",
+    "env_target_container",
     "env_target_container_id",
     "is_shell",
     "list_processes",
@@ -489,6 +494,42 @@ def env_target_container_id() -> str | None:
     raw = os.environ.get(TARGET_CID_ENV, "")
     stripped = strip_container_scheme(raw)
     return stripped or None
+
+
+def env_target_container() -> str | None:
+    """The target container's *name*, from :data:`~podbench.model.TARGET_NAME_ENV`.
+
+    ``None`` means the launcher that landed this seat did not say, which is not
+    the same as "there is no target": every seat has one. A caller must say
+    nothing rather than name the container id in its place - twelve hex digits
+    identify a container to the runtime and to no reader.
+    """
+    return os.environ.get(TARGET_NAME_ENV, "").strip() or None
+
+
+def env_pod_containers() -> tuple[str, ...]:
+    """Every container in this pod, from :data:`~podbench.model.POD_CONTAINERS_ENV`.
+
+    Empty means "not said", never "this pod has one container": a seat landed by
+    a launcher older than the variable carries none, and reading that absence as
+    a single-container pod is exactly the claim finding 15 is about.
+    """
+    return parse_pod_containers(os.environ.get(POD_CONTAINERS_ENV, ""))
+
+
+def parse_pod_containers(raw: str) -> tuple[str, ...]:
+    """Split the comma-separated list :data:`POD_CONTAINERS_ENV` carries.
+
+    Its own function for the reason :func:`parse_host_network` is: the parse is
+    the part worth testing, and doing it here keeps the test out of the process
+    environment.
+
+    >>> parse_pod_containers("ca, pva ,")
+    ('ca', 'pva')
+    >>> parse_pod_containers("")
+    ()
+    """
+    return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
 def env_host_network() -> bool | None:
