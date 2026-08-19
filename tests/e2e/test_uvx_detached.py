@@ -79,7 +79,12 @@ NO_MULTIPLEXING = (
     "ControlPath=none",
 )
 """A live ControlMaster bypasses the ProxyCommand entirely, so a test about
-what the ProxyCommand contains has to refuse one (S1 makes the same point)."""
+what the ProxyCommand contains has to refuse one (S1 makes the same point).
+
+Nothing to do with finding 10's shared socket: this pod carries a single seat,
+and the claim under test is that the stanza works with podbench off ``PATH`` —
+which a reused master would establish about a connection opened before the
+scrub."""
 
 LAUNCHER_NAMES = ("podbench", "kubectl-podbench")
 """Every name the launcher can appear under on ``PATH``.

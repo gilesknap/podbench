@@ -842,6 +842,61 @@ def running_seat(
     return None
 
 
+def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
+    """Which live seats a later one has replaced, keyed by the earlier name.
+
+    A pod carrying two seats is normal and not a fault: a multi-container pod
+    wants one per container, and ``--new`` asks for a second on purpose. Exactly
+    one mechanism makes a seat *replace* another, and it is the one the user did
+    not ask for - the gid correction (#103). It has a signature nothing else
+    has: same target container, same pinned uid, and a gid the later seat pins
+    and the earlier one does not, because an ephemeral container's
+    securityContext is fixed for its lifetime and the correction could only be
+    made by landing a second container.
+
+    Derived rather than remembered, because ``list`` and ``status`` routinely
+    run on a machine that never saw the attach - and inferred only from that
+    signature, so a deliberate ``--new`` seat, which pins the same ids as the
+    seat beside it, is not labelled as superseding anything.
+
+    >>> first = SeatInfo("podbench-1", Rung.DEGRADED, "running", "",
+    ...                  uid=1000, gid=None, target="app")
+    >>> second = SeatInfo("podbench-2", Rung.DEGRADED, "running", "",
+    ...                   uid=1000, gid=1000, target="app")
+    >>> superseded_seats([first, second])
+    {'podbench-1': 'podbench-2'}
+    >>> deliberate = SeatInfo("podbench-2", Rung.DEGRADED, "running", "",
+    ...                       uid=1000, gid=None, target="app")
+    >>> superseded_seats([first, deliberate])
+    {}
+    """
+    replaced: dict[str, str] = {}
+    live = [seat for seat in present if seat.running]
+    for index, earlier in enumerate(live):
+        if earlier.uid is None:
+            continue
+        for later in live[index + 1 :]:
+            if (later.target, later.uid) != (earlier.target, earlier.uid):
+                continue
+            if later.gid is not None and later.gid != earlier.gid:
+                replaced[earlier.name] = later.name
+    return replaced
+
+
+SUPERSEDED_NOTE = (
+    "superseded by {later}, which corrected this seat's group id - an "
+    "ephemeral container's securityContext is fixed for its lifetime, so the "
+    "correction cost a second name and this one cannot be removed. "
+    "--target-gid <gid> pins the group up front and costs one name instead"
+)
+"""What a listing says about a seat a later one replaced.
+
+Said here and not as a warning: by the time anyone runs ``list`` the correction
+is history, and :data:`ID_CORRECTION_WARNING` already spent its one line on the
+attach that made it. This is the fact a reader of two seats needs to have, which
+is why it is a row under the seat rather than a block under the pod."""
+
+
 def rung_of_spec(container: Mapping[str, Any]) -> Rung:
     """Which rung an existing container was *authored* at.
 
@@ -3576,6 +3631,11 @@ def format_seats(
     it attaches perfectly well, and this column used to call that seat
     read-only.
 
+    A seat a later one replaced is said to be superseded, which no other row
+    conveys: the pod carries two live seats with nothing between them to read,
+    and the one this listing was probably opened to ask about is the *second*.
+    :func:`superseded_seats` decides, from the seats alone.
+
     ``versions`` carries what each seat said its own build of podbench is, from
     :func:`probe_seat_versions`. A seat missing from it is
     :data:`~podbench.model.NOT_PROBED` for the same reason its verdict is: this
@@ -3591,6 +3651,7 @@ def format_seats(
     """
     probes = measured or {}
     builds = versions or {}
+    replaced = superseded_seats(present)
     # Headed, as `format_pod_choices` is, because the third cell now stops at
     # the rung's name: `degraded` under nothing at all is the very reading this
     # verb has to stop making, and a header is cheaper than a word per row.
@@ -3598,6 +3659,10 @@ def format_seats(
     for seat in present:
         lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
         lines.extend(_fact("state", seat.detail))
+        if seat.name in replaced:
+            lines.extend(
+                _fact("note", SUPERSEDED_NOTE.format(later=replaced[seat.name]))
+            )
         # Per seat and not per pod: two seats on one pod may target different
         # containers, and a listing that says only which pod they are in leaves
         # the reader of a multi-container pod to guess which of them either seat

@@ -63,7 +63,11 @@ SSH_TIMEOUT = 120.0
 
 NO_MULTIPLEXING = ("-o", "ControlMaster=no", "-o", "ControlPath=none")
 """The generated stanza asks for a ControlMaster, and a shared connection would
-make one test's failure the next one's, so every session here is its own."""
+make one test's failure the next one's, so every session here is its own.
+
+Kept after finding 10, and not as cover for it: the two seats this file lands
+now get one socket each, and only ``FIRST_SEAT`` is ever sshed to anyway. What
+this turns off is reuse *between tests*."""
 
 TARGET_POD = "nonroot-gid-target"
 TARGET_CONTAINER = "app"

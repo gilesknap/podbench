@@ -3821,6 +3821,78 @@ def test_a_listing_says_which_container_each_seat_is_in(tmp_path: Path) -> None:
     assert f"target    {NO_TARGET_CONTAINER}" in text
 
 
+def test_a_listing_marks_the_seat_the_gid_correction_replaced(
+    tmp_path: Path,
+) -> None:
+    """Two live seats, and nothing else on the rows says which one to use."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="app",
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000},
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "note      superseded by podbench-2" in text
+    assert "--target-gid" in " ".join(text.split())
+    # Only the earlier one, and the note is not repeated under the seat that
+    # replaced it.
+    assert text.count("superseded by") == 1
+
+
+def test_a_deliberate_second_seat_is_not_called_superseded(tmp_path: Path) -> None:
+    """``--new`` lands a seat pinned exactly as the first one is.
+
+    Nothing replaced anything, so a listing that said otherwise would be
+    inventing a reason to distrust a seat the user asked for.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="app",
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "superseded" not in text
+
+
 def test_list_finds_pods_carrying_a_seat(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

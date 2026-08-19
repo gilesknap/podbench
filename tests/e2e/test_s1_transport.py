@@ -70,11 +70,15 @@ NO_MULTIPLEXING = (
     "-o",
     "ControlPath=none",
 )
-"""Every ssh invocation here disables the ControlMaster the generated config
+"""Most ssh invocations here disable the ControlMaster the generated config
 turns on. Not because multiplexing is wrong — it is the measured 6x speedup and
 the config is right to default to it — but because a live master bypasses the
 ProxyCommand entirely, and a negative test that reuses one would pass while
-proving nothing."""
+proving nothing.
+
+Not a workaround for two seats colliding on one socket: that was a real defect,
+and ``test_two_seats_on_one_pod_do_not_share_a_control_master`` is the test for
+it, with multiplexing deliberately left on."""
 
 
 @pytest.fixture(scope="module")
@@ -141,14 +145,21 @@ def _ssh(
     check: bool = True,
     extra: Sequence[str] = (),
     timeout: float = SSH_TIMEOUT,
+    multiplexed: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
+    """``ssh`` through a generated stanza, multiplexing off unless asked.
+
+    ``multiplexed`` is for the one test whose subject *is* the multiplexing
+    key; everything else here asserts on what the ProxyCommand does, and a
+    live master would answer without running it.
+    """
     argv = [
         "ssh",
         "-F",
         str(config),
         "-o",
         "BatchMode=yes",
-        *NO_MULTIPLEXING,
+        *(() if multiplexed else NO_MULTIPLEXING),
         *extra,
         alias,
         *command,
@@ -310,6 +321,109 @@ def test_second_concurrent_session_works(ssh_config: tuple[Path, str]) -> None:
     assert second.returncode == 0, second_err.decode(errors="replace")
     assert first_out.decode().strip() == "first"
     assert second_out.decode().strip() == "second"
+
+
+SECOND_SEAT = f"{FIRST_SEAT[:-1]}2"
+"""The name a second ``--new`` attach takes. Ephemeral container names are
+burnt for the pod's lifetime, so this is a fact about the pod rather than a
+preference."""
+
+SEAT_MARKER = "/tmp/which-seat"
+"""Where each seat is told its own name, so an ssh session can say which
+container it landed in.
+
+A marker file rather than ``hostname``: two seats in one pod share the UTS
+namespace and answer identically, which is the very reason the two stanzas
+collided. The seats' writable layers are the thing that genuinely differs."""
+
+
+@pytest.fixture(scope="module")
+def two_seats(
+    kubectl: KubectlCli,
+    podbench: PodbenchCli,
+    target: str,
+    podbench_image: str,
+    ssh_identity: tuple[Path, str],
+    ssh_config: tuple[Path, str],
+) -> tuple[tuple[Path, str], tuple[Path, str]]:
+    """Two live seats on one pod, each having written its own name to a file.
+
+    Depends on ``ssh_config`` so the first seat is the one every other test in
+    this module already uses, and ``--new`` then lands the second beside it -
+    which is what a multi-container pod and the gid correction both do.
+    """
+    identity, _ = ssh_identity
+    podbench.run(
+        "attach",
+        target,
+        "--new",
+        "--identity",
+        str(identity),
+        "--image",
+        podbench_image,
+        *podbench.common(),
+        timeout=420,
+    )
+    config_dir = podbench.config_dir
+    assert config_dir is not None
+    pod = PodRef(kubectl.namespace, target)
+    seats: list[tuple[Path, str]] = []
+    for seat in (FIRST_SEAT, SECOND_SEAT):
+        path = ssh_config_path(config_dir, pod, seat)
+        assert path.is_file(), f"no ssh config for {seat}"
+        kubectl.run(
+            "exec", target, "-c", seat, "--", "sh", "-c", f"echo {seat} > {SEAT_MARKER}"
+        )
+        seats.append((path, _host_alias(path)))
+    return seats[0], seats[1]
+
+
+def test_two_seats_on_one_pod_do_not_share_a_control_master(
+    two_seats: tuple[tuple[Path, str], tuple[Path, str]],
+) -> None:
+    """The finding-10 acceptance, with ControlMaster left at its default.
+
+    Every other ssh in this file disables multiplexing, because it is testing
+    what the ProxyCommand does and a live master would bypass it. This one must
+    not: the defect *is* the multiplexing key. ``%C`` hashes the resolved
+    ``HostName``, which both stanzas set to the pod's name, so on a bare ``%C``
+    the second alias reuses the first seat's master and answers with the first
+    seat's marker - **without repeating the host-key check**, since a
+    multiplexed session never does.
+
+    Ordered rather than parallel on purpose: the first ssh has to establish a
+    master for the second one to be able to ride it.
+    """
+    (first_config, first_alias), (second_config, second_alias) = two_seats
+    assert _control_path(first_config) != _control_path(second_config)
+    try:
+        for config, alias, seat in (
+            (first_config, first_alias, FIRST_SEAT),
+            (second_config, second_alias, SECOND_SEAT),
+        ):
+            result = _ssh(config, alias, ["cat", SEAT_MARKER], multiplexed=True)
+            assert result.stdout.decode().strip() == seat, (
+                f"{alias} answered from another container: multiplexing joined "
+                "it to a seat whose host key it never checked"
+            )
+    finally:
+        for config, alias in (
+            (first_config, first_alias),
+            (second_config, second_alias),
+        ):
+            subprocess.run(
+                ["ssh", "-F", str(config), "-O", "exit", alias],
+                capture_output=True,
+                timeout=SSH_TIMEOUT,
+                check=False,
+            )
+
+
+def _control_path(config: Path) -> str:
+    for line in config.read_text().splitlines():
+        if line.strip().startswith("ControlPath "):
+            return line.split(None, 1)[1].strip()
+    raise AssertionError(f"no ControlPath in {config}:\n{config.read_text()}")
 
 
 def test_fd2_teardown_truncates_the_exec_stream(
