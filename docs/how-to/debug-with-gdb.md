@@ -246,8 +246,12 @@ path, and if it does, copies the target's binary to `/tmp/podbench-exe/<pid>/`
 and points `file` there. It says so in one line, and `--dry-run` prints the
 command it will actually run. Nothing else in the sequence changes — shared
 libraries are resolved by a different path in gdb and stay sysrooted.
-`podbench dbg <pid> --print-exec-file` prints just that path, which is what the
-image's `gdb-podbench` wrapper feeds to a third-party `gdb --pid <n>`.
+`podbench dbg <pid> --print-exec-file` prints just that path. The image's
+`gdb-podbench` wrapper asks for more than the path — `podbench dbg <pid>
+--print-startup-commands` prints every line above except the `attach`, and the
+wrapper passes each as `-iex` before a third-party `gdb --pid <n>` attaches, so
+`gdb -p`, cpptools and debugpy all get the sysroot, the staged exec file, the
+auto-load path and the SIGURG handling that `podbench dbg` gets.
 
 ## 5. Breakpoint, source, step
 

@@ -680,6 +680,11 @@ burnt.
 │ --no-probe                       do not run capreport in the seats; every verdict then reads     │
 │                                  `not probed`, which is what this listing has to say when it has │
 │                                  measured nothing                                                │
+│ --timeout             SECONDS    wait this long for a seat that is still starting before         │
+│                                  reporting. The default reports what is there now; pass the same │
+│                                  number `attach --timeout` needed on a cluster whose image pull  │
+│                                  is slow                                                         │
+│                                  [default: 0.0]                                                  │
 │ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
 │                                  ~/.podbench)                                                    │
 │ --help                           Show this message and exit.                                     │
@@ -1038,8 +1043,16 @@ produces a correct backtrace.
 │                                            exit. It is the target's own path under the sysroot   │
 │                                            unless this container has a file of its own at that   │
 │                                            path, in which case gdb would read ours (issue #90)   │
-│                                            and a copy is staged instead. What `gdb-podbench`     │
-│                                            calls for a third-party `gdb --pid`                   │
+│                                            and a copy is staged instead.                         │
+│                                            `--print-startup-commands` carries it as one line of  │
+│                                            the whole sequence, which is what `gdb-podbench` asks │
+│                                            for                                                   │
+│ --print-startup-commands                   print the gdb commands a caller doing its own attach  │
+│                                            must pass as `-iex`, one per line, and exit. Every    │
+│                                            line of `--dry-run` except the `attach` itself. What  │
+│                                            `gdb-podbench` calls, so that a third-party `gdb      │
+│                                            --pid` gets the same sysroot, exec file, auto-load    │
+│                                            path and SIGURG handling that `podbench dbg` does     │
 │ --launch                          PROGRAM  debug a program gdb starts itself instead of          │
 │                                            attaching. Needs no capability. Consumes the rest of  │
 │                                            the command line, so put other flags first            │
@@ -1058,6 +1071,15 @@ differ enough, and the wrong symbols in silence if they do not. Where that
 happens `dbg` copies the target's binary somewhere nothing shadows it, says so
 in one line, and points `file` at the copy; `--dry-run` prints the same command
 it would run, so the sequence stays pasteable.
+
+`--print-startup-commands` is what the image's `gdb-podbench` wrapper asks for:
+every line above except the `attach`, which the caller is making itself with
+`--pid`. Each becomes an `-iex`, because `--pid` attaches during *startup* and
+an `-ex` command would run after it. It is generated here rather than kept in
+the wrapper so that the two cannot disagree — the wrapper carried two of these
+lines by hand and was silently missing `add-auto-load-safe-path`, which costs
+every thread-aware command, and later `handle SIGURG`, which costs a Go session
+its readability.
 
 ### `debug-config`
 

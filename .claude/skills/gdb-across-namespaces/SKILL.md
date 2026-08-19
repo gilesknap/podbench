@@ -75,7 +75,8 @@ second implementation could only drift.
 It has to be wired into **every** place podbench names an exec file, and there are three:
 
 - `podbench dbg`
-- `image/bin/gdb-podbench`, via `podbench dbg <pid> --print-exec-file`
+- `image/bin/gdb-podbench`, via `podbench dbg <pid> --print-startup-commands`,
+  which carries the exec file as one line of the whole pre-attach sequence
 - `debug-config`'s cppdbg `program`
 
 The third is not optional and cannot be fixed any other way: **cpptools sends `program` as

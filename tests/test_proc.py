@@ -19,6 +19,7 @@ from podbench.proc import (
     is_shell,
     read_ppid,
     scan_processes,
+    shares_pod_pid_namespace,
 )
 from proc_samples import CID, sample, targets, without_measurements, write_tree
 
@@ -249,3 +250,37 @@ def test_the_scan_reads_state_threads_and_readability(tmp_path: Path) -> None:
     assert by_pid[518].state == "Z"
     assert by_pid[518].ptrace_readable is False
     assert [info.pid for info in debug_candidates(listing.targets)][0] == 1
+
+
+# --- which PID namespace this seat landed in --------------------------------
+
+
+def _pid_one(tmp_path: Path, comm: str | None) -> Path:
+    """A ``/proc`` with the given ``comm`` on pid 1, or with none at all."""
+    proc = tmp_path / "proc"
+    (proc / "1").mkdir(parents=True)
+    if comm is not None:
+        (proc / "1" / "comm").write_text(f"{comm}\n")
+    return proc
+
+
+def test_a_pause_process_means_the_pod_shares_its_namespace(tmp_path: Path) -> None:
+    """``shareProcessNamespace: true`` is the only thing that puts it there."""
+    assert shares_pod_pid_namespace(proc=_pid_one(tmp_path, "pause")) is True
+
+
+def test_an_entrypoint_on_pid_one_means_the_targets_own_namespace(
+    tmp_path: Path,
+) -> None:
+    """Finding 17.2, and the case 15 of 15 p47 pods are in.
+
+    Without the flag an ephemeral container joins the target container's
+    namespace through ``targetContainerName``, so pid 1 is the workload's own
+    entrypoint and everything podbench says about the pause process is false.
+    """
+    assert shares_pod_pid_namespace(proc=_pid_one(tmp_path, "ioc")) is False
+
+
+def test_an_unreadable_pid_one_is_neither_answer(tmp_path: Path) -> None:
+    """``None`` is "do not know", and a caller must hedge rather than pick."""
+    assert shares_pod_pid_namespace(proc=_pid_one(tmp_path, None)) is None

@@ -60,7 +60,8 @@
 # degraded rung it fails for a process that exists, and the wrapper would then
 # skip the sysroot exactly where it matters most — silently.
 #
-# 3. A sysroot is not enough for the *executable* (issue #90).
+# 3. A sysroot is not enough for the *executable* (issue #90), and it is not
+#    the only line the attach needs.
 #
 # Left to itself, `gdb --pid <n>` finds the exec file from /proc/<n>/exe and
 # canonicalises the name — and /proc/<n>/root canonicalises to `/`, so the
@@ -74,14 +75,23 @@
 # argv. The seat image and any uv-managed workload both install an interpreter
 # at /python/cpython-<version>-<triple>/, so a Python target collides by
 # construction. The cure is a `file` command naming a path nothing of ours
-# shadows, which `podbench dbg --print-exec-file` works out and stages; see
-# src/podbench/execfile.py for the measurements.
+# shadows.
 #
-# Asked of podbench rather than worked out here, per deviation 2 in
-# image/README.md: the rule (same mount namespace? shadowed? copy where?) is
-# tested once in Python, and a second implementation in sh could only drift.
-# The path is optional — an unreadable /proc/<pid>/exe prints nothing, and gdb
-# then behaves exactly as it did before this block existed.
+# The whole sequence is asked of podbench rather than worked out here, per
+# deviation 2 in image/README.md. It used to be two lines copied out of
+# `attach_commands` by hand, and the copy fell behind twice without anything
+# saying so: `add-auto-load-safe-path` was never in it, so a sysrooted gdb
+# declined to auto-load libthread_db and every caller in the seat — cpptools,
+# debugpy's attach-to-pid, `gdb -p` — silently lost thread debugging; and
+# `handle SIGURG nostop noprint pass` arrived later still, without which an
+# attached Go target is a wall of `Program received signal SIGURG` (finding
+# 17.6). `podbench dbg <pid> --print-startup-commands` prints exactly the lines
+# `podbench dbg` would run before its own `attach`, so there is now one author
+# and nothing left in sh to fall behind.
+#
+# The answer is optional — a podbench that is missing, older, or cannot read
+# /proc/<pid>/exe prints nothing, and the sysroot below is then supplied on its
+# own, which is what this wrapper did before any of it existed.
 pid=
 previous=
 for argument in "$@"; do
@@ -110,13 +120,36 @@ esac
 # the case being detected.
 /bin/pwd >/dev/null 2>&1 || cd /root 2>/dev/null || cd / || exit 1
 if [ -n "$pid" ]; then
-	# `-iex` for the same reason as the sysroot: --pid attaches during startup,
-	# so an -ex `file` would run after the attach and be too late.
-	exec_file=$(/usr/local/bin/podbench dbg "$pid" --print-exec-file) || exec_file=
-	if [ -n "$exec_file" ]; then
-		exec /usr/bin/gdb -iex "set sysroot /proc/$pid/root" \
-			-iex "file $exec_file" "$@"
+	commands=$(/usr/local/bin/podbench dbg "$pid" --print-startup-commands) ||
+		commands=
+	if [ -n "$commands" ]; then
+		# Every line becomes `-iex`, never `-ex`: --pid attaches during
+		# *startup*, so an -ex command runs after the attach and is too late —
+		# the sysroot-before-attach ordering report 3.3 made load-bearing.
+		#
+		# sh has no arrays, so the pairs are appended to the caller's own
+		# arguments and the caller's are then rotated to the end, which leaves
+		# `-iex … -iex … "$@"` in that order. A here-document rather than a
+		# pipe: dash runs the right-hand side of a pipeline in a subshell,
+		# where `set --` would be discarded.
+		given=$#
+		while IFS= read -r command; do
+			[ -n "$command" ] || continue
+			set -- "$@" -iex "$command"
+		done <<EOF
+$commands
+EOF
+		while [ "$given" -gt 0 ]; do
+			argument=$1
+			shift
+			set -- "$@" "$argument"
+			given=$((given - 1))
+		done
+		exec /usr/bin/gdb "$@"
 	fi
+	# podbench could not answer. The sysroot alone is still the difference
+	# between this container's libraries and the target's (report 3.3), and it
+	# is the one line short enough to be worth keeping a copy of.
 	exec /usr/bin/gdb -iex "set sysroot /proc/$pid/root" "$@"
 fi
 exec /usr/bin/gdb "$@"

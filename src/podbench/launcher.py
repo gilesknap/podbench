@@ -30,6 +30,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -45,6 +46,8 @@ from .cli import new_app, require_subcommand, run
 from .console import WARNING_LEAD, emit, paragraph
 from .editor import EditorError, open_seat, resolve_editor
 from .kubectl import (
+    CREATE_CONTAINER_CONFIG_ERROR,
+    DEFAULT_POLL_INTERVAL,
     EphemeralContainerError,
     Kubectl,
     KubectlError,
@@ -195,6 +198,7 @@ __all__ = [
     "seat_layout",
     "seat_version_fact",
     "seats",
+    "wait_for_seats",
     "spec_env",
     "ssh_config_path",
     "ssh_connect_line",
@@ -3435,6 +3439,66 @@ def list_seats(kubectl: Kubectl) -> list[tuple[PodRef, list[SeatInfo]]]:
     return found
 
 
+STARTING_PHASES = frozenset({"pending", "waiting"})
+"""The two phases a seat can still leave on its own.
+
+``pending`` is the node not having reported yet and ``waiting`` is the pull,
+the mount or the sandbox; ``running`` and ``terminated`` are both settled.
+"""
+
+
+def _still_starting(seat: SeatInfo) -> bool:
+    """Whether waiting on this seat could change what it is.
+
+    One exception, and it is the one that would otherwise cost the whole
+    timeout: a seat the kubelet refused sits in ``waiting`` with
+    ``CreateContainerConfigError`` for the pod's lifetime and never leaves it
+    (report 3.18). Polling that is a wait for something that has already
+    happened.
+    """
+    if seat.phase not in STARTING_PHASES:
+        return False
+    return seat.detail.split(":", 1)[0] != CREATE_CONTAINER_CONFIG_ERROR
+
+
+def wait_for_seats(
+    kubectl: Kubectl,
+    pod: str,
+    *,
+    timeout: float,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[SeatInfo]:
+    """This pod's seats, having waited up to ``timeout`` for one still starting.
+
+    ``attach`` needs ``--timeout`` on a cluster whose image pull is slow, and
+    ``status`` is the verb reached for next — which had no such flag, so every
+    one of 15 agents in the sweep hit it (finding 17.1). Waiting is what the
+    flag has to mean here: ``status`` measures a seat by ``exec``ing into it,
+    and a seat that is still ``waiting`` can answer nothing.
+
+    Never raises, unlike
+    :meth:`podbench.kubectl.Kubectl.wait_for_ephemeral_container`. A deadline
+    that passes with the seat still starting is *reported*: this verb exists to
+    say what is there, and ``waiting`` is a true answer that the caller asked
+    for a while longer to improve on.
+
+    ``timeout <= 0`` — the default — is a single read and no clock at all, so a
+    plain ``podbench status`` costs exactly what it always did.
+    """
+    present = seats(kubectl.get_pod(pod))
+    if timeout <= 0:
+        return present
+    deadline = clock() + timeout
+    while any(_still_starting(seat) for seat in present):
+        if clock() >= deadline:
+            break
+        sleep(poll_interval)
+        present = seats(kubectl.get_pod(pod))
+    return present
+
+
 def host_alias_in(stanza: str) -> str | None:
     """The ``Host`` name a written stanza declares, or ``None`` if it has none.
 
@@ -4601,12 +4665,23 @@ def _build_app(
                 "when it has measured nothing",
             ),
         ] = False,
+        timeout: Annotated[
+            float,
+            typer.Option(
+                "--timeout",
+                metavar="SECONDS",
+                help="wait this long for a seat that is still starting before "
+                "reporting. The default reports what is there now; pass the "
+                "same number `attach --timeout` needed on a cluster whose "
+                "image pull is slow",
+            ),
+        ] = 0.0,
         config_dir: _ConfigDir = None,
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         reference = PodRef(kube.namespace, name)
-        present = seats(kube.get_pod(name))
+        present = wait_for_seats(kube, name, timeout=timeout)
         if not present:
             print(f"no podbench containers in {kube.namespace}/{name}")
             raise typer.Exit(0)

@@ -45,6 +45,7 @@ __all__ = [
     "DEFAULT_SYS",
     "DELETED_SUFFIX",
     "NAMED_IN_NOTE",
+    "PAUSE_COMM",
     "MAX_MAPPED_OBJECTS",
     "READ_MATRIX_PATHS",
     "Attribution",
@@ -82,6 +83,7 @@ __all__ = [
     "seat_cwd",
     "seccomp_filter_count",
     "seccomp_mode",
+    "shares_pod_pid_namespace",
     "self_capabilities",
     "state_letter",
     "status_field",
@@ -399,6 +401,37 @@ def read_comm(pid: int | str, *, proc: Path = DEFAULT_PROC) -> str | None:
     """The process's ``comm``."""
     text = _read_text(_pid_dir(pid, proc) / "comm")
     return None if text is None else text.strip()
+
+
+PAUSE_COMM = "pause"
+"""``comm`` of the pod's infra container, and the one tell for a shared namespace.
+
+Every container in a pod that sets ``shareProcessNamespace: true`` sees the
+sandbox's own process as PID 1; nothing else in a pod is called this.
+"""
+
+
+def shares_pod_pid_namespace(*, proc: Path = DEFAULT_PROC) -> bool | None:
+    """Whether this seat is in the *pod's* PID namespace or the target's own.
+
+    The two modes differ in what PID 1 is, and every sentence podbench prints
+    about PID 1 is false in one of them. ``shareProcessNamespace: true`` puts
+    every container in one namespace whose PID 1 is the sandbox's ``pause``
+    process; without it an ephemeral container carrying ``targetContainerName``
+    joins the *target container's* namespace, where PID 1 is the target's own
+    entrypoint. The second is not the exotic case: 15 of 15 pods surveyed on
+    the p47 beamline set no ``shareProcessNamespace`` (finding 17.2).
+
+    Asked of ``/proc/1/comm`` rather than of the pod spec, because a seat has
+    no pod spec to read and because the kernel answers for the namespace that
+    was actually created rather than for the field somebody wrote. It is the
+    same tell :func:`_looks_foreign` already keys on.
+
+    ``None`` is "do not know" — an unreadable ``/proc/1/comm`` — and must be
+    spent as a hedge rather than as either answer.
+    """
+    comm = read_comm(1, proc=proc)
+    return None if comm is None else comm == PAUSE_COMM
 
 
 def read_cmdline(pid: int | str, *, proc: Path = DEFAULT_PROC) -> str | None:
@@ -1120,7 +1153,7 @@ def _is_target(
 def _looks_foreign(cgroup: str | None, own_cgroup: str | None, comm: str) -> bool:
     if cgroup is None:
         return False
-    if comm == "pause":
+    if comm == PAUSE_COMM:
         # PID 1 under shareProcessNamespace is the pod's pause process, never a
         # debugging target (report §3.15).
         return False

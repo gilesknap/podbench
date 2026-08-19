@@ -22,7 +22,12 @@ import pytest
 
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
-from podbench.kubectl import CommandResult, Kubectl, KubectlError
+from podbench.kubectl import (
+    CREATE_CONTAINER_CONFIG_ERROR,
+    CommandResult,
+    Kubectl,
+    KubectlError,
+)
 from podbench.launcher import (
     NO_TARGET_CONTAINER,
     RESIZE_WARNING,
@@ -59,6 +64,7 @@ from podbench.launcher import (
     target_container_name,
     target_fact,
     try_resize,
+    wait_for_seats,
 )
 from podbench.model import (
     PTRACE_READ_PATHS,
@@ -3571,6 +3577,148 @@ def test_an_unreadable_creation_stamp_costs_a_column_not_the_listing() -> None:
 
 
 # -- status, list, resize, namespace ----------------------------------------
+
+
+def waiting_status(name: str, reason: str = "ContainerCreating") -> dict[str, Any]:
+    """A seat the node has taken and not yet started."""
+    return {
+        "name": name,
+        "state": {"waiting": {"reason": reason, "message": "pulling the image"}},
+    }
+
+
+class FakeTime:
+    """A clock that moves only when the code under test sleeps.
+
+    The pod is mutated from ``sleep`` too, so a test says "this is what the
+    next poll finds" in the one place the wait can observe a change.
+    """
+
+    def __init__(self, on_sleep: Callable[[], None] | None = None) -> None:
+        self.now = 0.0
+        self.sleeps = 0
+        self._on_sleep = on_sleep
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        self.sleeps += 1
+        if self._on_sleep is not None:
+            self._on_sleep()
+
+
+def starting_cluster(reason: str = "ContainerCreating") -> FakeCluster:
+    return FakeCluster(
+        pod_document(
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[waiting_status("podbench-1", reason)],
+        )
+    )
+
+
+def test_a_plain_status_reads_the_pod_once_and_never_sleeps() -> None:
+    """The default has to cost exactly what it did before the flag existed."""
+    cluster = starting_cluster()
+    clock = FakeTime()
+
+    present = wait_for_seats(
+        talking_to(cluster), "target", timeout=0.0, clock=clock, sleep=clock.sleep
+    )
+
+    assert [seat.phase for seat in present] == ["waiting"]
+    assert clock.sleeps == 0
+
+
+def test_status_can_wait_for_a_seat_that_is_still_starting() -> None:
+    """Finding 17.1: 15 of 15 agents typed `--timeout` at `status` and were
+    refused, having just needed it for `attach` on a cluster whose image pull
+    is slow. Waiting is what it means here."""
+    cluster = starting_cluster()
+
+    def lands() -> None:
+        statuses = cast(dict[str, Any], cluster.pod["status"])
+        statuses["ephemeralContainerStatuses"] = [running_status("podbench-1")]
+
+    clock = FakeTime(on_sleep=lands)
+
+    present = wait_for_seats(
+        talking_to(cluster),
+        "target",
+        timeout=120.0,
+        poll_interval=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert [seat.phase for seat in present] == ["running"]
+    assert clock.sleeps == 1
+
+
+def test_a_seat_that_never_starts_is_reported_rather_than_refused() -> None:
+    """`status` exists to say what is there, so a passed deadline is not an
+    error: `waiting` is the true answer the caller asked for longer to
+    improve on."""
+    cluster = starting_cluster()
+    clock = FakeTime()
+
+    present = wait_for_seats(
+        talking_to(cluster),
+        "target",
+        timeout=3.0,
+        poll_interval=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert [seat.phase for seat in present] == ["waiting"]
+    assert clock.now >= 3.0
+
+
+def test_a_kubelet_refusal_is_not_something_to_wait_for() -> None:
+    """A container the kubelet refused sits in `waiting` for the pod's lifetime
+    (report 3.18), so polling it would spend the whole timeout on a state that
+    has already settled."""
+    cluster = starting_cluster(CREATE_CONTAINER_CONFIG_ERROR)
+    clock = FakeTime()
+
+    present = wait_for_seats(
+        talking_to(cluster), "target", timeout=120.0, clock=clock, sleep=clock.sleep
+    )
+
+    assert [seat.phase for seat in present] == ["waiting"]
+    assert clock.sleeps == 0
+
+
+def test_status_accepts_the_flag_attach_needed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The papercut itself: the same spelling `attach` takes, on the verb
+    reached for next."""
+    cluster = FakeCluster(
+        pod_document(
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+    code = main(
+        [
+            "status",
+            "target",
+            "-n",
+            "demo",
+            "--timeout",
+            "300",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    assert "podbench-1" in capsys.readouterr().out
 
 
 def test_status_lists_every_container_live_or_burnt(

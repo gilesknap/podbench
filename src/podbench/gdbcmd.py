@@ -3,12 +3,19 @@
 Both helpers live inside the debug container, on the far side of the ssh
 transport, and both exist because the obvious commands are wrong here.
 
-``pids`` is not ``ps``: every process in the pod is visible under
-``shareProcessNamespace: true``, including other podbench sessions', so the
-listing has to say which container owns each one. Attribution keys off the
-target's runtime id (report 4.3/3.15); when the launcher did not inject one the
-fallback marks *every* other session's processes as target, so that answer is
-labelled a guess rather than presented as fact.
+``pids`` is not ``ps``: under ``shareProcessNamespace: true`` every process in
+the pod is visible, including other podbench sessions', so the listing has to
+say which container owns each one. Attribution keys off the target's runtime id
+(report 4.3/3.15); when the launcher did not inject one the fallback marks
+*every* other session's processes as target, so that answer is labelled a guess
+rather than presented as fact.
+
+Which of the two namespaces a seat is in is not a detail: without that flag a
+seat joins the *target container's* namespace through ``targetContainerName``
+and PID 1 is the target's own entrypoint rather than the pod's ``pause``
+process — the common case in the field, and the one podbench used to describe
+backwards (finding 17.2). :func:`_no_container_id_note` states whichever is
+true here, from :func:`podbench.proc.shares_pod_pid_namespace`.
 
 ``dbg`` is not ``gdb -p``. Section 4.3 fixes seven commands in one order, and
 the order is a correctness property rather than a preference: ``set sysroot``
@@ -48,6 +55,7 @@ from .cli import new_app, require_subcommand, run
 from .elf import read_elf
 from .execfile import gdb_exec_file
 from .model import (
+    TARGET_CID_ENV,
     CapabilityReport,
     ProcInfo,
     Verdict,
@@ -68,6 +76,7 @@ from .proc import (
     is_shell,
     read_exe,
     scan_processes,
+    shares_pod_pid_namespace,
     strip_deleted,
     sysroot_path,
 )
@@ -92,6 +101,7 @@ __all__ = [
     "read_exe",
     "resolve_target_pid",
     "resolve_target_pids",
+    "startup_commands",
     "strip_deleted",
     "sysroot_path",
 ]
@@ -164,6 +174,68 @@ _DBG_DESCRIPTION = (
 )
 
 
+def startup_commands(
+    pid: int,
+    *,
+    exe: str | None = None,
+    exec_file: str | None = None,
+    source_dirs: Sequence[str] = (),
+    debuginfod: bool | None = True,
+    rust: bool = False,
+) -> list[str]:
+    """:func:`attach_commands` without the attach — for a caller doing its own.
+
+    ``gdb --pid <n>`` attaches during *startup*, so a third-party caller that
+    supplies its own ``--pid`` still needs every line below it, and needs them
+    as ``-iex``. That caller is ``image/bin/gdb-podbench``, which is ``gdb`` on
+    the seat's PATH and therefore stands behind cpptools, debugpy's
+    attach-to-pid and anyone who types ``gdb -p``. It had two of these lines
+    hand-copied into ``sh`` and was missing the other four, which is why they
+    are generated here instead: a wrapper that quietly lacks
+    ``add-auto-load-safe-path`` loses ``libthread_db`` and every thread-aware
+    command with it, and says nothing (finding 17.6).
+
+    >>> for command in startup_commands(597, exe="/app/victim", debuginfod=None):
+    ...     print(command)
+    set pagination off
+    handle SIGURG nostop noprint pass
+    set sysroot /proc/597/root
+    directory /proc/597/root
+    add-auto-load-safe-path /proc/597/root
+    file /proc/597/root/app/victim
+
+    ``debuginfod=None`` emits no ``set debuginfod`` line at all, which is the
+    wrapper's choice and not an oversight: enabling it would have gdb fetch
+    symbols with the workload *stopped* — a pause podbench's own verbs choose
+    to spend and a pause a third party has not agreed to.
+
+    What each line is for, and why the order is a correctness property rather
+    than a preference, is in :func:`attach_commands`.
+    """
+    root = sysroot_path(pid)
+    commands = [
+        "set pagination off",
+        SIGURG_COMMAND,
+        f"set sysroot {root}",
+        f"directory {root}",
+    ]
+    # gdb searches the *most recently added* directory first, so caller-supplied
+    # sources deliberately follow the target's rootfs and win over it.
+    commands += [f"directory {directory}" for directory in source_dirs]
+    commands.append(f"add-auto-load-safe-path {root}")
+    if debuginfod is not None:
+        commands.append(f"set debuginfod enabled {'on' if debuginfod else 'off'}")
+    if rust:
+        commands.append(f"source {RUST_PRETTY_PRINTERS}")
+    if exec_file is not None:
+        commands.append(f"file {exec_file}")
+    elif exe is not None:
+        # String concatenation, never a path join: the exe link is absolute, and
+        # joining would discard the sysroot and silently read our own binary.
+        commands.append(f"file {root}{strip_deleted(exe)}")
+    return commands
+
+
 def attach_commands(
     pid: int,
     *,
@@ -223,29 +295,22 @@ def attach_commands(
 
     >>> attach_commands(597, exe="/app/victim", rust=True)[-3:-2]
     ['source /opt/podbench/gdb/rust_printers.py']
+
+    Everything but the last line comes from :func:`startup_commands`, so the
+    sequence has exactly one author and a caller that attaches for itself
+    cannot drift away from it.
     """
-    root = sysroot_path(pid)
-    commands = [
-        "set pagination off",
-        SIGURG_COMMAND,
-        f"set sysroot {root}",
-        f"directory {root}",
+    return [
+        *startup_commands(
+            pid,
+            exe=exe,
+            exec_file=exec_file,
+            source_dirs=source_dirs,
+            debuginfod=debuginfod,
+            rust=rust,
+        ),
+        f"attach {pid}",
     ]
-    # gdb searches the *most recently added* directory first, so caller-supplied
-    # sources deliberately follow the target's rootfs and win over it.
-    commands += [f"directory {directory}" for directory in source_dirs]
-    commands.append(f"add-auto-load-safe-path {root}")
-    commands.append(f"set debuginfod enabled {'on' if debuginfod else 'off'}")
-    if rust:
-        commands.append(f"source {RUST_PRETTY_PRINTERS}")
-    if exec_file is not None:
-        commands.append(f"file {exec_file}")
-    elif exe is not None:
-        # String concatenation, never a path join: the exe link is absolute, and
-        # joining would discard the sysroot and silently read our own binary.
-        commands.append(f"file {root}{strip_deleted(exe)}")
-    commands.append(f"attach {pid}")
-    return commands
 
 
 def launch_commands(
@@ -343,11 +408,11 @@ def resolve_target_pids(
 ) -> tuple[list[int], list[str]]:
     """The processes in the target container worth offering, best first.
 
-    With neither an explicit pid nor a container id we refuse to guess: "the
-    target is PID 1" is wrong under ``shareProcessNamespace: true``, where PID 1
-    is ``/pause`` (3.15). An explicit pid is taken as given and is the only
-    answer — the caller named a process, so offering it three others is not
-    helpfulness.
+    With neither an explicit pid nor a container id we refuse to guess, and
+    :func:`_no_container_id_note` says why in the terms of the namespace this
+    seat is actually in (3.15, finding 17.2). An explicit pid is taken as given
+    and is the only answer — the caller named a process, so offering it three
+    others is not helpfulness.
 
     Otherwise at most :data:`MAX_OFFERED_PIDS`, and never a dead one. This is
     where :func:`podbench.proc.debug_candidates`'s "sort, never exclude"
@@ -359,10 +424,7 @@ def resolve_target_pids(
         return [pid], []
     cid = container_id or env_target_container_id()
     if cid is None:
-        return [], [
-            "no pid given and no PODBENCH_TARGET_CID: pass a pid explicitly — "
-            "PID 1 is the pod's pause process, not the target"
-        ]
+        return [], [_no_container_id_note(shares_pod_pid_namespace(proc=proc))]
     listing = scan_processes(cid, proc=proc)
     targets = listing.targets
     if not targets:
@@ -393,6 +455,47 @@ def resolve_target_pids(
     if len(ranked) > MAX_OFFERED_PIDS:
         notes.append(_dropped_note(ranked[MAX_OFFERED_PIDS:]))
     return [info.pid for info in offered], notes
+
+
+def _no_container_id_note(shared: bool | None) -> str:
+    """Why to pass a pid, said for the PID namespace this seat is in.
+
+    podbench used to state "PID 1 is the pod's pause process, not the target"
+    unconditionally. That is true only where the pod sets
+    ``shareProcessNamespace: true``; a seat carrying ``targetContainerName``
+    on a pod that does not joins the *target container's* namespace, where PID
+    1 is the workload itself. 15 of 15 pods surveyed on the p47 beamline are in
+    that second mode, so the unconditional sentence was false on every pod it
+    was read on (finding 17.2), and it was false in the direction that sends a
+    reader away from the right answer.
+
+    >>> "PID 1 is the pod's pause process" in _no_container_id_note(True)
+    True
+    >>> "PID 1 is the target container's entrypoint" in _no_container_id_note(False)
+    True
+    >>> "not reliably the target" in _no_container_id_note(None)
+    True
+    """
+    if shared is True:
+        fact = (
+            "this pod shares its process namespace, so PID 1 is the pod's "
+            "pause process, not the target"
+        )
+    elif shared is False:
+        fact = (
+            "this pod does not share its process namespace, so PID 1 is the "
+            "target container's entrypoint, which is the target unless "
+            "something wraps it"
+        )
+    else:
+        fact = (
+            "PID 1 is not reliably the target, and /proc/1/comm could not be "
+            "read to say which"
+        )
+    return (
+        f"no pid given and no {TARGET_CID_ENV}: pass a pid explicitly — "
+        f"{fact}. `podbench pids` lists them"
+    )
 
 
 def _dropped_note(dropped: Sequence[ProcInfo]) -> str:
@@ -746,8 +849,20 @@ def _dbg_command(
                 help="print the one path to give gdb's `file` command and exit. "
                 "It is the target's own path under the sysroot unless this "
                 "container has a file of its own at that path, in which case gdb "
-                "would read ours (issue #90) and a copy is staged instead. What "
-                "`gdb-podbench` calls for a third-party `gdb --pid`",
+                "would read ours (issue #90) and a copy is staged instead. "
+                "`--print-startup-commands` carries it as one line of the whole "
+                "sequence, which is what `gdb-podbench` asks for",
+            ),
+        ] = False,
+        print_startup_commands: Annotated[
+            bool,
+            typer.Option(
+                "--print-startup-commands",
+                help="print the gdb commands a caller doing its own attach must "
+                "pass as `-iex`, one per line, and exit. Every line of `--dry-run` "
+                "except the `attach` itself. What `gdb-podbench` calls, so that a "
+                "third-party `gdb --pid` gets the same sysroot, exec file, "
+                "auto-load path and SIGURG handling that `podbench dbg` does",
             ),
         ] = False,
         launch: Annotated[
@@ -770,6 +885,7 @@ def _dbg_command(
                 run_it=run_it,
                 dry_run=dry_run,
                 print_exec_file=print_exec_file,
+                print_startup_commands=print_startup_commands,
                 launch=launch,
                 program_args=program_args,
                 proc=proc,
@@ -824,6 +940,7 @@ def _run_dbg(
     run_it: bool,
     dry_run: bool,
     print_exec_file: bool,
+    print_startup_commands: bool,
     launch: str | None,
     program_args: Sequence[str],
     proc: Path,
@@ -839,7 +956,11 @@ def _run_dbg(
             run=run_it,
             rust=_is_rust(launch),
         )
-        if dry_run:
+        if dry_run or print_startup_commands:
+            # A launched program has no attach for the startup commands to
+            # precede, so its startup sequence *is* the whole sequence. Answered
+            # rather than ignored, for the reason --print-exec-file is answered
+            # here: a flag that asks for text must not start a debugger.
             print(command_file_text(commands), end="")
             return 0
         if print_exec_file:
@@ -881,6 +1002,26 @@ def _run_dbg(
         if file_path is None:
             return EXIT_USAGE
         print(file_path)
+        return 0
+    if print_startup_commands:
+        # gdb-podbench's other answer, and the reason the sequence is generated
+        # in one place: the wrapper supplies its own --pid, so it needs every
+        # line of the attach sequence except the attach. Printed even where the
+        # exe could not be read - the sysroot alone is still the difference
+        # between this container's libraries and the target's (3.3).
+        print(
+            command_file_text(
+                startup_commands(
+                    pid,
+                    exe=exe,
+                    exec_file=file_path,
+                    # No `set debuginfod` line at all: see startup_commands.
+                    debuginfod=None,
+                    rust=_is_rust(file_path),
+                )
+            ),
+            end="",
+        )
         return 0
     commands = attach_commands(
         pid,

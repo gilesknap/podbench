@@ -152,13 +152,16 @@ extension directory as a cwd, which VS Code deletes on update — gdb's libpytho
 then fails `getcwd()` and the process dies during startup with no signal name.
 See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
 
-It does *call* one, though: `podbench dbg <pid> --print-exec-file`, for the path
-to give gdb's `file` command. Deciding that path means knowing whether the
-target shares this container's mount namespace and whether anything of ours sits
-at its `exe` path, which is deviation 2's rule exactly — worked out once in
-Python, where it is tested, rather than a second time in `sh` where it could
-only drift. The call is optional: no answer, and the wrapper behaves as it did
-before, which is what a seat with a broken venv still deserves.
+It does *call* one, though: `podbench dbg <pid> --print-startup-commands`, for
+every gdb command that must precede an attach the caller is making itself. That
+is deviation 2's rule exactly — the sequence is authored once in Python, where
+it is tested, rather than a second time in `sh`. It used to be two of those
+lines copied into the script by hand, and the copy fell behind twice without
+anything saying so: `add-auto-load-safe-path` was never in it, so a sysrooted
+gdb declined to auto-load `libthread_db` and every caller in the seat silently
+lost thread debugging, and `handle SIGURG nostop noprint pass` arrived later
+still. The call is optional: no answer, and the wrapper supplies the sysroot
+alone as it did before, which is what a seat with a broken venv still deserves.
 
 ## Rust pretty-printers
 

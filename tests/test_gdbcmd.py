@@ -34,6 +34,7 @@ from podbench.gdbcmd import (
     read_exe,
     resolve_target_pid,
     resolve_target_pids,
+    startup_commands,
     strip_deleted,
 )
 from podbench.model import (
@@ -328,6 +329,43 @@ def test_resolve_target_pid_refuses_to_guess(
     pid, notes = resolve_target_pid(None, None, proc=proc)
     assert pid is None
     assert any("PODBENCH_TARGET_CID" in note for note in notes)
+    assert any("pause process, not the target" in note for note in notes)
+
+
+def test_the_refusal_describes_the_namespace_this_seat_is_really_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 17.2: the old sentence was false on 15 of 15 pods surveyed.
+
+    A pod that does not set ``shareProcessNamespace`` puts the seat in the
+    *target container's* namespace through ``targetContainerName``, and PID 1
+    there is the workload — so "PID 1 is the pod's pause process" sent every
+    reader on that beamline away from the right answer. ``/proc/1/comm`` is
+    what settles it, because a seat has no pod spec to read.
+    """
+    monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
+    proc = make_proc(tmp_path)
+    # The same tree with the pause process replaced by the target's own
+    # entrypoint, which is what PID 1 is without the flag.
+    (proc / "1" / "comm").write_text("victim\n")
+
+    _, notes = resolve_target_pid(None, None, proc=proc)
+
+    assert any("does not share its process namespace" in note for note in notes)
+    assert not any("pause" in note for note in notes)
+
+
+def test_an_unreadable_pid_one_is_hedged_rather_than_guessed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither sentence may be spent on a namespace nothing measured."""
+    monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
+    proc = make_proc(tmp_path)
+    (proc / "1" / "comm").unlink()
+
+    _, notes = resolve_target_pid(None, None, proc=proc)
+
+    assert any("not reliably the target" in note for note in notes)
 
 
 def test_resolve_target_pid_reports_an_unmatched_container(tmp_path: Path) -> None:
@@ -692,6 +730,84 @@ def test_an_unshadowed_target_still_gets_the_sysroot_path(
 
     assert captured.out == f"/proc/{TARGET_PID}/root/app/victim\n"
     assert captured.err == ""
+
+
+def test_startup_commands_are_the_attach_sequence_without_the_attach() -> None:
+    """One author for both, so the wrapper cannot fall behind (finding 17.6).
+
+    ``gdb-podbench`` supplies its own ``--pid``, and used to carry two of these
+    lines hand-copied into ``sh`` — missing ``add-auto-load-safe-path``, which
+    costs every thread-aware command, and later ``handle SIGURG``, which costs
+    a Go session its readability. Neither absence reports anything.
+    """
+    attach = attach_commands(TARGET_PID, exe="/app/victim")
+
+    assert startup_commands(TARGET_PID, exe="/app/victim") == attach[:-1]
+    assert attach[-1] == f"attach {TARGET_PID}"
+
+
+def test_startup_commands_can_leave_debuginfod_alone() -> None:
+    """``None`` is not ``False``: it emits no ``set debuginfod`` line at all.
+
+    Symbols are fetched with the workload *stopped*, so enabling it is a pause
+    ``podbench dbg`` chooses to spend on its own behalf. The wrapper stands
+    behind cpptools and debugpy, which have agreed to no such thing.
+    """
+    left_alone = startup_commands(TARGET_PID, exe="/app/victim", debuginfod=None)
+
+    assert not any(command.startswith("set debuginfod") for command in left_alone)
+    assert "set debuginfod enabled off" in startup_commands(
+        TARGET_PID, exe="/app/victim", debuginfod=False
+    )
+
+
+def test_dbg_prints_the_startup_sequence_for_the_gdb_wrapper(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--print-startup-commands`` is the wrapper's whole answer, one per line.
+
+    The wrapper turns each into an ``-iex``; ``attach`` is absent because the
+    caller passed ``--pid`` and gdb attaches during startup.
+    """
+    proc = make_proc(tmp_path)
+    runner = RecordingRunner()
+
+    code = main(
+        ["dbg", str(TARGET_PID), "--print-startup-commands"], proc=proc, runner=runner
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert runner.calls == [], "printing commands must not start a debugger"
+    assert out.splitlines() == [
+        "set pagination off",
+        "handle SIGURG nostop noprint pass",
+        f"set sysroot /proc/{TARGET_PID}/root",
+        f"directory /proc/{TARGET_PID}/root",
+        f"add-auto-load-safe-path /proc/{TARGET_PID}/root",
+        f"file /proc/{TARGET_PID}/root/app/victim",
+    ]
+
+
+def test_the_startup_sequence_survives_an_unreadable_exe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A degraded rung cannot read ``/proc/<pid>/exe``, and still needs the rest.
+
+    ``--print-exec-file`` has nothing to say here and exits non-zero. This flag
+    does: the sysroot alone is still the difference between this container's
+    libraries and the target's, and dropping the whole sequence over the one
+    line that cannot be built would be the worse trade (report 3.3).
+    """
+    proc = make_proc(tmp_path)
+    (proc / str(TARGET_PID) / "exe").unlink()
+
+    code = main(["dbg", str(TARGET_PID), "--print-startup-commands"], proc=proc)
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert f"set sysroot /proc/{TARGET_PID}/root" in captured.out.splitlines()
+    assert not any(line.startswith("file ") for line in captured.out.splitlines())
 
 
 def test_dbg_names_the_blocker_and_offers_launch(
