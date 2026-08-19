@@ -19,10 +19,13 @@ from typing import Any, cast
 
 import pytest
 
+from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
 from podbench.kubectl import CommandResult, Kubectl, KubectlError
 from podbench.launcher import (
     RESIZE_WARNING,
+    UNKNOWN_SEAT_VERSION,
+    VERSION_SKEW_WARNING,
     LauncherError,
     Session,
     attach,
@@ -33,6 +36,7 @@ from podbench.launcher import (
     features,
     forget_known_hosts,
     forget_ssh_config,
+    format_seats,
     format_session,
     host_alias_in,
     kubectl_for,
@@ -41,6 +45,7 @@ from podbench.launcher import (
     parse_mount,
     plan_ladder,
     pod_choices,
+    probe_seat_versions,
     resolve_pod,
     resolve_pod_name,
     seats,
@@ -223,6 +228,7 @@ class FakeCluster:
         ssh_probe_rc: int = 0,
         ssh_probe_err: str = "",
         limit_ranges: Sequence[dict[str, Any]] = (),
+        seat_version: str | None = __version__,
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -242,6 +248,11 @@ class FakeCluster:
         self.patch_error = patch_error
         self.ssh_probe_rc = ssh_probe_rc
         self.ssh_probe_err = ssh_probe_err
+        # The seat's own build, which the launcher asks for over the same
+        # exec channel. Defaulted to this launcher's so the common case in
+        # every other test is two halves that agree; `None` is the image too
+        # old to have a root `--version` at all.
+        self.seat_version = seat_version
         self.limit_ranges = [dict(entry) for entry in limit_ranges]
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
@@ -421,6 +432,13 @@ class FakeCluster:
             # 3 is the read script's own "no such file"; anything else means it
             # found one and could not read it, which `--open` refuses to guess.
             return _ok(text) if text is not None else _fail("", returncode=3)
+        if command[:2] == ["podbench", "--version"]:
+            if self.seat_version is None:
+                # click's usage message, which is what an image predating the
+                # root `--version` prints - on stdout, and with exit 2. The
+                # launcher must read that as unknown rather than as a version.
+                return _ok("Usage: podbench [OPTIONS] COMMAND [ARGS]...", returncode=2)
+            return _ok(self.seat_version + "\n")
         # Same two-token rule as `debug-config` above, for the same reason.
         if command[:2] == ["podbench", "capreport"]:
             if self.capreport_output is not None:
@@ -2376,18 +2394,35 @@ def test_a_side_loaded_image_is_not_asked_for_from_a_registry() -> None:
     assert cluster.added[0]["imagePullPolicy"] == "IfNotPresent"
 
 
-def test_a_moving_tag_is_named_in_the_report_rather_than_guessed_about() -> None:
-    """No symptom is the problem: the seat starts, and is simply older."""
+def test_the_seat_is_asked_its_version_rather_than_guessed_about() -> None:
+    """No symptom is the problem: the seat starts, and is simply older.
+
+    A moving tag used to be the only signal, and it is a guess in both
+    directions — it cannot confirm a skew and cannot rule one out. The seat is
+    on the other end of an open exec channel, so it is asked, and where it
+    answers the guess is not printed beside the answer.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     session = attach(talking_to(cluster), "target", image="ghcr.io/x/podbench:main")
 
+    assert session.seat_version == __version__
+    assert not any("a tag that moves" in note for note in session.warnings)
+    assert VERSION_SKEW_WARNING not in session.warnings
+
+
+def test_a_seat_that_will_not_say_falls_back_to_the_tag_guess() -> None:
+    """The guess survives for exactly the case that has no measurement."""
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
+    session = attach(talking_to(cluster), "target", image="ghcr.io/x/podbench:main")
+
+    assert session.seat_version is None
     assert any("a tag that moves" in note for note in session.warnings)
     assert any("--pull always" in note for note in session.warnings)
 
 
 def test_asking_for_always_says_nothing_about_staleness() -> None:
     """The warning is about the policy that cannot notice, not about the tag."""
-    cluster = FakeCluster(pod_document(uid=1000))
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
     session = attach(
         talking_to(cluster),
         "target",
@@ -2397,6 +2432,59 @@ def test_asking_for_always_says_nothing_about_staleness() -> None:
 
     assert cluster.added[0]["imagePullPolicy"] == "Always"
     assert not any("a tag that moves" in note for note in session.warnings)
+
+
+def test_a_matching_seat_version_is_reported_without_a_warning() -> None:
+    """The row is printed either way: agreement is a fact worth reading."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    text = format_session(attach(talking_to(cluster), "target"))
+
+    # Flattened: the row wraps at a narrow terminal, and where the break lands
+    # must not decide whether this holds (`console.wrap` collapses runs).
+    assert f"version {__version__}, the same build as this launcher" in " ".join(
+        text.split()
+    )
+    assert "different build of podbench" not in text
+
+
+def test_a_skewed_seat_version_is_one_warning_carrying_no_numbers() -> None:
+    """Both numbers on the `version` row, the consequence in one warning line.
+
+    The evidence this exists for: a seat from an image tagged 0.4.0b1 reported
+    `0.4.0b2.dev0+g01d9ac8f8.d20260818`, a post-tag build of a dirty tree. The
+    launcher and the seat share the agent's argv and capreport's JSON, so that
+    is a hazard rather than untidiness — and a fix-test cycle that cannot see it
+    burns rounds asking why the fix did not work.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), seat_version="0.0.1b1")
+    session = attach(talking_to(cluster), "target")
+    text = format_session(session)
+
+    assert session.warnings.count(VERSION_SKEW_WARNING) == 1
+    assert f"version 0.0.1b1 in the seat, {__version__} in this launcher" in " ".join(
+        text.split()
+    )
+    # One leader per warning, which is what makes the block a list rather than
+    # an essay: the numbers stay on the row above and are not repeated here.
+    leaders = [line for line in text.splitlines() if line.startswith("WARNING")]
+    assert len(leaders) == len(session.warnings)
+    assert "0.0.1b1" not in VERSION_SKEW_WARNING
+
+
+def test_a_seat_that_cannot_be_asked_its_version_still_attaches() -> None:
+    """Report 4.2: the seat is already in the pod and cannot be relanded.
+
+    So a diagnostic that did not arrive degrades to unknown. An image predating
+    the root `--version` answers with click's usage text and exit 2, which is
+    neither a version nor a reason to fail an attach that has landed.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.FULL
+    assert session.seat_version is None
+    assert VERSION_SKEW_WARNING not in session.warnings
+    assert UNKNOWN_SEAT_VERSION in format_session(session)
 
 
 def test_two_seats_on_one_pod_get_two_aliases_and_two_stanzas() -> None:
@@ -2845,6 +2933,76 @@ def test_status_says_why_a_running_seat_could_not_be_probed(
 
     assert "not probed - capreport produced no parsable JSON" in out
     assert "live attach" not in out
+
+
+def test_status_reports_each_running_seats_own_build() -> None:
+    """The same measurement `attach` prints, per seat.
+
+    Read from the seat and not from its image reference: an ephemeral
+    container's `image` is what the spec *asked* for, and `IfNotPresent` over a
+    tag that moves serves whatever the node had cached.
+    """
+    cluster = degraded_seat()
+    pod = PodRef("demo", "target")
+    present = seats(cluster.pod)
+
+    assert probe_seat_versions(talking_to(cluster), pod, present) == {
+        "podbench-1": __version__
+    }
+
+
+def test_status_asks_only_the_seats_that_could_answer() -> None:
+    """A container that is not running has no process to ask."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1"}, {"name": "podbench-2"}],
+            ephemeral_statuses=[running_status("podbench-2")],
+        )
+    )
+    pod = PodRef("demo", "target")
+
+    assert probe_seat_versions(talking_to(cluster), pod, seats(cluster.pod)) == {
+        "podbench-2": __version__
+    }
+
+
+def test_status_keeps_a_seat_that_would_not_say_its_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Asked and unanswered is not the same fact as never asked."""
+    cluster = degraded_seat()
+    cluster.seat_version = None
+    out = status_of(cluster, capsys, config=tmp_path / "cfg")
+
+    assert "version unknown - this seat did not answer" in out
+    assert "version not probed" not in out
+
+
+def test_status_says_not_probed_for_a_version_it_did_not_ask_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--no-probe` is for a listing that touches nothing, versions included."""
+    out = status_of(degraded_seat(), capsys, "--no-probe", config=tmp_path / "cfg")
+
+    assert "version not probed" in out
+
+
+def test_a_listing_that_measured_nothing_claims_no_version(tmp_path: Path) -> None:
+    """`list` has no probe at all, and an image tag is not a version."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "image": "ghcr.io/x/podbench:main"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "version   not probed" in text
+    assert "ghcr.io/x/podbench:main" not in text
 
 
 def test_list_finds_pods_carrying_a_seat(

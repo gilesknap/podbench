@@ -87,14 +87,23 @@ seat at the application's own mountPath, so the workflow is reachable end to
 end; reachable is not the same as demonstrated. See
 [What `hotfix` does](hotfix-flow.md).
 
-**Nothing tells you which half you are running.** The launcher and the image are
-one release in two places, and they can differ: `uvx` resolves the launcher on
-every invocation, while a seat comes from whatever copy of the image tag the
-node already has. Every symptom of that mismatch looks like a bug in the newer
-half — a fix that is present in the launcher and absent from the seat reads
-exactly like a fix that does not work. `podbench --version` inside the seat is
-the only thing that answers it, and nothing prints it unasked. When iterating on
-a tag that moves, `attach --pull always` is what keeps the two in step.
+**Which half you are running is now measured, not guessed.** The launcher and
+the image are one release in two places, and they can differ: `uvx` resolves the
+launcher on every invocation, while a seat comes from whatever copy of the image
+tag the node already has. Every symptom of that mismatch looks like a bug in the
+newer half — a fix present in the launcher and absent from the seat reads
+exactly like a fix that does not work. `attach` and `status` now run
+`podbench --version` in the seat and print it on a `version` row, and `attach`
+warns when it differs from its own; only where the seat will not answer does the
+report fall back to naming the tag as one that moves. When iterating on such a
+tag, `attach --pull always --new` is what puts a current seat in the pod.
+
+What is *not* closed is the other end of it: a release image can be built from a
+tree that setuptools_scm marks `.dev`/`+g<sha>`, and one was — an image tagged
+`0.4.0b1` whose seat reported `0.4.0b2.dev0+g01d9ac8f8.d20260818`, a post-tag
+build of a dirty context. CI now refuses to publish a release tag from such a
+build, which stops it recurring but does not retag what is already in the
+registry.
 
 The security-side gaps — the untested seccomp branch of the capability probe,
 and the assumption that every container on a node shares one AppArmor profile —

@@ -38,6 +38,7 @@ from typing import Annotated, Any, cast
 
 import typer
 
+from . import __version__
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV, SEAT_NSS_PATH
 from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
@@ -116,6 +117,9 @@ __all__ = [
     "OOM_WARNING",
     "RESIZE_WARNING",
     "SEAT_IDENTITY_MOUNTS",
+    "UNKNOWN_SEAT_VERSION",
+    "VERSION_ARGV",
+    "VERSION_SKEW_WARNING",
     "Feature",
     "LadderStep",
     "LauncherError",
@@ -152,6 +156,8 @@ __all__ = [
     "parse_mount",
     "plan_ladder",
     "pod_choices",
+    "probe_seat_version",
+    "probe_seat_versions",
     "probe_seats",
     "probe_ssh_identity",
     "read_public_key",
@@ -164,6 +170,7 @@ __all__ = [
     "running_seat",
     "seat_identity_mounts",
     "seat_layout",
+    "seat_version_fact",
     "seats",
     "spec_env",
     "ssh_config_path",
@@ -201,6 +208,16 @@ LOGIN_USER_ARGV: tuple[str, ...] = (*AGENT_COMMAND, "--print-login-user")
 Measured in the container rather than predicted from the spec, like everything
 else the launcher prints: whether an account exists for the target's uid is a
 fact about the *image*, and podbench can be pointed at any image."""
+
+VERSION_ARGV: tuple[str, ...] = ("podbench", "--version")
+"""Asks the seat which build of podbench it is, rather than inferring it.
+
+The two halves share a protocol - the agent's argv and ``capreport``'s JSON -
+so a skew is a hazard and not untidiness. It is also unreadable from outside:
+an image tag can move under a name that has not, ``IfNotPresent`` will not
+re-check, and a fix pushed to a branch tag is served from the node's cache with
+no event anywhere. Spelled with a bare ``podbench`` for the reason
+:data:`CAPREPORT_ARGV` is."""
 
 NON_ROOT_HOME = "/tmp/podbench-home"
 """``$HOME`` for a non-root seat.
@@ -267,6 +284,31 @@ caution.
 What R13 leaves unproven belongs on the other path and is printed there, by
 :func:`try_resize`: a caveat about a mutation is worth reading by the person who
 just made it, and worth skipping by the person who did not.
+"""
+
+VERSION_SKEW_WARNING = (
+    "this seat runs a different build of podbench from this launcher (the "
+    "`version` line above carries both): the two halves share the agent's argv "
+    "and capreport's JSON, so a fix in one of them is absent from the other and "
+    "the difference degrades quietly. `--pull always --new` lands a seat from "
+    "the tag as it stands now, at the cost of a container name; `--image` pins "
+    "a version instead."
+)
+"""Printed when the seat answered ``--version`` with something other than ours.
+
+Only ever *beside* the measurement: the numbers are on the ``version`` row and
+stay there, so this line is the consequence and the way out and nothing else.
+It replaces :func:`moving_tag_note` where a reading exists - a guess from the
+tag string next to a measured mismatch is two answers to one question, and the
+guess is the one that can be wrong in both directions.
+"""
+
+UNKNOWN_SEAT_VERSION = "unknown - this seat did not answer `podbench --version`"
+"""Stands where a seat's build should be when it would not say.
+
+Distinct from :data:`podbench.model.NOT_PROBED`, which is a seat that was never
+asked: an image old enough to have no root ``--version``, or an ``exec`` the
+namespace refuses, is a fact about this seat and not an omission of ours.
 """
 
 _UNPINNED_UID = 65534
@@ -929,6 +971,14 @@ class Session:
     """What the seat answered about its own login identity; ``None`` when it was
     never asked."""
 
+    seat_version: str | None = None
+    """The build of podbench running in the seat, ``None`` when unreadable.
+
+    Measured, never derived from the image tag: the tag is what was *asked*
+    for, and on ``IfNotPresent`` over a tag that moves the node may have served
+    something else entirely. :func:`seat_version_fact` renders it.
+    """
+
     @property
     def pod(self) -> PodRef:
         return self.seat.pod
@@ -1090,9 +1140,17 @@ def attach(
 
     # Before the OOM warning, because it is about which *code* is running and
     # every other line in the report is only true of the version that is.
-    stale = moving_tag_note(image, pull_policy)
-    if stale is not None:
-        warnings.append(stale)
+    seat_version = probe_seat_version(kubectl, session.seat)
+    if seat_version is None:
+        # The guess, and only where there is nothing better: `moving_tag_note`
+        # reasons from the tag string, so it can neither confirm a skew nor
+        # rule one out, and printing it next to a measurement would be two
+        # answers to one question.
+        stale = moving_tag_note(image, pull_policy)
+        if stale is not None:
+            warnings.append(stale)
+    elif seat_version != __version__:
+        warnings.append(VERSION_SKEW_WARNING)
     warnings.append(OOM_WARNING)
     # Read from the pod spec rather than warned about in general terms: every
     # number is already in hand, so this is the deadline on *this* pod and not
@@ -1111,6 +1169,7 @@ def attach(
         session,
         identity_declared=identity_declared,
         probes=budgets,
+        seat_version=seat_version,
         ssh=probe_ssh_identity(kubectl, session.seat),
     )
 
@@ -1319,6 +1378,32 @@ def probe_ssh_identity(kubectl: Kubectl, seat: ContainerRef) -> SeatIdentity:
         f"uid it runs as, so this was not measured: {reason or 'no output'}",
         measured=False,
     )
+
+
+def probe_seat_version(kubectl: Kubectl, seat: ContainerRef) -> str | None:
+    """Which build of podbench ``seat`` is running, or ``None`` if it would not say.
+
+    Asked over the same ``exec`` channel as everything else the report prints,
+    because nothing outside the seat can answer it: an image tag moves under a
+    name that does not, ``IfNotPresent`` will not re-check, and a node serving
+    a cached layer produces a seat that is simply older with no event anywhere.
+
+    ``check=False`` and every failure folds to ``None``, like
+    :attr:`SeatIdentity.measured`: an image predating this flag, or an ``exec``
+    the namespace refuses, is a diagnostic that did not arrive. Report 4.2 is
+    what makes that non-negotiable - the seat is an ephemeral container and
+    cannot be relanded, so nothing here may fail an attach that has landed.
+    """
+    result = kubectl.exec_(
+        seat.pod.name, VERSION_ARGV, container=seat.container, check=False
+    )
+    version = result.stdout.strip()
+    # One token or nothing. A usage message is what an image too old for the
+    # flag prints, and click writes it to stdout as readily as to stderr, so a
+    # zero exit and non-empty output are not on their own an answer.
+    if result.returncode != 0 or len(version.split()) != 1:
+        return None
+    return version
 
 
 def run_capreport(
@@ -1639,12 +1724,40 @@ _WARNING_HANG = len(WARNING_LEAD) + 2
 the coloured leader plus its separator."""
 
 
+def seat_version_fact(seat_version: str | None) -> str:
+    """The ``version`` row's value: which build the seat is, against this one.
+
+    Both numbers on the one line, because the pair is the fact - a bare
+    ``0.4.0b1`` reads as agreement to a reader who does not know what this
+    launcher is, and the whole reason to ask is that the two can differ. What a
+    difference *costs*, and the way out of it, is
+    :data:`VERSION_SKEW_WARNING`'s job; saying it here as well would put one
+    thing in two places.
+
+    >>> print(seat_version_fact(None))
+    unknown - this seat did not answer `podbench --version`
+    """
+    if seat_version is None:
+        return UNKNOWN_SEAT_VERSION
+    if seat_version == __version__:
+        return f"{seat_version}, the same build as this launcher"
+    return f"{seat_version} in the seat, {__version__} in this launcher"
+
+
 def format_session(session: Session) -> str:
     """The capability report, which is the product of an attach."""
     lines = [
         f"seat        {session.seat}"
         + ("  (reconnected)" if session.reused else "  (new)"),
         f"target      {session.workload}",
+        # Above the rung, not in `measured` below it: `--no-probe` skips that
+        # block entirely, and which build is answering is exactly the thing a
+        # user needs when a fix appears not to have worked.
+        *paragraph(
+            seat_version_fact(session.seat_version),
+            first="version     ",
+            indent=" " * 12,
+        ),
         f"rung        {session.rung.value} - {session.rung.description}",
         "ladder",
     ]
@@ -1854,6 +1967,13 @@ def moving_tag_note(image: str, policy: str) -> str | None:
     different versions. Measured while testing a branch image — the target
     selection was fixed in the launcher and absent from the seat, which read as
     the fix not working.
+
+    This is the fallback and not the answer. :func:`probe_seat_version` asks the
+    seat outright, and where it gets a reply ``attach`` prints that instead: a
+    tag string can only say a skew is *possible*, and it is wrong in both
+    directions — a moving tag whose node happens to be current, a pinned tag
+    whose image was built dirty. The note survives for the seat that will not
+    say.
 
     >>> print(moving_tag_note("ghcr.io/x/podbench:main", "IfNotPresent"))
     `main` is a tag that moves, and this node may already have a copy: a seat
@@ -2554,6 +2674,28 @@ def probe_seats(
     return measured
 
 
+def probe_seat_versions(
+    kubectl: Kubectl, pod: PodRef, present: Sequence[SeatInfo]
+) -> dict[str, str | None]:
+    """Which build of podbench each running seat is, keyed by container.
+
+    The sibling of :func:`probe_seats`, and separate from it because the answer
+    is not the capability report's: ``capreport``'s JSON is versioned so an old
+    seat can still be read (see :func:`capability_report_from_json`), which is
+    precisely what makes "how old" a question worth asking on its own.
+
+    A seat that would not say is kept, as a ``None`` value, rather than dropped:
+    :func:`format_seats` reads *absence* from this mapping as never asked, and
+    an image too old to answer is a fact about that seat and not an omission of
+    ours.
+    """
+    return {
+        seat.name: probe_seat_version(kubectl, ContainerRef(pod, seat.name))
+        for seat in present
+        if seat.running
+    }
+
+
 def _fact(label: str, value: str) -> list[str]:
     """One ``label   value`` row under a seat, wrapped at the value only.
 
@@ -2594,6 +2736,7 @@ def format_seats(
     *,
     directory: Path,
     measured: Mapping[str, CapabilityReport | str] | None = None,
+    versions: Mapping[str, str | None] | None = None,
 ) -> str:
     """One pod's podbench containers, for ``status`` and ``list``.
 
@@ -2611,6 +2754,13 @@ def format_seats(
     it attaches perfectly well, and this column used to call that seat
     read-only.
 
+    ``versions`` carries what each seat said its own build of podbench is, from
+    :func:`probe_seat_versions`. A seat missing from it is
+    :data:`~podbench.model.NOT_PROBED` for the same reason its verdict is: this
+    listing may not report an image tag as a version, since the tag is what the
+    spec asked for and a node serving a cached layer of a tag that moves gives
+    a seat built from something else.
+
     The alias is offered only where a seat is *running*. A stanza outlives the
     container it was written for — nothing deletes it, and an ephemeral
     container's name is burnt for the pod's lifetime once it exits — so a pod
@@ -2618,6 +2768,7 @@ def format_seats(
     that cannot work, one line under the row saying why.
     """
     probes = measured or {}
+    builds = versions or {}
     # Headed, as `format_pod_choices` is, because the third cell now stops at
     # the rung's name: `degraded` under nothing at all is the very reading this
     # verb has to stop making, and a header is cheaper than a word per row.
@@ -2625,6 +2776,14 @@ def format_seats(
     for seat in present:
         lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
         lines.extend(_fact("state", seat.detail))
+        lines.extend(
+            _fact(
+                "version",
+                seat_version_fact(builds[seat.name])
+                if seat.name in builds
+                else NOT_PROBED,
+            )
+        )
         lines.extend(_fact("verdict", _seat_verdict(probes.get(seat.name))))
         # Per seat, because the alias now names one: a pod carrying two live
         # seats has two of them, and a single line would have to pick.
@@ -3541,6 +3700,12 @@ def _build_app(
         # `capabilities.add` is indistinguishable from the degraded rung
         # (issue #89). `--no-probe` is for a listing that must touch nothing.
         measured = {} if no_probe else probe_seats(kube, reference, present)
+        # Same `--no-probe` gate, because it is one more `exec` per seat and
+        # that flag exists for a listing that must touch nothing. Asked at all
+        # because a seat's build is not its image tag: `IfNotPresent` over a tag
+        # that moves serves whatever the node cached, so the spec cannot answer
+        # this and neither can the launcher's own version.
+        versions = {} if no_probe else probe_seat_versions(kube, reference, present)
         # Read-only: the config dir is where the ssh alias for these seats is
         # recorded, and reporting one podbench cannot back up would be worse
         # than reporting none. Nothing here writes a stanza.
@@ -3550,6 +3715,7 @@ def _build_app(
                 present,
                 directory=client_dir(config_dir),
                 measured=measured,
+                versions=versions,
             )
         )
         raise typer.Exit(0)

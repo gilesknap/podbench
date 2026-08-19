@@ -72,8 +72,33 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.slug }}
           cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
 
-      - name: Test cli works in cached runtime image
-        run: docker run --rm tag_for_testing --version
+      # The version *compiled into the image*, asserted rather than printed and
+      # discarded. setuptools_scm marks anything that is not exactly a tagged,
+      # clean commit with a `.dev` segment and a `+g<sha>` local version — and
+      # appends `.dYYYYMMDD` to the local version when the build context had
+      # uncommitted changes. That is the same predicate
+      # `podbench.model.image_tag_for` applies to decide which image a launcher
+      # may ask for, so a release tag published from such a build ships an image
+      # naming a version no image was ever built from: an image tagged 0.4.0b1
+      # whose `podbench --version` said 0.4.0b2.dev0+g01d9ac8f8.d20260818, which
+      # is how this check came to exist.
+      #
+      # Only a tag build is held to it. A branch prerelease is legitimately a
+      # `.dev`/`+g<sha>` version — that is what makes it unmistakably not a
+      # release — so failing those would fail every branch push.
+      - name: Test the cli runs and reports a publishable version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          version=$(docker run --rm tag_for_testing --version)
+          echo "the image reports podbench $version"
+          if [[ $REF_TYPE == tag && ( $version == *.dev* || $version == *+* ) ]]; then
+            echo "::error::$GITHUB_REF_NAME is a release tag, but the image was" \
+                 "built from a post-tag or dirty tree and reports $version." \
+                 "Build the tagged commit from a clean checkout."
+            exit 1
+          fi
 
       # The image is only useful in a cluster, so exercise the in-pod verbs too:
       # they are the surface `podbench` drives once attached.

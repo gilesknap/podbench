@@ -381,7 +381,10 @@ Useful flags:
   *requires* a reachable registry. Use it when you are iterating on a tag that
   moves, such as `main` or a branch image: a node that already has a copy will
   otherwise serve it, and a seat older than the launcher that started it has no
-  symptom at all. `attach` names the tag in its report when this applies.
+  symptom at all. `attach` measures it rather than guessing — the `version` row
+  of the report is what the seat itself answered — but a running seat is
+  reconnected to rather than replaced, so re-checking the registry takes
+  `--pull always --new`.
 * `--ssh-user` — the login name. `root` on the full rung; `podbench` on a
   degraded one, which is the name in the record the seat registered for its own
   uid — unless that uid already has an account in the image, where it is whatever

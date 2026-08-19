@@ -125,6 +125,7 @@ the spec podbench asked for:
 ```
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
 target      web
+version     0.4.0b1, the same build as this launcher
 rung        full - root plus CAP_SYS_PTRACE
 ladder
   full      landed   admitted by the API server and the kubelet
@@ -144,8 +145,14 @@ measured
   uids        seat 0, target 0
 ```
 
-Three lines are worth learning to read:
+Four lines are worth learning to read:
 
+* **`version`** — which build of podbench answered, measured by running
+  `podbench --version` inside the seat. The launcher and the image are one
+  release in two places and can drift apart, most easily on a tag that moves:
+  the node serves the copy it already has, and a fix that is in the launcher but
+  not in the seat reads exactly like a fix that does not work. When the two
+  differ the report says so, on one `WARNING` line.
 * **`rung`** — what the *cluster* admitted. `degraded` means `SYS_PTRACE` was
   refused by Pod Security Admission and podbench fell back to the target's own
   UID. That is a normal outcome, not a failure, and the command still exits `0`.
