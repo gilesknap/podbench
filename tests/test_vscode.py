@@ -1604,6 +1604,28 @@ def test_provision_into_an_unreadable_target_names_the_credentials(
     assert "CAP_SYS_PTRACE is not in this seat's effective set" not in captured.err
 
 
+def test_a_denied_candidate_does_not_cost_the_others_their_configurations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Finding 01: one refused rootfs used to take the whole file with it.
+
+    ``pathlib`` raises rather than answering on a denied read — ``EACCES`` is
+    not among the errnos it ignores — and this verb writes ``launch.json``
+    last, so a raise anywhere in the walk left the run with a traceback and no
+    file at all. The Python candidate here is the one the seat may not read;
+    the IOC beside it is unaffected, and its entry has to survive.
+    """
+    proc = container_tree(tmp_path, IOC_TREE)
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"]
+    # Declined on the credentials, and not on an install that could not be run:
+    # `--provision` writes through the same `/proc/<pid>/root` the kernel just
+    # refused, so offering it here would be the denial told as a remedy.
+    assert "may not read /proc/8/root" in captured.err
+    assert "not importable by the target" not in captured.err
+
+
 def test_two_candidates_with_one_basename_get_two_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -854,6 +854,53 @@ def test_a_measurement_outranks_the_credential_check(tmp_path: Path) -> None:
     assert "refused when this seat measured it" in result.reason
 
 
+def test_a_denied_rootfs_is_not_reported_as_a_missing_debugpy(
+    tmp_path: Path,
+) -> None:
+    """One refusal, one sentence — and not the one that offers an install.
+
+    ``_target_debugpy`` stats through ``/proc/<pid>/root``, so on a tree the
+    kernel refuses there is nothing to conclude from an empty search. Saying
+    "debugpy is not importable by the target" there would be the same denial
+    told a second time, with a remedy that writes through the very path that
+    was just refused: ``--provision`` would run ``uv pip install --target
+    /proc/<pid>/root/...`` and fail at the same wall.
+    """
+    proc = python_proc(tmp_path, cap_sys_ptrace=False, ptrace_readable=False)
+    target = inspect_target(PID, proc=proc)
+    seat = injectable(tmp_path, proc, target)
+    assert seat.target_rootfs_denied
+    assert seat.debugpy_there is None
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert not result.available
+    assert f"may not read /proc/{PID}/root" in result.reason
+    assert "nothing in the target's filesystem could be searched" in result.reason
+    message = result.message()
+    assert "not importable by the target" not in message
+    assert "--target" not in message
+    # Nor the architecture: `tree` falls back to this seat's own copy only when
+    # the target has none, which nobody found out — and this seat's copy has
+    # the helper it is about to be told it lacks.
+    assert "attach_linux" not in message
+
+
+def test_a_denied_rootfs_leaves_the_seats_own_gaps_reported(tmp_path: Path) -> None:
+    """Only the *target-side* answers are withdrawn, not every answer.
+
+    What this seat has is knowable however unreadable the target is, and a
+    refusal that swallowed it would send the reader to fix the credentials only
+    to meet a second wall — which is the experience the prerequisite list
+    exists to end.
+    """
+    proc = python_proc(tmp_path, cap_sys_ptrace=False, ptrace_readable=False)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(target, proc=proc, which=which_of("gdb"), debugpy_root=None)
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DEBUGPY)
+    assert f"may not read /proc/{PID}/root" in result.reason
+    assert any("no debugpy in this seat" in item for item in result.detail)
+    assert any("no sysroot-aware gdb on PATH" in item for item in result.detail)
+
+
 def test_a_measured_refusal_names_the_measurement_and_not_the_bit(
     tmp_path: Path,
 ) -> None:

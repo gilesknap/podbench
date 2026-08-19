@@ -1171,6 +1171,27 @@ there is one, so the seat's copy answers a different question. On amd64 the
 helper is in every wheel, so a tree without one is an incomplete install with a
 re-install to fix it, not the architecture.
 
+A seat the kernel refuses `/proc/<pid>/root` is refused **before** any of that,
+and the refusal says so on its own:
+
+```
+debug-config: debugpy unavailable: this seat may not read /proc/597/root, which the
+              kernel gates on the same ptrace_may_access() credentials an attach takes
+              - so nothing in the target's filesystem could be searched, and
+              PTRACE_MODE_ATTACH is strictly stronger than the read, so the injection's
+              `gdb --pid` would be refused too. Not the capability: the credentials
+debug-config:   `podbench capreport 597` names which of the four mechanisms says no;
+                where it is a uid mismatch, `podbench attach --max-rung full` lands a
+                seat that runs as root
+```
+
+Nothing about the target's own filesystem is claimed beside it. The search for
+its debugpy stats through that same directory, so "debugpy is not importable by
+the target" would be this one refusal reported a second time — with a remedy,
+`--provision`, that writes through the very path the kernel just refused. It is
+the whole flavour that declines and not the verb: any other candidate in the
+pod still gets its configurations, and the file is still written.
+
 #### Installing debugpy into the target (`--provision`)
 
 A stock Python image has no debugpy, and debugpy's pid-injection needs it

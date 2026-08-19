@@ -446,6 +446,37 @@ class Seat:
     is the whole distinction :func:`ptrace_evidence` exists to keep.
     """
 
+    @property
+    def target_rootfs_denied(self) -> bool:
+        """Whether this seat was refused the target's filesystem outright.
+
+        :attr:`PtraceEvidence.DENIED` under the name of its *other* consequence.
+        One ``listdir`` answers both: ``/proc/<pid>/root`` opens under
+        ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)``, so "may not read the
+        tree" and "may not attach" are one refusal rather than two facts that
+        agree, and reporting them as two would tell the reader two stories about
+        one denial.
+
+        Spelled separately because what follows differs: the evidence decides
+        whether the injection may be *offered*, and this decides whether
+        anything the search failed to find under that tree is a finding at all.
+
+        It goes through :func:`ptrace_evidence` and not through
+        :attr:`target_ptrace_readable`, so that a measurement outranks it here
+        exactly as it does everywhere else — a seat that really attached read
+        the tree, whatever a hand-assembled ``Seat`` says.
+
+        >>> Seat(machine="x86_64", cap_sys_ptrace=False).target_rootfs_denied
+        False
+        >>> Seat(machine="x86_64", cap_sys_ptrace=False,
+        ...      target_ptrace_readable=False).target_rootfs_denied
+        True
+        >>> Seat(machine="x86_64", cap_sys_ptrace=False, target_attach_ok=True,
+        ...      target_ptrace_readable=False).target_rootfs_denied
+        False
+        """
+        return ptrace_evidence(self) is PtraceEvidence.DENIED
+
     def has(self, name: str) -> bool:
         """Whether the inventory found ``name``."""
         return any(entry.present for entry in self.debuggers if entry.name == name)
@@ -485,6 +516,34 @@ class Assessment:
 # -- what the target is ----------------------------------------------------
 
 
+def _readable_rootfs(pid: int, *, proc: Path = DEFAULT_PROC) -> Path | None:
+    """The target's filesystem, or ``None`` when the kernel refuses the read.
+
+    The one gate on every path this module opens under ``/proc/<pid>/root``,
+    and it is a *measurement* rather than a caught exception. pathlib's
+    ``_IGNORED_ERRNOS`` is ``(ENOENT, ENOTDIR, EBADF, ELOOP)`` on the 3.11
+    floor and ``EACCES`` is not in it, so every ``is_file()`` past this point
+    answers ``False`` for "not there" and **raises** for "not allowed" — and
+    ``debug-config`` writes ``launch.json`` last, so one raise here costs the
+    whole file and the verb exits on a traceback with nothing landed. ``glob``
+    raises for a less obvious reason worth keeping in mind if this moves:
+    ``_WildcardSelector`` does catch ``PermissionError`` from ``scandir``, but
+    ``_Selector.select_from`` stats the parent first, and that stat is naked.
+
+    The measurement is one the report already has a word for, and it is free:
+    :func:`podbench.proc.ptrace_readable` opens this very directory, which the
+    kernel gates on ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)``. So a
+    refused filesystem read and :attr:`PtraceEvidence.DENIED` are not two facts
+    that happen to agree — they are one ``listdir`` consulted twice, which is
+    what keeps the reader from being told two stories about one refusal.
+
+    >>> _readable_rootfs(1, proc=Path("/nonexistent")) is None
+    True
+    """
+    root = Path(proc) / str(pid) / "root"
+    return root if ptrace_readable(pid, proc=proc) else None
+
+
 def inspect_target(
     pid: int, *, proc: Path = DEFAULT_PROC, program: str | None = None
 ) -> Target:
@@ -496,6 +555,7 @@ def inspect_target(
     interpreter, which is the case that decides the Python flavour.
     """
     notes: list[str] = []
+    root = _readable_rootfs(pid, proc=proc)
     exe = program or read_exe(pid, proc=proc)
     cmdline = read_cmdline(pid, proc=proc) or ""
     if exe is None:
@@ -508,7 +568,7 @@ def inspect_target(
     # binary with the same name (report §3.3). The read goes through ``proc``
     # while the message quotes the real spelling, so a synthetic tree can stand
     # in for /proc without the emitted paths becoming synthetic too.
-    elf = read_elf(Path(proc) / str(pid) / "root" / exe.lstrip("/")) if exe else None
+    elf = read_elf(root / exe.lstrip("/")) if exe and root is not None else None
     if exe and elf is None:
         notes.append(
             f"{sysroot_path(pid)}{exe} could not be read as ELF, so neither the "
@@ -519,7 +579,6 @@ def inspect_target(
     interpreter = _interpreter_of(exe, argv)
     language = _language(interpreter, elf)
     script = _script_of(argv) if interpreter else None
-    root = Path(proc) / str(pid) / "root"
     return Target(
         pid=pid,
         language=language,
@@ -599,7 +658,9 @@ an admitted gap.
 """
 
 
-def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | None:
+def _python_version(
+    exe: str | None, argv: Sequence[str], root: Path | None
+) -> str | None:
     """The target's CPython ``X.Y``, from its own rootfs. ``None`` is an answer.
 
     The exe link usually resolves through ``python`` to ``python3.12`` and
@@ -614,15 +675,23 @@ def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | N
     a ``sorted()`` pick puts ``python3.10`` ahead of ``python3.9`` on top of it,
     so the wrong answer would not even have been the plausible one.
 
+    ``root`` is ``None`` when the kernel refused the tree
+    (:func:`_readable_rootfs`), and then the library directories are not asked
+    at all: an unreadable rootfs holds no evidence, and walking it raises.
+
     >>> _python_version("/usr/local/bin/python3.12", [], Path("/nonexistent"))
     '3.12'
     >>> _python_version(None, ["python"], Path("/nonexistent")) is None
+    True
+    >>> _python_version(None, ["python"], None) is None
     True
     """
     for candidate in (exe, argv[0] if argv else None):
         match = _PYTHON_VERSION.match(Path(candidate).name) if candidate else None
         if match:
             return match.group(1)
+    if root is None:
+        return None
     for prefix in _SEARCH_ROOTS:
         found: list[str] = []
         for parent in (root / prefix).glob("python3.*"):
@@ -760,10 +829,13 @@ def survey_seat(
     not at all.
     """
     here = _debugpy_dir(debugpy_root)
+    # The gate, and the same one `inspect_target` used: everything below this
+    # line stats through the target's rootfs, and a refused tree is measured
+    # rather than walked and caught (:func:`_readable_rootfs`).
+    root = _readable_rootfs(target.pid, proc=proc)
     there = _target_debugpy(
-        target.pid,
+        root,
         argv=target.cmdline.split(),
-        proc=proc,
         provision_dest=provision_dest,
     )
     return Seat(
@@ -782,7 +854,9 @@ def survey_seat(
         provision_dest=provision_dest,
         program_load_error=program_load_error,
         target_attach_ok=target_attach_ok,
-        target_ptrace_readable=ptrace_readable(target.pid, proc=proc),
+        # Not a second read: the gate above *is* the PTRACE_MODE_READ check,
+        # so the field and the search that was or was not run cannot disagree.
+        target_ptrace_readable=root is not None,
     )
 
 
@@ -861,13 +935,18 @@ def _venv_site_packages(root: Path, argv: Sequence[str]) -> Path | None:
 
 
 def _target_debugpy(
-    pid: int,
+    root: Path | None,
     *,
     argv: Sequence[str] = (),
-    proc: Path = DEFAULT_PROC,
     provision_dest: str = PROVISION_DEST,
 ) -> Path | None:
     """Where the *target* keeps debugpy, as a path this container can stat.
+
+    ``root`` is the target's filesystem or ``None``, and ``None`` means the
+    kernel refused it (:func:`_readable_rootfs`) — so the answer is ``None``
+    without a search. That is not "the target has no debugpy": nobody looked,
+    and :func:`_injection_prerequisites` says so rather than offering an
+    install that would write through the path just refused.
 
     ``provision_dest`` is **one** extra fixed path, not a widened glob: it is
     where ``--provision`` puts a copy, and it is checked first because it was
@@ -882,7 +961,8 @@ def _target_debugpy(
     so answering with a system copy would name a debugpy the bootstrap could
     not load.
     """
-    root = Path(f"{proc}/{pid}/root")
+    if root is None:
+        return None
     provisioned = root / provision_dest.lstrip("/")
     if _has_debugpy(provisioned):
         return provisioned
@@ -1231,6 +1311,33 @@ def can_ptrace_target(seat: Seat) -> bool:
     return ptrace_evidence(seat).permits
 
 
+def _rootfs_denied(target: Target) -> tuple[bool, str, str]:
+    """The prerequisite a seat refused the target's filesystem fails.
+
+    Two consequences of one refusal, in one sentence, because the reader meets
+    both in the same run: nothing under the target's rootfs could be searched,
+    and ``PTRACE_MODE_ATTACH`` is strictly stronger than the read that was
+    refused, so the injection's ``gdb --pid`` would be refused too.
+
+    Not structural. The remedy is a different seat rather than a different
+    world, so it stays below the architecture refusal in
+    :func:`_assess_debugpy`'s ordering — but above everything the refusal made
+    unanswerable, which is every target-side prerequisite there is.
+    """
+    return (
+        False,
+        f"this seat may not read /proc/{target.pid}/root, which the kernel "
+        "gates on the same ptrace_may_access() credentials an attach takes - "
+        "so nothing in the target's filesystem could be searched, and "
+        "PTRACE_MODE_ATTACH is strictly stronger than the read, so the "
+        "injection's `gdb --pid` would be refused too. Not the capability: "
+        "the credentials",
+        f"`podbench capreport {target.pid}` names which of the four mechanisms "
+        "says no; where it is a uid mismatch, `podbench attach --max-rung "
+        "full` lands a seat that runs as root",
+    )
+
+
 def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str, str]]:
     """The unmet prerequisites, as ``(structural, reason, remedy)``.
 
@@ -1238,8 +1345,16 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     second, the architecture third, ptrace fourth and the symbols gdb has to
     read once it is attached last. Reporting all of them is the point — fixing
     the headline only to meet the next wall is the experience this replaces.
+
+    A refused ``/proc/<pid>/root`` comes before all of them, because it is what
+    the seat hit before it could ask any of the target-side questions at all.
     """
     unmet: list[tuple[bool, str, str]] = []
+    if seat.target_rootfs_denied:
+        # First in the list, and so the headline: `sorted` below is stable, and
+        # only the structural arm64 refusal — which is true whatever this seat
+        # may read — outranks it.
+        unmet.append(_rootfs_denied(target))
     if seat.debugpy_here is None:
         unmet.append(
             (
@@ -1249,7 +1364,12 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                 "lists what this image actually has",
             )
         )
-    if seat.debugpy_there is None:
+    # Said only where it was really looked for. `_target_debugpy` stats through
+    # `/proc/<pid>/root`, so on a refused tree "debugpy is not importable by the
+    # target" is not a finding — it is the refusal above told a second time, and
+    # its remedy would send the reader to install through the very path the
+    # kernel just said no to. One refusal, one sentence.
+    if seat.debugpy_there is None and not seat.target_rootfs_denied:
         unmet.append(
             (
                 False,
@@ -1290,8 +1410,14 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     # "not published for x86_64" — which is false — would be worse than saying
     # nothing. The tree asked is the one the injection loads, and it is named in
     # the message, because with a copy on each side they can disagree.
+    #
+    # Not asked at all on a refused rootfs, and the fallback is why: `tree` is
+    # this seat's copy only when the target has none, which is a thing nobody
+    # found out. Asked anyway it names the wrong tree and — with the target's
+    # ELF unreadable too, so `Target.machine` is ``None`` — the wrong
+    # architecture, and reports a helper missing from a directory that has it.
     tree = seat.debugpy_there or seat.debugpy_here
-    if tree is not None and not seat.debugpy_helper:
+    if tree is not None and not seat.debugpy_helper and not seat.target_rootfs_denied:
         machine = target.machine or seat.machine
         helper = debugpy_helper_name(machine)
         if debugpy_helper_published(machine):
@@ -1349,20 +1475,9 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                 )
             )
         elif evidence is PtraceEvidence.DENIED:
-            unmet.append(
-                (
-                    False,
-                    f"this seat may not read /proc/{target.pid}/root, which the "
-                    "kernel gates on the same ptrace_may_access() credentials "
-                    "an attach takes - and PTRACE_MODE_ATTACH is strictly "
-                    "stronger than the read, so the injection's `gdb --pid` "
-                    "would be refused too. Not the capability: the credentials",
-                    f"`podbench capreport {target.pid}` names which of the four "
-                    "mechanisms says no; where it is a uid mismatch, "
-                    "`podbench attach --max-rung full` lands a seat that runs "
-                    "as root",
-                )
-            )
+            # Already the headline: DENIED *is* `target_rootfs_denied`, so the
+            # entry went in first, above every question it made unanswerable.
+            pass
         else:
             unmet.append(
                 (
