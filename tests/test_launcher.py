@@ -2270,6 +2270,32 @@ def test_a_stripped_capability_is_seen_before_the_rung_is_spent() -> None:
     assert "--max-rung degraded" in detail
 
 
+def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
+    """Report 3.11 compares two rungs, and a root target only has one.
+
+    The strip above drops the full rung because the rung below, at the target's
+    own uid, reads more. Against a root target there is no rung below:
+    ``runAsNonRoot: true`` cannot express uid 0, so every lower rung is ruled
+    out before the walk starts. Refusing there leaves nothing admitted at all —
+    which is what the ``dls-ioc`` e2e fixture measured, losing its seat.
+    """
+
+    def strip(container: dict[str, Any]) -> None:
+        security = cast(dict[str, Any], container.get("securityContext", {}))
+        cast(dict[str, Any], security.get("capabilities", {})).pop("add", None)
+
+    cluster = FakeCluster(pod_document(uid=0), mutate=strip)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    # A seat, rather than the "no rung of the capability ladder was admitted"
+    # the refusal produced. One name, and the strip is said out loud.
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+    full = {step.rung: step for step in session.steps}[Rung.FULL]
+    assert full.admitted
+    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
+    assert any("no rung below to prefer" in text for text in session.warnings)
+
+
 def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
     """The expensive one: ``runAsNonRoot: true`` beside uid 0.
 

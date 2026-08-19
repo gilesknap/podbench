@@ -114,6 +114,7 @@ from .sshcfg import (
 
 __all__ = [
     "ADMISSION_MUTATION_WARNING",
+    "CAPABILITY_STRIPPED_WARNING",
     "CAPREPORT_ARGV",
     "CONFIG_D",
     "CONTAINER_BASE",
@@ -1609,7 +1610,17 @@ def _walk_ladder(
         # Before the create, because the currency of being wrong here is a
         # container name burnt for the pod's lifetime (report 4.2) and a dry
         # run costs a round trip.
-        refusal, rewrites = _dry_run_rung(kubectl, pod, spec, rung)
+        # A stripped capability is only worth refusing a rung over if there is a
+        # rung below to fall back to. Report 3.11 compares a stripped root seat
+        # against one at the *target's own uid*; against a root target that
+        # comparison has no second term, because runAsNonRoot cannot express uid
+        # 0 and every lower rung is already ruled out. Refusing there leaves the
+        # walk with nothing (measured: the dls-ioc e2e fixture, whose target is
+        # root, lost its seat entirely).
+        fallback_uid = uid if uid else None
+        refusal, rewrites = _dry_run_rung(
+            kubectl, pod, spec, rung, fallback_uid=fallback_uid
+        )
         if refusal is not None:
             steps.append(refusal)
             continue
@@ -1698,6 +1709,23 @@ def _walk_ladder(
     )
 
 
+CAPABILITY_STRIPPED_WARNING = (
+    "admission removed {stripped} from this seat, and it was taken anyway "
+    "because there is no rung below to prefer: the target runs as root, which "
+    "`runAsNonRoot: true` cannot express, so a seat at the target's own uid is "
+    "not available (report 3.11 compares the two; here there is only one). The "
+    "seat is root without the capability, which reads three of the six probe "
+    "paths - `podbench capreport` names which."
+)
+"""One line for a strip the walk cannot improve on.
+
+Against a non-root target the same strip *drops* the rung, because the rung
+below reads more (report 3.11). Against a root target there is no rung below:
+every lower one needs a non-zero uid to pin. Refusing here would end the walk
+with nothing admitted, which is worse than a seat that says what it lost —
+measured on the ``dls-ioc`` e2e fixture, whose target is root.
+"""
+
 ADMISSION_MUTATION_WARNING = (
     "admission rewrote this seat's securityContext before storing it: it "
     "{rewrites}. Nothing in the response names the controller responsible. It "
@@ -1724,7 +1752,12 @@ measured on the same cluster).
 
 
 def _dry_run_rung(
-    kubectl: Kubectl, pod: str, spec: Mapping[str, Any], rung: Rung
+    kubectl: Kubectl,
+    pod: str,
+    spec: Mapping[str, Any],
+    rung: Rung,
+    *,
+    fallback_uid: int | None = None,
 ) -> tuple[LadderStep | None, tuple[str, ...]]:
     """Submit this rung to admission without letting it store anything.
 
@@ -1775,7 +1808,7 @@ def _dry_run_rung(
         )
 
     stripped = capabilities_removed(spec, admitted)
-    if stripped:
+    if stripped and fallback_uid is not None:
         return (
             LadderStep(
                 rung,
@@ -1783,12 +1816,18 @@ def _dry_run_rung(
                 f"admission would take it and remove "
                 f"{', '.join(stripped)} from it, landing a root seat with no "
                 f"capability: that reads three of the six probe paths where the "
-                f"rung below, at the target's own uid, reads all six (report "
+                f"rung below, at uid {fallback_uid}, reads all six (report "
                 f"3.11). A dry run read that back before a name was spent; "
                 f"`--max-rung degraded` says it up front",
             ),
             (),
         )
+    if stripped:
+        # No rung below to prefer, so the stripped seat is the best there is
+        # rather than the worst: against a root target `runAsNonRoot: true`
+        # cannot express uid 0, so every lower rung is already ruled out.
+        # Refusing here would end the walk with nothing admitted at all.
+        return None, (CAPABILITY_STRIPPED_WARNING.format(stripped=", ".join(stripped)),)
 
     rewrites = admission_rewrites(spec, admitted)
     if not rewrites:
