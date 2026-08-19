@@ -397,7 +397,25 @@ class Seat:
     """Whether a bare ``gdb`` on PATH sets the sysroot before it attaches."""
 
     listening_port: int | None = None
-    """A debugpy server already accepting connections in this pod, if any."""
+    """A debugpy server already accepting connections in this pod, if any.
+
+    Set only where the listening socket was **attributed to a container in this
+    pod**. Under ``hostNetwork: true`` the namespace ``ss`` reads is the node's,
+    so a port being held is not evidence of anything in this pod — that is how a
+    seat announced another pod's debugpy server as this one's and emitted a
+    configuration pointing at it (issue #87). An unattributable listener leaves
+    this ``None``, which is the same answer as an empty port.
+    """
+
+    listening_owner: str | None = None
+    """Who holds :attr:`listening_port`, as
+    :meth:`podbench.dev.PortOwner.describe` names them.
+
+    Carried beside the port because the two useful cases are indistinguishable
+    from the number alone: the target's *own* ``debugpy.listen()`` is the good
+    case and worth connecting to, while a server in the seat is debugging the
+    wrong process.
+    """
 
     program_load_error: str | None = None
     """What gdb said when asked to load the target's binary, if it objected.
@@ -811,6 +829,7 @@ def survey_seat(
     which: Which = shutil.which,
     debugpy_root: str | None = None,
     listening_port: int | None = None,
+    listening_owner: str | None = None,
     provision_dest: str = PROVISION_DEST,
     program_load_error: str | None = None,
     target_attach_ok: bool | None = None,
@@ -851,6 +870,7 @@ def survey_seat(
         debugpy_helper=_helper_present(there or here, target.machine),
         sysroot_gdb=sysroot_gdb_on_path(which),
         listening_port=listening_port,
+        listening_owner=listening_owner,
         provision_dest=provision_dest,
         program_load_error=program_load_error,
         target_attach_ok=target_attach_ok,
@@ -1201,13 +1221,19 @@ def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
             Flavour.DEBUGPY, True, "Python target in this container's own namespace"
         )
     if seat.listening_port is not None:
-        # The app called debugpy.listen() itself. Pure Python, so this path is
-        # architecture-independent and needs no capability at all.
+        # The app called debugpy.listen() itself, or ran `-m debugpy` at start
+        # up. Pure Python, so this path is architecture-independent and needs no
+        # capability at all.
+        #
+        # The owner is named rather than the pod: `listening_port` is only set
+        # where the socket was attributed to a container, and "in this pod" said
+        # of an unattributed port is exactly the claim issue #87 was filed for.
         return Assessment(
             Flavour.DEBUGPY,
             True,
             f"a debugpy server is already listening on 127.0.0.1:"
-            f"{seat.listening_port} in this pod",
+            f"{seat.listening_port}, held by "
+            f"{seat.listening_owner or 'a process this seat could not name'}",
         )
     unmet = _injection_prerequisites(target, seat)
     if not unmet:

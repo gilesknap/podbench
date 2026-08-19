@@ -45,9 +45,32 @@ from podbench.flavour import (
 from test_elf import EM_AARCH64, EM_X86_64, build_elf
 
 PID = 597
+TARGET_CID = "cafe1234cafe1234cafe1234cafe1234"
+"""The target container's id, as it appears in the target's own cgroup path."""
 SITE_PACKAGES = "usr/local/lib/python3.12/site-packages"
 FULL_SEAT = ("gdb", "gdb-podbench", "dlv")
 AMD64_HELPER = ["attach_linux_amd64.so"]
+
+
+def comm_of(cmdline: str) -> str:
+    """``/proc/<pid>/comm`` for a command line: argv[0]'s basename, 15 chars."""
+    return Path(cmdline.split()[0]).name[:15]
+
+
+def proc_stat(pid: int, comm: str, *, state: str = "S", start_ticks: int = 4242) -> str:
+    """A ``/proc/<pid>/stat`` line ``dev.read_process`` can read.
+
+    Only two fields of the 52 are ever consulted — the state, which separates a
+    live server from a zombie still holding a port, and field 22, which pins the
+    pid to a start time so a recycled number cannot pass for it. The rest are
+    padding, and are padding in the parser's eyes too: it splits on the *last*
+    ``)`` precisely because ``comm`` may contain one.
+
+    >>> proc_stat(7, "python").split()[:4]
+    ['7', '(python)', 'S', '0']
+    """
+    padding = " ".join("0" for _ in range(18))
+    return f"{pid} ({comm}) {state} {padding} {start_ticks}\n"
 
 
 def make_proc(
@@ -80,8 +103,24 @@ def make_proc(
     (status / "status").write_text(
         f"CapEff:\t{(1 << 19) if cap_sys_ptrace else 0:016x}\n"
     )
+    # The seat's own root, which is the *left* half of every `same_root`
+    # comparison. A tree without it makes every socket unattributable, which is
+    # the safe answer and the wrong fixture: attribution is what decides whether
+    # a listening port belongs to this pod at all (issue #87).
+    seat_root = tmp_path / "seat-root"
+    seat_root.mkdir()
+    (status / "root").symlink_to(seat_root)
     entry = tmp_path / str(PID)
     entry.mkdir()
+    # `stat` and `cgroup` are read by nothing that inspects the *target*, and by
+    # everything that attributes a *socket* to it: whether the pid is alive
+    # rather than a zombie holding a dead port (report 3.19), and which
+    # container it belongs to (report 3.15).
+    (entry / "stat").write_text(proc_stat(PID, comm_of(cmdline)))
+    (entry / "comm").write_text(f"{comm_of(cmdline)}\n")
+    (entry / "cgroup").write_text(
+        f"0::/kubepods/besteffort/podfeed-face/{TARGET_CID}\n"
+    )
     if not ptrace_readable:
         (entry / "root").symlink_to(tmp_path / "unreadable")
     if exe is not None:

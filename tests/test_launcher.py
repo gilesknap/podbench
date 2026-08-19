@@ -167,6 +167,7 @@ def pod_document(
     phase: str = "Running",
     ready: bool = True,
     probes: Mapping[str, Any] | None = None,
+    host_network: bool = False,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -190,6 +191,10 @@ def pod_document(
         },
         "spec": {
             "nodeName": "node02",
+            # Omitted when false, exactly as the API server serializes it: the
+            # seat has to read a missing key as "no" and a missing *variable* as
+            # "unknown", and those are not the same absence.
+            **({"hostNetwork": True} if host_network else {}),
             "containers": [workload],
             "volumes": [dict(volume) for volume in volumes],
             "ephemeralContainers": [dict(entry) for entry in ephemeral],
@@ -629,6 +634,23 @@ def test_full_rung_lands_when_the_namespace_allows_it() -> None:
     assert env["PODBENCH_SSH_PUBKEY"] == CLIENT_KEY
     assert env["PODBENCH_NODE_NAME"] == "node02"
     assert "HOME" not in env
+    # Written both ways round, always. Nothing inside a container can work out
+    # whether 127.0.0.1 is the pod's loopback or the node's, and a seat that
+    # simply finds the variable missing has to keep reading that as "an older
+    # launcher landed me" rather than as "no" (issue #87).
+    assert env["PODBENCH_HOST_NETWORK"] == "false"
+
+
+def test_a_host_network_pod_says_so_in_the_seats_environment() -> None:
+    """The six hostNetwork IOCs on one beamline node are the case: there,
+    127.0.0.1 in the seat is the *node's* loopback, so a port found on it is
+    not evidence of anything in this pod and a debugpy server started on it is
+    reachable by every other pod on the node."""
+    cluster = FakeCluster(pod_document(uid=1000, host_network=True))
+    attach(talking_to(cluster), "pod/target", public_key=CLIENT_KEY)
+
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["PODBENCH_HOST_NETWORK"] == "true"
 
 
 def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None:

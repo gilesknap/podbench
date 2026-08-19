@@ -278,10 +278,18 @@ automatically and prints why.
 
 ## Things worth knowing before you approve it
 
-* **The blast radius of the seat is the pod.** A podbench container sees that
-  pod's processes, that pod's network namespace and the target container's
-  filesystem — nothing outside. There is no node access, no host mount, no
-  hostNetwork, no hostPID.
+* **The blast radius of the seat is the pod's blast radius.** A podbench
+  container sees that pod's processes, that pod's network namespace and the
+  target container's filesystem. podbench adds no node access, no host mount,
+  no `hostNetwork` and no `hostPID` — but it inherits whatever the pod already
+  has, and an ephemeral container cannot decline them. **On a `hostNetwork: true`
+  pod the network namespace is the node's**, so `127.0.0.1` inside the seat is
+  the node's loopback, shared with every other hostNetwork pod and every node
+  daemon. `debug-config` states this, refuses to credit a listening port to
+  this pod unless it can attribute the socket to a container in it, and asks
+  the kernel for an unused port for any server `--provision` starts (issue
+  #87). A debugpy server authenticates nobody, so on such a pod it is an
+  arbitrary-code-execution endpoint for anything on the node until you stop it.
 * **The `/proc/<pid>/root` bridge is one-directional.** The debug container can
   read the app's rootfs; the app cannot see the debug container's. A compromised
   application container cannot reach the debug toolchain.

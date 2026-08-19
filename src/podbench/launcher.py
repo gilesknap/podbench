@@ -54,6 +54,7 @@ from .kubectl import (
 )
 from .model import (
     DEFAULT_IMAGE,
+    HOST_NETWORK_ENV,
     IMAGE_ENV,
     NOT_PROBED,
     SEAT_GROUP_KEY,
@@ -1919,11 +1920,16 @@ def _container_env(
         env["HOME"] = home
     if public_key is not None:
         env[PUBKEY_ENV] = public_key.strip()
-    node = _as_str(as_dict(pod_json.get("spec")).get("nodeName"))
+    spec_block = as_dict(pod_json.get("spec"))
+    node = _as_str(spec_block.get("nodeName"))
     if node is not None:
         # Yama differs per node by kernel flavour, so a report that cannot name
         # the node cannot explain "attach worked yesterday" (report 3.13/4.5).
         env["PODBENCH_NODE_NAME"] = node
+    # Always written, both ways round, because in the seat *absence* has to keep
+    # meaning "an older launcher landed me and I do not know" rather than "no".
+    # `hostNetwork` is omitempty in the pod object, so a missing key is false.
+    env[HOST_NETWORK_ENV] = "true" if spec_block.get("hostNetwork") is True else "false"
     return env
 
 

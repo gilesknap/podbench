@@ -1085,9 +1085,12 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │                                                     to another container and needs path          │
 │                                                     mappings; dev launches in this one and must  │
 │                                                     not have any                                 │
-│ --port                    PORT                      the debugpy port to connect to (shared       │
-│                                                     network namespace, so always 127.0.0.1)      │
-│                                                     [default: 5678]                              │
+│ --port                    PORT                      pin the debugpy port. The default looks for  │
+│                                                     an existing server on 5678 and lets the      │
+│                                                     kernel choose a free port for one            │
+│                                                     --provision starts, so two seats on a node   │
+│                                                     cannot collide. Always on 127.0.0.1: the     │
+│                                                     seat shares the target's network namespace   │
 │ --program                 PATH                      the target's binary as its own rootfs spells │
 │                                                     it, when /proc/<pid>/exe cannot be read. It  │
 │                                                     is prefixed with the sysroot here, so do not │

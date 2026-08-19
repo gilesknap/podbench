@@ -61,11 +61,12 @@ import copy
 import json
 import platform
 import shutil
+import socket
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 
@@ -100,7 +101,12 @@ from .gdbcmd import (
 from .kubectl import Runner, run_subprocess
 from .model import as_dict, describe_pause
 from .probe import Attacher, default_attacher
-from .proc import DEFAULT_PROC
+from .proc import (
+    DEFAULT_PROC,
+    env_host_network,
+    env_target_container_id,
+    strip_container_scheme,
+)
 from .provision import (
     PROVISION_DEST,
     inject_debugpy,
@@ -108,6 +114,11 @@ from .provision import (
     provision_paste,
     target_destination,
 )
+
+if TYPE_CHECKING:
+    # Type-only: the runtime import lives inside `_listening_debugpy`, where its
+    # docstring explains which of the three module cycles here gives way.
+    from .dev import PortOwner
 
 __all__ = [
     "ADAPTER_CPPDBG",
@@ -120,12 +131,14 @@ __all__ = [
     "SEAT_CWD",
     "SEAT_FOLDER_SETTINGS",
     "SEAT_MACHINE_SETTINGS",
+    "ListeningServer",
     "configurations_for",
     "cppdbg_configuration",
     "cppdbg_launch_configuration",
     "debugpy_attach_configuration",
     "debugpy_launch_configuration",
     "delve_configuration",
+    "ephemeral_port",
     "extensions_for",
     "extensions_json_text",
     "launch_json_text",
@@ -165,7 +178,15 @@ flavour is named after the debugger, the ``type`` after the extension."""
 DEBUGPY_HOST = "127.0.0.1"
 """Right in both modes, and worth stating because it looks wrong in Observe
 mode: the seat and the app are separate containers but share the pod's network
-namespace, so no port-forward and no tunnel is involved."""
+namespace, so no port-forward and no tunnel is involved.
+
+Under ``hostNetwork: true`` that namespace is the **node's**, and this address
+stops meaning "inside this pod". Loopback is still the right bind — nothing off
+the node can reach it — but every other hostNetwork pod and every node daemon
+shares it, in both directions: a port found here may be a stranger's, and a
+server started here is reachable by all of them. See
+:data:`~podbench.model.HOST_NETWORK_ENV` and issue #87.
+"""
 
 _VERSION = "0.2.0"
 """The ``launch.json`` schema version, which VS Code has never bumped."""
@@ -1063,15 +1084,98 @@ def program_load_error(
     return " / ".join(line.strip() for line in output.splitlines() if line.strip())
 
 
-def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
-    """Whether something is already serving ``port`` in this pod.
+PortChooser = Callable[[], int]
+"""How a free port is obtained. Injected so the unit suite never binds one."""
 
-    Reuses ``dev``'s ``ss`` parsing rather than growing a second one: the pod's
-    network namespace is shared, so a listener anywhere in it is reachable from
-    the seat at ``127.0.0.1`` — which is exactly what makes the "the app called
-    ``debugpy.listen()`` itself" path work with no capability and on any
-    architecture. An ``ss`` that cannot run answers ``None``, since a guess here
-    would emit a configuration that connects to nothing.
+
+def ephemeral_port(host: str = DEBUGPY_HOST) -> int:
+    """Ask the kernel for a port nothing on this network namespace holds.
+
+    Bind zero and read back what was assigned: it is the only way to choose a
+    port without racing whoever else is choosing one. The fixed 5678 raced
+    twice over. Within a pod two seats on two pids collide on it silently — the
+    second ``debugpy --listen`` dies and the emitted configuration connects to
+    the first. Under ``hostNetwork: true`` the namespace is the *node's*, so the
+    collision is with **another pod** on the same node, which is issue #87 seen
+    from the writing end rather than the reading end.
+
+    The socket is closed before the port is handed on, so this is a hint and not
+    a reservation — but the window is microseconds against 5678's permanence,
+    and :func:`_listening_debugpy` re-reads the port afterwards and attributes
+    whatever it finds. Nothing is left behind to trip the next bind either: a
+    listener that never accepted a connection has no ``TIME_WAIT`` to leave
+    (report 3.16).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return cast("tuple[str, int]", sock.getsockname())[1]
+
+
+@dataclass(frozen=True)
+class ListeningServer:
+    """A listener found on the debugpy port, and who was proved to hold it."""
+
+    port: int
+    owner: PortOwner | None = None
+    """``None`` when nothing could be attributed: either ``ss`` reported no
+    owning pid, or the pid it reported is gone or a zombie."""
+
+    @property
+    def attributed(self) -> bool:
+        """Whether the socket was traced to a container in this pod.
+
+        The two facts that establish it are the pid resolving in *our* pid
+        namespace at all — a process in another pod is invisible there, so ``ss``
+        cannot name it and this is already ``False`` — and
+        ``/proc/<pid>/root`` answering, which is what tells one container from
+        another. Anything short of both is ``unknown``, and unknown must never
+        be reported as "in this pod" (issue #87).
+        """
+        owner = self.owner
+        return owner is not None and (
+            owner.is_target or owner.same_container is not None
+        )
+
+    def describe(self) -> str:
+        """Who holds the port, for the sentence that offers it."""
+        return (
+            self.owner.describe()
+            if self.owner is not None
+            else "a process this seat cannot see"
+        )
+
+
+def _listening_debugpy(
+    port: int,
+    *,
+    runner: Runner | None,
+    proc: Path,
+    target_cid: str | None,
+) -> ListeningServer | None:
+    """What is serving ``port``, and which container it belongs to.
+
+    Reuses ``dev``'s ``ss`` parsing rather than growing a second one — and now
+    its *attribution* as well, which is the half that was missing. The premise
+    this function used to rest on ("the pod's network namespace is shared, so a
+    listener anywhere in it is reachable from the seat at 127.0.0.1") is true of
+    an ordinary pod and false under ``hostNetwork: true``, where that namespace
+    is the node's: the sweep found 5678 held by a podbench seat in a **different
+    pod on the same node**, announced it as this pod's own server and emitted a
+    configuration pointing at it (issue #87).
+
+    So a port is not evidence. ``ss -lntpe`` already reports the owning pid and
+    the socket inode; the fix is to stop discarding them. The pid is resolved in
+    this seat's own ``/proc``, which is the pod's pid namespace, so a process in
+    another pod cannot be named there at all — an unattributable listener is
+    exactly the shape #87 takes, and it is returned as ``unknown`` rather than
+    as a server.
+
+    ``read_process`` first, because a pid can also be a zombie holding nothing:
+    a dead server that still answers ``kill -0`` is how a bootstrap once handed
+    a client a dead port (report 3.19).
+
+    An ``ss`` that cannot run answers ``None``, since a guess here would emit a
+    configuration that connects to nothing.
 
     Imported here rather than at module scope because the three modules that
     hold VS Code, dev-pod and seat-preparation knowledge genuinely each need a
@@ -1081,7 +1185,13 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     narrowest of the three edges, a single call in a single function, so it is
     the one that gives way.
     """
-    from .dev import LISTENERS_COMMAND, listeners_on, parse_ss
+    from .dev import (
+        LISTENERS_COMMAND,
+        identify_owner,
+        listeners_on,
+        parse_ss,
+        read_process,
+    )
 
     run = runner if runner is not None else run_subprocess
     try:
@@ -1093,7 +1203,18 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
         return None
     if result.returncode != 0:
         return None
-    return port if listeners_on(parse_ss(result.stdout), port) else None
+    entries = listeners_on(parse_ss(result.stdout), port)
+    if not entries:
+        return None
+    for entry in entries:
+        for pid in entry.pids:
+            snapshot = read_process(pid, proc=proc)
+            if snapshot is None or not snapshot.alive:
+                continue
+            owner = identify_owner(pid, proc=proc, target_cid=target_cid)
+            if owner.is_target or owner.same_container is not None:
+                return ListeningServer(port, owner=owner)
+    return ListeningServer(port)
 
 
 def measured_attach(
@@ -1175,12 +1296,49 @@ def measured_attach(
     return outcome.measured_ok
 
 
+def _exposure_warning(port: int, host_network: bool | None) -> str | None:
+    """Who else can reach a debugpy server started on ``port``, or ``None``.
+
+    A debugpy server authenticates nobody: anything that can open the socket can
+    load a module into the target and run it. Inside a pod's own network
+    namespace that is the same blast radius the seat already has, so it is not
+    worth a line. Under ``hostNetwork: true`` the same loopback bind is on the
+    **node's** loopback, shared with every other hostNetwork pod and every node
+    daemon — a different blast radius entirely, and the reader has to be told
+    before the server exists rather than after (issue #87).
+
+    Allowed, not refused: the sweep's own targets are hostNetwork IOCs, and a
+    verb that refused them would refuse the pods podbench exists for.
+    """
+    if host_network is True:
+        return (
+            f"this pod runs with hostNetwork: true, so {DEBUGPY_HOST}:{port} is "
+            "the *node's* loopback and not this pod's: the debugpy server "
+            "authenticates nobody, so every other hostNetwork pod and every "
+            "node daemon on this node can connect to it and run code inside "
+            "the target. Nothing off the node can reach it. Stop the server "
+            "when you are done - killing the seat does not - and pass `--port` "
+            "if you need to pin which port it is on"
+        )
+    if host_network is None:
+        return (
+            f"this seat cannot tell whether {DEBUGPY_HOST}:{port} is this pod's "
+            "loopback or the node's - it was landed before podbench recorded "
+            "hostNetwork - so treat the debugpy server as unauthenticated and "
+            "node-visible until you have checked `kubectl get pod -o "
+            "jsonpath='{.spec.hostNetwork}'`. Re-run `podbench attach` for a "
+            "seat that knows, and pass `--port` to pin which port it is on"
+        )
+    return None
+
+
 def _inject(
     target: Target,
     mode: Mode,
     seat: Seat,
     *,
     port: int,
+    host_network: bool | None,
     runner: Runner | None,
 ) -> bool:
     """Start the debugpy server inside the target, under ``--provision``.
@@ -1220,6 +1378,9 @@ def _inject(
             + (verdict.reason if verdict else "debugpy was not assessed")
         )
         return False
+    exposure = _exposure_warning(port, host_network)
+    if exposure is not None:
+        _warn(f"--provision: {exposure}")
     command = injection_command(target, seat, port)
     _warn(
         f"--provision: starting the server inside the app. This ptraces the "
@@ -1294,8 +1455,9 @@ def _provision(
     if seat.listening_port is not None:
         _warn(
             "--provision: a debugpy server is already listening on "
-            f"{DEBUGPY_HOST}:{seat.listening_port}, and the emitted "
-            "configuration connects to it without any of this"
+            f"{DEBUGPY_HOST}:{seat.listening_port}, held by "
+            f"{seat.listening_owner or 'a process this seat could not name'}, "
+            "and the emitted configuration connects to it without any of this"
         )
         return False
     machine = target.machine or seat.machine
@@ -1460,7 +1622,7 @@ def _run(
     flavours: Sequence[Flavour],
     lldb: bool,
     mode: Mode | None,
-    port: int,
+    port: int | None,
     print_config: bool,
     output: str | None,
     provision: bool,
@@ -1471,6 +1633,7 @@ def _run(
     attacher: Attacher | None,
     which: Which,
     debugpy_root: str | None,
+    choose_port: PortChooser,
 ) -> int:
     source_map, problems = _parse_source_map(source_map_entries)
     for problem in problems:
@@ -1484,6 +1647,16 @@ def _run(
     if not pids:
         return EXIT_USAGE
     explicit_pid = pid is not None
+
+    # Resolved once, here, for the same reason `resolve_target_pids` reads it:
+    # the id is what turns "not this container" into "the app", and without it
+    # a listener in the target reads as an anonymous neighbour (report 3.15).
+    target_cid = (
+        strip_container_scheme(container_id) or None
+        if container_id
+        else env_target_container_id()
+    )
+    host_network = env_host_network()
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
     explicit = bool(requested)
@@ -1523,6 +1696,9 @@ def _run(
                 attacher=attacher,
                 which=which,
                 debugpy_root=debugpy_root,
+                choose_port=choose_port,
+                target_cid=target_cid,
+                host_network=host_network,
                 hint=primary,
                 # A verb that prints rather than writes touches nothing, and the
                 # probe is per candidate: N candidates were N real attaches on
@@ -1552,7 +1728,7 @@ def _for_target(
     wanted: set[Flavour],
     explicit: bool,
     verbose: bool,
-    port: int,
+    port: int | None,
     source_dirs: Sequence[str],
     source_map: Mapping[str, str],
     debuginfod: bool,
@@ -1564,10 +1740,22 @@ def _for_target(
     attacher: Attacher | None,
     which: Which,
     debugpy_root: str | None,
+    choose_port: PortChooser,
+    target_cid: str | None,
+    host_network: bool | None,
     hint: bool,
     probe: bool = True,
 ) -> list[dict[str, Any]]:
-    """Everything one candidate pid contributes to ``launch.json``."""
+    """Everything one candidate pid contributes to ``launch.json``.
+
+    ``port`` is ``None`` unless the user named one, and the two questions it
+    used to answer are separated here because their answers differ. *Where to
+    look* for a server that is already running is :data:`DEBUGPY_PORT`, the
+    conventional port an app that ran ``-m debugpy`` at start-up will be on.
+    *Where a server started from this run should listen* is a port the kernel
+    picks (:func:`ephemeral_port`), so that two seats on one node - which under
+    ``hostNetwork`` share a network namespace - cannot land on the same one.
+    """
     target = inspect_target(pid, proc=proc, program=program)
     for note in target.notes:
         _warn(note)
@@ -1613,16 +1801,80 @@ def _for_target(
     attach_ok: bool | None = None
     attach_asked = False
 
+    # Where to look for a server that is already running. It moves exactly once,
+    # to the port an injection was actually made on: an ephemeral port is not
+    # 5678, so re-probing 5678 after --provision would find the run's own new
+    # server missing and report "nothing is listening" about a port it had just
+    # opened.
+    probe_at = DEBUGPY_PORT if port is None else port
+    chosen: int | None = None
+    said_unattributed = False
+
+    def serving_port() -> int:
+        """The port a server started by *this* run would listen on."""
+        nonlocal chosen
+        if port is not None:
+            # Named by the user, so it is theirs: `--port` is the way to pin one,
+            # and a verb that overrode it would leave no way to.
+            return port
+        if mode is Mode.DEV or target.language is not Language.PYTHON:
+            # Dev mode connects to whatever `podbench run` started, which is on
+            # the conventional port; a non-Python target has no server at all.
+            return DEBUGPY_PORT
+        if chosen is None:
+            try:
+                chosen = choose_port()
+            except OSError as error:
+                # Not fatal: a seat that cannot bind loopback still authors a
+                # correct configuration, it just cannot promise the port is free.
+                _warn(
+                    f"could not ask the kernel for a free port ({error}), so "
+                    f"the conventional {DEBUGPY_PORT} is used - pass `--port` "
+                    "to pin one this seat is known to be able to bind"
+                )
+                chosen = DEBUGPY_PORT
+        return chosen
+
     def measure() -> Seat:
-        nonlocal attach_ok, attach_asked
+        nonlocal attach_ok, attach_asked, said_unattributed
         # The listener is re-probed on every measurement rather than read once:
         # --provision can *start* one part way through this function, and a
         # port sampled before that would emit a configuration whose "already
         # listening" answer is stale in the one run that changed it.
-        listening = (
-            _listening_debugpy(port, runner=runner)
+        found = (
+            _listening_debugpy(
+                probe_at, runner=runner, proc=proc, target_cid=target_cid
+            )
             if target.language is Language.PYTHON
             else None
+        )
+        if found is not None and not found.attributed and not said_unattributed:
+            said_unattributed = True
+            # The whole of issue #87 in one line. `ss` names an owner for every
+            # process in this pod's pid namespace, so a listener it cannot name
+            # is one this seat has no business claiming - under hostNetwork it
+            # belongs to another pod or a node daemon, and the old code emitted
+            # a configuration pointing straight at it.
+            _warn(
+                f"port {found.port} is held by {found.describe()}: this seat "
+                "cannot attribute the socket to any container in this pod"
+                + (
+                    ", and hostNetwork: true means the listener may be in "
+                    "another pod or a node daemon sharing the node's network "
+                    "namespace"
+                    if host_network is True
+                    else ", and whether this pod uses hostNetwork is unknown "
+                    "to this seat"
+                    if host_network is None
+                    else ""
+                )
+                + ". Treating it as unknown rather than as this pod's server, "
+                "so nothing here connects to it - pass `--port` to look at a "
+                "different one"
+            )
+        listening = found.port if found is not None and found.attributed else None
+        listening_owner = (
+            found.describe() if found is not None and found.attributed else None
         )
         # Native and unknown targets only, and still, though the debugpy pid
         # injection now withdraws on the same answer — it drives gdb to `call
@@ -1642,6 +1894,7 @@ def _for_target(
             which=which,
             debugpy_root=debugpy_root,
             listening_port=listening,
+            listening_owner=listening_owner,
             provision_dest=provision_dest,
             program_load_error=load_error,
         )
@@ -1676,13 +1929,31 @@ def _for_target(
         # Not chained onto the install: a target that could already import
         # debugpy takes the "nothing is installed" path above and still has
         # nothing listening, which is the case this whole flag exists to end.
-        if _inject(target, mode, seat, port=port, runner=runner):
+        injected_on = serving_port()
+        if _inject(
+            target,
+            mode,
+            seat,
+            port=injected_on,
+            host_network=host_network,
+            runner=runner,
+        ):
+            # The re-measure has to look where the server was actually put, not
+            # where a server conventionally is.
+            probe_at = injected_on
             seat = measure()
     assessments = assess(target, mode, seat)
 
     _warn(
         f"pid {pid} ({target.name}): {target.language.value} target, "
         f"{mode.value} mode" + (f", {target.machine}" if target.machine else "")
+    )
+    # An attributed server's own port beats any port this run would have chosen:
+    # the configuration has to connect to the process that exists, and where the
+    # app started its own `debugpy --listen` that is neither 5678-by-default nor
+    # the ephemeral one nothing was ever bound to.
+    emit_port = (
+        seat.listening_port if seat.listening_port is not None else serving_port()
     )
     configurations = _emit(
         assessments,
@@ -1691,7 +1962,7 @@ def _for_target(
         target,
         mode,
         seat,
-        port=port,
+        port=emit_port,
         source_dirs=source_dirs,
         source_map=source_map,
         debuginfod=debuginfod,
@@ -1718,7 +1989,15 @@ def _for_target(
     # `wanted`/`available` pair. The next flavour that assesses available and
     # contributes nothing makes it fire.
     if hint:
-        _hint(target, mode, seat, assessments, wanted, port=port)
+        _hint(
+            target,
+            mode,
+            seat,
+            assessments,
+            wanted,
+            port=emit_port,
+            host_network=host_network,
+        )
     return configurations
 
 
@@ -1757,6 +2036,7 @@ def _hint(
     wanted: set[Flavour],
     *,
     port: int,
+    host_network: bool | None,
 ) -> None:
     """Say what still has to happen before the debugpy entry can connect.
 
@@ -1772,6 +2052,11 @@ def _hint(
     )
     if debugpy is None or not debugpy.available or seat.listening_port is not None:
         return
+    # Before the command, not after it: this is the paste that creates the
+    # exposure, and a caveat printed under a command has already been skipped.
+    exposure = _exposure_warning(port, host_network)
+    if exposure is not None:
+        _warn(exposure)
     print(
         f"debug-config: nothing is listening on {DEBUGPY_HOST}:{port} yet. "
         "Start the server inside the app with:\n"
@@ -1788,16 +2073,20 @@ def main(
     attacher: Attacher | None = None,
     which: Which = shutil.which,
     debugpy_root: str | None = None,
+    port_chooser: PortChooser = ephemeral_port,
 ) -> int:
     """``podbench debug-config`` — author ``launch.json`` for this seat.
 
-    ``proc``, ``runner``, ``attacher``, ``which`` and ``debugpy_root`` are test
-    seams; the CLI passes none of them. ``which`` in particular: whether this
-    image ships gdb decides whether a gdb configuration is emitted at all, and a
-    unit test must not answer that question from the machine it happens to run
-    on. ``attacher`` is the ptrace backend :func:`measured_attach` uses, and a
-    test that wants an answer out of it has to inject one *and* a real ``proc``:
-    against a synthetic tree nothing is attached at all.
+    ``proc``, ``runner``, ``attacher``, ``which``, ``debugpy_root`` and
+    ``port_chooser`` are test seams; the CLI passes none of them. ``which`` in
+    particular: whether this image ships gdb decides whether a gdb
+    configuration is emitted at all, and a unit test must not answer that
+    question from the machine it happens to run on. ``attacher`` is the ptrace
+    backend :func:`measured_attach` uses, and a test that wants an answer out of
+    it has to inject one *and* a real ``proc``: against a synthetic tree nothing
+    is attached at all. ``port_chooser`` is the last of them because its default
+    really binds a socket, and a test asserting on the emitted port has to know
+    which number to expect.
     """
     app = new_app()
 
@@ -1838,14 +2127,17 @@ def main(
             ),
         ] = None,
         port: Annotated[
-            int,
+            int | None,
             typer.Option(
                 "--port",
                 metavar="PORT",
-                help="the debugpy port to connect to (shared network namespace, "
-                "so always 127.0.0.1)",
+                help="pin the debugpy port. The default looks for an existing "
+                f"server on {DEBUGPY_PORT} and lets the kernel choose a free "
+                "port for one --provision starts, so two seats on a node "
+                "cannot collide. Always on 127.0.0.1: the seat shares the "
+                "target's network namespace",
             ),
-        ] = DEBUGPY_PORT,
+        ] = None,
         program: Annotated[
             str | None,
             typer.Option(
@@ -1961,6 +2253,7 @@ def main(
                 attacher=attacher,
                 which=which,
                 debugpy_root=debugpy_root,
+                choose_port=port_chooser,
             )
         )
 

@@ -32,6 +32,7 @@ __all__ = [
     "SEAT_IDENTITY_VOLUME",
     "SEAT_PASSWD_KEY",
     "IMAGE_ENV",
+    "HOST_NETWORK_ENV",
     "TARGET_CID_ENV",
     "Blocker",
     "CapabilityReport",
@@ -173,6 +174,22 @@ moves that weight off the pod's budget, and survives the seat.
 SEAT_HOME_PATH = "/home/podbench"
 """Where :data:`SEAT_HOME_VOLUME` is mounted, and the home the passwd record
 names. Both halves must agree: sshd puts the user in the home NSS gives it."""
+
+HOST_NETWORK_ENV = "PODBENCH_HOST_NETWORK"
+"""Env var carrying ``spec.hostNetwork`` into the debug container.
+
+The seat cannot read it for itself: pod JSON is laptop-side, and nothing inside
+a container distinguishes "this pod has its own network namespace" from "this
+pod is using the node's". The difference is the whole of issue #87 — under
+``hostNetwork: true`` a listener on ``127.0.0.1`` belongs to the *node*, shared
+with every other hostNetwork pod and node daemon on it, so a port found there
+is not evidence of anything in this pod and a server started there is exposed to
+all of them.
+
+Absent means **unknown**, never false: a seat landed by an older launcher
+carries no such variable, and reading its absence as "no hostNetwork" would put
+back the very claim this exists to stop.
+"""
 
 TARGET_CID_ENV = "PODBENCH_TARGET_CID"
 """Env var carrying the target's container id into the debug container.

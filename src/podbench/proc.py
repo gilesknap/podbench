@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .model import (
+    HOST_NETWORK_ENV,
     PTRACE_READ_PATHS,
     TARGET_CID_ENV,
     WORLD_READ_PATHS,
@@ -48,6 +49,8 @@ __all__ = [
     "apparmor_profile",
     "candidate_note",
     "debug_candidates",
+    "env_host_network",
+    "parse_host_network",
     "env_target_container_id",
     "is_shell",
     "list_processes",
@@ -416,6 +419,34 @@ def env_target_container_id() -> str | None:
     raw = os.environ.get(TARGET_CID_ENV, "")
     stripped = strip_container_scheme(raw)
     return stripped or None
+
+
+def env_host_network() -> bool | None:
+    """Whether this pod shares the node's network namespace, or ``None``.
+
+    ``None`` is a third answer and not a synonym for ``False``: a seat landed by
+    a launcher that predates :data:`~podbench.model.HOST_NETWORK_ENV` carries no
+    such variable, and the whole point of the flag is that guessing here is what
+    made podbench announce a *stranger's* debugpy server as this pod's own
+    (issue #87). Callers must say "unknown" where this says ``None``.
+    """
+    return parse_host_network(os.environ.get(HOST_NETWORK_ENV, ""))
+
+
+def parse_host_network(raw: str) -> bool | None:
+    """The tri-state :data:`~podbench.model.HOST_NETWORK_ENV` spells.
+
+    >>> parse_host_network("true"), parse_host_network("FALSE")
+    (True, False)
+    >>> parse_host_network("") is None, parse_host_network("maybe") is None
+    (True, True)
+    """
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    return None
 
 
 def _container_id_from_cgroup(cgroup: str | None) -> str | None:
