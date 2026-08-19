@@ -70,6 +70,7 @@ __all__ = [
     "read_uid",
     "same_root",
     "scan_processes",
+    "seat_cwd",
     "seccomp_filter_count",
     "seccomp_mode",
     "self_capabilities",
@@ -447,6 +448,49 @@ def parse_host_network(raw: str) -> bool | None:
     if value in ("0", "false", "no"):
         return False
     return None
+
+
+def seat_cwd() -> str:
+    """A directory this seat can start a debugger in, read from its own ``$HOME``.
+
+    Something has to be named: ``${workspaceFolder}`` resolves to nothing in a
+    seat and gdb dies during startup with no signal name (:mod:`podbench.vscode`
+    has the mechanism). What was named until now was the constant ``/root``, on
+    the reasoning that the image guarantees it — and the image guarantees it for
+    a **root** seat only. Every rung below full runs at the target's uid, for
+    which this image has no account, which is exactly why the launcher pins
+    ``HOME`` to ``launcher.NON_ROOT_HOME`` under ``/tmp``. ``/root`` is mode
+    0700 and owned by root, so at any other uid it is not merely unwritable but
+    **unenterable** — measured in a uid-36070 seat on the k3s bed, where
+    ``test -x /root`` fails and ``cd /root`` is refused. A cwd that cannot be
+    entered is worse than no cwd, and every seat below the full rung was being
+    handed one.
+
+    So the seat's own ``$HOME`` — the value the launcher already computed and
+    put in the container's environment, rather than a second copy of it here —
+    and ``/tmp`` where there is none: mode 1777 in every image, so enterable at
+    whatever uid the seat turned out to run as.
+
+    Enterability is measured rather than assumed, because ``$HOME`` can name a
+    directory the seat cannot use: a ``podbench-home`` volume mounted with no
+    ``fsGroup`` stays ``root:root``, and an older launcher may have pinned a
+    home nothing created. This runs *in the seat* at the seat's uid — the only
+    place the question has a true answer.
+    """
+    home = os.environ.get("HOME", "").strip()
+    if home and _enterable(home):
+        return home
+    return "/tmp"
+
+
+def _enterable(path: str) -> bool:
+    """Whether the calling process could ``chdir`` into ``path``.
+
+    Search permission, not write permission: gdb's ``getcwd()`` is all that
+    depends on it, so a home the seat can enter and not write still beats the
+    fallback.
+    """
+    return os.path.isdir(path) and os.access(path, os.X_OK)
 
 
 def _container_id_from_cgroup(cgroup: str | None) -> str | None:

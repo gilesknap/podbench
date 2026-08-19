@@ -446,9 +446,16 @@ mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
 printf -- "-enable-pretty-printing\n-gdb-exit\n" | gdb --interpreter=mi
 ```
 
-`cwd` must be set. On a developer's machine `${workspaceFolder}` always exists
-so nobody sets it; in a seat it can resolve to nothing, and the result is that
-same unformattable crash.
+`cwd` must be set, **and must be a directory this seat can enter**. On a
+developer's machine `${workspaceFolder}` always exists so nobody sets it; in a
+seat it can resolve to nothing, and the result is that same unformattable crash.
+`debug-config` fills it in from the seat's own `$HOME`: `/root` above, because
+that example is a root seat, but `/tmp/podbench-home` on a seat pinned to the
+target's uid — `/root` is mode 0700 there and belongs to an account the image
+has no record of, so naming it emitted a cwd the debugger could not chdir into.
+Where the seat has no `$HOME` at all it is `/tmp`, which is 1777 in every image.
+Measured inside a seat with `test -d` and `test -x`; no VS Code client has
+driven the adapter.
 
 :::{note}
 `targetArchitecture` is worth setting on arm64 — without it cpptools logs

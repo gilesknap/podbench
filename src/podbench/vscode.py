@@ -28,7 +28,11 @@ Two fields here exist only because of measured failures rather than taste:
   See ``image/bin/gdb-podbench``.
 * ``cwd`` is set explicitly. On a developer's machine ``${workspaceFolder}``
   always exists so nobody sets it; in a seat it can resolve to nothing, and the
-  result is that same unformattable crash.
+  result is that same unformattable crash. It is
+  :func:`podbench.proc.seat_cwd` — the seat's own ``$HOME``, measured here
+  because this verb runs in the seat — and not a constant: ``/root`` is the
+  home of a *root* seat only, and naming it on a uid-pinned rung emitted a
+  directory that seat cannot enter.
 
 The ordering inside ``setupCommands`` is not this module's invention: it is
 :func:`podbench.gdbcmd.attach_commands` with the two lines cpptools issues
@@ -105,6 +109,7 @@ from .proc import (
     DEFAULT_PROC,
     env_host_network,
     env_target_container_id,
+    seat_cwd,
     strip_container_scheme,
 )
 from .provision import (
@@ -128,7 +133,6 @@ __all__ = [
     "EXTENSIONS",
     "GDB_WRAPPER",
     "MACHINE_SETTINGS_PATH",
-    "SEAT_CWD",
     "SEAT_FOLDER_SETTINGS",
     "SEAT_MACHINE_SETTINGS",
     "ListeningServer",
@@ -160,13 +164,6 @@ __all__ = [
 
 GDB_WRAPPER = "/usr/local/bin/gdb-podbench"
 """The image's cwd-safe gdb. Never ``/usr/bin/gdb`` — see the module docstring."""
-
-SEAT_CWD = "/root"
-"""Where the debug adapter should start gdb.
-
-Any directory that exists would do; the seat's home is the one the image
-guarantees. The value matters far less than the field being present at all.
-"""
 
 ADAPTER_CPPDBG = "cppdbg"
 ADAPTER_LLDB = "lldb"
@@ -320,8 +317,7 @@ def extensions_for(configurations: Sequence[Mapping[str, Any]]) -> list[str]:
     *workload's* ephemeral-storage budget — an ephemeral container may not
     declare ``resources`` (report 3.9) — and ``ms-vscode.cpptools`` alone is
     330 MiB against a server that already measured 1215 MiB live. Installing a
-    language the target does not use spends the workload's disk on nothing
-    (issue #42).
+    language the target does not use spends the workload's disk on nothing.
 
     What this cannot promise is "and nothing else". ``ms-python.python`` is an
     extension *pack*: s2 §7 ran the install and got ``vscode-python-envs``,
@@ -627,7 +623,7 @@ def cppdbg_configuration(
         # today but is not what the schema documents.
         "processId": str(pid),
         "program": exec_file or f"{sysroot_path(pid)}{program}",
-        "cwd": SEAT_CWD,
+        "cwd": seat_cwd(),
         "MIMode": "gdb",
         "miDebuggerPath": GDB_WRAPPER,
         "setupCommands": [
@@ -674,7 +670,7 @@ def cppdbg_launch_configuration(
         "request": "launch",
         "program": program,
         "args": [],
-        "cwd": cwd or SEAT_CWD,
+        "cwd": cwd or seat_cwd(),
         "MIMode": "gdb",
         "miDebuggerPath": GDB_WRAPPER,
         "setupCommands": [

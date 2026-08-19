@@ -32,12 +32,11 @@ from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
 from podbench.model import SEIZE_PROBE
 from podbench.probe import AttachOutcome
-from podbench.proc import DEFAULT_PROC
+from podbench.proc import DEFAULT_PROC, seat_cwd
 from podbench.provision import INJECTION_TIMEOUT_SECONDS
 from podbench.vscode import (
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
-    SEAT_CWD,
     SEAT_FOLDER_SETTINGS,
     SEAT_MACHINE_SETTINGS,
     cppdbg_configuration,
@@ -161,7 +160,61 @@ def test_mi_debugger_is_the_wrapper_not_usr_bin_gdb() -> None:
 
 def test_cwd_is_always_set() -> None:
     """``${workspaceFolder}`` can resolve to nothing in a seat, and gdb dies."""
-    assert cppdbg_configuration(PID, EXE)["cwd"] == SEAT_CWD
+    for configuration in (
+        cppdbg_configuration(PID, EXE),
+        cppdbg_launch_configuration(EXE),
+    ):
+        cwd = configuration["cwd"]
+        assert cwd and cwd.startswith("/"), configuration
+
+
+def test_cwd_is_the_seats_own_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Not a constant: ``/root`` is the home of a *root* seat only.
+
+    On every rung below full the seat runs at the target's uid, for which this
+    image has no account, so the launcher pins ``HOME`` under ``/tmp`` and
+    ``/root`` is a directory that seat cannot enter. cpptools starting gdb
+    there is finding 06.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cppdbg_configuration(PID, EXE)["cwd"] == str(tmp_path)
+    assert cppdbg_launch_configuration(EXE)["cwd"] == str(tmp_path)
+
+
+def test_an_explicit_cwd_still_wins_in_launch_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``dev`` mode has a real answer — the target's own cwd — and it is not
+    the seat's home."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cppdbg_launch_configuration(EXE, cwd="/workspace")["cwd"] == "/workspace"
+
+
+@pytest.mark.parametrize(
+    "home",
+    ["", "/nonexistent-podbench-home", "unenterable"],
+    ids=["unset", "missing", "unenterable"],
+)
+def test_a_home_the_seat_cannot_enter_loses_to_tmp(
+    home: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A cwd that cannot be entered is worse than no cwd.
+
+    ``/tmp`` is 1777 in every image, so it is enterable at whatever uid the
+    seat turned out to run as — which a ``podbench-home`` volume mounted with
+    no ``fsGroup`` need not be.
+    """
+    if home == "unenterable":
+        (tmp_path / "home").mkdir(mode=0o600)
+        home = str(tmp_path / "home")
+    monkeypatch.setenv("HOME", home)
+
+    assert seat_cwd() == "/tmp"
+    assert cppdbg_configuration(PID, EXE)["cwd"] == "/tmp"
 
 
 def test_setup_commands_keep_the_load_bearing_order() -> None:
@@ -508,7 +561,7 @@ def test_merging_folder_settings_twice_changes_nothing() -> None:
 def test_each_flavour_names_only_its_own_extensions() -> None:
     """Never a bundle: in Observe mode an extension is unpacked into the seat's
     ~/.vscode-server, which is on the *workload's* ephemeral-storage budget, and
-    cpptools alone is 330 MiB (issue #42)."""
+    cpptools alone is 330 MiB."""
     assert extensions_for([{"type": "cppdbg"}]) == ["ms-vscode.cpptools"]
     assert extensions_for([{"type": "lldb"}]) == ["vadimcn.vscode-lldb"]
     assert extensions_for([{"type": "go"}]) == ["golang.go"]
