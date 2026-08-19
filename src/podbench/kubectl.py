@@ -651,13 +651,21 @@ class Kubectl:
         parsed by the same path and returned for free; ``{}`` where the server
         said nothing parseable, since no caller needs it.
 
-        The subresource replace carries the pod's **whole** ephemeral container
-        list, existing entries included — omitting one is refused with
-        ``existing ephemeral containers "podbench-1" may not be removed``. So a
-        caller comparing what it asked for against what came back must find its
-        own container by name: admission rewrites the others too, and on a
-        hostNetwork pod at DLS that rewrite of a *stored* seat was itself
-        refused, as ``may not be changed`` (measured 2026-08-19).
+        The body is the **whole pod**, not just the containers being added, and
+        that is load-bearing rather than incidental: admission judges the object
+        it is handed, so a body carrying only ``spec.ephemeralContainers`` is
+        missing ``spec.hostNetwork`` and every policy keyed on it takes the
+        wrong branch. Measured at DLS 2026-08-19: the same probe container is
+        admitted when the pod object is preserved and refused — for a capability
+        the request never asked for, which a mutating policy added on the
+        strength of the absent field — when it is not. The failure is silent and
+        points at the cluster rather than at the caller, so keep the pod the
+        subresource GET returned and splice into it.
+
+        The list must also carry the existing entries; omitting one is refused
+        with ``existing ephemeral containers "podbench-1" may not be removed``.
+        So a caller comparing what it asked for against what came back must find
+        its own container by name — admission rewrites the others too.
 
         Raises :class:`KubectlError` on a synchronous refusal; check
         :attr:`KubectlError.is_psa_ptrace_denial` to tell a capability refusal
