@@ -160,6 +160,31 @@ Python, where it is tested, rather than a second time in `sh` where it could
 only drift. The call is optional: no answer, and the wrapper behaves as it did
 before, which is what a seat with a broken venv still deserves.
 
+## Rust pretty-printers
+
+`/opt/podbench/gdb/rust_printers.py`, copied from `image/gdb/`. Not on `PATH`
+and not a helper — it is a gdb Python script, sourced by
+`podbench.gdbcmd.RUST_PRETTY_PRINTERS` only when `podbench.elf` has identified
+the target as a Rust binary.
+
+It exists because the mechanism rustc relies on cannot work here. A Rust binary
+names `gdb_load_rust_pretty_printers.py` in its `.debug_gdb_scripts` section,
+gdb resolves that against its auto-load scripts directory, and the file ships
+with a **rustup toolchain** — which a production container does not have and
+this image does not carry. Without it `Vec`, `String` and `Option` render as the
+`RawVecInner`/`Unique`/`NonNull` nest they are made of.
+
+Four printers, covering exactly those three types, and every decision that could
+be wrong is taken before a printer object exists: an unfamiliar layout returns
+`None` from the lookup and gdb renders the value its own way. A `Vec` shown as a
+struct is an inconvenience; a `Vec` shown with the wrong three elements is the
+plausible-and-wrong answer this repository exists to prevent.
+
+Rust is the *only* language here that is served by a configuration and still
+needed something in the image. Java and Erlang targets get no configuration at
+all — see `podbench.flavour._assess_gdb`, issue #114 — and Go's delve is
+absent on purpose (issue #115).
+
 ## Deviations from the brief
 
 1. **`run`/`stop` were installed as `podbench-run`/`podbench-stop`,** because

@@ -85,8 +85,15 @@ def make_proc(
     target_helpers: list[str] | None = None,
     cap_sys_ptrace: bool = False,
     ptrace_readable: bool = True,
+    mapped: dict[str, list[str]] | None = None,
 ) -> Path:
     """A ``/proc`` with one target process and a rootfs behind it.
+
+    ``mapped`` is the target's address space: each key is a file as the target
+    spells it and each value its section names, so a fixture can put a
+    ``libjvm.so`` full of symbols beside a main binary that has none. It writes
+    both halves - the ``maps`` file and the ELF behind every line of it -
+    because the whole point of the inventory is that the two agree.
 
     ``ptrace_readable=False`` models a seat the kernel refuses
     ``PTRACE_MODE_READ`` on, as a ``root`` link that resolves to nothing. It
@@ -129,6 +136,27 @@ def make_proc(
             binary = entry / "root" / exe.lstrip("/")
             binary.parent.mkdir(parents=True)
             binary.write_bytes(build_elf(sections or [".text"], machine=machine))
+    if mapped is not None and ptrace_readable:
+        # `maps` is one of PTRACE_READ_PATHS, so it is written only for a
+        # target this seat may read - a fixture with an unreadable rootfs and a
+        # readable maps is a tree the kernel never produces.
+        lines: list[str] = []
+        for index, (path, sections) in enumerate(mapped.items()):
+            base = 0x7F0000000000 + index * 0x100000
+            lines.append(
+                f"{base:012x}-{base + 0x1000:012x} r-xp 00000000 08:01 {index}"
+                f"                  {path}\n"
+            )
+            binary = entry / "root" / path.lstrip("/")
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_bytes(build_elf(sections, machine=machine))
+        # An anonymous mapping and the stack, so the parser is asked to skip
+        # the lines a real /proc/<pid>/maps is mostly made of.
+        lines.append(
+            f"{0x7FFF00000000:012x}-{0x7FFF00001000:012x} rw-p "
+            "00000000 00:00 0                          [stack]\n"
+        )
+        (entry / "maps").write_text("".join(lines))
     (entry / "cmdline").write_text(cmdline.replace(" ", "\x00"))
     (entry / "cwd").symlink_to(cwd)
     if site_packages is not None and ptrace_readable:
@@ -244,6 +272,87 @@ def test_a_go_binary_is_go(tmp_path: Path) -> None:
     assert inspect_target(PID, proc=proc).language is Language.GO
 
 
+JVM_CMDLINE = "/opt/java/bin/java -Xmx1g -jar /opt/nexus/nexus.jar"
+BEAM_CMDLINE = (
+    "/opt/erlang/lib/erlang/erts-15.2.7.12/bin/beam.smp -W w -- -root "
+    "/opt/erlang/lib/erlang -progname erl -- -home /var/lib/rabbitmq -- "
+    "-s rabbit boot"
+)
+"""p47-rabbitmq-0's own command line, kept verbatim. 208 threads behind it, and
+gdb attaches to all of them and shows the emulator."""
+
+
+def test_a_jvm_is_detected_from_its_command_line(tmp_path: Path) -> None:
+    """``cmdline`` is world-readable, so this survives the degraded rung."""
+    proc = make_proc(tmp_path, exe="/opt/java/bin/java", cmdline=JVM_CMDLINE)
+    assert inspect_target(PID, proc=proc).language is Language.JVM
+
+
+def test_a_jvm_behind_a_wrapper_is_found_in_its_address_space(
+    tmp_path: Path,
+) -> None:
+    """``argv[0]`` names the wrapper, and ``libjvm.so`` names the runtime.
+
+    The case that matters at DLS, where PID 1 is routinely an entrypoint script
+    or an Argo shim rather than the runtime itself.
+    """
+    proc = make_proc(
+        tmp_path,
+        exe="/entrypoint.sh",
+        cmdline="/entrypoint.sh --serve",
+        mapped={"/opt/java/lib/server/libjvm.so": [".dynsym", ".text"]},
+    )
+    assert inspect_target(PID, proc=proc).language is Language.JVM
+
+
+def test_the_beam_is_erlang(tmp_path: Path) -> None:
+    proc = make_proc(
+        tmp_path,
+        exe="/opt/erlang/lib/erlang/erts-15.2.7.12/bin/beam.smp",
+        cmdline=BEAM_CMDLINE,
+    )
+    assert inspect_target(PID, proc=proc).language is Language.ERLANG
+
+
+def test_a_beamline_binary_is_not_a_beam(tmp_path: Path) -> None:
+    """The runtime names are matched whole, and this is why.
+
+    Every workload podbench was written for lives on a beamline, so a ``beam``
+    *prefix* would refuse a debugger to most of the estate and name Erlang
+    while doing it.
+    """
+    proc = make_proc(tmp_path, exe="/app/beamline-ioc", cmdline="/app/beamline-ioc")
+    assert inspect_target(PID, proc=proc).language is Language.NATIVE
+
+
+def test_a_rust_binary_is_rust_and_not_native(tmp_path: Path) -> None:
+    """Not a refusal - it changes what gdb is told, not which gdb is chosen."""
+    proc = make_proc(tmp_path, sections=[".rustc", ".text"])
+    assert inspect_target(PID, proc=proc).language is Language.RUST
+
+
+def test_a_known_runtime_never_falls_through_to_native(tmp_path: Path) -> None:
+    """The root cause of finding 13, pinned at the one line that caused it.
+
+    ``_language`` used to end "Go if the sections say so, native otherwise", so
+    a JVM with a perfectly readable ELF became ``NATIVE`` and was handed a
+    confident cppdbg entry pointing into HotSpot's interpreter loop. The ELF is
+    given every reason to answer here: it is readable, it is not Go, and it is
+    not Rust.
+    """
+    proc = make_proc(
+        tmp_path,
+        exe="/opt/java/bin/java",
+        cmdline=JVM_CMDLINE,
+        sections=[".text", ".debug_info", ".symtab"],
+    )
+    target = inspect_target(PID, proc=proc)
+    assert target.language is Language.JVM
+    assert target.elf is not None
+    results = assess(target, Mode.OBSERVE, full_seat())
+    assert not any(result.available for result in results)
+
+
 def test_the_architecture_comes_from_the_target_not_the_seat(tmp_path: Path) -> None:
     """A pod can run an amd64 image on an arm64 node, and vice versa."""
     proc = make_proc(tmp_path, machine=EM_AARCH64)
@@ -307,12 +416,175 @@ def test_delve_without_dlv_names_the_missing_binary(tmp_path: Path) -> None:
     assert "no dlv on PATH" in result.reason
 
 
+def test_delve_without_dlv_names_the_image_and_the_issue(tmp_path: Path) -> None:
+    """ "no dlv on PATH" reads as something a seat could fix, and it is not.
+
+    The image ships no delve at all, so the sentence has to say so and name the
+    issue that would change it - otherwise the remedy the reader reaches for is
+    a PATH entry that does not exist anywhere in the pod (issue #115).
+    """
+    target = inspect_target(PID, proc=make_proc(tmp_path, sections=[".gopclntab"]))
+    seat = full_seat(debuggers=inventory(which=which_of("gdb")))
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DELVE)
+    assert not result.available
+    assert "ships no" in result.reason
+    assert "#115" in result.reason
+
+
+def test_a_jvm_is_refused_and_jdwp_is_named(tmp_path: Path) -> None:
+    """A named frame inside HotSpot looks like progress and is not.
+
+    The refusal is deliberately *not* a language mismatch: gdb is the default
+    flavour and would attach happily, so this sentence is the only thing
+    between the reader and a plausible backtrace through the interpreter.
+    """
+    proc = make_proc(tmp_path, exe="/opt/java/bin/java", cmdline=JVM_CMDLINE)
+    target = inspect_target(PID, proc=proc)
+    result = verdict(assess(target, Mode.OBSERVE, full_seat()), Flavour.GDB)
+    assert not result.available
+    assert not result.language_mismatch
+    assert "HotSpot" in result.reason
+    assert result.remedy is not None
+    assert "jdwp" in result.remedy
+    assert "#114" in result.remedy
+
+
+def test_a_beam_is_refused_and_the_beam_tools_are_named(tmp_path: Path) -> None:
+    """gdb sees the emulator; nothing it shows is an Erlang process."""
+    proc = make_proc(tmp_path, exe="/erts-15.2/bin/beam.smp", cmdline=BEAM_CMDLINE)
+    target = inspect_target(PID, proc=proc)
+    result = verdict(assess(target, Mode.OBSERVE, full_seat()), Flavour.GDB)
+    assert not result.available
+    assert not result.language_mismatch
+    assert "BEAM" in result.reason
+    assert result.remedy is not None
+    assert "remsh" in result.remedy
+    assert "observer" in result.remedy
+
+
+@pytest.mark.parametrize(
+    ("exe", "cmdline"),
+    [
+        ("/opt/java/bin/java", JVM_CMDLINE),
+        ("/erts-15.2/bin/beam.smp", BEAM_CMDLINE),
+    ],
+)
+def test_a_refused_runtime_gets_no_configuration_at_all(
+    tmp_path: Path, exe: str, cmdline: str
+) -> None:
+    """Refusing gdb and then emitting lldb would be the same wrong backtrace."""
+    target = inspect_target(PID, proc=make_proc(tmp_path, exe=exe, cmdline=cmdline))
+    assert not any(
+        result.available for result in assess(target, Mode.OBSERVE, full_seat())
+    )
+
+
+def test_rust_is_served_by_the_native_path(tmp_path: Path) -> None:
+    """Rust is supported, not refused - it is next in priority after C++."""
+    target = inspect_target(PID, proc=make_proc(tmp_path, sections=[".rustc", ".text"]))
+    results = assess(target, Mode.OBSERVE, full_seat())
+    assert verdict(results, Flavour.GDB).available
+    lldb = verdict(results, Flavour.LLDB)
+    assert lldb.available
+    assert "rust target" in lldb.reason
+
+
 def test_gdb_on_a_python_target_is_refused_with_the_reason(tmp_path: Path) -> None:
     """cppdbg attaches happily to CPython and shows interpreter frames."""
     target = inspect_target(PID, proc=python_proc(tmp_path))
     result = verdict(assess(target, Mode.OBSERVE, full_seat()), Flavour.GDB)
     assert not result.available
     assert "interpreter frames" in result.reason
+
+
+# -- what the gdb entry says about itself -----------------------------------
+#
+# The reason string had no test at all, which is how it came to announce a
+# "native target" one line under `debug-config`'s own "go target" (#115), and
+# "expect addresses rather than names" about a process whose libraries were
+# full of them (finding 13). It is specified here.
+
+
+def gdb_reason(tmp_path: Path, **kwargs: object) -> str:
+    """The sentence the gdb entry is emitted with, for one synthetic target."""
+    proc = make_proc(tmp_path, **kwargs)  # type: ignore[arg-type]
+    target = inspect_target(PID, proc=proc)
+    result = verdict(assess(target, Mode.OBSERVE, full_seat()), Flavour.GDB)
+    assert result.available, result.reason
+    return result.reason
+
+
+def test_the_gdb_reason_names_the_language_rather_than_assuming_native(
+    tmp_path: Path,
+) -> None:
+    """gdb is offered for Go, and calling it a native target contradicts the
+    line above it in the same report."""
+    reason = gdb_reason(tmp_path, sections=[".gopclntab", ".debug_info"], mapped={})
+    assert reason.startswith("go target")
+    assert "native" not in reason
+    # The fallback has to say what it is a fallback for, and why the better
+    # tool is not here.
+    assert "delve" in reason
+    assert "#115" in reason
+    assert "SIGURG" in reason
+
+
+def test_symbols_in_a_mapped_library_are_not_no_symbols(tmp_path: Path) -> None:
+    """The whole of finding 13, at the size it was found.
+
+    The JVM's own executable is a launcher stub with nothing in it, and gdb was
+    told to expect addresses rather than names while ``libjvm.so`` sat in the
+    same address space with 65,843 symbols. The question is about the address
+    space, not about ``/proc/<pid>/exe``.
+    """
+    reason = gdb_reason(
+        tmp_path,
+        sections=[".text"],
+        mapped={
+            "/app/victim": [".text"],
+            "/usr/lib/libbig.so": [".dynsym", ".text"],
+            "/usr/lib/libc.so.6": [".text"],
+        },
+    )
+    assert "no .debug_info in the binary" in reason
+    assert "libbig.so" in reason
+    assert "symbol table" in reason
+    assert "expect addresses" not in reason
+
+
+def test_debug_info_in_a_mapped_library_is_the_better_news(tmp_path: Path) -> None:
+    reason = gdb_reason(
+        tmp_path,
+        sections=[".text"],
+        mapped={"/app/victim": [".text"], "/usr/lib/libapp.so": [".debug_info"]},
+    )
+    assert "libapp.so" in reason
+    assert "named and lined" in reason
+
+
+def test_a_measured_and_bare_address_space_says_so(tmp_path: Path) -> None:
+    """The one case that really does license "expect addresses"."""
+    reason = gdb_reason(
+        tmp_path,
+        sections=[".text"],
+        mapped={"/app/victim": [".text"], "/usr/lib/libc.so.6": [".text"]},
+    )
+    assert "no symbols anywhere in the 2 mapped objects" in reason
+    assert "expect addresses rather than names" in reason
+
+
+def test_an_unreadable_maps_is_unmeasured_and_never_bare(tmp_path: Path) -> None:
+    """``maps`` is PTRACE-gated, so its absence is a refusal, not an emptiness.
+
+    Reporting "no symbols anywhere" off a read that was denied is the overclaim
+    the rest of this module exists to prevent, one file along.
+    """
+    reason = gdb_reason(tmp_path, sections=[".text", ".note.gnu.build-id"])
+    assert "unmeasured" in reason
+    assert "PTRACE_MODE_READ" in reason
+    assert "no symbols anywhere" not in reason
+    # The build-id survives the degraded rung and is still worth saying.
+    assert "debuginfod" in reason
 
 
 def test_lldb_survives_an_unreadable_binary(tmp_path: Path) -> None:

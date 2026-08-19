@@ -71,6 +71,7 @@ from .proc import (
     read_cmdline,
     read_comm,
     read_exe,
+    read_mapped_objects,
     same_root,
     self_capabilities,
     sysroot_path,
@@ -79,8 +80,10 @@ from .provision import PROVISION_DEST, provision_paste
 
 __all__ = [
     "DEBUGPY_PORT",
+    "NATIVE_LANGUAGES",
     "SEAT_DEBUGPY_PATH",
     "SEAT_PYTHON",
+    "AddressSpace",
     "Assessment",
     "Debugger",
     "Flavour",
@@ -180,13 +183,69 @@ class Flavour(enum.Enum):
 
 
 class Language(enum.Enum):
-    """What the target process runs, as far as a debugger is concerned."""
+    """What the target process runs, as far as a debugger is concerned.
+
+    Every member other than :attr:`NATIVE` and :attr:`UNKNOWN` is here because
+    something has to be *said* about it — a different adapter is emitted, or no
+    configuration is emitted and the tool that would have worked is named. That
+    is the whole reason the list grew: :attr:`NATIVE` is the fallback, and a
+    runtime nobody had taught this enum about reached it and was handed a
+    confident ``cppdbg`` entry pointed at somebody else's interpreter loop.
+    """
 
     NATIVE = "native"
+    """C, C++, and anything else whose frames really are the user's code."""
+
     GO = "go"
+    RUST = "rust"
+    """Also native, and served by the same gdb and lldb. It is spelled
+    separately because ``Vec``, ``String`` and ``Option`` are unreadable without
+    the pretty-printers, so what changes is what gdb is *told*, not which
+    debugger is chosen."""
+
     PYTHON = "python"
     NODE = "node"
+
+    JVM = "jvm"
+    """HotSpot. Refused: gdb debugs the JVM, not the program it is running."""
+
+    ERLANG = "erlang"
+    """The BEAM emulator. Refused for the same reason, one runtime along."""
+
     UNKNOWN = "unknown"
+
+
+NATIVE_LANGUAGES = (Language.NATIVE, Language.RUST, Language.UNKNOWN)
+"""The languages the gdb and lldb path really serves.
+
+:attr:`Language.UNKNOWN` is in the list on purpose and is the reason the tuple
+exists rather than a ``not in`` test: reading the target's ELF needs
+``PTRACE_MODE_READ``, so on the degraded rung an ordinary C binary is
+``UNKNOWN``, and withdrawing a working configuration there would be a silent
+wrong answer in a new place. :attr:`Language.GO` is deliberately *not* in it —
+gdb is offered for Go, but as a named fallback rather than as the right tool.
+"""
+
+#: Managed runtimes podbench has no debugger for, by the *exact* basename of
+#: ``exe`` or ``argv[0]``. Exact and never a prefix: the interpreter table
+#: can afford ``python`` matching ``python3.12`` because every such name is one,
+#: while a ``beam`` prefix would swallow every binary on a beamline.
+_RUNTIMES = {
+    "java": Language.JVM,
+    "beam.smp": Language.ERLANG,
+    "beam.debug.smp": Language.ERLANG,
+    "beam": Language.ERLANG,
+}
+
+#: The same runtimes, by a library or emulator mapped into the address space.
+#: This is the half that survives a wrapper: an Argo- or entrypoint-launched
+#: workload has an ``argv[0]`` naming the wrapper, and ``libjvm.so`` names the
+#: runtime whatever the wrapper is called.
+_MAPPED_RUNTIMES = {
+    "libjvm.so": Language.JVM,
+    "beam.smp": Language.ERLANG,
+    "beam.debug.smp": Language.ERLANG,
+}
 
 
 class Mode(enum.Enum):
@@ -254,6 +313,45 @@ class PtraceEvidence(enum.Enum):
 
 
 @dataclass(frozen=True)
+class AddressSpace:
+    """What is mapped into the target, and which of it carries symbols.
+
+    It exists because "no symbols" said of ``/proc/<pid>/exe`` is not "no
+    symbols", and the gap between the two is the whole of finding 13: a JVM's
+    own executable is a launcher stub with nothing in it, and ``libjvm.so``
+    mapped in beside it held 65,843. Reasoning over the main binary alone
+    announced the first and never looked for the second.
+    """
+
+    inspected: bool
+    """Whether the mapped files could be opened and read as ELF.
+
+    ``False`` is a refusal rather than an emptiness. ``maps`` is one of
+    :data:`podbench.model.PTRACE_READ_PATHS` and the files behind it are under
+    ``/proc/<pid>/root``, so both are gated on the same
+    ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)`` comparison that
+    :attr:`PtraceEvidence.DENIED` reports — one refusal, and the same one
+    :func:`_readable_rootfs` already measures. A seat that was refused it must
+    say the address space is *unmeasured*, never that it is bare.
+    """
+
+    objects: tuple[str, ...] = ()
+    """The distinct mapped files, in the target's own spelling.
+
+    Populated whenever ``maps`` itself could be read, which is not quite the
+    same condition as :attr:`inspected`: the *names* are evidence on their own —
+    ``libjvm.so`` identifies a JVM whatever the executable is called — while
+    saying anything about their symbols needs the files themselves.
+    """
+
+    with_debug_info: tuple[str, ...] = ()
+    """Mapped objects carrying DWARF. Meaningless unless :attr:`inspected`."""
+
+    with_symbols: tuple[str, ...] = ()
+    """Mapped objects carrying a symbol table, DWARF or not. Same caveat."""
+
+
+@dataclass(frozen=True)
 class Target:
     """What could be learnt about the process being debugged."""
 
@@ -288,6 +386,14 @@ class Target:
     distinguishes two candidates a launch.json entry name would otherwise
     confuse: three children of one entrypoint script are all ``python``,
     and their :attr:`name` is the same word three times.
+    """
+
+    address_space: AddressSpace | None = None
+    """What else is mapped into the process, or ``None`` when nobody looked.
+
+    ``None`` and ``AddressSpace(inspected=False)`` are different answers and
+    both are real: a hand-assembled :class:`Target` never asked, and a seat at
+    the wrong credentials asked and was refused.
     """
 
     notes: tuple[str, ...] = ()
@@ -578,7 +684,8 @@ def inspect_target(
 
     argv = cmdline.split()
     interpreter = _interpreter_of(exe, argv)
-    language = _language(interpreter, elf)
+    space = _scan_address_space(pid, root, proc=proc)
+    language = _language(interpreter, elf, exe, argv, space)
     script = _script_of(argv) if interpreter else None
     return Target(
         pid=pid,
@@ -588,6 +695,7 @@ def inspect_target(
         elf=elf,
         interpreter=interpreter,
         script=script,
+        address_space=space,
         python_version=(
             _python_version(exe, argv, root) if interpreter == "python" else None
         ),
@@ -704,14 +812,111 @@ def _python_version(
     return None
 
 
-def _language(interpreter: str | None, elf: ElfInfo | None) -> Language:
+def _scan_address_space(
+    pid: int, root: Path | None, *, proc: Path = DEFAULT_PROC
+) -> AddressSpace:
+    """Read the target's mapped objects, and ask each of them for symbols.
+
+    Bounded twice over, because this runs in a seat against another container:
+    :data:`podbench.proc.MAX_MAPPED_OBJECTS` caps how many files are opened at
+    all, and each is read with ``deep=False`` so nothing walks a string table.
+    The section headers are three short reads per file.
+
+    Both refusals produce an ``inspected=False`` answer rather than an empty
+    one, and they are the same refusal: ``maps`` and ``/proc/<pid>/root`` are
+    gated on one ``ptrace_may_access()`` comparison, so a seat that lost the
+    rootfs has lost the address space too.
+
+    >>> _scan_address_space(1, None, proc=Path("/nonexistent")).inspected
+    False
+    """
+    objects = read_mapped_objects(pid, proc=proc)
+    if objects is None:
+        return AddressSpace(inspected=False)
+    if root is None:
+        # The names still identify a runtime even where none of the files can
+        # be opened, so they are kept and only the symbol answers withheld.
+        return AddressSpace(inspected=False, objects=objects)
+    debug: list[str] = []
+    symbols: list[str] = []
+    for path in objects:
+        info = read_elf(root / path.lstrip("/"), deep=False)
+        if info is None:
+            continue
+        if info.has_debug_info:
+            debug.append(path)
+        if info.has_symbols:
+            symbols.append(path)
+    return AddressSpace(True, objects, tuple(debug), tuple(symbols))
+
+
+def _runtime_of(
+    exe: str | None, argv: Sequence[str], space: AddressSpace
+) -> Language | None:
+    """A managed runtime podbench cannot debug, from the two cheapest reads.
+
+    ``cmdline`` is world-readable and needs no ptrace at all, which is what
+    makes this answerable on the degraded rung where the ELF is not.
+
+    >>> _runtime_of("/opt/java/bin/java", [], AddressSpace(False)).name
+    'JVM'
+    >>> _runtime_of(None, ["/erts-15.2/bin/beam.smp", "-W", "w"],
+    ...             AddressSpace(False)).name
+    'ERLANG'
+
+    A beamline is not a BEAM, which is why the names are matched whole:
+
+    >>> _runtime_of("/app/beamline-ioc", [], AddressSpace(False)) is None
+    True
+    """
+    for candidate in (exe, argv[0] if argv else None):
+        if candidate:
+            language = _RUNTIMES.get(Path(candidate).name)
+            if language is not None:
+                return language
+    for path in space.objects:
+        language = _MAPPED_RUNTIMES.get(Path(path).name)
+        if language is not None:
+            return language
+    return None
+
+
+def _language(
+    interpreter: str | None,
+    elf: ElfInfo | None,
+    exe: str | None,
+    argv: Sequence[str],
+    space: AddressSpace,
+) -> Language:
+    """What this process runs, refusing to fall through to a guess.
+
+    The order is by evidence and not by popularity. An interpreter names itself
+    in ``argv[0]``; a runtime with no debugger of ours is asked about *before*
+    the ELF, because the last line here is a fallback and a fallback must only
+    ever be reached by something there is no evidence against.
+
+    That last line is the defect this function was rewritten for. It used to
+    read "Go if the sections say so, native otherwise", so a JVM, a BEAM and
+    anything else with a readable ELF became :attr:`Language.NATIVE` and was
+    handed a confident ``cppdbg`` configuration — named frames, plausible
+    backtrace, entirely inside somebody else's interpreter loop (finding 13).
+    A language that is *known* and unsupported must be refused by name, and
+    reaching :attr:`Language.NATIVE` has to mean nothing else fitted.
+    """
     if interpreter == "python":
         return Language.PYTHON
     if interpreter == "node":
         return Language.NODE
+    runtime = _runtime_of(exe, argv, space)
+    if runtime is not None:
+        return runtime
     if elf is None:
         return Language.UNKNOWN
-    return Language.GO if elf.is_go else Language.NATIVE
+    if elf.is_go:
+        return Language.GO
+    if elf.is_rust:
+        return Language.RUST
+    return Language.NATIVE
 
 
 def detect_mode(pid: int, *, proc: Path = DEFAULT_PROC) -> Mode:
@@ -1023,6 +1228,43 @@ def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
             "gdb would show V8's frames",
             language_mismatch=True,
         )
+    # Deliberately *not* `language_mismatch`. That flag means "this flavour is
+    # for another language and you knew that" - telling someone debugging C
+    # that delve is for Go - and it keeps the refusal quiet unless the flavour
+    # was asked for by name. These two are the opposite case: gdb is the
+    # default flavour, the target is one gdb will cheerfully attach to, and the
+    # only thing standing between the user and a plausible backtrace through
+    # HotSpot is this sentence being printed.
+    if target.language is Language.JVM:
+        return Assessment(
+            Flavour.GDB,
+            False,
+            "the target is a JVM: gdb debugs HotSpot rather than the program "
+            "it is running, so the frames come back named, plausible, and "
+            "entirely inside the interpreter",
+            remedy=(
+                "debug it over JDWP instead - add `-agentlib:jdwp="
+                "transport=dt_socket,server=y,suspend=n,address=*:5005` to the "
+                "workload's JAVA_TOOL_OPTIONS and attach with the Java "
+                "extension. podbench does not author that configuration yet: "
+                "issue #114"
+            ),
+        )
+    if target.language is Language.ERLANG:
+        return Assessment(
+            Flavour.GDB,
+            False,
+            "the target is the BEAM emulator: gdb sees the emulator's C frames "
+            "and never an Erlang process, so a backtrace here says nothing "
+            "about your module",
+            remedy=(
+                "use the BEAM's own tools - `erl -remsh <node>` for a remote "
+                "shell, `observer` for the process tree, or "
+                "`rabbitmq-diagnostics remote_shell` on RabbitMQ. gdb is the "
+                "right tool only if the emulator itself is what you are "
+                "debugging"
+            ),
+        )
     if not seat.has("gdb"):
         return Assessment(
             Flavour.GDB, False, "no gdb on PATH in this seat", remedy=_IMAGE_REMEDY
@@ -1074,19 +1316,80 @@ def _no_program(flavour: Flavour, target: Target) -> Assessment | None:
 
 
 def _gdb_reason(target: Target, mode: Mode) -> str:
+    """Why the gdb entry is being emitted, in the target's own language.
+
+    Two defects it exists to keep fixed, both of them finding 13. It reads
+    :attr:`Target.language` rather than assuming, because saying "native
+    target" one line after ``debug-config`` announced a "go target" is a
+    contradiction the reader has to resolve themselves (issue #115). And it
+    asks the *address space* about symbols rather than the main binary: on a
+    launcher-plus-runtime workload the executable carries nothing and every
+    symbol in the process is in a library beside it, so "expect addresses
+    rather than names" was simply false where it mattered most.
+    """
     if target.elf is None:
         return (
             "the target's binary could not be read, so this is gdb on the "
             "assumption that it is native code"
         )
-    if not target.elf.has_debug_info:
-        return "native target with no .debug_info in the binary; " + (
-            "the build-id is present, so debuginfod can still serve symbols "
-            "(report §3.2)"
-            if target.elf.has_build_id
-            else "and no build-id either, so expect addresses rather than names"
+    head = f"{target.language.value} target, {mode.value} mode"
+    if target.language is Language.GO:
+        head += (
+            "; gdb is the fallback here - goroutines and channels are delve's "
+            "job and this image ships no dlv (issue #115) - and SIGURG is set "
+            "to nostop so Go's async preemption does not halt the session"
         )
-    return f"native target, {mode.value} mode"
+    if target.elf.has_debug_info:
+        return head
+    return f"{head}; no .debug_info in the binary, {_symbols_elsewhere(target)}"
+
+
+def _some(paths: Sequence[str], limit: int = 2) -> str:
+    """The first few basenames, so naming the evidence stays one line.
+
+    >>> _some(("/usr/lib/jvm/lib/server/libjvm.so", "/lib/libc.so.6", "/x/y.so"))
+    'libjvm.so, libc.so.6, ...'
+    """
+    names = [Path(path).name for path in paths[:limit]]
+    return ", ".join([*names, "..."] if len(paths) > limit else names)
+
+
+def _symbols_elsewhere(target: Target) -> str:
+    """What the rest of the address space carries, once the binary carries none.
+
+    Four answers, and the two that sound alike are the ones worth keeping
+    apart: an address space measured and found bare, and an address space that
+    could not be measured at all. Only the first licenses "expect addresses
+    rather than names".
+    """
+    has_build_id = target.elf is not None and target.elf.has_build_id
+    debuginfod = (
+        "the build-id is present, so debuginfod can still serve symbols (report §3.2)"
+        if has_build_id
+        else "and no build-id either, so expect addresses rather than names"
+    )
+    space = target.address_space
+    if space is None or not space.inspected:
+        return (
+            f"and /proc/{target.pid}/maps could not be read - it needs "
+            "PTRACE_MODE_READ, the same check the rootfs takes - so the rest "
+            f"of the address space is unmeasured; {debuginfod}"
+        )
+    total = len(space.objects)
+    if space.with_debug_info:
+        return (
+            f"but {len(space.with_debug_info)} of the {total} mapped objects "
+            f"do carry it ({_some(space.with_debug_info)}), so frames in those "
+            "are named and lined"
+        )
+    if space.with_symbols:
+        return (
+            f"nor in any of the {total} mapped objects, but "
+            f"{len(space.with_symbols)} of them carry a symbol table "
+            f"({_some(space.with_symbols)}), so expect function names without "
+            "source lines"
+        )
+    return f"and no symbols anywhere in the {total} mapped objects; {debuginfod}"
 
 
 def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
@@ -1094,8 +1397,10 @@ def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
     # unknown one: reading the target's ELF needs PTRACE_MODE_READ, so on the
     # degraded rung the language is unknown for a perfectly ordinary C binary,
     # and withdrawing a working configuration on that basis would be the silent
-    # wrong answer in a new place.
-    if target.language in (Language.PYTHON, Language.NODE):
+    # wrong answer in a new place. The refusal is quiet because gdb's is not:
+    # one printed sentence per target names the runtime and the tool that
+    # would work, and three say it three times.
+    if target.language in _MANAGED_LANGUAGES:
         return Assessment(
             Flavour.LLDB,
             False,
@@ -1116,8 +1421,31 @@ def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
     # No image check: CodeLLDB ships its own lldb and installs it into the
     # *remote* extension host, so the seat having none decides nothing.
     return _no_program(Flavour.LLDB, target) or Assessment(
-        Flavour.LLDB, True, "native target; CodeLLDB brings its own lldb to the seat"
+        Flavour.LLDB,
+        True,
+        f"{target.language.value} target; CodeLLDB brings its own lldb to the "
+        "seat"
+        + (
+            ", and is the better of the two here - lldb reads Rust's enums and "
+            "slices natively"
+            if target.language is Language.RUST
+            else ""
+        ),
     )
+
+
+_MANAGED_LANGUAGES = (
+    Language.PYTHON,
+    Language.NODE,
+    Language.JVM,
+    Language.ERLANG,
+)
+"""Languages whose frames a native debugger cannot show as the user's code.
+
+Not the same list as "not :data:`NATIVE_LANGUAGES`": Go is in neither, because
+gdb on a Go binary really does show the user's functions - badly, and without
+goroutines, but it is the same code.
+"""
 
 
 def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
@@ -1134,7 +1462,9 @@ def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
             Flavour.DELVE,
             False,
             "no dlv on PATH in this seat, and the Go extension runs dlv on the "
-            "remote rather than shipping one",
+            "remote rather than shipping one. The podbench image ships no "
+            "delve at all, so this is a missing tool and not a missing PATH "
+            "entry (issue #115); the gdb entry beside this one is the fallback",
             remedy=_IMAGE_REMEDY,
         )
     return _no_program(Flavour.DELVE, target) or Assessment(

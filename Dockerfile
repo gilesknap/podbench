@@ -317,6 +317,16 @@ ENV PATH=/app/.venv/bin:$PATH
 RUN uv pip install --python /app/.venv/bin/python \
     --target /opt/podbench/debugpy debugpy==1.8.21
 
+# Rust's pretty-printers, which no toolchain in this pod ships. A Rust binary
+# names `gdb_load_rust_pretty_printers.py` in .debug_gdb_scripts and that file
+# lives in a rustup toolchain, so in a production container the reference
+# resolves to nothing and `Vec`, `String` and `Option` print as the
+# RawVecInner/Unique/NonNull nest they are made of. 6 KiB against the ~700 MB
+# cap. Sourced only for a target podbench identified as Rust
+# (`podbench.gdbcmd.RUST_PRETTY_PRINTERS`), so it costs an unrelated attach
+# nothing.
+COPY image/gdb/ /opt/podbench/gdb/
+
 # Two files, both structural, and deliberately not the brief's per-subcommand
 # helpers - see image/README.md, deviation 6, for why those went away.
 #

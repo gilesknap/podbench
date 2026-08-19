@@ -1138,9 +1138,29 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 
 | axis | how it is decided | what it changes |
 |---|---|---|
-| language | `/proc/<pid>/exe` and `argv[0]` for an interpreter; the target's ELF sections for Go (`.gopclntab`) | which adapter: `cppdbg`, CodeLLDB, the Go extension, debugpy |
+| language | `/proc/<pid>/exe` and `argv[0]` for an interpreter (`python`) or a runtime (`java`, `beam.smp`); `/proc/<pid>/maps` for a runtime behind a wrapper (`libjvm.so`); the target's ELF sections for Go (`.gopclntab`) and Rust (`.rustc`, an `rustc` producer string, `_ZN…17h<hash>E` mangling) | which adapter — `cppdbg`, CodeLLDB, the Go extension, debugpy — **or none at all** |
 | mode | whether the target shares this container's **mount namespace** — a `podbench dev` pod relaunches the app from the seat, so its process is on this side | attach vs launch, and whether `pathMappings` is populated **or empty** |
 | architecture | the target *binary*'s `e_machine`, not the node label | whether debugpy's attach-to-pid exists at all |
+
+A language is only ever reported as native once every other answer has been
+ruled out, and that ordering is the point. Java and Erlang are **refused**: gdb
+attaches to a JVM or to the BEAM perfectly well and shows named C++ frames
+inside somebody else's interpreter loop, which reads as progress and says
+nothing about the program. Those targets get a sentence naming JDWP (issue #114)
+or `erl -remsh`/`observer`, and no configuration. Go gets a `cppdbg` entry and a
+sentence saying it is a fallback — the image ships no `dlv` and the Go extension
+runs delve on the remote rather than shipping one (issue #115) — plus
+`handle SIGURG nostop noprint pass`, without which Go's async preemption fills
+the session with signal reports. Rust is served by the native path, with
+`/opt/podbench/gdb/rust_printers.py` sourced so `Vec`, `String` and `Option`
+print as themselves.
+
+"No symbols" is likewise asked of the whole address space and not of
+`/proc/<pid>/exe`: a launcher stub carries nothing while the runtime beside it
+carries tens of thousands of symbols, so the sentence names the mapped objects
+that have them. Where `/proc/<pid>/maps` cannot be read — it needs
+`PTRACE_MODE_READ`, the same check the rootfs takes — it says the address space
+is *unmeasured* rather than bare.
 
 `pathMappings` is the field with no error message, and it has two ways of being
 wrong: a mapping that binds nothing means breakpoints never bind, and a mapping

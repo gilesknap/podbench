@@ -14,6 +14,12 @@ in anything the user typed:
   the rest of this codebase exists to prevent.
 * **whether it is a Go program** — gdb can attach to one, but goroutines,
   channels and Go's own stack layout are delve's job.
+* **whether it is a Rust program** — the debugger is the same one, but ``Vec``,
+  ``String`` and ``Option`` are unreadable without the pretty-printers, so the
+  answer changes what gdb is told rather than which gdb is chosen.
+* **whether it carries a symbol table at all** — asked of every object mapped
+  into the target, not only of the main binary, because "no symbols" said of a
+  JVM whose ``libjvm.so`` holds sixty thousand of them is simply false.
 
 Reading section headers by hand rather than shelling out to ``readelf``: the
 unit suite may not shell out at all, ``eu-readelf`` and ``readelf`` disagree on
@@ -25,6 +31,7 @@ too.
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +39,7 @@ from typing import BinaryIO
 
 __all__ = [
     "GO_SECTIONS",
+    "RUST_SECTIONS",
     "ElfInfo",
     "debugpy_helper_name",
     "debugpy_helper_published",
@@ -56,8 +64,33 @@ _MACHINES = {
 #: binary it links, and the build-id note in everything since Go 1.10.
 GO_SECTIONS = frozenset({".gopclntab", ".note.go.buildid"})
 
+#: rustc's crate metadata. Conclusive where it survives, and it often does not:
+#: it is emitted for rlibs and dylibs and routinely absent from a linked
+#: executable, which is why it is only the first of :attr:`ElfInfo.is_rust`'s
+#: three signals rather than the whole test.
+RUST_SECTIONS = frozenset({".rustc", ".rustc_meta"})
+
 _DEBUG_SECTION = ".debug_info"
 _BUILD_ID_SECTION = ".note.gnu.build-id"
+_SYMBOL_SECTIONS = frozenset({".symtab", ".dynsym"})
+_COMMENT_SECTION = ".comment"
+_STRING_SECTIONS = (".strtab", ".dynstr")
+
+#: rustc's legacy symbol mangling: a trailing ``17h`` length prefix on a
+#: sixteen-hex-digit disambiguator, which nothing else emits. The v0 scheme
+#: (``_R``-prefixed) is still opt-in, so this is the one that identifies a
+#: stock ``cargo build``.
+_RUST_MANGLED = re.compile(rb"_ZN[0-9A-Za-z_$.]*17h[0-9a-f]{16}E")
+
+#: How much of a string table is searched for that mangling. Bounded because
+#: the search runs against another container's binary from inside a seat, and
+#: an unbounded read of a statically linked Rust binary's ``.strtab`` is the
+#: kind of allocation that OOMs the seat (skill: vscode-in-a-seat).
+_MAX_STRING_SCAN = 1 << 20
+
+#: ``.comment`` holds one producer string per translation unit and is a few
+#: hundred bytes in practice; this cap only bounds a corrupt ``sh_size``.
+_MAX_COMMENT = 1 << 16
 
 #: A cap on the section header table, so a corrupt ``e_shnum`` cannot turn a
 #: capability question into a multi-gigabyte read.
@@ -79,6 +112,23 @@ class ElfInfo:
     sections: frozenset[str]
     sections_readable: bool = True
 
+    producer: str | None = None
+    """What ``.comment`` says compiled this, when it says anything.
+
+    LLVM writes its module producer there, so a ``cargo build`` leaves
+    ``rustc version 1.83.0 (...)`` beside the usual ``GCC: (...)``. It is the
+    signal that survives when :data:`RUST_SECTIONS` has been linked away, which
+    is the normal case for an executable.
+    """
+
+    rust_mangled: bool = False
+    """Whether a rustc-mangled symbol was seen in this file's string table.
+
+    The last of the three Rust signals and the only one that costs a read of
+    real size, so it is asked only when the other two are silent, and only when
+    :func:`read_elf` was asked for a deep read.
+    """
+
     @property
     def has_debug_info(self) -> bool:
         """Whether DWARF is present in the file itself.
@@ -95,9 +145,37 @@ class ElfInfo:
         return _BUILD_ID_SECTION in self.sections
 
     @property
+    def has_symbols(self) -> bool:
+        """Whether *any* symbol table survives in the file.
+
+        Weaker than :attr:`has_debug_info` and worth a separate answer: a
+        stripped-of-DWARF library with a ``.dynsym`` still gives named frames
+        without source lines, which is the difference between a backtrace a
+        reader can act on and a column of addresses.
+        """
+        return bool(self.sections & _SYMBOL_SECTIONS)
+
+    @property
     def is_go(self) -> bool:
         """Whether the Go toolchain linked this binary."""
         return bool(self.sections & GO_SECTIONS)
+
+    @property
+    def is_rust(self) -> bool:
+        """Whether rustc built this binary, on any of three signals.
+
+        Three rather than one because each is absent from a perfectly ordinary
+        Rust binary on its own: :data:`RUST_SECTIONS` is usually linked out of
+        an executable, ``.comment`` is dropped by ``strip``, and the mangling
+        goes with ``.symtab``. Rust is *supported* rather than refused, so a
+        miss here costs the pretty-printers and not the configuration — which
+        is why three cheap signals are worth more than one exact one.
+        """
+        if self.sections & RUST_SECTIONS:
+            return True
+        if self.producer is not None and "rustc" in self.producer:
+            return True
+        return self.rust_mangled
 
 
 def machine_name(e_machine: int) -> str:
@@ -148,12 +226,18 @@ def debugpy_helper_published(machine: str) -> bool:
     return debugpy_helper_name(machine) == "attach_linux_amd64.so"
 
 
-def read_elf(path: Path | str) -> ElfInfo | None:
-    """Parse ``path`` far enough to answer the three questions, or ``None``.
+def read_elf(path: Path | str, *, deep: bool = True) -> ElfInfo | None:
+    """Parse ``path`` far enough to answer the questions above, or ``None``.
 
     ``None`` means "not an ELF file, or not readable" — a shell script, a
     denied ``/proc/<pid>/root`` and a truncated binary are all the same answer
     to the caller, which is that this file decides nothing.
+
+    ``deep=False`` stops after the section names, which answer every question
+    except "was this rustc". That is what the mapped-object inventory asks with,
+    because it reads every shared object in another container's address space —
+    dozens of files for an ordinary service and several hundred for a JVM — and
+    only wants to know which of them carry symbols.
     """
     try:
         with open(path, "rb") as stream:
@@ -166,7 +250,22 @@ def read_elf(path: Path | str) -> ElfInfo | None:
             table = _section_table(header, endian=endian, is_64=is_64)
             if table is None:
                 return ElfInfo(machine_name(e_machine), frozenset(), False)
-            names = _section_names(stream, table, endian=endian, is_64=is_64)
+            sections = _sections(stream, table, endian=endian, is_64=is_64)
+            if sections is None:
+                return ElfInfo(machine_name(e_machine), frozenset(), False)
+            names = frozenset(sections)
+            if not deep or names & RUST_SECTIONS:
+                # The section name settles it, so neither of the two reads
+                # below can change the answer they exist to reach.
+                return ElfInfo(machine_name(e_machine), names)
+            producer = _text_at(stream, sections.get(_COMMENT_SECTION), _MAX_COMMENT)
+            # The string-table scan is the one read of real size here, so it is
+            # skipped the moment a cheaper signal has already answered.
+            mangled = (
+                False
+                if producer is not None and "rustc" in producer
+                else _rust_mangled(stream, sections)
+            )
     except OSError:
         return None
     except struct.error:
@@ -174,9 +273,41 @@ def read_elf(path: Path | str) -> ElfInfo | None:
         # own header promises. Reported as no information rather than as a
         # crash in a diagnostic tool.
         return None
-    if names is None:
-        return ElfInfo(machine_name(e_machine), frozenset(), False)
-    return ElfInfo(machine_name(e_machine), names)
+    return ElfInfo(
+        machine_name(e_machine), names, producer=producer, rust_mangled=mangled
+    )
+
+
+def _text_at(stream: BinaryIO, extent: tuple[int, int] | None, cap: int) -> str | None:
+    """A section's bytes as text, NULs included, or ``None`` if it is absent."""
+    if extent is None:
+        return None
+    offset, size = extent
+    if size <= 0 or size > cap:
+        return None
+    stream.seek(offset)
+    return stream.read(size).decode("ascii", "replace")
+
+
+def _rust_mangled(stream: BinaryIO, sections: dict[str, tuple[int, int]]) -> bool:
+    """Whether a rustc-mangled symbol name is in this file's string table.
+
+    Only the first :data:`_MAX_STRING_SCAN` bytes are searched. A truncated
+    search can answer "not Rust" about a Rust binary, which costs the
+    pretty-printers; an unbounded one can allocate the seat out of memory,
+    which costs the session.
+    """
+    for name in _STRING_SECTIONS:
+        extent = sections.get(name)
+        if extent is None:
+            continue
+        offset, size = extent
+        if size <= 0:
+            continue
+        stream.seek(offset)
+        if _RUST_MANGLED.search(stream.read(min(size, _MAX_STRING_SCAN))):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -205,10 +336,15 @@ def _section_table(header: bytes, *, endian: str, is_64: bool) -> _SectionTable 
     return _SectionTable(offset, entry_size, count, name_index)
 
 
-def _section_names(
+def _sections(
     stream: BinaryIO, table: _SectionTable, *, endian: str, is_64: bool
-) -> frozenset[str] | None:
-    """The names of every section, read through the string table."""
+) -> dict[str, tuple[int, int]] | None:
+    """Every section's name, file offset and size, via the string table.
+
+    The extents are carried beside the names because two of the questions above
+    are answered by a section's *contents* rather than by its existence, and
+    re-walking the table to find them would be the same parse twice.
+    """
     stream.seek(table.offset)
     entries = stream.read(table.entry_size * table.count)
     if len(entries) < table.entry_size * table.count:
@@ -229,11 +365,11 @@ def _section_names(
     stream.seek(strtab_offset)
     strings = stream.read(strtab_size)
 
-    names: set[str] = set()
+    found: dict[str, tuple[int, int]] = {}
     for index in range(table.count):
-        name_offset, _, _ = entry(index)
+        name_offset, offset, size = entry(index)
         end = strings.find(b"\0", name_offset)
         if name_offset >= len(strings) or end < 0:
             continue
-        names.add(strings[name_offset:end].decode("ascii", "replace"))
-    return frozenset(names)
+        found[strings[name_offset:end].decode("ascii", "replace")] = (offset, size)
+    return found

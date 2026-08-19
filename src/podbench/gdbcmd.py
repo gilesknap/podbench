@@ -45,6 +45,7 @@ from typing import Annotated
 import typer
 
 from .cli import new_app, require_subcommand, run
+from .elf import read_elf
 from .execfile import gdb_exec_file
 from .model import CapabilityReport, ProcInfo, Verdict, describe_gated_fallback
 from .probe import Attacher, probe
@@ -67,6 +68,8 @@ __all__ = [
     "DELETED_SUFFIX",
     "EXIT_USAGE",
     "MAX_OFFERED_PIDS",
+    "RUST_PRETTY_PRINTERS",
+    "SIGURG_COMMAND",
     "GdbRunner",
     "attach_blocked_message",
     "attach_commands",
@@ -86,6 +89,39 @@ __all__ = [
 
 GdbRunner = Callable[[Sequence[str]], int]
 """How ``dbg`` finally starts gdb. A seam so tests never exec a real gdb."""
+
+SIGURG_COMMAND = "handle SIGURG nostop noprint pass"
+"""Issued for *every* target, not only for Go ones.
+
+Go's runtime preempts goroutines by sending SIGURG, at up to a few hundred a
+second on a busy process. gdb's default is to stop and announce each one, which
+turns an attached Go session into a wall of ``Program received signal SIGURG``
+and nothing else — the session is not slow, it is unusable, and nothing in it
+says why.
+
+Unconditional because the sequence has no language to switch on: ``podbench
+dbg`` and ``gdb-podbench`` attach to whatever pid they are handed, and a config
+that only helped when a *previous* step had identified the binary as Go would
+be missing on exactly the degraded rung where the ELF could not be read.
+
+``pass`` rather than ``ignore``: the signal is still delivered to the inferior,
+because it is how the Go runtime works and swallowing it changes the program's
+scheduling. Elsewhere SIGURG means out-of-band socket data, which is delivered
+and rarely watched, so the same three words are right there too.
+"""
+
+RUST_PRETTY_PRINTERS = "/opt/podbench/gdb/rust_printers.py"
+"""Where the image keeps the Rust printers, sourced only for a Rust target.
+
+Rust binaries name ``gdb_load_rust_pretty_printers.py`` in
+``.debug_gdb_scripts``, which resolves against a rustup toolchain that a
+production container does not have and this seat does not ship. Without them
+``Vec``, ``String`` and ``Option`` print as their raw ``RawVecInner`` fields —
+readable, wrong-looking, and no use for deciding anything.
+
+Sourced conditionally rather than always, because ``source`` of a path that is
+not there is an error in the debug console on every unrelated attach.
+"""
 
 EXIT_USAGE = 2
 """Exit code for "there is nothing to debug", matching a usage error's own."""
@@ -126,12 +162,14 @@ def attach_commands(
     exec_file: str | None = None,
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
+    rust: bool = False,
 ) -> list[str]:
     """The gdb command sequence from report 4.3, in the one order that works.
 
     >>> for command in attach_commands(597, exe="/app/victim (deleted)"):
     ...     print(command)
     set pagination off
+    handle SIGURG nostop noprint pass
     set sysroot /proc/597/root
     directory /proc/597/root
     add-auto-load-safe-path /proc/597/root
@@ -167,10 +205,20 @@ def attach_commands(
       a start-up probe that drops ``DEBUGINFOD_URLS`` from an ssh session
       whose seat cannot reach the server at all. ``--no-debuginfod`` is the
       per-run switch, for a server that is reachable and slow.
+    * ``handle SIGURG`` first — see :data:`SIGURG_COMMAND`. It has to precede
+      the attach, because the flood starts the moment the process resumes.
+
+    ``rust`` sources :data:`RUST_PRETTY_PRINTERS`, and is the one thing in this
+    sequence that turns on the target's *language* rather than on the two mount
+    namespaces:
+
+    >>> attach_commands(597, exe="/app/victim", rust=True)[-3:-2]
+    ['source /opt/podbench/gdb/rust_printers.py']
     """
     root = sysroot_path(pid)
     commands = [
         "set pagination off",
+        SIGURG_COMMAND,
         f"set sysroot {root}",
         f"directory {root}",
     ]
@@ -179,6 +227,8 @@ def attach_commands(
     commands += [f"directory {directory}" for directory in source_dirs]
     commands.append(f"add-auto-load-safe-path {root}")
     commands.append(f"set debuginfod enabled {'on' if debuginfod else 'off'}")
+    if rust:
+        commands.append(f"source {RUST_PRETTY_PRINTERS}")
     if exec_file is not None:
         commands.append(f"file {exec_file}")
     elif exe is not None:
@@ -196,6 +246,7 @@ def launch_commands(
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
     run: bool = False,
+    rust: bool = False,
 ) -> list[str]:
     """The ptrace-free inner loop: let gdb *start* the program.
 
@@ -211,14 +262,17 @@ def launch_commands(
     >>> for command in launch_commands("./victim", ["--fast"], run=True):
     ...     print(command)
     set pagination off
+    handle SIGURG nostop noprint pass
     set debuginfod enabled on
     file ./victim
     set args --fast
     run
     """
-    commands = ["set pagination off"]
+    commands = ["set pagination off", SIGURG_COMMAND]
     commands += [f"directory {directory}" for directory in source_dirs]
     commands.append(f"set debuginfod enabled {'on' if debuginfod else 'off'}")
+    if rust:
+        commands.append(f"source {RUST_PRETTY_PRINTERS}")
     commands.append(f"file {program}")
     if args:
         commands.append("set args " + " ".join(args))
@@ -692,6 +746,18 @@ def _run_pids(
     return 0
 
 
+def _is_rust(path: str | None) -> bool:
+    """Whether the file gdb will really read was built by rustc.
+
+    Asked of the exact path handed to ``file`` — which is the staged copy
+    wherever issue #90 forced one — and never of the target's own spelling: that
+    path names *this* container's binary from in here, and answering from it is
+    report §3.3's substitution in a new place.
+    """
+    info = read_elf(path) if path else None
+    return info is not None and info.is_rust
+
+
 def _run_dbg(
     pid: int | None,
     container_id: str | None,
@@ -714,6 +780,7 @@ def _run_dbg(
             source_dirs=list(source_dirs),
             debuginfod=debuginfod,
             run=run_it,
+            rust=_is_rust(launch),
         )
         if dry_run:
             print(command_file_text(commands), end="")
@@ -764,6 +831,7 @@ def _run_dbg(
         exec_file=file_path,
         source_dirs=list(source_dirs),
         debuginfod=debuginfod,
+        rust=_is_rust(file_path),
     )
     if dry_run:
         # Deliberately before the probe: generating the documented command file

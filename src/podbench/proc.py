@@ -43,6 +43,7 @@ __all__ = [
     "DEFAULT_SYS",
     "DELETED_SUFFIX",
     "NAMED_IN_NOTE",
+    "MAX_MAPPED_OBJECTS",
     "READ_MATRIX_PATHS",
     "Attribution",
     "Capabilities",
@@ -64,6 +65,7 @@ __all__ = [
     "read_comm",
     "read_exe",
     "read_gid",
+    "read_mapped_objects",
     "read_ppid",
     "read_state",
     "read_status_field",
@@ -404,6 +406,66 @@ def read_cmdline(pid: int | str, *, proc: Path = DEFAULT_PROC) -> str | None:
     if text is None:
         return None
     return " ".join(part for part in text.split("\x00") if part)
+
+
+MAX_MAPPED_OBJECTS = 128
+"""How many distinct file-backed objects :func:`read_mapped_objects` returns.
+
+A JVM maps several hundred files and a seat reads each of the returned ones as
+an ELF, so this is what keeps "does anything here carry symbols" a bounded
+question. It is a cap on the *answer* and not on the parse: the paths are read
+in address order, which is load order, so what falls off the end is whatever a
+long-running process mapped last.
+"""
+
+_MAPS_SKIPPED = ("/dev/", "/memfd:", "/anon_hugepage")
+"""Map entries with a path-shaped name that is not a file to read.
+
+``/dev/zero`` and an anonymous huge page are named like paths and are not ELF
+files; opening them from a seat is at best wasted and at worst blocking.
+"""
+
+
+def read_mapped_objects(
+    pid: int | str, *, proc: Path = DEFAULT_PROC, limit: int = MAX_MAPPED_OBJECTS
+) -> tuple[str, ...] | None:
+    """The distinct files mapped into ``pid``, as *it* spells them.
+
+    ``None`` is the refusal and is a different answer from ``()``: ``maps`` is
+    one of :data:`podbench.model.PTRACE_READ_PATHS`, gated on the same
+    ``ptrace_may_access()`` comparison as ``root`` and ``exe``, so a seat at the
+    wrong credentials gets nothing here while a kernel thread legitimately maps
+    no files at all. Reporting "no symbols anywhere in the address space" on the
+    strength of a read that was refused is precisely the overclaim this package
+    exists to prevent.
+
+    The paths are the target's own spelling and are not openable from here
+    without the sysroot prefix, exactly like :func:`read_exe`'s answer.
+
+    >>> read_mapped_objects(1, proc=Path("/nonexistent")) is None
+    True
+    """
+    text = _read_text(_pid_dir(pid, proc) / "maps")
+    if text is None:
+        return None
+    found: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        # The path is the sixth field and is the only one that may contain
+        # spaces, so the split is bounded rather than greedy.
+        fields = line.split(maxsplit=5)
+        if len(fields) < 6:
+            continue
+        path = strip_deleted(fields[5].strip())
+        if not path.startswith("/") or path.startswith(_MAPS_SKIPPED):
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        found.append(path)
+        if len(found) >= limit:
+            break
+    return tuple(found)
 
 
 def read_cgroup(pid: int | str, *, proc: Path = DEFAULT_PROC) -> str | None:

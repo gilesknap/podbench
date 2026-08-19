@@ -23,9 +23,20 @@ EM_AARCH64 = 0xB7
 
 
 def build_elf(
-    sections: list[str], *, machine: int = EM_X86_64, is_64: bool = True
+    sections: list[str],
+    *,
+    machine: int = EM_X86_64,
+    is_64: bool = True,
+    contents: dict[str, bytes] | None = None,
 ) -> bytes:
-    """A valid-enough ELF carrying exactly these section names."""
+    """A valid-enough ELF carrying exactly these section names.
+
+    ``contents`` gives a named section real bytes at a real offset. Two of the
+    reader's questions are answered by what is *in* a section rather than by
+    whether it exists — ``.comment`` names the compiler and ``.strtab`` carries
+    the mangling — and a fixture of empty sections cannot ask either of them.
+    """
+    payloads = dict(contents or {})
     names = ["", *sections, ".shstrtab"]
     strtab = b""
     offsets: list[int] = []
@@ -56,12 +67,21 @@ def build_elf(
         struct.pack_into("<I", header, 0x20, shoff)
         struct.pack_into("<3H", header, 0x2E, entry_size, count, shstrndx)
 
+    # Section bodies follow the string table, so their offsets are known before
+    # the headers that name them are packed.
+    bodies = b""
+    placed: dict[str, tuple[int, int]] = {}
+    for name, payload in payloads.items():
+        placed[name] = (strtab_offset + len(strtab) + len(bodies), len(payload))
+        bodies += payload
+
     table = b""
     for index in range(count):
         entry = bytearray(entry_size)
         struct.pack_into("<I", entry, 0, offsets[index])
-        offset = strtab_offset if index == shstrndx else 0
-        size = len(strtab) if index == shstrndx else 0
+        offset, size = placed.get(names[index], (0, 0))
+        if index == shstrndx:
+            offset, size = strtab_offset, len(strtab)
         if is_64:
             struct.pack_into("<2Q", entry, 0x18, offset, size)
         else:
@@ -70,7 +90,7 @@ def build_elf(
 
     # The header must be 64 bytes for the reader's single read, so a 32-bit
     # header is padded out to the same length rather than special-cased.
-    return bytes(header).ljust(64, b"\0") + table + strtab
+    return bytes(header).ljust(64, b"\0") + table + strtab + bodies
 
 
 def write(tmp_path: Path, data: bytes, name: str = "prog") -> Path:
@@ -135,6 +155,87 @@ def test_a_c_binary_is_not_go(tmp_path: Path) -> None:
     assert info is not None
     assert info.is_go is False
     assert info.has_debug_info
+
+
+MANGLED = b"\x00_ZN4core3fmt5write17h5f7c9a1b2d3e4f60E\x00"
+"""One rustc-mangled symbol as it sits in a ``.strtab``: NUL-delimited, and
+carrying the ``17h`` + sixteen hex digits that nothing else emits."""
+
+
+def test_rust_is_recognised_from_its_own_section(tmp_path: Path) -> None:
+    """The cheapest of the three signals, and the one that is usually absent."""
+    info = read_elf(write(tmp_path, build_elf([".rustc", ".text"])))
+    assert info is not None
+    assert info.is_rust
+
+
+def test_rust_is_recognised_from_the_producer_string(tmp_path: Path) -> None:
+    """What survives when the linker drops ``.rustc`` from an executable."""
+    elf = build_elf(
+        [".comment", ".text"],
+        contents={
+            ".comment": b"GCC: (Debian 12.2.0) 12.2.0\x00rustc version 1.83.0\x00"
+        },
+    )
+    info = read_elf(write(tmp_path, elf))
+    assert info is not None
+    assert info.is_rust
+    assert info.producer is not None
+    assert "rustc" in info.producer
+
+
+def test_rust_is_recognised_from_a_mangled_symbol(tmp_path: Path) -> None:
+    """The last signal: no ``.rustc``, no ``.comment``, and a symbol table."""
+    elf = build_elf([".strtab", ".text"], contents={".strtab": MANGLED})
+    info = read_elf(write(tmp_path, elf))
+    assert info is not None
+    assert info.rust_mangled
+    assert info.is_rust
+
+
+def test_a_cpp_binary_is_not_mistaken_for_rust(tmp_path: Path) -> None:
+    """Itanium mangling is the same ``_ZN`` prefix, and is not the same thing.
+
+    Rust is *served* rather than refused, so a false positive here does not
+    withdraw a configuration - it sources the wrong printers into a C++ session
+    and makes gdb look broken.
+    """
+    elf = build_elf(
+        [".strtab", ".comment", ".text"],
+        contents={
+            ".strtab": b"\x00_ZN6thingy4makeEii\x00_ZNSt6vectorIiEC1Ev\x00",
+            ".comment": b"GCC: (Debian 12.2.0) 12.2.0\x00",
+        },
+    )
+    info = read_elf(write(tmp_path, elf))
+    assert info is not None
+    assert info.is_rust is False
+
+
+def test_a_shallow_read_skips_the_rust_signals(tmp_path: Path) -> None:
+    """What the mapped-object inventory asks with, and why it is cheaper.
+
+    ``deep=False`` still answers every symbol question, which is all the
+    inventory wants of several hundred shared objects - and it does it without
+    reading a string table out of another container per file.
+    """
+    elf = build_elf([".strtab", ".symtab"], contents={".strtab": MANGLED})
+    info = read_elf(write(tmp_path, elf), deep=False)
+    assert info is not None
+    assert info.has_symbols
+    assert info.rust_mangled is False
+
+
+def test_symbols_are_a_weaker_question_than_debug_info(tmp_path: Path) -> None:
+    """A stripped-of-DWARF library with a ``.dynsym`` still names its frames.
+
+    The difference is what stops a JVM being told "expect addresses rather than
+    names" while ``libjvm.so`` sits in its address space with 65,843 symbols.
+    """
+    info = read_elf(write(tmp_path, build_elf([".dynsym", ".text"])))
+    assert info is not None
+    assert info.has_symbols
+    assert not info.has_debug_info
 
 
 def test_32_bit_binaries_parse(tmp_path: Path) -> None:

@@ -23,6 +23,7 @@ from podbench import execfile, gdbcmd
 from podbench.gdbcmd import (
     EXIT_USAGE,
     MAX_OFFERED_PIDS,
+    RUST_PRETTY_PRINTERS,
     attach_commands,
     command_file_text,
     format_process_table,
@@ -178,6 +179,7 @@ def make_proc(tmp_path: Path, *, capeff: str = CAP_WITHOUT_PTRACE) -> Path:
 def test_attach_sequence_is_pinned_in_order() -> None:
     assert attach_commands(TARGET_PID, exe="/app/victim") == [
         "set pagination off",
+        "handle SIGURG nostop noprint pass",
         f"set sysroot /proc/{TARGET_PID}/root",
         f"directory /proc/{TARGET_PID}/root",
         f"add-auto-load-safe-path /proc/{TARGET_PID}/root",
@@ -185,6 +187,40 @@ def test_attach_sequence_is_pinned_in_order() -> None:
         f"file /proc/{TARGET_PID}/root/app/victim",
         f"attach {TARGET_PID}",
     ]
+
+
+def test_sigurg_is_handled_before_the_process_resumes() -> None:
+    """Go preempts goroutines with SIGURG, hundreds a second on a busy process.
+
+    gdb's default is to stop and announce each one, which does not make the
+    session slow, it makes it unusable - and nothing in the wall of `Program
+    received signal SIGURG` says why. It has to precede the attach, because the
+    flood starts the moment the inferior resumes.
+    """
+    commands = attach_commands(TARGET_PID, exe="/app/victim")
+    assert commands.index("handle SIGURG nostop noprint pass") < commands.index(
+        f"attach {TARGET_PID}"
+    )
+    # `pass`, not `ignore`: the signal is still delivered, because swallowing it
+    # changes the Go runtime's scheduling.
+    assert "handle SIGURG nostop noprint pass" in launch_commands("./victim")
+
+
+def test_the_rust_printers_are_sourced_only_for_a_rust_target() -> None:
+    """No rustup toolchain exists in the pod, so nothing else loads them.
+
+    Conditional rather than always: `source` of a path that is not there is an
+    error in the debug console on every unrelated attach.
+    """
+    plain = attach_commands(TARGET_PID, exe="/app/victim")
+    rust = attach_commands(TARGET_PID, exe="/app/victim", rust=True)
+    assert not any(command.startswith("source ") for command in plain)
+    assert f"source {RUST_PRETTY_PRINTERS}" in rust
+    # Before `file`, so the printers are registered by the time gdb renders
+    # anything out of the inferior.
+    assert rust.index(f"source {RUST_PRETTY_PRINTERS}") < rust.index(
+        f"attach {TARGET_PID}"
+    )
 
 
 def test_sysroot_and_file_precede_attach() -> None:

@@ -80,6 +80,7 @@ from .elf import debugpy_helper_name, debugpy_helper_published
 from .execfile import gdb_exec_file
 from .flavour import (
     DEBUGPY_PORT,
+    NATIVE_LANGUAGES,
     Assessment,
     Flavour,
     Language,
@@ -510,6 +511,7 @@ def setup_commands(
     *,
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
+    rust: bool = False,
 ) -> list[str]:
     """The gdb settings cpptools must apply *before* it attaches.
 
@@ -521,6 +523,7 @@ def setup_commands(
     >>> for command in setup_commands(597):
     ...     print(command)
     set pagination off
+    handle SIGURG nostop noprint pass
     set sysroot /proc/597/root
     directory /proc/597/root
     add-auto-load-safe-path /proc/597/root
@@ -529,14 +532,21 @@ def setup_commands(
     return [
         command
         for command in attach_commands(
-            pid, exe=None, source_dirs=source_dirs, debuginfod=debuginfod
+            pid,
+            exe=None,
+            source_dirs=source_dirs,
+            debuginfod=debuginfod,
+            rust=rust,
         )
         if not command.startswith(("file ", "attach "))
     ]
 
 
 def launch_setup_commands(
-    *, source_dirs: Sequence[str] = (), debuginfod: bool = True
+    *,
+    source_dirs: Sequence[str] = (),
+    debuginfod: bool = True,
+    rust: bool = False,
 ) -> list[str]:
     """The same, for a program gdb starts itself.
 
@@ -549,12 +559,13 @@ def launch_setup_commands(
     >>> for command in launch_setup_commands():
     ...     print(command)
     set pagination off
+    handle SIGURG nostop noprint pass
     set debuginfod enabled on
     """
     return [
         command
         for command in launch_commands(
-            "unused", source_dirs=source_dirs, debuginfod=debuginfod
+            "unused", source_dirs=source_dirs, debuginfod=debuginfod, rust=rust
         )
         if not command.startswith(("file ", "set args ", "run"))
     ]
@@ -589,6 +600,7 @@ def cppdbg_configuration(
     source_map: Mapping[str, str] | None = None,
     debuginfod: bool = True,
     machine: str | None = None,
+    rust: bool = False,
 ) -> dict[str, Any]:
     """One ``cppdbg`` attach configuration for a process in this pod.
 
@@ -630,7 +642,7 @@ def cppdbg_configuration(
         "setupCommands": [
             {"text": command}
             for command in setup_commands(
-                pid, source_dirs=source_dirs, debuginfod=debuginfod
+                pid, source_dirs=source_dirs, debuginfod=debuginfod, rust=rust
             )
         ],
     }
@@ -650,6 +662,7 @@ def cppdbg_launch_configuration(
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
     machine: str | None = None,
+    rust: bool = False,
 ) -> dict[str, Any]:
     """The ``dev``-mode shape: gdb starts the program rather than attaching.
 
@@ -677,7 +690,7 @@ def cppdbg_launch_configuration(
         "setupCommands": [
             {"text": command}
             for command in launch_setup_commands(
-                source_dirs=source_dirs, debuginfod=debuginfod
+                source_dirs=source_dirs, debuginfod=debuginfod, rust=rust
             )
         ],
     }
@@ -875,6 +888,10 @@ def configurations_for(
     # candidates each get a full set of entries, and `merge_launch_configs`
     # matches by name, so two candidates sharing a basename do not merely read
     # alike in the dropdown - the second silently replaces the first.
+    # Sourcing the Rust printers is the one thing here that turns on the
+    # target's language rather than on the mode, and it is asked once so both
+    # shapes agree.
+    rust = target.language is Language.RUST
     if flavour is Flavour.GDB:
         if mode is Mode.DEV:
             return [
@@ -885,6 +902,7 @@ def configurations_for(
                     source_dirs=source_dirs,
                     debuginfod=debuginfod,
                     machine=target.machine,
+                    rust=rust,
                 )
             ]
         return [
@@ -897,6 +915,7 @@ def configurations_for(
                 source_map=source_map,
                 debuginfod=debuginfod,
                 machine=target.machine,
+                rust=rust,
             )
         ]
     if flavour is Flavour.LLDB:
@@ -1814,7 +1833,7 @@ def _for_target(
     if target.program:
         if mode is Mode.DEV:
             gdb_program = target.program
-        elif target.language in (Language.NATIVE, Language.UNKNOWN):
+        elif target.language in NATIVE_LANGUAGES:
             gdb_program, exec_file_notes = gdb_exec_file(pid, target.program, proc=proc)
             for note in exec_file_notes:
                 _warn(note)
@@ -1903,7 +1922,8 @@ def _for_target(
         listening_owner = (
             found.describe() if found is not None and found.attributed else None
         )
-        # Native and unknown targets only, and still, though the debugpy pid
+        # The languages that reach gdb only (NATIVE_LANGUAGES, which is where
+        # Rust joins), and still, though the debugpy pid
         # injection now withdraws on the same answer — it drives gdb to `call
         # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
         # says about a python-build-standalone interpreter is issue #90's open
@@ -1912,7 +1932,7 @@ def _for_target(
         # start-up per candidate. #90 is where the Python case joins.
         load_error = (
             program_load_error(target.pid, gdb_program, runner=runner)
-            if gdb_program and target.language in (Language.NATIVE, Language.UNKNOWN)
+            if gdb_program and target.language in NATIVE_LANGUAGES
             else None
         )
         surveyed = survey_seat(

@@ -28,7 +28,7 @@ import pytest
 from podbench import vscode
 from podbench.execfile import gdb_exec_file
 from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
-from podbench.gdbcmd import attach_commands
+from podbench.gdbcmd import EXIT_USAGE, RUST_PRETTY_PRINTERS, attach_commands
 from podbench.kubectl import CommandResult
 from podbench.model import SEIZE_PROBE
 from podbench.probe import AttachOutcome
@@ -62,8 +62,11 @@ from podbench.vscode import (
 )
 from test_elf import EM_AARCH64
 from test_flavour import (
+    BEAM_CMDLINE,
+    JVM_CMDLINE,
     SITE_PACKAGES,
     TARGET_CID,
+    make_proc,
     proc_stat,
     python_proc,
     seat_debugpy,
@@ -229,6 +232,7 @@ def test_setup_commands_keep_the_load_bearing_order() -> None:
     ]
     assert commands == [
         "set pagination off",
+        "handle SIGURG nostop noprint pass",
         f"set sysroot /proc/{PID}/root",
         f"directory /proc/{PID}/root",
         f"add-auto-load-safe-path /proc/{PID}/root",
@@ -819,6 +823,7 @@ def test_dev_launch_setup_is_derived_from_the_cli_sequence() -> None:
     """One definition of the launch ordering, not two that can diverge."""
     assert launch_setup_commands() == [
         "set pagination off",
+        "handle SIGURG nostop noprint pass",
         "set debuginfod enabled on",
     ]
 
@@ -957,6 +962,69 @@ def test_no_gdb_to_ask_is_not_a_second_refusal() -> None:
         raise FileNotFoundError(2, "No such file or directory", argv[0])
 
     assert program_load_error(1, "/proc/1/root/bin/x", runner=missing) is None
+
+
+# -- languages with no real debugger, end to end ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exe", "cmdline", "named"),
+    [
+        ("/opt/java/bin/java", JVM_CMDLINE, "jdwp"),
+        ("/erts-15.2/bin/beam.smp", BEAM_CMDLINE, "remsh"),
+    ],
+)
+def test_a_runtime_with_no_debugger_gets_a_refusal_and_no_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    exe: str,
+    cmdline: str,
+    named: str,
+) -> None:
+    """Nothing is emitted, and the sentence names the tool that would work.
+
+    gdb attaches to both of these perfectly well and shows named C++ frames
+    inside somebody else's interpreter, which reads as progress. An empty
+    launch.json with a reason beats a full one that debugs the runtime.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=make_proc(tmp_path, exe=exe, cmdline=cmdline),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=gdb_saying(""),
+    )
+    captured = capsys.readouterr()
+    # Nothing on stdout: --print-config prints a file or it prints nothing, and
+    # an empty `configurations` list would be a file the reader could paste.
+    assert captured.out == ""
+    assert code == EXIT_USAGE
+    assert named in captured.err
+    # The language is named, so the reader knows which of the pod's processes
+    # this was said about.
+    assert "jvm target" in captured.err or "erlang target" in captured.err
+
+
+def test_a_rust_target_gets_cppdbg_with_the_printers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rust is served rather than refused, and needs one thing C does not.
+
+    Verified by fixture only: there is no Rust workload in p47-beamline, so
+    nothing here has been through a cluster.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=make_proc(tmp_path, sections=[".rustc", ".text"]),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=gdb_saying(""),
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    cppdbg = next(
+        entry for entry in document["configurations"] if entry["type"] == "cppdbg"
+    )
+    commands = [entry["text"] for entry in cppdbg["setupCommands"]]
+    assert f"source {RUST_PRETTY_PRINTERS}" in commands
 
 
 # -- the Python path, end to end ---------------------------------------------

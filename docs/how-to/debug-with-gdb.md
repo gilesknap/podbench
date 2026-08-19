@@ -200,6 +200,7 @@ What it feeds gdb, in this order — see it without starting gdb using
 
 ```
 set pagination off
+handle SIGURG nostop noprint pass
 set sysroot /proc/1/root
 directory /proc/1/root
 add-auto-load-safe-path /proc/1/root
@@ -212,11 +213,13 @@ Every line earns its place:
 
 | Command | Why |
 |---|---|
+| `handle SIGURG nostop noprint pass` **before** `attach` | Go preempts goroutines by sending SIGURG, at up to a few hundred a second. gdb's default is to stop and announce each one, which does not make an attached Go session slow — it makes it unusable, and nothing in the wall of `Program received signal SIGURG` says why. `pass`, not `ignore`: the signal is still delivered, because swallowing it changes the runtime's scheduling. Issued for every target, since `podbench dbg` attaches to whatever pid it is handed |
 | `set sysroot /proc/<pid>/root` **before** `attach` | gdb resolves the *target's* loader and shared libraries, not the debug image's. gdb 13's default sysroot is `target:`, which needs `CAP_SYS_ADMIN` and fails loudly without it |
 | `directory /proc/<pid>/root` | sysroot does **not** cover source lookup. This is what turns `victim.c: No such file or directory` into real source text |
 | `add-auto-load-safe-path /proc/<pid>/root` | setting a sysroot makes gdb decline to auto-load the target's `libthread_db.so.1` — no `info threads`, no per-thread backtraces. Narrow, never `set auto-load safe-path /` |
 | `set debuginfod enabled on` | symbols for stripped binaries and system libraries. Symbols only — see below. A library's are fetched *after* the attach, with the target stopped, so the image bounds each fetch at `DEBUGINFOD_TIMEOUT=2` and `--no-debuginfod` turns the whole thing off for one run |
 | `file /proc/<pid>/root$(readlink /proc/<pid>/exe)` **before** `attach` | this is what recovers the *user* frames. A trailing ` (deleted)` is stripped |
+| `source /opt/podbench/gdb/rust_printers.py` | **Rust targets only.** A Rust binary asks for `gdb_load_rust_pretty_printers.py`, which ships with a rustup toolchain that a production container does not have; without it `Vec`, `String` and `Option` print as the `RawVecInner`/`Unique`/`NonNull` nest they are made of. Sourced only where the binary was identified as Rust, because `source` of a missing path is an error on every other attach |
 
 ### When that `file` line names `/tmp` instead
 
