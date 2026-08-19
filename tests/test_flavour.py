@@ -259,23 +259,6 @@ def test_an_unreadable_exe_still_produces_a_target(tmp_path: Path) -> None:
     assert any("PTRACE_MODE_READ" in note for note in target.notes)
 
 
-def test_source_root_prefers_the_script_over_the_cwd(tmp_path: Path) -> None:
-    """The debuggee reports the path it was *given*, whatever its cwd is."""
-    assert inspect_target(PID, proc=python_proc(tmp_path)).source_root == "/src"
-
-
-def test_a_console_script_is_not_a_source_root(tmp_path: Path) -> None:
-    """p47's shape: ``argv[1]`` is a shim in the venv's ``bin/``, which holds no
-    source at all, so the cwd is the only honest answer left (issue #112)."""
-    proc = make_proc(
-        tmp_path,
-        exe="/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
-        cmdline=VENV_CMDLINE,
-        cwd="/epics/ioc",
-    )
-    assert inspect_target(PID, proc=proc).source_root == "/epics/ioc"
-
-
 @pytest.mark.parametrize("shared", [True, False])
 def test_mode_follows_the_mount_namespace(tmp_path: Path, shared: bool) -> None:
     """A ``podbench dev`` pod relaunches the app *from* the seat.

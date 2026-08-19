@@ -1018,7 +1018,22 @@ def _warn(message: str) -> None:
 
 
 def _parse_source_map(entries: Sequence[str]) -> tuple[dict[str, str], list[str]]:
-    """``FROM=TO`` pairs, and a complaint for anything that is not one."""
+    """``FROM=TO`` pairs, and a complaint for anything that is not one.
+
+    Refusing ``/`` here is not in tension with
+    :func:`python_path_mappings` emitting ``remoteRoot: "/"``, however alike the
+    two read. They are different debuggers doing different things.
+    ``remoteRoot`` is a DAP path translation the adapter applies *once*, to turn
+    a path the debuggee reported into one the editor can open. This becomes
+    gdb's ``substitute-path``, which gdb re-applies every time it computes
+    ``fullname`` — and the exec file is already loaded through the sysroot, so
+    substituting ``/`` again prefixes a path that carries the prefix already.
+
+    Left unremarked, the apparent contradiction invites reconciling one to the
+    other, and either direction reintroduces a defect: dropping this refusal
+    doubles the prefix, and narrowing ``remoteRoot`` puts back the guessed root
+    that made a wrong mapping *resolve* instead of fail (issue #112).
+    """
     mapping: dict[str, str] = {}
     problems: list[str] = []
     for entry in entries:
