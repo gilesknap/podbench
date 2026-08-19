@@ -776,17 +776,23 @@ def test_a_seat_without_gdb_says_so_rather_than_emitting_cppdbg(
 # -- the mode-dependent shapes ----------------------------------------------
 
 
-def test_observe_mode_maps_the_source_through_the_sysroot() -> None:
-    """The editor sees the source through ``/proc/<pid>/root``; the app does not."""
-    assert python_path_mappings(1, "/src", Mode.OBSERVE) == [
-        {"localRoot": "/proc/1/root/src", "remoteRoot": "/src"}
+def test_observe_mode_maps_the_mount_namespace_and_nothing_narrower() -> None:
+    """The editor sees the target's filesystem through ``/proc/<pid>/root``.
+
+    One entry and no narrower one beside it: a root guessed from ``argv`` is
+    ``/app/.venv/bin`` for a console script, and podbench's own image installs
+    under ``/app/.venv``, so such a mapping resolves to *this* container's copy
+    of the file rather than failing (issue #112).
+    """
+    assert python_path_mappings(1, Mode.OBSERVE) == [
+        {"localRoot": "/proc/1/root", "remoteRoot": "/"}
     ]
 
 
 def test_dev_mode_has_no_mappings_at_all() -> None:
     """Editor and interpreter are the same inodes, and a spurious mapping is
     the same silent wrong answer as a missing one: breakpoints never bind."""
-    assert python_path_mappings(1, "/src", Mode.DEV) == []
+    assert python_path_mappings(1, Mode.DEV) == []
 
 
 def test_debugpy_connects_rather_than_listens() -> None:
@@ -795,7 +801,7 @@ def test_debugpy_connects_rather_than_listens() -> None:
     ``127.0.0.1`` is right even in Observe mode — separate containers, one
     network namespace — so no port-forward is involved.
     """
-    config = debugpy_attach_configuration(1, name="x", port=5678, source_root="/src")
+    config = debugpy_attach_configuration(1, name="x", port=5678)
     assert config["connect"] == {"host": "127.0.0.1", "port": 5678}
     assert "listen" not in config
 
@@ -1028,7 +1034,7 @@ def test_a_python_target_emits_debugpy_with_the_observe_mapping(
 
     An amd64 Python service with debugpy on both sides: the configuration is a
     ``connect``, and its ``pathMappings`` carries the sysroot on the left and
-    the target's own path on the right.
+    the target's own root on the right.
     """
     proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
     code = main(
@@ -1044,7 +1050,7 @@ def test_a_python_target_emits_debugpy_with_the_observe_mapping(
     configurations = json.loads(captured.out)["configurations"]
     assert [entry["type"] for entry in configurations] == ["debugpy"]
     assert configurations[0]["pathMappings"] == [
-        {"localRoot": f"/proc/{PID}/root/src", "remoteRoot": "/src"}
+        {"localRoot": f"/proc/{PID}/root", "remoteRoot": "/"}
     ]
     # Nothing is listening yet, so the command that starts the server is printed
     # rather than run: it ptraces the workload and leaves a server inside it.

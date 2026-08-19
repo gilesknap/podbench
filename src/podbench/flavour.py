@@ -343,15 +343,33 @@ class Target:
 
         The script's directory first and the working directory second: an app
         started as ``python /src/app.py`` reports ``/src/app.py`` whatever its
-        cwd happens to be, and it is that spelling — not the cwd — that has to
-        appear on the right-hand side of a ``pathMappings`` entry.
+        cwd happens to be, so the cwd is the weaker answer of the two.
 
         >>> Target(1, Language.PYTHON, "/usr/bin/python3",
         ...        script="/src/app.py", cwd="/").source_root
         '/src'
+
+        A console script is the exception, and it is the ordinary shape for an
+        epics-containers IOC rather than a corner case: ``argv[1]`` is then a
+        generated shim in the venv's ``bin/``, a directory that holds no source
+        at all, and calling its parent a source root is a guess this module's
+        house rule forbids (issue #112).
+
+        >>> Target(1, Language.PYTHON, "/app/.venv/bin/python3",
+        ...        script="/app/.venv/bin/fastcs-example",
+        ...        cwd="/epics/ioc").source_root
+        '/epics/ioc'
+
+        Nothing derives a ``pathMappings`` entry from this any more:
+        :func:`podbench.vscode.python_path_mappings` maps the mount namespace,
+        which needs no root to be guessed at all.
         """
         if self.script and self.script.startswith("/"):
-            return str(Path(self.script).parent)
+            script = Path(self.script)
+            # A suffix-less file in `bin/` is a console entry point, never a
+            # module: `/app/.venv/bin/fastcs-example` is pip's generated shim.
+            if script.suffix == ".py" or script.parent.name != "bin":
+                return str(script.parent)
         return self.cwd
 
 

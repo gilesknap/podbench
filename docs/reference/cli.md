@@ -1140,12 +1140,31 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 | mode | whether the target shares this container's **mount namespace** — a `podbench dev` pod relaunches the app from the seat, so its process is on this side | attach vs launch, and whether `pathMappings` is populated **or empty** |
 | architecture | the target *binary*'s `e_machine`, not the node label | whether debugpy's attach-to-pid exists at all |
 
-`pathMappings` is the field with no error message: get it wrong and breakpoints
-simply never bind. In Observe mode the editor sees the source through
-`/proc/<pid>/root` and the debuggee reports its own path, so a mapping is
-required; in dev mode both are the same inodes and the mapping must be empty.
+`pathMappings` is the field with no error message, and it has two ways of being
+wrong: a mapping that binds nothing means breakpoints never bind, and a mapping
+that binds to the *wrong real file* means the editor shows confident, plausible,
+wrong source. In Observe mode the editor sees the target's filesystem through
+`/proc/<pid>/root` while the debuggee reports its own path, so a mapping is
+required, and podbench emits exactly one:
+
+```json
+"pathMappings": [{ "localRoot": "/proc/12/root", "remoteRoot": "/" }]
+```
+
+The **mount namespace**, not a guess at a source root. A root taken from `argv`
+is `/app/.venv/bin` for a console script — the ordinary shape for an
+epics-containers IOC — which holds no source, and podbench's own image installs
+under `/app/.venv` too, so that path exists on both sides with different
+contents and the wrong mapping resolves rather than failing (issue #112). In dev
+mode editor and interpreter are the same inodes and the mapping must be empty.
 `127.0.0.1` is right in both, because the seat and the app share the pod's
 network namespace — no port-forward, no tunnel.
+
+What has been verified of this is filesystem-level, on a DLS-alike IOC: the
+file a reported frame resolves to through `localRoot` is the target's own, and
+differs from this container's file at the same path. No VS Code client is
+driven anywhere in this project, so the adapter's own behaviour is not observed
+here.
 
 #### When a flavour cannot be emitted
 

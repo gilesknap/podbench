@@ -40,10 +40,11 @@ itself removed, so the sequence report 3.3 made load-bearing cannot drift
 between the CLI path and the DAP path.
 
 And ``pathMappings`` is **mode-dependent**, which is the one field here that
-fails without any error at all — breakpoints simply never bind. In Observe mode
-the target is another container, so the editor sees the source through
-``/proc/<pid>/root`` and the debuggee reports its own path: a mapping is
-required. In a ``dev`` pod editor and interpreter are the same container and
+fails without any error at all. In Observe mode the target is another
+container, so the editor sees the source through ``/proc/<pid>/root`` while the
+debuggee reports its own path: a mapping is required, and it maps the *mount
+namespace* — ``/proc/<pid>/root`` to ``/`` — rather than a root guessed from
+``argv``. In a ``dev`` pod editor and interpreter are the same container and
 the same inodes, so the mapping must be **empty**. Both spellings are emitted
 from the detected mode rather than from a flag, because a user cannot be
 expected to know which side of that line they are on.
@@ -752,26 +753,45 @@ def delve_configuration(
     return configuration
 
 
-def python_path_mappings(
-    pid: int, source_root: str | None, mode: Mode
-) -> list[dict[str, str]]:
+def python_path_mappings(pid: int, mode: Mode) -> list[dict[str, str]]:
     """The mapping debugpy needs, which is decided by the mode and nothing else.
 
-    Getting this wrong does not error — breakpoints simply never bind — so it
-    is derived from the detected mode rather than left to a flag.
+    Getting this wrong does not error, and there are two ways to be wrong: a
+    mapping that binds nothing means breakpoints simply never bind, and a
+    mapping that binds to the *wrong real file* means the editor shows
+    confident, plausible, wrong source. So it is derived from the detected mode
+    rather than left to a flag.
 
-    >>> python_path_mappings(1, "/src", Mode.OBSERVE)
-    [{'localRoot': '/proc/1/root/src', 'remoteRoot': '/src'}]
-    >>> python_path_mappings(1, "/src", Mode.DEV)
+    In Observe mode the answer is the mount namespace itself, which is true for
+    a script, a console script and an editable install alike — no root is
+    guessed, so none can be guessed wrongly.
+
+    >>> python_path_mappings(1, Mode.OBSERVE)
+    [{'localRoot': '/proc/1/root', 'remoteRoot': '/'}]
+    >>> python_path_mappings(1, Mode.DEV)
     []
+
+    ``/`` on the right is not the anti-pattern :func:`_parse_source_map`
+    refuses: that one is gdb re-applying its own ``substitute-path`` on every
+    display, which is a gdb behaviour and not a property of a root mapping.
     """
-    if mode is Mode.DEV or not source_root:
+    if mode is Mode.DEV:
         # Dev mode: editor and interpreter are the same container and the same
         # inodes, so any mapping at all is a spurious one.
         return []
-    return [
-        {"localRoot": f"{sysroot_path(pid)}{source_root}", "remoteRoot": source_root}
-    ]
+    # The namespace, never a narrower root — the same discipline gdbcmd states
+    # for the exec file ("String concatenation, never a path join: the exe link
+    # is absolute, and joining would discard the sysroot and silently read our
+    # own binary"), and the same failure. A root taken from `argv` is
+    # `/app/.venv/bin` for a console script, and podbench's own image installs
+    # under `/app/.venv` too, so that path exists on both sides with different
+    # contents: the wrong mapping *resolves* instead of failing, and the editor
+    # opens the seat's copy of the workload's frame (issue #112).
+    #
+    # One entry, and deliberately no narrower ones beside it: a second, more
+    # specific pair reintroduces exactly that collision for the paths it covers,
+    # and covers nothing this one does not.
+    return [{"localRoot": sysroot_path(pid), "remoteRoot": "/"}]
 
 
 def debugpy_attach_configuration(
@@ -779,7 +799,6 @@ def debugpy_attach_configuration(
     *,
     name: str,
     port: int = DEBUGPY_PORT,
-    source_root: str | None = None,
     mode: Mode = Mode.OBSERVE,
 ) -> dict[str, Any]:
     """Connect to a debugpy server running inside the target's interpreter.
@@ -791,11 +810,11 @@ def debugpy_attach_configuration(
     ``justMyCode`` is false because the interesting frames in a pod are usually
     somebody else's — a framework's request handler, an ORM's session teardown.
 
-    >>> config = debugpy_attach_configuration(1, name="x", source_root="/src")
+    >>> config = debugpy_attach_configuration(1, name="x")
     >>> config["connect"]
     {'host': '127.0.0.1', 'port': 5678}
     >>> config["pathMappings"]
-    [{'localRoot': '/proc/1/root/src', 'remoteRoot': '/src'}]
+    [{'localRoot': '/proc/1/root', 'remoteRoot': '/'}]
     """
     return {
         "name": name,
@@ -803,7 +822,7 @@ def debugpy_attach_configuration(
         "request": "attach",
         "connect": {"host": DEBUGPY_HOST, "port": port},
         "justMyCode": False,
-        "pathMappings": python_path_mappings(pid, source_root, mode),
+        "pathMappings": python_path_mappings(pid, mode),
     }
 
 
@@ -904,12 +923,10 @@ def configurations_for(
 def _debugpy_configurations(
     target: Target, mode: Mode, seat: Seat, *, port: int
 ) -> list[dict[str, Any]]:
-    source_root = target.source_root
     connect = debugpy_attach_configuration(
         target.pid,
         name=_name("connect to", target.label, Flavour.DEBUGPY),
         port=port,
-        source_root=source_root,
         mode=mode,
     )
     if mode is not Mode.DEV:
@@ -918,7 +935,6 @@ def _debugpy_configurations(
                 target.pid,
                 name=_name("attach to", target.label, Flavour.DEBUGPY),
                 port=port,
-                source_root=source_root,
                 mode=mode,
             )
         ]
