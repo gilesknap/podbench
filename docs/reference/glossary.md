@@ -361,9 +361,12 @@ ambient set
   seat that looks privileged and behaves unprivileged.
 
 AppArmor
-  A Linux security module that confines processes by profile. One of the four
-  {term}`blocker`s: a profile can deny ptrace between two domains, returning the same
-  {term}`EPERM` as everything else.
+  A Linux security module that confines processes by profile — one of the two
+  podbench names, beside SELinux, as the LSM {term}`blocker`. ptrace is denied
+  between two *different* labels, returning the same {term}`EPERM` as everything
+  else, so the report compares the seat's with the target's rather than judging
+  either alone. Which module owns the label is read from `/sys`:
+  `/proc/<pid>/attr/current` is a slot they share.
 
 bounding set
   The ceiling on the capabilities a process can ever hold. A capability here but not

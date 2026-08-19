@@ -19,24 +19,32 @@ from typing import cast
 
 import pytest
 
-from podbench.model import ATTACH_PROBE, SEIZE_PROBE, Blocker, Verdict
+from podbench.model import (
+    ATTACH_PROBE,
+    SEIZE_PROBE,
+    Blocker,
+    CapabilityReport,
+    Lsm,
+    Verdict,
+)
 from podbench.probe import (
     PTRACE_ATTACH,
     PTRACE_DETACH,
     PTRACE_SEIZE,
+    Attacher,
     AttachOutcome,
     CtypesAttacher,
     SkippedAttacher,
     derive_verdict,
     format_report,
-    main,
-    probe,
 )
+from podbench.probe import main as _main
+from podbench.probe import probe as _probe
 from podbench.proc import (
     Attribution,
     Credentials,
-    apparmor_profile,
     list_processes,
+    lsm_label,
     no_new_privs,
     proc_read_matrix,
     read_gid,
@@ -60,9 +68,64 @@ CAP_WITH_PTRACE = "00000000a80c25fb"
 CAP_WITHOUT_PTRACE = "00000000a80425fb"
 
 
+# A representative SELinux context from a p47-beamline RHEL9 node, and the one
+# the seat and its target both carried on 2026-08-19 - no MCS categories, both
+# sides identical, ptrace permitted. A matching pair is the normal case at DLS.
+SPC_T = "system_u:system_r:spc_t:s0"
+CONTAINER_T = "system_u:system_r:container_t:s0:c34,c721"
+
+
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+
+
+def sysfs_of(proc: Path) -> Path:
+    """The synthetic ``/sys`` built beside a synthetic ``/proc``.
+
+    Which LSM is active is a property of the *node*, so letting it default to
+    the host's ``/sys`` would assert whatever the machine happened to run - and
+    they disagree: the CI runners have AppArmor enabled, the k3s bed has it
+    compiled in and switched off, the beamline nodes run SELinux.
+    """
+    return proc.parent / "sys"
+
+
+def make_sys(root: Path, lsm: Lsm) -> Path:
+    """A ``/sys`` that answers :func:`podbench.proc.lsm_label`'s discriminator.
+
+    Both signals are written the way they were measured: selinuxfs mounted at
+    ``/sys/fs/selinux``, and AppArmor's module parameter reading ``Y`` or ``N``
+    (the k3s bed boots ``apparmor=0`` and reads ``N`` with the file present).
+    """
+    if lsm is Lsm.SELINUX:
+        (root / "fs" / "selinux").mkdir(parents=True, exist_ok=True)
+    enabled = "Y" if lsm is Lsm.APPARMOR else "N"
+    write(root / "module" / "apparmor" / "parameters" / "enabled", enabled + "\n")
+    return root
+
+
+def probe(
+    target_pid: int | None,
+    *,
+    proc: Path,
+    sysfs: Path | None = None,
+    attacher: Attacher | None = None,
+    node_name: str | None = None,
+) -> CapabilityReport:
+    """:func:`podbench.probe.probe`, pinned to the tree's own ``/sys``."""
+    return _probe(
+        target_pid,
+        proc=proc,
+        sysfs=sysfs_of(proc) if sysfs is None else sysfs,
+        attacher=attacher,
+        node_name=node_name,
+    )
+
+
+def main(args: list[str], *, proc: Path, attacher: Attacher | None = None) -> int:
+    """:func:`podbench.probe.main`, pinned the same way."""
+    return _main(args, proc=proc, sysfs=sysfs_of(proc), attacher=attacher)
 
 
 def make_status(
@@ -104,15 +167,24 @@ def make_proc(
     seccomp: int = 0,
     nnp: int = 0,
     yama: int | None = 1,
-    apparmor: str | None = "cri-containerd.apparmor.d (enforce)",
+    lsm: Lsm = Lsm.NONE,
+    label: str | None = None,
+    target_label: str | None = None,
     target_uid: int = 1000,
     target_reads: bool = True,
     target_tracer_pid: int = 0,
     self_gid: int | None = None,
     target_gid: int | None = None,
 ) -> Path:
-    """A synthetic /proc with our own container (pid 42) and a target (pid 1)."""
+    """A synthetic /proc with our own container (pid 42) and a target (pid 1).
+
+    ``lsm`` builds the matching ``/sys`` beside it, and defaults to "neither" -
+    the k3s bed's answer, and the one that keeps a test from asserting the
+    host's. ``target_label`` defaults to ``label``: containers in a pod share a
+    label, so a *mismatch* has to be asked for explicitly.
+    """
     proc = tmp_path / "proc"
+    make_sys(tmp_path / "sys", lsm)
 
     write(
         proc / "self" / "status",
@@ -127,8 +199,8 @@ def make_proc(
     )
     write(proc / "self" / "comm", "capreport\n")
     write(proc / "self" / "cgroup", OWN_CGROUP + "\n")
-    if apparmor is not None:
-        write(proc / "self" / "attr" / "current", apparmor + "\n")
+    if label is not None:
+        write(proc / "self" / "attr" / "current", label + "\n")
 
     if yama is not None:
         write(proc / "sys" / "kernel" / "yama" / "ptrace_scope", f"{yama}\n")
@@ -149,8 +221,9 @@ def make_proc(
     write(proc / "1" / "comm", "python3\n")
     write(proc / "1" / "cmdline", "python3\x00-u\x00-c\x00app\x00")
     write(proc / "1" / "cgroup", f"0::/../cri-containerd-{TARGET_CID}.scope\n")
-    if apparmor is not None:
-        write(proc / "1" / "attr" / "current", apparmor + "\n")
+    seen_by_target = label if target_label is None else target_label
+    if seen_by_target is not None:
+        write(proc / "1" / "attr" / "current", seen_by_target + "\n")
     if target_reads:
         write(proc / "1" / "maps", "6549010cd000-6549010ce000 r--p /usr/bin/python3\n")
         write(proc / "1" / "environ", "PODBENCH_SECRET_MARKER=s5-environ-canary\x00")
@@ -228,7 +301,7 @@ def test_readers_tolerate_missing_paths(tmp_path: Path) -> None:
     empty.mkdir()
     assert read_uid(1, proc=empty) is None
     assert yama_scope(proc=empty) is None
-    assert apparmor_profile("self", proc=empty) is None
+    assert lsm_label("self", proc=empty, sysfs=empty) == (Lsm.NONE, None)
     assert seccomp_mode(proc=empty) is None
     assert no_new_privs(proc=empty) is None
     assert self_capabilities(proc=empty).readable is False
@@ -285,9 +358,46 @@ def test_credentials_from_an_exec_that_answered_nothing() -> None:
     assert Credentials.from_status("cannot exec: permission denied") is None
 
 
-def test_apparmor_empty_attribute_means_unconfined(tmp_path: Path) -> None:
-    proc = make_proc(tmp_path, apparmor="")
-    assert apparmor_profile("self", proc=proc) == "unconfined"
+def test_an_empty_attribute_is_no_label_not_unconfined(tmp_path: Path) -> None:
+    """#104: "unconfined" is a state AppArmor spells itself.
+
+    Synthesising it for an empty slot is what made a node with no LSM at all
+    look like a confined one - and, with `_confined()` reading any other
+    string as confinement, made every SELinux seat look blocked.
+    """
+    proc = make_proc(tmp_path, label="")
+    assert lsm_label("self", proc=proc, sysfs=sysfs_of(proc)) == (Lsm.NONE, None)
+
+
+def test_the_lsm_is_read_from_sysfs_not_the_per_lsm_attributes(
+    tmp_path: Path,
+) -> None:
+    """The discriminator the plan proposed does not work on the target cluster.
+
+    Measured 2026-08-19 in a seat on a p47-beamline RHEL9 node: `attr/current`
+    held the SELinux context while *both* `attr/selinux/current` and
+    `attr/apparmor/current` read empty. So the per-LSM paths are written here
+    exactly as they were measured - empty - and the answer still has to be
+    SELinux.
+    """
+    proc = make_proc(tmp_path, lsm=Lsm.SELINUX, label=SPC_T)
+    write(proc / "self" / "attr" / "selinux" / "current", "")
+    write(proc / "self" / "attr" / "apparmor" / "current", "")
+
+    assert lsm_label("self", proc=proc, sysfs=sysfs_of(proc)) == (Lsm.SELINUX, SPC_T)
+
+
+def test_apparmor_compiled_in_but_switched_off_is_neither(tmp_path: Path) -> None:
+    """The k3s bed's shape: `apparmor=0` on the kernel command line, so the
+    module parameter is present and reads `N`, and there is no selinuxfs."""
+    proc = make_proc(tmp_path, lsm=Lsm.NONE)
+    assert lsm_label("self", proc=proc, sysfs=sysfs_of(proc))[0] is Lsm.NONE
+
+    apparmor = make_proc(tmp_path / "aa", lsm=Lsm.APPARMOR, label="unconfined")
+    assert lsm_label("self", proc=apparmor, sysfs=sysfs_of(apparmor)) == (
+        Lsm.APPARMOR,
+        "unconfined",
+    )
 
 
 def test_proc_read_matrix(tmp_path: Path) -> None:
@@ -518,41 +628,96 @@ def test_yama_scope_three_blocks_own_child(tmp_path: Path) -> None:
     assert report.verdict.value == 20
 
 
-def test_apparmor_blocks_own_child(tmp_path: Path) -> None:
+def test_a_label_alone_does_not_convict_the_scratch_attach(tmp_path: Path) -> None:
+    """#104: a forked child inherits our label, so there is no pair to compare.
+
+    This used to be `Blocker.APPARMOR` on the strength of one string, on a node
+    whose LSM is SELinux. The honest answer is that none of the known
+    mechanisms explains it - with the node's audit log named, since that is
+    where an LSM denial actually lands.
+    """
     report = probe(
         1,
-        proc=make_proc(tmp_path, seccomp=0, yama=1, apparmor="podbench-custom"),
+        proc=make_proc(tmp_path, seccomp=0, yama=1, lsm=Lsm.SELINUX, label=CONTAINER_T),
         attacher=attacher(child=EPERM),
+        node_name="cn01",
     )
-    assert report.blocker is Blocker.APPARMOR
+    assert report.blocker is Blocker.UNKNOWN
+    assert any("ausearch -m avc" in note and "cn01" in note for note in report.notes)
 
 
 def test_unclassified_structural_failure(tmp_path: Path) -> None:
     report = probe(
         1,
-        proc=make_proc(tmp_path, seccomp=0, yama=1, apparmor=""),
+        proc=make_proc(tmp_path, seccomp=0, yama=1),
         attacher=attacher(child=EPERM),
     )
     assert report.blocker is Blocker.UNKNOWN
+    # No LSM here, so no LSM homework: the old tail sent every reader to
+    # AppArmor regardless of whether the node had ever heard of it.
+    prose = " ".join(report.notes)
+    assert "neither SELinux nor AppArmor" in prose
+    assert "ausearch" not in prose
 
 
-def test_denied_despite_capability_is_apparmor(tmp_path: Path) -> None:
-    report = probe(
-        1,
-        proc=make_proc(tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0),
-        attacher=attacher(),
-    )
-    assert report.blocker is Blocker.APPARMOR
+def test_differing_labels_are_the_blocker_matching_ones_are_not(
+    tmp_path: Path,
+) -> None:
+    """The comparison is the whole check. Both halves are measured cases.
 
-
-def test_denied_despite_capability_unconfined_is_unknown(tmp_path: Path) -> None:
-    report = probe(
+    p47-blueapi-0 on 2026-08-19: seat and target both `spc_t:s0`, ptrace
+    permitted - so a matching pair must stay quiet, and calling it confinement
+    would have accused a working seat. A pair that genuinely differs - MCS
+    categories under SELinux, profiles under AppArmor - is denied exactly as
+    the old code claimed a lone label was.
+    """
+    matching = probe(
         1,
         proc=make_proc(
-            tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0, apparmor=""
+            tmp_path / "same",
+            self_uid=0,
+            capeff=CAP_WITH_PTRACE,
+            target_uid=0,
+            lsm=Lsm.SELINUX,
+            label=SPC_T,
         ),
         attacher=attacher(),
     )
+    assert matching.blocker is Blocker.UNKNOWN
+
+    differing = probe(
+        1,
+        proc=make_proc(
+            tmp_path / "differ",
+            self_uid=0,
+            capeff=CAP_WITH_PTRACE,
+            target_uid=0,
+            lsm=Lsm.SELINUX,
+            label=SPC_T,
+            target_label=CONTAINER_T,
+        ),
+        attacher=attacher(),
+        node_name="cn01",
+    )
+    assert differing.blocker is Blocker.LSM_MISMATCH
+    prose = " ".join(differing.notes)
+    assert "SELinux labels differ" in prose
+    assert CONTAINER_T in prose
+    assert "ausearch -m avc" in prose and "cn01" in prose
+
+
+def test_an_unreadable_target_label_is_not_a_mismatch(tmp_path: Path) -> None:
+    """A seat denied PTRACE_MODE_READ cannot read the target's label either.
+
+    Treating "we could not read it" as "it differs" would blame the LSM for
+    every credential failure - which is the shape #104 exists to stop.
+    """
+    proc = make_proc(
+        tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0, lsm=Lsm.SELINUX
+    )
+    write(proc / "self" / "attr" / "current", SPC_T + "\n")
+    report = probe(1, proc=proc, attacher=attacher())
+    assert report.lsm_label_target is None
     assert report.blocker is Blocker.UNKNOWN
 
 
@@ -583,8 +748,10 @@ def test_an_existing_tracer_outranks_a_uid_mismatch(tmp_path: Path) -> None:
         cap_sys_ptrace=True,
         yama=1,
         seccomp=0,
-        apparmor_self="cri-containerd.apparmor.d (enforce)",
-        apparmor_target="custom",
+        lsm=Lsm.SELINUX,
+        lsm_label=SPC_T,
+        lsm_label_target=CONTAINER_T,
+        node_name="cn01",
         self_uid=0,
         target_uid=1000,
         self_gid=0,
@@ -652,28 +819,33 @@ def test_skipped_probe_with_capability_names_no_blocker(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("seccomp", "yama", "apparmor", "expected"),
+    ("seccomp", "yama", "label", "expected"),
     [
-        (2, 1, "unconfined", Blocker.SECCOMP),
-        (0, 3, "unconfined", Blocker.YAMA_SCOPE),
+        (2, 1, None, Blocker.SECCOMP),
+        (0, 3, None, Blocker.YAMA_SCOPE),
         # Scope 2 is the one Yama setting with no descendant exemption, so a
         # scratch attach can fail on it — and it used to fall past this table
         # to "none of the known mechanisms accounts for it", with the scope
         # printed six lines above in the same report.
-        (0, 2, "unconfined", Blocker.YAMA_SCOPE),
-        (0, 1, "custom", Blocker.APPARMOR),
-        (0, None, "unconfined", Blocker.UNKNOWN),
+        (0, 2, None, Blocker.YAMA_SCOPE),
+        # This row read APPARMOR until #104. A label is not a verdict, and the
+        # child that failed here carries ours, so there is nothing to compare
+        # it with - the table must fall through.
+        (0, 1, CONTAINER_T, Blocker.UNKNOWN),
+        (0, None, None, Blocker.UNKNOWN),
     ],
 )
 def test_structural_classification(
-    seccomp: int, yama: int | None, apparmor: str, expected: Blocker
+    seccomp: int, yama: int | None, label: str | None, expected: Blocker
 ) -> None:
     _, blocker, _ = derive_verdict(
         cap_sys_ptrace=False,
         yama=yama,
         seccomp=seccomp,
-        apparmor_self=apparmor,
-        apparmor_target=apparmor,
+        lsm=Lsm.SELINUX if label else Lsm.NONE,
+        lsm_label=label,
+        lsm_label_target=label,
+        node_name="cn01",
         self_uid=1000,
         target_uid=1000,
         self_gid=1000,
@@ -764,8 +936,10 @@ def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
         cap_sys_ptrace=True,
         yama=2,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=1000,
         target_uid=1000,
         self_gid=1000,
@@ -783,8 +957,10 @@ def test_no_reads_but_our_own_child_attaches_is_launch_only() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
         self_gid=0,
@@ -806,8 +982,10 @@ def test_no_reads_and_no_ptrace_at_all_is_verdict_none() -> None:
         cap_sys_ptrace=False,
         yama=3,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
         self_gid=0,
@@ -832,8 +1010,10 @@ def test_a_partly_denied_matrix_still_points_at_the_sysroot() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
         self_gid=0,
@@ -856,8 +1036,10 @@ def test_read_only_does_not_claim_gdb_launch_it_never_measured() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=1000,
         target_uid=1000,
         self_gid=1000,
@@ -878,8 +1060,10 @@ def test_an_unmeasured_scratch_attach_does_not_claim_launch_only() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
         self_gid=0,
@@ -1105,7 +1289,16 @@ JSON_KEYS = {
     "yama_scope",
     "seccomp_mode",
     "no_new_privs",
+    # The name this string was published under before podbench knew which LSM
+    # it had read. Kept emitting, because the versioning rule cuts both ways:
+    # an older launcher still finds the seat's label where it expects it.
     "apparmor_profile",
+    # ...and the same string under the name that says what it is, beside the
+    # LSM it belongs to and the target's label - the only comparison with any
+    # content in it (#104).
+    "lsm",
+    "lsm_label",
+    "lsm_label_target",
     "self_uid",
     "target_uid",
     # Peers of the two above, not refinements of them: __ptrace_may_access()
@@ -1211,6 +1404,47 @@ def test_a_fallback_attach_admits_the_pause_it_cost(tmp_path: Path) -> None:
     text = format_report(report, False)
     assert "OK via PTRACE_ATTACH" in text
     assert "brief - PTRACE_ATTACH stopped it until the probe detached" in text
+
+
+def test_the_report_names_the_lsm_that_is_there_and_prints_both_labels(
+    tmp_path: Path,
+) -> None:
+    """#104: the heading said "AppArmor" whatever the node ran.
+
+    All four shapes, because the heading *is* the claim: the pair is printed
+    whether or not it matches, so a reader can check the comparison instead of
+    taking a verdict on trust.
+    """
+
+    def rows(lsm: Lsm, label: str | None, target_label: str | None = None) -> str:
+        proc = make_proc(
+            tmp_path / f"{lsm.value}-{target_label}",
+            self_uid=1000,
+            target_uid=1000,
+            yama=0,
+            lsm=lsm,
+            label=label,
+            target_label=target_label,
+        )
+        return format_report(probe(1, proc=proc, attacher=attacher()), False)
+
+    matching = rows(Lsm.SELINUX, SPC_T)
+    assert f"SELinux                    {SPC_T}" in matching
+    assert f"SELinux                    {SPC_T} (same as tracer)" in matching
+    assert "AppArmor" not in matching
+
+    differing = rows(Lsm.SELINUX, SPC_T, CONTAINER_T)
+    assert f"SELinux                    {CONTAINER_T} (MISMATCH)" in differing
+
+    apparmor = rows(Lsm.APPARMOR, "cri-containerd.apparmor.d (enforce)")
+    assert "AppArmor                   cri-containerd.apparmor.d (enforce)" in apparmor
+    assert "SELinux" not in apparmor
+
+    # The bed's shape, and the one the old report could not express: no LSM row
+    # for the target, because there is no label to compare.
+    neither = rows(Lsm.NONE, None)
+    assert "LSM                        none - neither SELinux nor AppArmor" in neither
+    assert "AppArmor  " not in neither
 
 
 def test_human_report_without_target(tmp_path: Path) -> None:

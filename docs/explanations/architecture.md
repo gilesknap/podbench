@@ -246,7 +246,8 @@ letting it be discovered.
 ## What the probe is for
 
 Four unrelated subsystems refuse `PTRACE_ATTACH` with the same `EPERM`: a
-missing capability, Yama's `ptrace_scope`, a seccomp filter, and AppArmor. A
+missing capability, Yama's `ptrace_scope`, a seccomp filter, and the node's
+LSM. A
 previous hand-rolled attempt at this tool reached same-UID and still could not
 tell which one had said no. Naming the blocker is the point of the whole probe —
 "denied by Yama (ptrace_scope=1)" is actionable; "ptrace: Operation not

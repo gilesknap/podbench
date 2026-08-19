@@ -919,8 +919,10 @@ whose own forked child refuses to be traced can still read all three gated paths
 at the target's uid. `child_attach_ok` in the JSON is the only thing that claims
 that rung.
 
-It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
-profile of both itself and the target, and `yama/ptrace_scope`; then runs a
+It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the security
+label of both itself and the target — under the name of whichever LSM the node
+runs, SELinux or AppArmor, and reported as a *pair* because only a difference
+between them denies anything — and `yama/ptrace_scope`; then runs a
 scratch `PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a
 failure there is structural) and a live attach on the target; then a six-path
 `/proc` read matrix.

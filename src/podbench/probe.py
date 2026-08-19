@@ -1,9 +1,10 @@
 """``capreport`` — name the mechanism that denied ptrace, before it costs an
 afternoon.
 
-Four unrelated subsystems (the credential check, Yama, seccomp and AppArmor)
-refuse ``PTRACE_ATTACH`` with the same bare ``EPERM``, and gdb makes it worse
-by reporting a stale ``ENOTTY`` as ``ptrace: Inappropriate ioctl for device``
+Four unrelated subsystems (the credential check, Yama, seccomp and whichever
+LSM the node runs) refuse ``PTRACE_ATTACH`` with the same bare ``EPERM``, and
+gdb makes it worse by reporting a stale ``ENOTTY`` as
+``ptrace: Inappropriate ioctl for device``
 (spike S5, finding 4). So the probe never infers the answer from a failure: it
 reads the kernel's own accounting, then measures ptrace twice.
 
@@ -16,8 +17,8 @@ The two measurements are the whole trick. The first attaches to a child the
 probe **forked itself** — the credential check always passes against your own
 child and Yama exempts descendants below ``ptrace_scope=2``, so a failure there
 cannot be a policy decision about the target and must be structural: a seccomp
-filter rejecting the syscall, ``ptrace_scope`` 2 or 3, or AppArmor. Only if
-that succeeds is a failure on the target informative about the target.
+filter rejecting the syscall, ``ptrace_scope`` 2 or 3, or the node's LSM. Only
+if that succeeds is a failure on the target informative about the target.
 
 Exit codes are :class:`~podbench.model.Verdict`'s values — 0 live attach,
 10 read-only, 15 launch-only, 20 nothing — so a shell can branch without
@@ -46,18 +47,21 @@ from .model import (
     TARGET_CID_ENV,
     Blocker,
     CapabilityReport,
+    Lsm,
     Verdict,
     describe_gated_fallback,
+    describe_lsm_remedy,
     describe_pause,
     describe_reads,
     ptrace_reads_ok,
 )
 from .proc import (
     DEFAULT_PROC,
-    apparmor_profile,
+    DEFAULT_SYS,
     candidate_note,
     debug_candidates,
     env_target_container_id,
+    lsm_label,
     no_new_privs,
     proc_read_matrix,
     read_gid,
@@ -436,6 +440,7 @@ def probe(
     target_pid: int | None,
     *,
     proc: Path = DEFAULT_PROC,
+    sysfs: Path = DEFAULT_SYS,
     attacher: Attacher | None = None,
     node_name: str | None = None,
     extra_notes: Sequence[str] = (),
@@ -476,14 +481,14 @@ def probe(
         notes.append("no NoNewPrivs field in /proc/self/status; assumed unset")
 
     yama = yama_scope(proc=proc)
-    aa_self = apparmor_profile("self", proc=proc)
-    aa_target: str | None = None
+    lsm, label_self = lsm_label("self", proc=proc, sysfs=sysfs)
+    label_target: str | None = None
     target_uid: int | None = None
     target_gid: int | None = None
     tracer_pid: int | None = None
     reads: dict[str, bool] = {}
     if target_pid is not None:
-        aa_target = apparmor_profile(target_pid, proc=proc)
+        _, label_target = lsm_label(target_pid, proc=proc, sysfs=sysfs)
         target_uid = read_uid(target_pid, proc=proc)
         # `status` needs no ptrace permission, so this is readable from a seat
         # that can do nothing else to the target - which is the whole point:
@@ -511,12 +516,16 @@ def probe(
         )
     )
 
+    node = node_name if node_name is not None else _node_name_from_env()
+
     verdict, blocker, derived = derive_verdict(
         cap_sys_ptrace=caps.sys_ptrace_effective,
         yama=yama,
         seccomp=seccomp,
-        apparmor_self=aa_self,
-        apparmor_target=aa_target,
+        lsm=lsm,
+        lsm_label=label_self,
+        lsm_label_target=label_target,
+        node_name=node,
         self_uid=self_uid,
         target_uid=target_uid,
         self_gid=self_gid,
@@ -537,13 +546,15 @@ def probe(
         yama_scope=yama,
         seccomp_mode=seccomp,
         no_new_privs=nnp,
-        apparmor_profile=aa_self,
+        lsm=lsm,
+        lsm_label=label_self,
+        lsm_label_target=label_target,
         self_uid=self_uid,
         target_uid=target_uid,
         self_gid=self_gid,
         target_gid=target_gid,
         target_pid=target_pid,
-        node_name=node_name if node_name is not None else _node_name_from_env(),
+        node_name=node,
         child_attach_ok=child.measured_ok,
         target_attach_ok=(
             target_attach.measured_ok if target_attach is not None else None
@@ -624,8 +635,10 @@ def derive_verdict(
     cap_sys_ptrace: bool,
     yama: int | None,
     seccomp: int,
-    apparmor_self: str | None,
-    apparmor_target: str | None,
+    lsm: Lsm,
+    lsm_label: str | None,
+    lsm_label_target: str | None,
+    node_name: str | None,
     self_uid: int,
     target_uid: int | None,
     self_gid: int,
@@ -653,7 +666,8 @@ def derive_verdict(
         blocker, structural_notes = _classify_structural(
             seccomp=seccomp,
             yama=yama,
-            apparmor_self=apparmor_self,
+            lsm=lsm,
+            node_name=node_name,
             cap_sys_ptrace=cap_sys_ptrace,
             child=child,
         )
@@ -689,8 +703,10 @@ def derive_verdict(
             target_gid=target_gid,
             tracer_pid=tracer_pid,
             yama=yama,
-            apparmor_self=apparmor_self,
-            apparmor_target=apparmor_target,
+            lsm=lsm,
+            lsm_label=lsm_label,
+            lsm_label_target=lsm_label_target,
+            node_name=node_name,
             cap_sys_ptrace=cap_sys_ptrace,
         )
         notes.extend(denial_notes)
@@ -732,7 +748,8 @@ def _classify_structural(
     *,
     seccomp: int,
     yama: int | None,
-    apparmor_self: str | None,
+    lsm: Lsm,
+    node_name: str | None,
     cap_sys_ptrace: bool,
     child: AttachOutcome,
 ) -> tuple[Blocker, list[str]]:
@@ -765,8 +782,11 @@ def _classify_structural(
             "descendant, so `gdb ./prog` is refused as well"
         )
         return Blocker.YAMA_SCOPE, notes
-    if _confined(apparmor_self):
-        return Blocker.APPARMOR, notes
+    # No LSM arm here, and deliberately: a forked child inherits our own label,
+    # so there is no pair to compare and naming the LSM would be the verdict
+    # off one label that #104 removed. What the reader gets instead is where to
+    # find the denial if there was one.
+    notes.append(describe_lsm_remedy(lsm, node_name))
     return Blocker.UNKNOWN, notes
 
 
@@ -778,8 +798,10 @@ def _classify_denial(
     target_gid: int | None,
     tracer_pid: int | None,
     yama: int | None,
-    apparmor_self: str | None,
-    apparmor_target: str | None,
+    lsm: Lsm,
+    lsm_label: str | None,
+    lsm_label_target: str | None,
+    node_name: str | None,
     cap_sys_ptrace: bool,
 ) -> tuple[Blocker, list[str]]:
     if tracer_pid:
@@ -791,18 +813,20 @@ def _classify_denial(
         return Blocker.ALREADY_TRACED, [
             f"pid {tracer_pid} is already tracing this process, so the kernel "
             "refuses a second tracer. Nothing about this container's uid, "
-            "capabilities, Yama or AppArmor is implicated"
+            "capabilities, Yama or its security label is implicated"
         ]
     if cap_sys_ptrace:
-        if _confined(apparmor_self) or _confined(apparmor_target):
-            return Blocker.APPARMOR, [
-                f"our profile is {apparmor_self!r} and the target's is "
-                f"{apparmor_target!r}; the containerd default profile permits "
-                "ptrace only between peers in the SAME profile"
+        if _labels_differ(lsm_label, lsm_label_target):
+            return Blocker.LSM_MISMATCH, [
+                f"{lsm.title} labels differ: ours is {lsm_label!r} and the "
+                f"target's is {lsm_label_target!r}; ptrace is permitted within "
+                "one label, not across two",
+                describe_lsm_remedy(lsm, node_name),
             ]
         return Blocker.UNKNOWN, [
             "CAP_SYS_PTRACE is effective and our own child attached fine, so "
-            "this is not a capability problem"
+            "this is not a capability problem",
+            describe_lsm_remedy(lsm, node_name),
         ]
     if target_uid is None:
         return Blocker.NO_CAP_SYS_PTRACE, [
@@ -839,15 +863,31 @@ def _classify_denial(
             "container, so no securityContext change fixes it. The target can "
             "opt in with prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)"
         ]
+    # The tail that used to send every reader to "check AppArmor and user
+    # namespaces" - on nodes that run SELinux, and on a bed that runs neither.
+    # It now names whatever is actually there, and where its log is (#104).
     return Blocker.UNKNOWN, [
         "same uid and gid, no existing tracer, no Yama restriction and no "
-        "capability in play, yet attach was refused; check AppArmor and user "
-        "namespaces"
+        "capability in play, yet attach was refused"
+        + (
+            f"; the {lsm.title} labels match ({lsm_label!r}), so the label is "
+            "not the reason"
+            if lsm is not Lsm.NONE and not _labels_differ(lsm_label, lsm_label_target)
+            else ""
+        ),
+        describe_lsm_remedy(lsm, node_name),
     ]
 
 
-def _confined(profile: str | None) -> bool:
-    return profile is not None and profile != "unconfined"
+def _labels_differ(label: str | None, target_label: str | None) -> bool:
+    """Whether two LSM labels are a *pair* that disagrees.
+
+    Both sides must be known. A missing label is "we could not read it", which
+    is the ordinary answer for a target the seat has no PTRACE_MODE_READ on -
+    exactly the seat that is already being denied - so treating absence as
+    difference would blame the LSM for every credential failure.
+    """
+    return label is not None and target_label is not None and label != target_label
 
 
 def format_report(
@@ -889,7 +929,18 @@ def _json_payload(
         "yama_scope": report.yama_scope,
         "seccomp_mode": report.seccomp_mode,
         "no_new_privs": report.no_new_privs,
-        "apparmor_profile": report.apparmor_profile,
+        # `apparmor_profile` was the published name for this string back when
+        # podbench believed it was always an AppArmor profile. It is kept, and
+        # kept meaning "the seat's label", because the versioning rule cuts
+        # both ways: an older launcher reads it and a newer one still parses an
+        # older seat's report. The LSM it belongs to, and the target's label to
+        # compare it with, are new keys - so an older launcher ignores them and
+        # a newer one reads their absence as "this seat is older than the
+        # question", which `Lsm.NONE` and `None` say honestly (#104).
+        "apparmor_profile": report.lsm_label,
+        "lsm": report.lsm.value,
+        "lsm_label": report.lsm_label,
+        "lsm_label_target": report.lsm_label_target,
         "self_uid": report.self_uid,
         "target_uid": report.target_uid,
         # Added after the shape was published, so every consumer must treat a
@@ -939,7 +990,11 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
         f"({SECCOMP_MEANINGS.get(report.seccomp_mode, 'unknown')})",
     )
     kv("NoNewPrivs", int(report.no_new_privs))
-    kv("AppArmor", report.apparmor_profile or "unavailable")
+    # Under the LSM's own name, because the generic attribute this comes from
+    # is shared and podbench used to attribute it to AppArmor wherever it read
+    # (#104). The target's label gets its own row below, next to the uid and
+    # gid it is compared exactly like.
+    kv(report.lsm.title, _label_text(report.lsm, report.lsm_label))
     kv("Yama ptrace_scope", _yama_text(report.yama_scope))
     kv("node", report.node_name or "unknown")
 
@@ -947,6 +1002,8 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
         lines.append(f"TARGET (pid {report.target_pid})")
         kv("uid", report.target_uid if report.target_uid is not None else "?")
         kv("gid", report.target_gid if report.target_gid is not None else "?")
+        if report.lsm is not Lsm.NONE:
+            kv(report.lsm.title, _target_label_text(report))
         ok = sum(1 for value in report.proc_reads.values() if value)
         detail = " ".join(
             f"{name}={'ok' if value else 'DENIED'}"
@@ -993,6 +1050,23 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
     return "\n".join(lines)
 
 
+def _label_text(lsm: Lsm, label: str | None) -> str:
+    if lsm is Lsm.NONE:
+        # Said out loud rather than left blank: "no LSM" is the answer that
+        # stops a reader hunting for an AppArmor profile that cannot exist.
+        return "none - neither SELinux nor AppArmor on this node"
+    return label or "no label"
+
+
+def _target_label_text(report: CapabilityReport) -> str:
+    label = report.lsm_label_target
+    if label is None:
+        return "unreadable"
+    if report.lsm_label is None:
+        return label
+    return f"{label} ({'same as tracer' if label == report.lsm_label else 'MISMATCH'})"
+
+
 def _yn(value: bool) -> str:
     return "yes" if value else "no"
 
@@ -1013,13 +1087,14 @@ def main(
     args: Sequence[str] | None = None,
     *,
     proc: Path = DEFAULT_PROC,
+    sysfs: Path = DEFAULT_SYS,
     attacher: Attacher | None = None,
 ) -> int:
     """Run the probe and print the report. Returns the verdict's exit code.
 
-    ``proc`` and ``attacher`` are seams for testing against a synthetic tree;
-    the CLI passes neither, which is why the app is built here rather than at
-    import time: the command closes over them.
+    ``proc``, ``sysfs`` and ``attacher`` are seams for testing against a
+    synthetic tree; the CLI passes none of them, which is why the app is built
+    here rather than at import time: the command closes over them.
     """
     app = new_app()
 
@@ -1054,6 +1129,7 @@ def main(
                 container_id,
                 json_output=json_output,
                 proc=proc,
+                sysfs=sysfs,
                 attacher=attacher,
             )
         )
@@ -1070,6 +1146,7 @@ def _run(
     *,
     json_output: bool,
     proc: Path,
+    sysfs: Path,
     attacher: Attacher | None,
 ) -> int:
     notes: list[str] = []
@@ -1077,7 +1154,7 @@ def _run(
         pid, discovery_notes = _discover_target(container_id, proc=proc)
         notes.extend(discovery_notes)
 
-    report = probe(pid, proc=proc, attacher=attacher, extra_notes=notes)
+    report = probe(pid, proc=proc, sysfs=sysfs, attacher=attacher, extra_notes=notes)
     print(format_report(report, json_output, inventory()))
     return report.verdict.value
 

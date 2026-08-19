@@ -33,12 +33,14 @@ from .model import (
     PTRACE_READ_PATHS,
     TARGET_CID_ENV,
     WORLD_READ_PATHS,
+    Lsm,
     ProcInfo,
 )
 
 __all__ = [
     "CAP_SYS_PTRACE_BIT",
     "DEFAULT_PROC",
+    "DEFAULT_SYS",
     "DELETED_SUFFIX",
     "NAMED_IN_NOTE",
     "READ_MATRIX_PATHS",
@@ -46,7 +48,6 @@ __all__ = [
     "Capabilities",
     "Credentials",
     "ProcessListing",
-    "apparmor_profile",
     "candidate_note",
     "debug_candidates",
     "env_host_network",
@@ -54,6 +55,7 @@ __all__ = [
     "env_target_container_id",
     "is_shell",
     "list_processes",
+    "lsm_label",
     "no_new_privs",
     "proc_read_matrix",
     "ptrace_readable",
@@ -84,6 +86,11 @@ __all__ = [
 
 DEFAULT_PROC = Path("/proc")
 """Where ``/proc`` is mounted. A parameter so tests can use a synthetic tree."""
+
+DEFAULT_SYS = Path("/sys")
+"""Where ``/sys`` is mounted. Separate from :data:`DEFAULT_PROC` because which
+LSM is active is a property of the *node*, and only sysfs answers it - see
+:func:`lsm_label`."""
 
 CAP_SYS_PTRACE_BIT = 19
 """CAP_SYS_PTRACE's bit position in the 64-bit capability masks."""
@@ -600,19 +607,49 @@ def yama_scope(*, proc: Path = DEFAULT_PROC) -> int | None:
     return _parse_int(_read_text(proc / "sys" / "kernel" / "yama" / "ptrace_scope"))
 
 
-def apparmor_profile(
-    pid: int | str = "self", *, proc: Path = DEFAULT_PROC
-) -> str | None:
-    """The AppArmor profile confining a process.
+def lsm_label(
+    pid: int | str = "self",
+    *,
+    proc: Path = DEFAULT_PROC,
+    sysfs: Path = DEFAULT_SYS,
+) -> tuple[Lsm, str | None]:
+    """Which LSM is active on this node, and the label it gives ``pid``.
 
-    ``None`` means the attribute could not be read (no AppArmor, or denied);
-    an empty attribute means the process is genuinely unconfined.
+    ``/proc/<pid>/attr/current`` is one slot shared by every label-based LSM,
+    so the string in it does not say whose it is. podbench read it as an
+    AppArmor profile, which on the RHEL9 nodes it runs on printed an SELinux
+    context under an "AppArmor" heading (#104).
+
+    **The LSM is identified from sysfs, not from the per-LSM attribute files.**
+    The obvious discriminator - ``attr/selinux/current`` versus
+    ``attr/apparmor/current`` - does not work. Measured 2026-08-19 in a seat on
+    a p47-beamline RHEL9 node: ``attr/current`` held the context while *both*
+    per-LSM paths read empty. The k3s bed answers the same way from the other
+    end: no ``/sys/fs/selinux`` at all, ``apparmor`` compiled in but disabled,
+    an ``attr/apparmor`` directory present regardless, and ``attr/current``
+    failing outright with ``EINVAL``.
+
+    ``None`` for the label means "no label" - absent, unreadable or empty. It
+    is deliberately *not* rendered as "unconfined": AppArmor spells that state
+    itself, and inventing it for an empty slot is how a node with no LSM came
+    to look like a confined one.
     """
     text = _read_text(_pid_dir(pid, proc) / "attr" / "current")
-    if text is None:
-        return None
-    profile = text.replace("\x00", "").strip()
-    return profile or "unconfined"
+    label = None if text is None else text.replace("\x00", "").strip() or None
+    return _active_lsm(sysfs=sysfs), label
+
+
+def _active_lsm(*, sysfs: Path = DEFAULT_SYS) -> Lsm:
+    if (sysfs / "fs" / "selinux").is_dir():
+        # selinuxfs is mounted only where SELinux is enabled, and the seat sees
+        # it: it is the one signal that was present on the measured node.
+        return Lsm.SELINUX
+    enabled = _read_text(sysfs / "module" / "apparmor" / "parameters" / "enabled")
+    if enabled is not None and enabled.strip().upper().startswith("Y"):
+        # The parameter exists wherever AppArmor is compiled in and reads `N`
+        # when it is off - which is how the k3s bed is booted (`apparmor=0`).
+        return Lsm.APPARMOR
+    return Lsm.NONE
 
 
 def seccomp_mode(*, proc: Path = DEFAULT_PROC) -> int | None:

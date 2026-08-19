@@ -65,6 +65,7 @@ from .model import (
     Blocker,
     CapabilityReport,
     ContainerRef,
+    Lsm,
     PodRef,
     Rung,
     Verdict,
@@ -1506,13 +1507,13 @@ def id_correction(
       CAP_SYS_PTRACE, which is exempt from the credential check entirely -
       "correcting" it would trade a capability for a group.
 
-    >>> from podbench.model import Blocker, CapabilityReport, Verdict
+    >>> from podbench.model import Blocker, CapabilityReport, Lsm, Verdict
     >>> def report(**kw):
     ...     return CapabilityReport(
     ...         verdict=Verdict.NONE, blocker=Blocker.GID_MISMATCH,
     ...         cap_sys_ptrace=False, cap_bounding_sys_ptrace=False,
     ...         yama_scope=0, seccomp_mode=0, no_new_privs=False,
-    ...         apparmor_profile=None, target_pid=1, **kw)
+    ...         lsm=Lsm.NONE, lsm_label=None, target_pid=1, **kw)
     >>> id_correction(report(self_uid=1000, self_gid=0,
     ...                      target_uid=1000, target_gid=1000))
     (1000, 1000)
@@ -2117,7 +2118,16 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         yama_scope=_as_int(payload.get("yama_scope")),
         seccomp_mode=_as_int(payload.get("seccomp_mode")) or 0,
         no_new_privs=bool(payload.get("no_new_privs")),
-        apparmor_profile=_as_str(payload.get("apparmor_profile")),
+        # `lsm` and `lsm_label` are the names since #104; `apparmor_profile`
+        # is the name the same string was published under before podbench knew
+        # which LSM it had read, and is still what an older seat sends. Falling
+        # back to it keeps a current launcher honest about an old image, and
+        # `Lsm.NONE` for a seat that never said is the same "older than the
+        # question" silence `self_gid` and `attach_method` use.
+        lsm=_lsm_from(payload.get("lsm")),
+        lsm_label=_as_str(payload.get("lsm_label"))
+        or _as_str(payload.get("apparmor_profile")),
+        lsm_label_target=_as_str(payload.get("lsm_label_target")),
         self_uid=_as_int(payload.get("self_uid")) or 0,
         target_uid=_as_int(payload.get("target_uid")),
         # Absent from an image older than #103, and `None` has to survive that:
@@ -2138,6 +2148,20 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         proc_reads=reads,
         notes=notes,
     )
+
+
+def _lsm_from(value: object) -> Lsm:
+    """The LSM the seat named, or :attr:`Lsm.NONE` for a seat that named none.
+
+    A seat older than #104 sends no ``lsm`` key at all, and "this image never
+    said" is indistinguishable from "no LSM here" as far as the launcher can
+    act on it: neither is grounds for reporting a label mismatch, which is the
+    only thing the field decides.
+    """
+    try:
+        return Lsm(str(value))
+    except ValueError:
+        return Lsm.NONE
 
 
 def _verdict_from(value: object) -> Verdict | None:

@@ -414,7 +414,8 @@ The report is six lines of *measured* capability, not of requested capability:
   NSS identity the exec half does not.
 
 When ptrace is denied, the report names *which* of the four mechanisms said no —
-missing capability, Yama's `ptrace_scope`, seccomp or AppArmor — because all four
+missing capability, Yama's `ptrace_scope`, seccomp or the node's LSM — because
+all four
 return the same `EPERM`, and that naming is the point of the whole probe.
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`

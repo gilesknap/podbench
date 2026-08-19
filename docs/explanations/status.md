@@ -106,5 +106,5 @@ build, which stops it recurring but does not retag what is already in the
 registry.
 
 The security-side gaps — the untested seccomp branch of the capability probe,
-and the assumption that every container on a node shares one AppArmor profile —
-are listed under *Unproven areas* in the [Security model](security.md).
+and an LSM label mismatch never having been observed — are listed under
+*Unproven areas* in the [Security model](security.md).

@@ -185,13 +185,20 @@ Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
    it, a DLS node denied it even on a self-forked child (2026-08-18), so only
    `capreport` can say which node you are on. It blocks
    `personality(ADDR_NO_RANDOMIZE)` either way, so gdb cannot disable ASLR;
-4. **AppArmor** — a profile denying ptrace between the two domains. Everything
-   observed ran under `cri-containerd.apparmor.d (enforce)`, which permits
-   ptrace between peers *in the same profile*; a target with a custom profile
-   breaks that.
+4. **the node's LSM** — SELinux or AppArmor, denying ptrace between two
+   *different* labels. Which one is active is read from `/sys` (selinuxfs, or
+   AppArmor's `enabled` parameter), because `/proc/<pid>/attr/current` is a
+   slot they share and the string in it does not say whose it is. A label on
+   its own decides nothing: containers in a pod normally carry the same one,
+   and ptrace is permitted within it. `capreport` therefore prints the seat's
+   label and the target's and names a blocker only when they *differ* —
+   differing MCS categories under SELinux, differing profiles under AppArmor.
+   The denial is logged on the node and nowhere the pod can read, so the report
+   names the node and the command: `ausearch -m avc -ts recent` under SELinux,
+   `dmesg | grep -i apparmor` under AppArmor.
 
 All four return `EPERM`. `capreport` reads the capability sets, `Seccomp`,
-`NoNewPrivs`, both AppArmor profiles and the Yama scope, then runs a scratch
+`NoNewPrivs`, both security labels and the Yama scope, then runs a scratch
 `PTRACE_ATTACH` on its own forked child — always permitted by Yama, so a failure
 *there* is structural — and a live attach on the target. The live one is a
 `PTRACE_SEIZE`, which takes the identical permission check and leaves the
@@ -428,10 +435,11 @@ Stated so nobody relies on them:
   filter branch itself is no longer unproven: it fired at DLS on 2026-08-18,
   under a `RuntimeDefault` profile that denies ptrace, and named the right
   mechanism.
-* **AppArmor uniformity is an assumption.** Every container observed shared one
-  profile, and ptrace worked because that profile permits ptrace between peers
-  within it. A custom profile on the target breaks that, and the diagnostic text
-  for that case has never been seen in the field.
+* **A differing LSM label has never been seen in the field.** Every pair
+  measured matched — `cri-containerd.apparmor.d (enforce)` on the spike nodes,
+  `system_u:system_r:spc_t:s0` on both sides at DLS on 2026-08-19 — so the
+  comparison has only ever answered "same". The mismatch arm, and the audit-log
+  advice it prints, are untested against a real refusal.
 * **Targets in user namespaces**, and targets with unusual UID mappings, were
   never tested.
 * **Behaviour through konnectivity or an API gateway** is unknown; every

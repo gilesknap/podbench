@@ -37,6 +37,7 @@ __all__ = [
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
+    "Lsm",
     "PodRef",
     "ProcInfo",
     "Rung",
@@ -44,6 +45,7 @@ __all__ = [
     "as_dict",
     "describe_credentials",
     "describe_gated_fallback",
+    "describe_lsm_remedy",
     "describe_pause",
     "describe_reads",
     "image_tag_for",
@@ -488,6 +490,58 @@ def measured_verdict(
     return Verdict.NONE
 
 
+class Lsm(enum.Enum):
+    """Which label-based Linux Security Module owns ``/proc/<pid>/attr/current``.
+
+    That attribute is one slot shared by every such LSM, so the string in it
+    does not say whose it is. podbench printed it under an "AppArmor" heading
+    and treated any non-``unconfined`` value as confinement, which on the RHEL9
+    nodes it is deployed to reported an SELinux context as an AppArmor profile
+    and made every seat read as confined (#104).
+    """
+
+    SELINUX = "selinux"
+    APPARMOR = "apparmor"
+    NONE = "none"
+    """No label-based LSM is active on this node - which is a real answer, and
+    the one the k3s test bed gives (``apparmor=0`` on its kernel command line,
+    no selinuxfs). A report that cannot say this ends up advising the reader to
+    go and check an LSM that is not there."""
+
+    @property
+    def title(self) -> str:
+        """The LSM's name as it is spelled in its own documentation.
+
+        >>> Lsm.SELINUX.title, Lsm.APPARMOR.title, Lsm.NONE.title
+        ('SELinux', 'AppArmor', 'LSM')
+        """
+        return {Lsm.SELINUX: "SELinux", Lsm.APPARMOR: "AppArmor", Lsm.NONE: "LSM"}[self]
+
+
+def describe_lsm_remedy(lsm: Lsm, node_name: str | None) -> str:
+    """Where to go and look for an LSM denial, or why there is nowhere to look.
+
+    An LSM refusal is logged on the **node**, never in the pod: the seat sees
+    the same bare ``EPERM`` as every other mechanism. So the only actionable
+    thing podbench can say is the command and the machine to run it on - and it
+    already knows the machine, because :attr:`CapabilityReport.node_name` is on
+    the report (``PODBENCH_NODE_NAME``).
+
+    >>> describe_lsm_remedy(Lsm.SELINUX, "cn01")
+    'SELinux denials are logged on node cn01: `ausearch -m avc -ts recent`'
+    >>> describe_lsm_remedy(Lsm.APPARMOR, None)
+    'AppArmor denials are logged on the node: `dmesg | grep -i apparmor`'
+    >>> describe_lsm_remedy(Lsm.NONE, "cn01")
+    'this node runs neither SELinux nor AppArmor'
+    """
+    where = f"node {node_name}" if node_name else "the node"
+    if lsm is Lsm.SELINUX:
+        return f"SELinux denials are logged on {where}: `ausearch -m avc -ts recent`"
+    if lsm is Lsm.APPARMOR:
+        return f"AppArmor denials are logged on {where}: `dmesg | grep -i apparmor`"
+    return "this node runs neither SELinux nor AppArmor"
+
+
 class Blocker(enum.Enum):
     """The mechanism that denied ptrace.
 
@@ -509,8 +563,18 @@ class Blocker(enum.Enum):
     SECCOMP = "seccomp"
     """A seccomp filter is rejecting the ``ptrace`` syscall itself."""
 
+    LSM_MISMATCH = "lsm-mismatch"
+    """The seat and the target carry *different* LSM labels.
+
+    A label on its own says nothing - under SELinux every container on the node
+    carries one, and containers in a pod normally share it. What denies ptrace
+    is a *difference*: differing MCS categories under SELinux, differing
+    profiles under AppArmor. So this is a comparison, never a verdict read off
+    one side (#104)."""
+
     APPARMOR = "apparmor"
-    """An AppArmor profile denies ptrace between these two domains."""
+    """Superseded by :attr:`LSM_MISMATCH`, and kept so that a seat older than
+    #104 still parses. Nothing emits it; the launcher may still read it."""
 
     UID_MISMATCH = "uid-mismatch"
     """The debug container runs as a different UID than the target."""
@@ -523,7 +587,7 @@ class Blocker(enum.Enum):
     and ``sgid`` are checked exactly as ``uid``, ``euid`` and ``sgid`` are, and
     any one of the six differing denies every ptrace-gated operation. Without
     this arm the commonest shape at Diamond — a seat at the target's uid and the
-    image's gid 0 — fell through to :attr:`UNKNOWN`, which sends the reader off
+    image's gid 0 — fell through to :attr:`UNKNOWN`, which sent the reader off
     to check AppArmor and user namespaces (#103)."""
 
     ALREADY_TRACED = "already-traced"
@@ -555,9 +619,16 @@ class Blocker(enum.Enum):
                 "target's rather than imposing one, so where it denies ptrace "
                 "it is the profile the pod runs under that has to change."
             ),
+            Blocker.LSM_MISMATCH: (
+                "the seat and the target carry different security labels, and "
+                "the LSM permits ptrace only within one. Both labels are on "
+                "the report above; the denial itself is logged on the node, "
+                "not in the pod."
+            ),
             Blocker.APPARMOR: (
-                "AppArmor denies ptrace between this container's profile and "
-                "the target's. Both must be in a profile that permits it."
+                "an image older than #104 named AppArmor here without knowing "
+                "which LSM was active. Read the two labels on the report; a "
+                "current image compares them and names the real one."
             ),
             Blocker.UID_MISMATCH: (
                 "this container's UID differs from the target's and it has no "
@@ -838,7 +909,14 @@ class CapabilityReport:
     yama_scope: int | None
     seccomp_mode: int
     no_new_privs: bool
-    apparmor_profile: str | None
+    lsm: Lsm
+    """Which LSM owns the labels below, read from sysfs rather than guessed at."""
+
+    lsm_label: str | None
+    """The seat's own label, verbatim. ``None`` is "no label", not "unconfined":
+    the attribute is absent, unreadable or empty, and on a node with no
+    label-based LSM reading it fails with ``EINVAL``."""
+
     self_uid: int
     target_uid: int | None
     target_pid: int | None
@@ -859,6 +937,14 @@ class CapabilityReport:
     place the truth lives when the manifest sets ``runAsUser`` and no
     ``runAsGroup`` and the image's own user supplies the group (measured on
     p47-blueapi-0: manifest uid 1000, real gid 1000)."""
+
+    lsm_label_target: str | None = None
+    """The target's label, for the only comparison that has content.
+
+    Held beside :attr:`lsm_label` rather than folded into a verdict, because a
+    lone label is not evidence: on p47-blueapi-0 both sides read
+    ``system_u:system_r:spc_t:s0`` and ptrace was permitted, so "confined"
+    would have been a false accusation on a working seat (#104)."""
 
     node_name: str | None = None
     child_attach_ok: bool | None = None

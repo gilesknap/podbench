@@ -63,6 +63,7 @@ from podbench.model import (
     SEIZE_PROBE,
     Blocker,
     ContainerRef,
+    Lsm,
     PodRef,
     Rung,
     Verdict,
@@ -226,7 +227,12 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "yama_scope": 1,
         "seccomp_mode": 2,
         "no_new_privs": False,
-        "apparmor_profile": "cri-containerd.apparmor.d (enforce)",
+        # The name the seat's label was published under before podbench knew
+        # which LSM had written it; kept, so an older launcher still finds it.
+        "apparmor_profile": "system_u:system_r:spc_t:s0",
+        "lsm": "selinux",
+        "lsm_label": "system_u:system_r:spc_t:s0",
+        "lsm_label_target": "system_u:system_r:spc_t:s0",
         "self_uid": 0,
         "target_uid": 1000,
         # Peers of the two above: __ptrace_may_access() compares the group ids
@@ -1772,6 +1778,29 @@ def test_an_image_older_than_the_seize_reports_an_unmeasured_pause() -> None:
     assert describe_pause(report.attach_method, report.target_attach_ok) == (
         "not measured"
     )
+
+
+def test_an_image_older_than_the_lsm_question_keeps_its_label() -> None:
+    """#104 renamed the key, and the versioning rule cuts both ways.
+
+    A seat older than the rename sends only ``apparmor_profile``, and its
+    string is still the seat's label - so it is read, not discarded. What is
+    *not* invented is which LSM wrote it: an absent ``lsm`` is ``NONE``, the
+    same "this image never said" silence ``self_gid`` and ``attach_method``
+    use, and it is not grounds for reporting a mismatch.
+    """
+    payload = capreport_payload()
+    for key in ("lsm", "lsm_label", "lsm_label_target"):
+        del payload[key]
+    report = capability_report_from_json(payload)
+    assert report.lsm_label == "system_u:system_r:spc_t:s0"
+    assert report.lsm is Lsm.NONE
+    assert report.lsm_label_target is None
+
+
+def test_an_lsm_this_launcher_has_never_heard_of_is_not_invented() -> None:
+    report = capability_report_from_json(capreport_payload(lsm="tomoyo"))
+    assert report.lsm is Lsm.NONE
 
 
 def test_capability_report_from_json_keeps_an_unreadable_target_uid_none() -> None:
