@@ -15,13 +15,14 @@ The fix gives the image a second NSS source — ``libnss-extrausers``, its datab
 world-writable — so the append needs no capability, no particular gid and no edit
 to the workload's manifest. ``apps/nonroot-gid.yaml`` is the target's shape.
 
-**The setup is the whole test, and it is easy to get wrong: on an unrestricted
-cluster this defect cannot appear.** The ladder takes the full rung, the seat is
-root, ``/etc/passwd`` is writable and the append succeeds by a route that has
-nothing to do with the fix. ``deny-sys-ptrace.yaml`` is bound to refuse that rung
-so the walk reaches ``degraded``, which is the rung that lands in the most
-hostile namespaces and the one the field target gets. Unbind it and every
-assertion below passes vacuously.
+**The setup is the whole test, and it is easy to get wrong: a seat that lands as
+root cannot show this defect at all.** ``/etc/passwd`` is then writable and the
+append succeeds by a route that has nothing to do with the fix. Two things keep
+the walk off that rung, and the policy is the one that does not depend on the
+launcher: the target names a non-root uid, so the ladder now starts at
+``degraded`` of its own accord, *and* ``deny-sys-ptrace.yaml`` is bound to refuse
+the rung above it. Unbind it, change the ordering rule, and every assertion below
+passes vacuously — so the refusal is checked for rather than assumed.
 
 **Unlike ``test_dls_ioc.py``, this module needs nothing of the node's Yama.** An
 NSS lookup is not a ptrace, so the identity half of a seat is decided identically

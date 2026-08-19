@@ -11,6 +11,7 @@ that only the second burns a container name.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -89,6 +90,31 @@ KYVERNO_REFUSAL = (
 Kept whole rather than trimmed to the fragment that is matched: the point of the
 test is that podbench recognises what a real policy engine really says, and a
 tidied copy would keep passing against a matcher that no longer works.
+"""
+
+VAP_REFUSAL = (
+    'Error from server (Forbidden): pods "target" is forbidden: '
+    "ValidatingAdmissionPolicy 'deny-sys-ptrace' with binding "
+    "'deny-sys-ptrace-binding' denied request: SYS_PTRACE is not permitted here"
+)
+"""A native policy, which names itself and says ``denied request``.
+
+The wording misses the webhook group by one word, which is why it needed its own
+group in ``ADMISSION_DENIAL_MARKERS`` (issue #93) - and why the report needed its
+own branch, having called it a webhook until now.
+"""
+
+UID_ALLOW_LIST_REFUSAL = (
+    'admission webhook "validate.kyverno.svc-fail" denied the request: \n'
+    "kp-validate-custom-validate-user-and-group-ids:\n"
+    "  validate user id: The fields spec.securityContext.runAsUser is set to an "
+    'invalid value. Allowed runAsUser values are: "36096|37887".'
+)
+"""Verbatim from a DLS namespace, 2026-08-19.
+
+Standard policy for a pod that does host mounts, not local drift: the uid a seat
+may run as is allow-listed, so no rung may invent one. A refusal that names the
+uids it *would* take is a question with an answer, and the report gives it.
 """
 
 WEBHOOK_UNREACHABLE = (
@@ -229,6 +255,8 @@ class FakeCluster:
         ssh_probe_err: str = "",
         limit_ranges: Sequence[dict[str, Any]] = (),
         seat_version: str | None = __version__,
+        mutate: Callable[[dict[str, Any]], None] | None = None,
+        allowed_uids: Sequence[int] = (),
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -238,6 +266,13 @@ class FakeCluster:
         self.others = [dict(other) for other in others]
         self.psa_denies_ptrace = psa_denies_ptrace
         self.admission_error = admission_error
+        # A mutating admission policy, applied to what a dry run reports back
+        # and never to what is stored: it is the half of admission that issues
+        # no refusal at all, so the launcher has nothing but the response.
+        self.mutate = mutate
+        # A policy that allow-lists runAsUser, which refuses every rung rather
+        # than one: the ladder has no lower rung that fixes a uid.
+        self.allowed_uids = tuple(allowed_uids)
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
         self.capreport = capreport if capreport is not None else capreport_payload()
@@ -334,7 +369,10 @@ class FakeCluster:
                 return _ok(f"pod/{rest[2]}\n")
             return _ok(json.dumps(found))
         if rest[:2] == ["replace", "--raw"]:
-            return self._add_ephemeral(stdin)
+            # `?dryRun=All` is the whole of the difference between a rehearsal
+            # and a name spent, so the fake keeps it: a dry run runs admission
+            # and stores nothing, which is the property the launcher relies on.
+            return self._add_ephemeral(stdin, dry_run=rest[2].endswith("?dryRun=All"))
         if rest[:1] == ["exec"]:
             return self._exec(rest, stdin)
         if rest[:1] == ["patch"]:
@@ -362,7 +400,7 @@ class FakeCluster:
             list[dict[str, Any]], self.pod["status"]["ephemeralContainerStatuses"]
         )
 
-    def _add_ephemeral(self, stdin: str | None) -> CommandResult:
+    def _add_ephemeral(self, stdin: str | None, *, dry_run: bool) -> CommandResult:
         assert stdin is not None, "the subresource PUT must carry a body"
         body = cast(dict[str, Any], json.loads(stdin))
         submitted = cast(list[dict[str, Any]], body["spec"]["ephemeralContainers"])
@@ -370,7 +408,12 @@ class FakeCluster:
         new = [entry for entry in submitted if entry["name"] not in known]
         assert len(new) == 1, f"expected exactly one new container, got {new}"
         spec = new[0]
-        self.added.append(spec)
+        # One entry per rung *attempt*, not per API call: a rung is now
+        # rehearsed by a dry run and then created, with the same body both
+        # times, and what these tests read `added` for is which securityContexts
+        # podbench authored.
+        if not self.added or self.added[-1] != spec:
+            self.added.append(spec)
 
         security = cast(dict[str, Any], spec.get("securityContext", {}))
         added_caps = cast(
@@ -381,6 +424,22 @@ class FakeCluster:
             return _fail(PSA_REFUSAL, returncode=1)
         if self.admission_error is not None and "SYS_PTRACE" in added_caps:
             return _fail(self.admission_error, returncode=1)
+        if self.allowed_uids and security.get("runAsUser") not in self.allowed_uids:
+            return _fail(UID_ALLOW_LIST_REFUSAL, returncode=1)
+
+        if dry_run:
+            # What admission would store, which is the only place a *mutating*
+            # policy shows itself: it refuses nothing, so the response body is
+            # the entire signal. Nothing is kept - a dry run that burnt a name
+            # would be worse than no dry run at all.
+            preview = copy.deepcopy(body)
+            containers = cast(
+                list[dict[str, Any]], preview["spec"]["ephemeralContainers"]
+            )
+            if self.mutate is not None:
+                for container in containers:
+                    self.mutate(container)
+            return _ok(json.dumps(preview))
 
         self._ephemeral_specs().append(spec)
         # The kubelet's two asynchronous refusals: a root container under the
@@ -489,8 +548,14 @@ def running_status(name: str) -> dict[str, Any]:
 
 
 def test_full_rung_lands_when_the_namespace_allows_it() -> None:
+    # Asked for, because it is no longer where the walk starts: a target at a
+    # known non-root uid has its own rung tried first. `--max-rung full` is how
+    # somebody who needs the capability - a node with Yama ptrace_scope >= 1
+    # exempts nothing else - says so.
     cluster = FakeCluster(pod_document(uid=1000))
-    session = attach(talking_to(cluster), "pod/target", public_key=CLIENT_KEY)
+    session = attach(
+        talking_to(cluster), "pod/target", public_key=CLIENT_KEY, max_rung=Rung.FULL
+    )
 
     assert session.rung is Rung.FULL
     assert session.seat == ContainerRef(PodRef("demo", "target"), "podbench-1")
@@ -510,7 +575,7 @@ def test_full_rung_lands_when_the_namespace_allows_it() -> None:
 
 def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None:
     cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
-    session = attach(talking_to(cluster), "target")
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
     assert session.rung is Rung.DEGRADED
     # A synchronous refusal means the container was never created, so the name
@@ -541,7 +606,7 @@ def test_the_seat_imposes_no_seccomp_profile_its_target_does_not_have() -> None:
     cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
     attach(talking_to(cluster), "target")
 
-    assert "seccompProfile" not in security_contexts(cluster)[1]
+    assert "seccompProfile" not in security_contexts(cluster)[0]
 
 
 def test_the_seat_mirrors_a_seccomp_profile_its_target_does_have() -> None:
@@ -557,12 +622,14 @@ def test_the_seat_mirrors_a_seccomp_profile_its_target_does_have() -> None:
     )
     attach(talking_to(cluster), "target")
 
-    assert security_contexts(cluster)[1]["seccompProfile"] == profile
+    assert security_contexts(cluster)[0]["seccompProfile"] == profile
 
 
 def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
     cluster = FakeCluster(pod_document(uid=1000), kubelet_refuses_root=True)
-    session = attach(talking_to(cluster), "target", poll_interval=0.0)
+    session = attach(
+        talking_to(cluster), "target", poll_interval=0.0, max_rung=Rung.FULL
+    )
 
     assert session.rung is Rung.DEGRADED
     # The rejected container exists and is unrestartable, so its name is gone.
@@ -620,7 +687,9 @@ def test_target_uid_override_re_enables_the_degraded_rung() -> None:
     session = attach(talking_to(cluster), "target", target_uid=1000)
 
     assert session.rung is Rung.DEGRADED
-    assert security_contexts(cluster)[1]["runAsUser"] == 1000
+    # And is where the walk starts: a uid the launcher was handed is a uid the
+    # degraded rung can match, so nothing is spent on the rung above it.
+    assert security_contexts(cluster)[0]["runAsUser"] == 1000
 
 
 def test_an_exhausted_ladder_raises_with_every_reason() -> None:
@@ -964,7 +1033,7 @@ def test_a_volume_the_application_does_not_mount_needs_an_explicit_path() -> Non
         attach(talking_to(cluster), "target", mounts=["myapp-venv"])
 
     session = attach(talking_to(cluster), "target", mounts=["myapp-venv:/opt/venv"])
-    assert session.rung is Rung.FULL
+    assert session.rung is Rung.DEGRADED
     assert cluster.added[0]["volumeMounts"] == [
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
     ]
@@ -1123,7 +1192,7 @@ def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
     assert "volumeMounts" not in cluster.added[0]
     assert not session.identity_mounted
     assert not session.identity_declared
-    assert session.rung is Rung.FULL
+    assert session.rung is Rung.DEGRADED
 
 
 def test_no_seat_identity_opts_out(tmp_path: Path) -> None:
@@ -1631,6 +1700,11 @@ def test_attach_writes_an_includeable_stanza_and_a_known_hosts_entry(
             identity(tmp_path),
             "--config-dir",
             str(tmp_path / "cfg"),
+            # The ProxyCommand under test is the root sshd's, which is the full
+            # rung's; a target at a known non-root uid otherwise gets the rung
+            # below and the layout that goes with it.
+            "--max-rung",
+            "full",
         ],
         runner=cluster,
     )
@@ -1678,7 +1752,7 @@ def test_a_degraded_seat_points_at_the_non_root_sshd_layout(
     out = capsys.readouterr().out
     # $HOME is pinned in the container spec precisely so this path is knowable.
     assert "/tmp/podbench-home/.podbench/sshd_config" in out
-    env = {entry["name"]: entry["value"] for entry in cluster.added[1]["env"]}
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
     assert env["HOME"] == "/tmp/podbench-home"
 
 
@@ -1949,7 +2023,7 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     ladder. A denial is a verdict about one rung, not about the attach.
     """
     cluster = FakeCluster(pod_document(uid=1000), admission_error=KYVERNO_REFUSAL)
-    session = attach(talking_to(cluster), "target")
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
     assert session.rung is Rung.DEGRADED
     # Nothing was stored, so the name the refused rung was submitted under is
@@ -1957,7 +2031,9 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     assert session.seat.container == "podbench-1"
     steps = {step.rung: step for step in session.steps}
     assert not steps[Rung.FULL].admitted
-    assert "an admission webhook refused it" in steps[Rung.FULL].detail
+    # "the dry run", because that is where it was refused now: the rung is
+    # rehearsed before a name is committed to it (report 4.2).
+    assert "an admission webhook refused the dry run" in steps[Rung.FULL].detail
     # The policy's own words, whole: they name the rule and the field, which is
     # the only thing in the message a cluster admin can act on.
     assert "kp-validate-block-privileged-containers-standard" in (
@@ -1965,12 +2041,176 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     )
 
 
+def stored(cluster: FakeCluster) -> list[dict[str, Any]]:
+    """The ephemeral containers the pod actually carries.
+
+    Distinct from ``cluster.added``, which is every spec podbench *authored*: a
+    rung refused or withdrawn at the dry run is authored and never stored, and
+    the difference between the two lists is the container names C2 stops
+    spending.
+    """
+    return cast(list[dict[str, Any]], cluster.pod["spec"]["ephemeralContainers"])
+
+
+def test_a_dry_run_refusal_costs_no_container_name() -> None:
+    """The rehearsal, and the reason for it (report 4.2).
+
+    A synchronous refusal never stored anything either, so what this pins is the
+    mechanism: the refused rung goes through ``?dryRun=All``, and the pod ends
+    the attach carrying exactly the one container that landed.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert any("dryRun=All" in arg for call in cluster.calls for arg in call)
+    assert session.seat.container == "podbench-1"
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+
+
+def test_a_validating_admission_policy_is_not_reported_as_a_webhook() -> None:
+    """Issue #93's other half. The ladder already *acted* on a native policy
+    correctly; the report called it a webhook, which sends a reader looking for
+    a webhook that does not exist."""
+    cluster = FakeCluster(pod_document(uid=1000), admission_error=VAP_REFUSAL)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert session.rung is Rung.DEGRADED
+    detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
+    assert "a ValidatingAdmissionPolicy refused" in detail
+    assert "webhook" not in detail
+
+
+def test_a_stripped_capability_is_seen_before_the_rung_is_spent() -> None:
+    """The mutating half of admission, which refuses nothing (issue #94).
+
+    A policy that strips ``capabilities.add`` leaves the update succeeding and a
+    root seat landing with ``CapEff: 0``, which reads three of the six probe
+    paths where the degraded rung at the target's own uid reads all six (report
+    3.11). Landing it is worse than not landing it, and the dry run is the only
+    place the strip is visible.
+    """
+
+    def strip(container: dict[str, Any]) -> None:
+        security = cast(dict[str, Any], container.get("securityContext", {}))
+        cast(dict[str, Any], security.get("capabilities", {})).pop("add", None)
+
+    cluster = FakeCluster(pod_document(uid=1000), mutate=strip)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert session.rung is Rung.DEGRADED
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+    detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
+    assert "remove SYS_PTRACE" in detail
+    assert "--max-rung degraded" in detail
+
+
+def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
+    """The expensive one: ``runAsNonRoot: true`` beside uid 0.
+
+    The API server takes it and the kubelet refuses it seconds later, which is
+    the one refusal that burns a container name for the pod's lifetime (report
+    3.18). ``spec.py`` never authors that pair; a mutating policy assembles it,
+    and the dry run reads it back before a name is committed.
+    """
+
+    def add_non_root(container: dict[str, Any]) -> None:
+        cast(dict[str, Any], container["securityContext"])["runAsNonRoot"] = True
+
+    cluster = FakeCluster(pod_document(uid=0), mutate=add_non_root)
+    session = attach(talking_to(cluster), "target", poll_interval=0.0)
+
+    # The seat rung authors that pair itself against a root target, having no
+    # uid it may pin, so it is not read as a rewrite and still lands.
+    assert session.rung is Rung.SEAT
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+    detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
+    assert "CreateContainerConfigError" in detail
+
+
+def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() -> None:
+    """DLS, 2026-08-19: podbench asks for ``drop: [ALL]`` and adds nothing, and
+    the pod comes back with thirteen capabilities added to it. Harmless to the
+    rung, and still not what was asked for - so it is said once, on the line the
+    rung is reported on, rather than acted on."""
+
+    def add_baseline(container: dict[str, Any]) -> None:
+        capabilities = cast(
+            dict[str, Any],
+            cast(dict[str, Any], container["securityContext"])["capabilities"],
+        )
+        capabilities["add"] = ["CHOWN", "SETGID"]
+
+    cluster = FakeCluster(pod_document(uid=1000), mutate=add_baseline)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    rewrite = [
+        warning for warning in session.warnings if "admission rewrites" in warning
+    ]
+    assert len(rewrite) == 1
+    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+    assert "podbench status target" in rewrite[0]
+
+
+def test_an_allow_listed_run_as_user_refusal_names_the_uids_and_the_flag() -> None:
+    """The refusal with an answer (DLS, 2026-08-19).
+
+    The seat rung may not invent a uid: this cluster allow-lists the ones a
+    host-mounting pod may run as, so the fix is to pick one, and the report is
+    where the reader finds out which and how.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), allowed_uids=(36096, 37887))
+    with pytest.raises(LauncherError) as raised:
+        attach(talking_to(cluster), "target")
+
+    message = str(raised.value)
+    assert "takes only 36096, 37887" in message
+    assert "--target-uid 36096" in message
+    assert stored(cluster) == []
+
+
+def test_a_target_at_a_known_uid_starts_at_the_rung_that_matches_it() -> None:
+    """Sweep finding 07, and report 3.11 behind it.
+
+    A seat at the target's own uid satisfies ``PTRACE_MODE_ATTACH`` by
+    credential match, which is where all nine of the sweep's symbolised
+    backtraces came from. Trying the capability rung first spends a permanent
+    container name proving something the target already implied.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    assert security_contexts(cluster) == [
+        {
+            "capabilities": {"drop": ["ALL"]},
+            "runAsNonRoot": True,
+            "privileged": False,
+            "allowPrivilegeEscalation": False,
+            "runAsUser": 1000,
+        }
+    ]
+    # Said rather than left out: the full rung is above this one and was never
+    # tried, and the ladder line is where that is explained.
+    full = {step.rung: step for step in session.steps}[Rung.FULL]
+    assert not full.admitted
+    assert "--max-rung full" in full.detail
+
+
+def test_a_root_target_still_starts_at_the_capability_rung() -> None:
+    """There is no degraded rung for uid 0 to fall back to - ``runAsNonRoot:
+    true`` cannot express it - so the capability rung is the only one worth a
+    name, and it is kept."""
+    plan = [rung for rung, _ in plan_ladder(pod_document(uid=0), "app")]
+    assert plan[0] is Rung.FULL
+
+
 def test_a_webhook_that_did_not_answer_is_still_an_error() -> None:
     """ "Unreachable" is not "denied", and retrying lower rungs against a broken
     webhook would turn one honest failure into three."""
     cluster = FakeCluster(pod_document(uid=1000), admission_error=WEBHOOK_UNREACHABLE)
     with pytest.raises(KubectlError, match="failed calling webhook"):
-        attach(talking_to(cluster), "target")
+        attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
 
 def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
@@ -2049,7 +2289,9 @@ def test_open_configures_the_seats_home_and_opens_that(
     a seat that cannot be restarted."""
     cluster = FakeCluster(pod_document(uid=1000))
     code = main(
-        attach_argv(tmp_path, "--open"),
+        # `/root` is the full rung's home, and that rung is now asked for
+        # rather than assumed: the target's uid implies the one below it.
+        attach_argv(tmp_path, "--open", "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -2284,7 +2526,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
     cluster = FakeCluster(pod_document(uid=1000))
     cluster.unwritable.add("/root/.vscode/settings.json")
     code = main(
-        attach_argv(tmp_path, "--open"),
+        attach_argv(tmp_path, "--open", "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -2481,7 +2723,7 @@ def test_a_seat_that_cannot_be_asked_its_version_still_attaches() -> None:
     cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.FULL
+    assert session.rung is Rung.DEGRADED
     assert session.seat_version is None
     assert VERSION_SKEW_WARNING not in session.warnings
     assert UNKNOWN_SEAT_VERSION in format_session(session)

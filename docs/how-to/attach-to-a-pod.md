@@ -171,40 +171,45 @@ admission runs *before* validating admission, so by the time anything could
 refuse the request there is no capability left in it to object to. The API
 server returns success.
 
-podbench drops a rung when something refuses it. Nothing refused this, so the
-walk stops on the full rung and you get a **root seat with no capability** —
-which is strictly worse than the degraded rung, because root that cannot ptrace
-cannot read `/proc/<pid>/root`, `maps` or `environ` either:
+podbench drops a rung when something refuses it, and nothing refuses this. Left
+alone the walk would stop on the full rung and hand you a **root seat with no
+capability** — strictly worse than the degraded rung, because root that cannot
+ptrace cannot read `/proc/<pid>/root`, `maps` or `environ` either.
+
+So every rung is rehearsed first. Before a container name is committed to it,
+podbench submits the rung with `?dryRun=All`: the API server runs the whole
+admission chain, returns the container as it *would* have stored it, and stores
+nothing. A stripped capability is visible there, and the rung is withdrawn
+instead of spent:
 
 ```
-rung        full - root plus CAP_SYS_PTRACE
+rung        degraded - a pinned UID, all capabilities dropped
 ladder
-  full      landed   running since 2026-08-18T09:01:33Z
-measured
-  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
-  blocker     uid-mismatch
+  full      refused  admission would take it and remove SYS_PTRACE from it,
+                     landing a root seat with no capability: that reads three of
+                     the six probe paths where the rung below, at the target's
+                     own uid, reads all six (report 3.11). A dry run read that
+                     back before a name was spent; `--max-rung degraded` says it
+                     up front
+  degraded  landed   running since 2026-08-18T09:01:33Z
 ```
 
-`capreport` measures the truth and says so — `CAP_SYS_PTRACE (eff) no
-[bounding: no]` at `uid 0` — but the rung line above it is the rung that was
-*asked for*. To confirm it is a mutation rather than anything about your image,
-read the landed spec back with `kubectl get pod <pod> -o jsonpath` over
-`.spec.ephemeralContainers[*].securityContext`. podbench submits exactly
-`{"add":["SYS_PTRACE"]}`; anything else in `add` — a list of `CHOWN`,
-`DAC_OVERRIDE`, `SETUID` and friends — is the cluster's house default, put there
-by a policy that replaced the field rather than refusing it.
+A rewrite that costs the rung nothing is reported rather than acted on, as one
+`WARNING` line naming what admission changed — a DLS policy adds thirteen
+capabilities to a container that asked for none, which is the cluster's house
+default and harms nothing. Either way the rung line names what podbench asked
+for; `podbench status <pod>` reads back what landed.
 
-The way past it is `--max-rung`, which caps the walk instead of waiting for a
-refusal that will never come:
+You can still state the cap up front, which spends no dry run either:
 
 ```
 $ podbench attach bl47p-mo-ioc-01-0 --max-rung degraded
 ```
 
-The full rung is then never submitted, the seat lands at the target's own UID,
-and the ptrace credentials match. Two things worth knowing:
+The full rung is then never submitted at all, the seat lands at the target's own
+UID, and the ptrace credentials match. Two things worth knowing:
 
-* It is a **ceiling, not a choice**. The rungs below it are still tried, so a
+* It is a **starting rung**, not a choice. The rungs below it are still tried, so a
   target podbench cannot author a degraded rung for — one running as root, or
   one whose UID is not in the pod spec — still falls through to the seat rung.
   Where the UID is missing, pass `--target-uid` as well; the ladder line says so.
@@ -451,6 +456,7 @@ for whatever it has written.
 | container status `CreateContainerConfigError`, `container's runAsUser breaks non-root policy` | the kubelet refused a root container *after* the API server accepted it | podbench pre-empts this by reading `runAsNonRoot` and skips the full rung; if you forced it, do not |
 | traffic stopped reaching the pod while you sat at a breakpoint, and came back on its own | the readiness budget expired: the pod went not-ready, so its EndpointSlice kept the address but flipped `conditions.ready` to false and kube-proxy stopped routing to it. Quiet, not silent — `Unhealthy` events are emitted while it lasts, but no restart survives it | nothing to fix — it self-heals. Stay inside the budget `attach` printed, or use a dev pod |
 | the workload restarted mid-session and the seat went with it | the liveness budget expired; the seat shares the target's namespaces | `attach --new` for a fresh seat (the old name is burnt), and debug in a dev pod if you need to stop for longer |
+| every rung refused with `The fields spec.securityContext.runAsUser is set to an invalid value. Allowed runAsUser values are: "36096\|37887"` | the cluster allow-lists the uid a pod may run as — standard where pods do host mounts — and no rung of the ladder may invent one | re-run with `--target-uid 36096`, one of the uids the refusal names. The ladder line names them and the flag |
 | attach lands but `blocker: yama-scope` | Yama's `ptrace_scope >= 1` on **that node** forbids attaching to non-descendants | `podbench dbg --launch`, or have the target call `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` |
 | every library reports `missing debugging information` | `ca-certificates` absent, so `libdebuginfod` fails the TLS handshake silently | use the published image; it is mandatory there for exactly this reason |
 | attach works on one pod, is denied on the next | Yama differs **per node**, by kernel flavour, not by architecture | nothing to fix. The report prints the node name and Yama state for this reason |

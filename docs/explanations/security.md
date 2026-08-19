@@ -89,10 +89,15 @@ first-class mode rather than an error state.
 | **degraded** | `runAsUser: <target's uid>`, `runAsGroup: <target's gid>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, and the target's own `seccompProfile` where it has one | **restricted**, verified | `/proc/<pid>/root`, `maps`, `environ`, `exe`, `cwd`; full source-level debugging of processes gdb starts itself |
 | *(seat)* | whatever the cluster will admit | anything | editor, shell, git, uv |
 
-The launcher tries them in order and falls down on refusal, then reports the
-rung it landed on. A degraded seat exits `0`: returning non-zero for "the
-cluster would not grant `SYS_PTRACE`" would make an honest report look like a
-failure.
+The launcher walks them and falls down on refusal, then reports the rung it
+landed on. Which rung it *starts* at is the target's to imply: a target at a
+known non-root uid gets the degraded rung first, since that rung already matches
+its credentials and the row above buys nothing the row below does not — see
+[the capability ladder](attach-flow.md). Every rung is rehearsed through a
+server-side dry run before a container name is committed to it, so a policy that
+rewrites the request instead of refusing it is seen rather than landed. A
+degraded seat exits `0`: returning non-zero for "the cluster would not grant
+`SYS_PTRACE`" would make an honest report look like a failure.
 
 ### The seat mirrors the target's seccomp profile, and imposes none
 

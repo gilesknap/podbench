@@ -85,10 +85,15 @@ from .spec import (
     DEFAULT_PULL_POLICY,
     PULL_POLICIES,
     InvalidSpecError,
+    admission_rewrites,
+    admission_wedges_the_kubelet,
+    capabilities_removed,
     container_id,
+    ephemeral_container,
     ephemeral_container_spec,
     moves,
     runs_as_non_root,
+    shares_pid_namespace_across_uids,
     target_seccomp_profile,
     target_uid_gid,
 )
@@ -820,12 +825,18 @@ class LadderStep:
 
 
 LADDER: tuple[Rung, ...] = (Rung.FULL, Rung.DEGRADED, Rung.SEAT)
-"""The rungs in the order the walk tries them, highest first.
+"""The rungs by capability, most first.
 
 Stated once so that ``--max-rung`` can express "at or below" as an index
 comparison. :class:`~podbench.model.Rung` deliberately does not order itself:
-its members describe securityContexts, and only the walk knows that more
-capability is tried first.
+its members describe securityContexts, and only the walk knows which carries
+more.
+
+It is no longer always the order they are *tried* in — see
+:func:`_attempt_order`, which lets a target whose uid is known and not root
+have its own rung tried first. Anything ranking rungs by capability
+(``--max-rung``, :func:`above_ceiling`) indexes this; only the walk reads the
+attempt order.
 """
 
 
@@ -864,6 +875,31 @@ def plan_ladder(
     running process knows it. Guessing is refused — defaulting the fallback to
     root would cost the sysroot, maps, environ and exe reads that are the whole
     value of the degraded rung (report 4.5).
+
+    The **order** is the target's to imply, and only the ceiling overrides it.
+    Where the target's uid is known and not root, the degraded rung at that uid
+    already satisfies ``PTRACE_MODE_ATTACH`` by credential match, and it reads
+    all six probe paths where a root seat whose capability was stripped reads
+    three (report 3.11) — so it is tried first and the capability rung is not
+    spent proving it. The full rung stays in the walk below it, because it is
+    the only rung Yama exempts and ``ptrace_scope`` is a per-node sysctl that no
+    laptop-side read can answer (report 3.13): it is measured from inside a
+    seat, which is a seat later than this decision. Root targets, targets whose
+    uid is unknown, and pods sharing one PID namespace between containers of
+    different uids keep the classic order, because for them the degraded rung
+    cannot be authored or cannot reach what the user came for. Passing
+    ``--max-rung`` states the starting rung explicitly and restores it too.
+
+    >>> pod = {"spec": {"containers": [
+    ...     {"name": "app", "securityContext": {"runAsUser": 37887}}]}}
+    >>> [rung.value for rung, _ in plan_ladder(pod, "app")]
+    ['degraded', 'full', 'seat']
+    >>> [rung.value for rung, _ in plan_ladder(pod, "app", max_rung=Rung.FULL)]
+    ['full', 'degraded', 'seat']
+    >>> root = {"spec": {"containers": [
+    ...     {"name": "app", "securityContext": {"runAsUser": 0}}]}}
+    >>> [rung.value for rung, _ in plan_ladder(root, "app")]
+    ['full', 'degraded', 'seat']
     """
     uid, _ = target_uid_gid(pod_json, container)
     if target_uid is not None:
@@ -891,7 +927,30 @@ def plan_ladder(
     elif uid == 0:
         degraded = "the target runs as root, which runAsNonRoot: true cannot express"
 
-    return ((Rung.FULL, full), (Rung.DEGRADED, degraded), (Rung.SEAT, None))
+    skipped = {Rung.FULL: full, Rung.DEGRADED: degraded, Rung.SEAT: None}
+    return tuple(
+        (rung, skipped[rung])
+        for rung in _attempt_order(
+            uid,
+            cross_uid=shares_pid_namespace_across_uids(pod_json, container, uid),
+            max_rung=max_rung,
+        )
+    )
+
+
+def _attempt_order(
+    target_uid: int | None, *, cross_uid: bool, max_rung: Rung | None
+) -> tuple[Rung, ...]:
+    """The order to try the rungs in, highest-capability first by default.
+
+    :data:`LADDER` stays the *capability* order — it is what ``--max-rung``
+    indexes to express "at or below" — and this is the *attempt* order, which
+    is the target's to imply. They differ only where the target hands the walk
+    a uid it can match.
+    """
+    if max_rung is None and target_uid and not cross_uid:
+        return (Rung.DEGRADED, Rung.FULL, Rung.SEAT)
+    return LADDER
 
 
 @dataclass(frozen=True)
@@ -1203,12 +1262,22 @@ def _walk_ladder(
     cid = container_id(pod_json, workload)
     name = next_container_name(pod_json, CONTAINER_BASE)
     steps: list[LadderStep] = []
+    warnings: list[str] = []
 
-    for rung, skip in plan_ladder(
-        pod_json, workload, target_uid=target_uid, max_rung=max_rung
-    ):
+    plan = plan_ladder(pod_json, workload, target_uid=target_uid, max_rung=max_rung)
+    # Every pre-skip up front, and in ladder order rather than attempt order: a
+    # rung the plan ruled out is a fact about the target whichever rung lands,
+    # and the walk returns as soon as one does. Recorded where it is decided,
+    # the reason survives; recorded where it is reached, it is lost the moment a
+    # lower rung is tried first.
+    steps.extend(
+        LadderStep(rung, False, skip)
+        for rung, skip in sorted(plan, key=lambda item: LADDER.index(item[0]))
+        if skip is not None
+    )
+
+    for rung, skip in plan:
         if skip is not None:
-            steps.append(LadderStep(rung, False, skip))
             continue
         try:
             spec = ephemeral_container_spec(
@@ -1238,6 +1307,15 @@ def _walk_ladder(
             steps.append(LadderStep(rung, False, str(error)))
             continue
 
+        # Before the create, because the currency of being wrong here is a
+        # container name burnt for the pod's lifetime (report 4.2) and a dry
+        # run costs a round trip.
+        refusal, rewrites = _dry_run_rung(kubectl, pod, spec, rung)
+        if refusal is not None:
+            steps.append(refusal)
+            continue
+        warnings.extend(rewrites)
+
         try:
             kubectl.add_ephemeral_container(pod, spec)
         except KubectlError as error:
@@ -1249,19 +1327,7 @@ def _walk_ladder(
             # container - so the next rung reuses the same name.
             if not error.is_admission_denial:
                 raise
-            refuser = (
-                "Pod Security Admission"
-                if error.is_psa_ptrace_denial
-                else "an admission webhook"
-            )
-            steps.append(
-                LadderStep(
-                    rung,
-                    False,
-                    f"{refuser} refused it synchronously: "
-                    f"{error.stderr.strip() or error.stdout.strip()}",
-                )
-            )
+            steps.append(LadderStep(rung, False, _refusal_detail(error)))
             continue
 
         try:
@@ -1271,13 +1337,21 @@ def _walk_ladder(
         except EphemeralContainerError as error:
             hint = ""
             if _KUBELET_NON_ROOT_MESSAGE in error.message:
-                hint = " (the pod's runAsNonRoot policy; read it up front next time)"
+                hint = (
+                    " The cause is a runAsNonRoot policy over an image whose own "
+                    "USER is root; `--target-uid <uid>` pins a non-root uid the "
+                    "node will take, once the target's real uid is known."
+                )
             steps.append(
                 LadderStep(
                     rung,
                     False,
                     f"the kubelet refused it asynchronously ({error.reason}): "
-                    f"{error.message}{hint}",
+                    f"{error.message}. That container is wedged in waiting for "
+                    f"the pod's lifetime and only a pod restart clears it; its "
+                    f"name is spent and the next rung takes a fresh one. No dry "
+                    f"run could have caught this - dryRun=All runs the admission "
+                    f"chain, and the kubelet is not on it (report 3.18).{hint}",
                     name,
                 )
             )
@@ -1286,6 +1360,23 @@ def _walk_ladder(
             continue
 
         steps.append(LadderStep(rung, True, f"running since {started}", name))
+        # A rung the walk never reached because a *lower* one was tried first
+        # and worked. Said rather than left out: the ladder line is where a
+        # reader finds out that the target's own uid, not the cluster, is what
+        # chose this seat.
+        recorded = {step.rung for step in steps}
+        steps.extend(
+            LadderStep(
+                other,
+                False,
+                f"not attempted: the {rung.value} rung is the one this target "
+                f"implies and the cluster admitted it. `--max-rung "
+                f"{other.value}` starts the walk there instead",
+            )
+            for other in LADDER[: LADDER.index(rung)]
+            if other not in recorded
+        )
+        steps.sort(key=lambda step: LADDER.index(step.rung))
         return Session(
             seat=ContainerRef(PodRef(kubectl.namespace, pod), name),
             workload=workload,
@@ -1298,12 +1389,135 @@ def _walk_ladder(
             home=spec_env(spec).get("HOME"),
             identity_mounted=_mounts_volume(spec, SEAT_IDENTITY_VOLUME),
             steps=tuple(steps),
+            warnings=tuple(warnings),
         )
 
     raise LauncherError(
         "no rung of the capability ladder was admitted:\n"
         + "\n".join(f"  {step.rung.value}: {step.detail}" for step in steps)
     )
+
+
+def _dry_run_rung(
+    kubectl: Kubectl, pod: str, spec: Mapping[str, Any], rung: Rung
+) -> tuple[LadderStep | None, tuple[str, ...]]:
+    """Submit this rung to admission without letting it store anything.
+
+    Returns the step that ends the rung, or ``None`` to go on and create it,
+    plus any warnings about what admission would rewrite on the way through.
+
+    The reactive channels the walk already had only fire on a *refusal*. A
+    mutating policy issues none: the update succeeds, the ladder drops no rung,
+    and the seat that lands is not the seat that was asked for (issue #94). The
+    dry run is the only way to see that coming, and the two rewrites it acts on
+    rather than merely reports are the two that cost something real - a stripped
+    capability, which lands a root seat that reads *fewer* ``/proc`` paths than
+    the rung below it (report 3.11), and an added ``runAsNonRoot`` beside no
+    uid, which the kubelet turns into a container wedged for the pod's lifetime.
+
+    A dry run that fails for any reason that is *not* a policy verdict is
+    ignored, and the real create goes ahead to fail on its own terms: this is a
+    pre-flight, and a cluster that will not serve one must not thereby lose the
+    ability to take a seat.
+    """
+    name = _as_str(spec.get("name")) or ""
+    try:
+        preview = kubectl.add_ephemeral_container(pod, spec, dry_run=True)
+    except KubectlError as error:
+        if not error.is_admission_denial:
+            return None, ()
+        return LadderStep(rung, False, _refusal_detail(error, dry_run=True)), ()
+
+    admitted = ephemeral_container(preview, name)
+    if admitted is None:
+        # Nothing came back to compare against - an API server that ignored the
+        # query, or a response this code does not recognise. Not an answer, so
+        # not treated as one.
+        return None, ()
+
+    wedge = admission_wedges_the_kubelet(spec, admitted)
+    if wedge is not None:
+        return (
+            LadderStep(
+                rung,
+                False,
+                f"{wedge}, which the API server takes and the kubelet then "
+                f"refuses seconds later with CreateContainerConfigError - "
+                f"burning the container name (report 3.18). A dry run read it "
+                f"back before one was spent",
+            ),
+            (),
+        )
+
+    stripped = capabilities_removed(spec, admitted)
+    if stripped:
+        return (
+            LadderStep(
+                rung,
+                False,
+                f"admission would take it and remove "
+                f"{', '.join(stripped)} from it, landing a root seat with no "
+                f"capability: that reads three of the six probe paths where the "
+                f"rung below, at the target's own uid, reads all six (report "
+                f"3.11). A dry run read that back before a name was spent; "
+                f"`--max-rung degraded` says it up front",
+            ),
+            (),
+        )
+
+    rewrites = admission_rewrites(spec, admitted)
+    if not rewrites:
+        return None, ()
+    return None, (
+        f"admission rewrites this seat's securityContext: it "
+        f"{'; '.join(rewrites)}. The rung names what podbench asked for, so "
+        f"read `podbench status {pod}` for what landed.",
+    )
+
+
+def _refusal_detail(error: KubectlError, *, dry_run: bool = False) -> str:
+    """One ladder step's account of a synchronous refusal, naming the engine.
+
+    Three engines and three wordings, because the one thing they agree on is
+    that they disagree: Pod Security Admission is built in, a webhook is
+    announced by the API server's wrapper, and a native
+    ``ValidatingAdmissionPolicy`` names itself and its binding. The walk already
+    *acts* on all three (``ADMISSION_DENIAL_MARKERS``); until this it reported
+    the third as a webhook, which sends the reader looking for a webhook that
+    does not exist (issue #93).
+
+    A refusal that allow-lists ``runAsUser`` is the one with an answer, so it
+    gets one rather than a relayed paragraph: DLS restricts the uid a
+    host-mounting pod may run as, and ``--target-uid`` is how a seat picks one
+    it will take.
+
+    >>> from podbench.kubectl import CommandResult
+    >>> vap = "ValidatingAdmissionPolicy 'p' with binding 'b' denied request"
+    >>> _refusal_detail(KubectlError(CommandResult((), 1, "", vap))).split(":")[0]
+    'a ValidatingAdmissionPolicy refused it synchronously'
+    >>> uids = 'Allowed runAsUser values are: "36096|37887"'
+    >>> refusal = _refusal_detail(KubectlError(CommandResult((), 1, "", uids)))
+    >>> "--target-uid 36096" in refusal
+    True
+    """
+    text = f"{error.stderr}\n{error.stdout}"
+    if error.is_psa_ptrace_denial or "violates PodSecurity" in text:
+        refuser = "Pod Security Admission"
+    elif "ValidatingAdmissionPolicy '" in text:
+        refuser = "a ValidatingAdmissionPolicy"
+    else:
+        refuser = "an admission webhook"
+    when = "refused the dry run" if dry_run else "refused it synchronously"
+    detail = f"{refuser} {when}: {error.stderr.strip() or error.stdout.strip()}"
+    allowed = error.allowed_run_as_user
+    if allowed:
+        uids = ", ".join(str(uid) for uid in allowed)
+        detail += (
+            f". This cluster allow-lists runAsUser and takes only {uids}, so no "
+            f"seat may invent one: re-run with `--target-uid {allowed[0]}` to "
+            f"pin a uid it admits"
+        )
+    return detail
 
 
 def _seat_home(volume_mounts: Sequence[Mapping[str, Any]], rung: Rung) -> str | None:
@@ -3403,13 +3617,14 @@ def _build_app(
             typer.Option(
                 "--max-rung",
                 metavar="RUNG",
-                help="highest rung of the capability ladder to try: full "
-                "(default), degraded or seat. The ladder still falls through "
-                "the rungs below. Use `degraded` where a mutating admission "
-                "policy strips SYS_PTRACE instead of refusing it - there the "
-                "full rung is admitted, lands as root without the capability, "
-                "and the walk has nothing to act on. A running seat above the "
-                "ceiling is not reused",
+                help="highest rung of the capability ladder to try: full, "
+                "degraded or seat. It is where the walk starts, and the ladder "
+                "still falls through the rungs below. Without it a target "
+                "whose uid is known and not root has its own rung tried first. "
+                "Use `full` to insist on the capability rung - a node with Yama "
+                "ptrace_scope >= 1 exempts nothing else - or `degraded` where a "
+                "mutating admission policy strips SYS_PTRACE instead of "
+                "refusing it. A running seat above the ceiling is not reused",
             ),
         ] = None,
         mount: Annotated[

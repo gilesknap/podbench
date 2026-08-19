@@ -51,6 +51,9 @@ __all__ = [
     "WORKSPACE_MOUNT_PATH",
     "WORKSPACE_VOLUME",
     "InvalidSpecError",
+    "admission_rewrites",
+    "admission_wedges_the_kubelet",
+    "capabilities_removed",
     "container_id",
     "cutover_selector_patch",
     "dev_pod_spec",
@@ -61,8 +64,10 @@ __all__ = [
     "ephemeral_container_spec",
     "moves",
     "runs_as_non_root",
+    "ephemeral_container",
     "seat_identity_volume_mounts",
     "service_selector_patch",
+    "shares_pid_namespace_across_uids",
     "target_seccomp_profile",
     "target_uid_gid",
     "validate_ephemeral_volume_mounts",
@@ -1008,6 +1013,234 @@ def runs_as_non_root(pod_json: Mapping[str, Any], container: str) -> bool:
     if isinstance(value, bool):
         return value
     return as_dict(spec.get("securityContext")).get("runAsNonRoot") is True
+
+
+def shares_pid_namespace_across_uids(
+    pod_json: Mapping[str, Any], container: str, uid: int | None
+) -> bool:
+    """Whether a seat pinned to ``uid`` would see processes it cannot trace.
+
+    ``shareProcessNamespace: true`` puts every container's processes in one PID
+    namespace, and the credential check in ``__ptrace_may_access`` compares uids
+    before Yama is consulted (report 3.11/3.12). So a seat matching the target
+    container's uid can trace that container and *only* that container, and on
+    such a pod the capability is the only thing that reaches the rest — which is
+    the one case where the full rung is worth a name even though the target's
+    own uid is known.
+
+    A container whose uid the manifest does not state counts as different: it
+    comes from the image and cannot be shown to match. Where the pod does not
+    share its PID namespace the question does not arise — the seat joins the
+    target container's namespace and sees nothing else.
+
+    >>> pod = {"spec": {"shareProcessNamespace": True, "containers": [
+    ...     {"name": "app", "securityContext": {"runAsUser": 1000}},
+    ...     {"name": "sidecar", "securityContext": {"runAsUser": 2000}}]}}
+    >>> shares_pid_namespace_across_uids(pod, "app", 1000)
+    True
+    >>> del pod["spec"]["shareProcessNamespace"]
+    >>> shares_pid_namespace_across_uids(pod, "app", 1000)
+    False
+    """
+    spec = as_dict(pod_json.get("spec"))
+    if spec.get("shareProcessNamespace") is not True:
+        return False
+    containers = spec.get("containers")
+    if not isinstance(containers, list):
+        return False
+    for entry in cast(list[Any], containers):
+        if not isinstance(entry, dict):
+            continue
+        other = cast(dict[str, Any], entry)
+        name = other.get("name")
+        if name == container or not isinstance(name, str):
+            continue
+        if target_uid_gid(pod_json, name)[0] != uid:
+            return True
+    return False
+
+
+def ephemeral_container(
+    pod_json: Mapping[str, Any], name: str
+) -> dict[str, Any] | None:
+    """The named ephemeral container as this pod document carries it.
+
+    By name, never by position. The subresource replace submits the pod's whole
+    ephemeral container list, so what comes back from a server-side dry-run
+    describes the seats podbench did not author as well as the one it proposed —
+    and admission rewrites those too. Only the proposed container is podbench's
+    to reason about.
+
+    >>> pod = {"spec": {"ephemeralContainers": [{"name": "podbench-1"}]}}
+    >>> ephemeral_container(pod, "podbench-1")
+    {'name': 'podbench-1'}
+    >>> ephemeral_container(pod, "podbench-2") is None
+    True
+    """
+    entries = as_dict(pod_json.get("spec")).get("ephemeralContainers")
+    if not isinstance(entries, list):
+        return None
+    for entry in cast(list[Any], entries):
+        if isinstance(entry, dict) and cast(dict[str, Any], entry).get("name") == name:
+            return cast(dict[str, Any], entry)
+    return None
+
+
+_REWRITTEN_FIELDS: tuple[str, ...] = (
+    "runAsUser",
+    "runAsGroup",
+    "runAsNonRoot",
+    "privileged",
+    "allowPrivilegeEscalation",
+    "readOnlyRootFilesystem",
+)
+"""securityContext scalars worth naming when admission changes one.
+
+The whole securityContext and nothing else, because that is what decides the
+rung. A policy that rewrites it issues no refusal, so the ladder drops no rung,
+and podbench goes on naming a rung the seat does not have (issue #94).
+"""
+
+
+def _capabilities(context: Mapping[str, Any], key: str) -> list[str]:
+    entries = as_dict(context.get("capabilities")).get(key)
+    if not isinstance(entries, list):
+        return []
+    return [item for item in cast(list[Any], entries) if isinstance(item, str)]
+
+
+def _rendered(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def capabilities_removed(
+    requested: Mapping[str, Any], admitted: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Capabilities the request added that admission would not store.
+
+    The full rung's entire content is ``SYS_PTRACE``, so a policy that strips it
+    leaves a root container with no capability — which reads three of the six
+    probe paths, where the degraded rung at the target's own uid reads all six
+    (report 3.11). Landing that is strictly worse than not landing it, and the
+    only signal is this difference: the update itself succeeds.
+
+    >>> capabilities_removed(
+    ...     {"securityContext": {"capabilities": {"add": ["SYS_PTRACE"]}}},
+    ...     {"securityContext": {"capabilities": {"drop": ["ALL"]}}},
+    ... )
+    ('SYS_PTRACE',)
+    """
+    stored = set(_capabilities(as_dict(admitted.get("securityContext")), "add"))
+    asked = _capabilities(as_dict(requested.get("securityContext")), "add")
+    return tuple(name for name in asked if name not in stored)
+
+
+def admission_rewrites(
+    requested: Mapping[str, Any], admitted: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """How admission would rewrite this container's securityContext.
+
+    Each phrase is one difference between the container podbench authored and
+    the container a server-side dry-run says would be stored. A *mutating*
+    policy is the quiet half of admission: it does not refuse, so nothing in the
+    walk reacts, and the seat that lands is not the seat that was asked for.
+
+    Measured at DLS on 2026-08-19: podbench asks for
+    ``{"capabilities": {"drop": ["ALL"]}}`` and adds nothing; the pod comes back
+    with thirteen capabilities added to it.
+
+    >>> admission_rewrites(
+    ...     {"securityContext": {"capabilities": {"drop": ["ALL"]}}},
+    ...     {"securityContext": {"capabilities": {"drop": ["ALL"],
+    ...                                           "add": ["KILL", "CHOWN"]}}},
+    ... )
+    ('added CHOWN, KILL to capabilities.add',)
+    >>> admission_rewrites(
+    ...     {"securityContext": {"runAsUser": 0}},
+    ...     {"securityContext": {"runAsUser": 0, "runAsNonRoot": True}},
+    ... )
+    ('set runAsNonRoot: true',)
+    >>> admission_rewrites({"securityContext": {}}, {"securityContext": {}})
+    ()
+    """
+    asked = as_dict(requested.get("securityContext"))
+    stored = as_dict(admitted.get("securityContext"))
+    phrases: list[str] = []
+
+    added = sorted(set(_capabilities(stored, "add")) - set(_capabilities(asked, "add")))
+    if added:
+        phrases.append(f"added {', '.join(added)} to capabilities.add")
+    removed = capabilities_removed(requested, admitted)
+    if removed:
+        phrases.append(f"removed {', '.join(removed)} from capabilities.add")
+    undropped = sorted(
+        set(_capabilities(asked, "drop")) - set(_capabilities(stored, "drop"))
+    )
+    if undropped:
+        phrases.append(f"removed {', '.join(undropped)} from capabilities.drop")
+
+    for field in _REWRITTEN_FIELDS:
+        before, after = asked.get(field), stored.get(field)
+        if before == after and (field in asked) == (field in stored):
+            continue
+        if field not in asked:
+            phrases.append(f"set {field}: {_rendered(after)}")
+        elif field not in stored:
+            phrases.append(f"unset {field}")
+        else:
+            phrases.append(
+                f"changed {field} from {_rendered(before)} to {_rendered(after)}"
+            )
+    return tuple(phrases)
+
+
+def admission_wedges_the_kubelet(
+    requested: Mapping[str, Any], admitted: Mapping[str, Any]
+) -> str | None:
+    """Whether admission assembled the pair the kubelet refuses, seconds later.
+
+    ``runAsNonRoot: true`` with no non-zero uid beside it is accepted by the API
+    server and then refused by the *node*, with
+    ``CreateContainerConfigError: container has runAsNonRoot and image will run
+    as root`` (report 3.18). That is the one refusal that burns a container
+    name for the pod's lifetime, and ``?dryRun=All`` will never see it: a dry
+    run is the admission chain and stops there.
+
+    :func:`_rung_security_context` is careful never to author that pair against
+    a target it could pin a uid from. It never imagined admission assembling it
+    — a policy that adds ``runAsNonRoot: true`` to the full rung produces a
+    request that succeeds and a container that waits forever. So the pair is
+    read out of what admission says it would store, and only where the request
+    did not already carry it: the seat rung against a *root* target authors that
+    shape deliberately, having no uid it may pin, and that is podbench's own
+    known trade rather than a rewrite.
+
+    >>> admission_wedges_the_kubelet(
+    ...     {"securityContext": {"runAsUser": 0}},
+    ...     {"securityContext": {"runAsUser": 0, "runAsNonRoot": True}},
+    ... )
+    'admission would add runAsNonRoot: true beside uid 0'
+    >>> seat = {"securityContext": {"runAsNonRoot": True}}
+    >>> admission_wedges_the_kubelet(seat, seat) is None
+    True
+    """
+    if _wedged(as_dict(requested.get("securityContext"))):
+        return None
+    stored = as_dict(admitted.get("securityContext"))
+    if not _wedged(stored):
+        return None
+    uid = stored.get("runAsUser")
+    beside = "uid 0" if isinstance(uid, int) else "no uid at all"
+    return f"admission would add runAsNonRoot: true beside {beside}"
+
+
+def _wedged(context: Mapping[str, Any]) -> bool:
+    if context.get("runAsNonRoot") is not True:
+        return False
+    uid = context.get("runAsUser")
+    return not isinstance(uid, int) or isinstance(uid, bool) or uid == 0
 
 
 def container_id(pod_json: Mapping[str, Any], container: str) -> str | None:

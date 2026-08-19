@@ -130,10 +130,21 @@ grant `SYS_PTRACE` would make an honest report look like a failure.
 
 ## The capability ladder
 
-Three rungs, tried in order, and the shape is forced rather than chosen: `SYS_PTRACE`
-on a container whose `runAsUser` is not 0 lands in the bounding set only, leaving
-`CapEff: 0` — so there is no useful middle rung to invent, and `spec.py` raises rather
-than author one.
+Three rungs, and the shape is forced rather than chosen: `SYS_PTRACE` on a container
+whose `runAsUser` is not 0 lands in the bounding set only, leaving `CapEff: 0` — so
+there is no useful middle rung to invent, and `spec.py` raises rather than author one.
+
+The **order** is the target's to imply. Where the target's uid is known and is not
+root, rung 2 already matches it, which is what the kernel's credential check wants,
+and it is tried first: the capability rung is not spent proving what the uid already
+says, and a root seat whose capability a policy strips reads *fewer* of the target's
+`/proc` files than rung 2 does (report 3.11). A root target, a target whose uid the
+pod spec does not carry, and a pod sharing one PID namespace between containers of
+different uids keep the classic order, rung 1 first — for them rung 2 cannot be
+authored, or cannot reach what the user came for. `--max-rung` states the starting
+rung explicitly and overrides all of it; it is also the only way to insist on rung 1
+for a node whose Yama `ptrace_scope` is 1 or more, which is per-node and cannot be
+read before a seat exists.
 
 ```text
                  ┌───────────────────────────────────────┐
@@ -150,6 +161,8 @@ than author one.
       pre-skipped, no API call, no name burnt:
         the pod or the container sets runAsNonRoot: true
         or --max-rung named a lower rung as the ceiling
+      withdrawn at the dry run, no name burnt:
+        admission would strip SYS_PTRACE, or add runAsNonRoot: true
       refused synchronously, in kubectl's stderr:
         PSA — 'must not include "SYS_PTRACE" in ...capabilities.add'
                                   │
@@ -179,6 +192,12 @@ Refusal arrives through two unrelated channels, and only one of them is catchabl
 around the API call:
 
 ```text
+  replace --raw .../ephemeralcontainers?dryRun=All      the rehearsal
+        │        admission runs, nothing is stored, no name is spent
+        │        → a refusal here ends the rung; a rewrite here is read
+        │          out of the response body, which is the only place a
+        │          mutating policy is visible at all
+        ▼
   replace --raw .../ephemeralcontainers
         │
         ├── non-zero exit, PSA text in stderr ──── synchronous refusal
@@ -210,12 +229,22 @@ never tried. The spec reads back afterwards as `runAsUser: 0` with nothing added
 which is indistinguishable from rung 2 (issue #94) — the honest answer about such
 a seat is never its rung, only what `capreport` measured.
 
-`--max-rung` is the way out: it caps the walk so the rung that cannot work is
-never submitted, rather than detecting the strip afterwards. Detection is
-possible — the API server returns the mutated object in the response body, and a
-server-side dry-run would show it without storing anything — but a cap is what a
-person who knows their own cluster can state up front, and it spends no
-container name proving what they already know. Measured at DLS, 2026-08-18.
+So the rung is rehearsed first. Every rung goes through `?dryRun=All` before it is
+created: the API server runs the whole admission chain, returns the object as it
+*would* have stored it, and stores nothing. A strip is then visible in the response
+body, and rung 1 is withdrawn rather than spent — landing it would be worse than not
+landing it. The same read catches the more expensive rewrite, a `runAsNonRoot: true`
+added beside `runAsUser: 0`, which the API server takes and the kubelet then refuses
+seconds later with a container name already gone.
+
+A dry run is the admission chain and nothing else, so it never sees that kubelet
+refusal itself; that one is still pre-empted by reading the target's `runAsNonRoot`
+up front rather than provoked. And a rewrite that costs the rung nothing — the
+thirteen capabilities a DLS policy adds to a container that asked for none, measured
+2026-08-19 — is reported as one line rather than acted on.
+
+`--max-rung` remains the way to state a cap up front, and is what somebody who knows
+their own cluster reaches for. Measured at DLS, 2026-08-18.
 
 ## Every cluster call, in order
 
@@ -229,9 +258,14 @@ container name proving what they already know. Measured at DLS, 2026-08-18.
         -p '{"spec":{"containers":[{"name":C,"resources":…}]}}' \
         --subresource=resize                             # --resize only
  5  kubectl -n NS get pod POD -o json                    # the pod attach works from
- --- only when a new seat is landed: ---
+ --- only when a new seat is landed, once per rung attempted: ---
  6  kubectl -n NS get pod POD --subresource=ephemeralcontainers -o json
  7  kubectl -n NS replace --raw \
+        /api/v1/namespaces/NS/pods/POD/ephemeralcontainers?dryRun=All -f -
+                                                        # the rehearsal: admission
+                                                        # runs, nothing is stored
+ 6' kubectl -n NS get pod POD --subresource=ephemeralcontainers -o json
+ 7' kubectl -n NS replace --raw \
         /api/v1/namespaces/NS/pods/POD/ephemeralcontainers -f -
  8  kubectl -n NS get pod POD -o json                    # polled until running
  --- always: ---

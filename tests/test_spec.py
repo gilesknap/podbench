@@ -7,7 +7,7 @@ all three probes, a ConfigMap volume and a controller label.
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -24,6 +24,9 @@ from podbench.spec import (
     ORIGIN_ANNOTATION,
     WORKSPACE_VOLUME,
     InvalidSpecError,
+    admission_rewrites,
+    admission_wedges_the_kubelet,
+    capabilities_removed,
     container_id,
     cutover_selector_patch,
     dev_pod_spec,
@@ -365,6 +368,47 @@ def test_seat_rung_pins_no_uid() -> None:
     )
     assert "runAsUser" not in spec["securityContext"]
     assert spec["securityContext"]["runAsNonRoot"] is True
+
+
+def test_the_seat_rungs_own_run_as_non_root_is_not_read_as_a_mutation() -> None:
+    """The asymmetry the wedge check turns on.
+
+    Against a root target the seat rung authors ``runAsNonRoot: true`` and pins
+    no uid deliberately — there is no uid it may pin — so that shape is
+    podbench's own trade and the rung is still worth attempting. The identical
+    shape *arriving* from a mutating policy is a rung about to wedge, because
+    nothing chose it.
+    """
+    seat = ephemeral_container_spec(
+        name="podbench-1", image="podbench:dev", rung=Rung.SEAT, target_uid=0
+    )
+    assert admission_wedges_the_kubelet(seat, seat) is None
+
+    full = ephemeral_container_spec(
+        name="podbench-1", image="podbench:dev", rung=Rung.FULL
+    )
+    rewritten = copy.deepcopy(full)
+    cast(dict[str, Any], rewritten["securityContext"])["runAsNonRoot"] = True
+    assert admission_wedges_the_kubelet(full, rewritten) == (
+        "admission would add runAsNonRoot: true beside uid 0"
+    )
+
+
+def test_a_stripped_capability_is_named_even_when_nothing_refused() -> None:
+    """What a mutating policy leaves behind is a rung that reads back as the one
+    below it, which is why the comparison is against the request rather than
+    against the spec alone (issue #94)."""
+    full = ephemeral_container_spec(
+        name="podbench-1", image="podbench:dev", rung=Rung.FULL
+    )
+    stripped = copy.deepcopy(full)
+    cast(dict[str, Any], stripped["securityContext"])["capabilities"] = {}
+
+    assert capabilities_removed(full, stripped) == ("SYS_PTRACE",)
+    assert admission_rewrites(full, stripped) == (
+        "removed SYS_PTRACE from capabilities.add",
+    )
+    assert admission_rewrites(full, full) == ()
 
 
 def test_seat_rung_never_pins_root_beside_run_as_non_root() -> None:
