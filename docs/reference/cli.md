@@ -1015,7 +1015,9 @@ produces a correct backtrace.
 │                                            so this is how source text outside the target's       │
 │                                            rootfs is found. Repeatable                           │
 │ --no-debuginfod                            do not enable debuginfod (it needs ca-certificates    │
-│                                            and network)                                          │
+│                                            and network). Library symbols are fetched after the   │
+│                                            attach, with the target stopped, so this is the flag  │
+│                                            to reach for when the pause is what costs             │
 │ --run                                      with --launch, start the program immediately          │
 │ --dry-run,--print-commands                 print the generated gdb commands and exit, without    │
 │                                            probing or starting gdb                               │
@@ -1088,7 +1090,10 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │                                                     source` prints it) onto a readable path.     │
 │                                                     Repeatable                                   │
 │ --no-debuginfod                                     do not enable debuginfod (it needs           │
-│                                                     ca-certificates and network)                 │
+│                                                     ca-certificates and network). Library        │
+│                                                     symbols are fetched after the attach, with   │
+│                                                     the target stopped, so this is the flag to   │
+│                                                     reach for when the pause is what costs       │
 │ --lldb                                              shorthand for --flavour lldb                 │
 │ --provision                                         make the target debuggable: install debugpy  │
 │                                                     with uv when it cannot import one, then      │
@@ -1379,8 +1384,8 @@ stream.
 | `PODBENCH_SSH_PUBKEY_FILE` | agent | read it from a file instead. Default mount `/etc/podbench/ssh/authorized_keys` |
 | `PODBENCH_SSH_HOST_KEY` | agent | host private key, rather than minting one |
 | `PODBENCH_SSH_HOST_KEY_FILE` | agent | the same from a file. Default mount `/etc/podbench/ssh/ssh_host_ed25519_key` |
-| `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net` |
-| `DEBUGINFOD_TIMEOUT` | gdb, `dbg` | seconds gdb will wait on that server |
+| `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net`; the seat drops it from ssh sessions when nothing answers there |
+| `DEBUGINFOD_TIMEOUT` | gdb, `dbg` | seconds gdb will wait on that server, per file. The image sets `2`; gdb's own default is 90 |
 
 sshd leaks none of its own environment to the commands it runs, so a variable
 set on the debug container reaches `kubectl exec` and a shell but not an ssh
@@ -1388,6 +1393,14 @@ session. The agent's generated sshd config carries the ones the seat needs —
 every `PODBENCH_*` except the keys, plus `PATH`, `DEBUGINFOD_URLS` and
 `DEBUGINFOD_TIMEOUT` — and reports in the container's start-up log if a value
 contains whitespace, which sshd's `SetEnv` cannot carry.
+
+`DEBUGINFOD_URLS` is the one of those the agent may decide *not* to carry. It
+opens a connection to that server once, at start-up, and drops the variable
+from the session when nothing answers — gdb's client has nothing to query
+without it, so its absence is the off switch. The reason is one line in the
+container's start-up log (`kubectl logs <pod> -c <seat>`). A `kubectl exec`
+session inherits the image's value regardless, where `podbench dbg
+--no-debuginfod` is the same decision taken per run.
 
 ## Exit codes
 

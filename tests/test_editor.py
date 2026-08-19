@@ -392,7 +392,7 @@ _SUCCESS = (
     "debug-config: nothing is listening on 127.0.0.1:5678 yet. Start the server "
     "inside the app with:\n"
     "PYTHONPATH=/proc/1/root/opt/podbench-debugpy \\\n"
-    "  python -m debugpy --listen 127.0.0.1:5678 --pid 1\n"
+    "  /app/.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid 1\n"
 )
 
 

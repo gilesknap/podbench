@@ -86,7 +86,7 @@ symptoms that read as unrelated bugs:
 | Lost | How it shows up |
 |---|---|
 | `PODBENCH_TARGET_CID` | the in-pod verbs fall back to *guessing* which processes belong to the target |
-| `PATH` | `--provision` dies with `sh: 1: python: not found` — the seat's interpreter is on no default `PATH` |
+| `PATH` | `--provision` died with `sh: 1: python: not found` — the seat's interpreter is on no default `PATH`. The injection recipe now names it in full (`flavour.SEAT_PYTHON`), because a line printed to be pasted must not depend on a directive sshd may refuse |
 | `DEBUGINFOD_URLS` | `set debuginfod enabled on` is inert **over the transport podbench itself generates**, while working under `kubectl exec`, which does inherit the image's environment |
 
 `SetEnv` in the sshd config is the only route that survives — and podbench generates that
@@ -96,6 +96,13 @@ variable; `agent.SESSION_ENV_NAMES` carries the image's `PATH`, `DEBUGINFOD_URLS
 sshd config is world-readable and the seat's environment is where the keys live. A name
 listed but unset is simply absent, which is what lets a variable be carried before
 anything sets it.
+
+`DEBUGINFOD_URLS` is the one the agent may decide *not* to carry: `agent.check_debuginfod`
+connects to that server once at start-up and drops the variable when nothing answers,
+because gdb's client has nothing to query without it and would otherwise wait
+`DEBUGINFOD_TIMEOUT` per shared library **after** the attach, with the workload stopped.
+The reason goes into the start-up log; a `kubectl exec` session still inherits the image's
+value, where `podbench dbg --no-debuginfod` is the same decision per run.
 
 > **One `SetEnv` directive carrying every pair, never one per variable.** sshd resolves
 > each keyword **first-match-wins**, so a second `SetEnv` line is silently ignored. This

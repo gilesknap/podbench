@@ -293,7 +293,9 @@ to the pod in front of you.
 
 EDITOR_PROBE_REMINDER = (
     "before the first breakpoint: this pod is probed, and the deadline under "
-    "`supports` above is what a pause spends."
+    "`supports` above is what a pause spends - symbol fetches included, since "
+    "gdb fetches a library's debuginfo after the stop. `podbench dbg "
+    "--no-debuginfod` in the seat spends none."
 )
 """The last thing ``attach --open`` says, and the only thing it repeats.
 
@@ -301,6 +303,12 @@ The numbers are :func:`podbench.budget.probe_qualifier`'s and stay there — a
 second copy is a second thing to keep true. What this adds is the timing: the
 report is several blocks up by the time the window opens, and the reader's
 attention is about to leave the terminal for a GUI.
+
+It names debuginfod because that is the one item of the spend the reader can
+still decide, and because it is not obviously part of a "pause" at all: the
+seat bounds each fetch and withdraws the server when it cannot be reached
+(:func:`podbench.agent.check_debuginfod`), but a reachable, slow one is charged
+to this budget. The mechanism is in ``docs/how-to/attach-to-a-pod.md``.
 """
 
 RESIZE_WARNING = (

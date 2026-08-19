@@ -139,6 +139,14 @@ def attach_commands(
       thread-aware command. Narrow, not ``set auto-load safe-path /``.
     * ``file`` before ``attach`` — this is what recovers the user frames, and
       it is the line that needs the deleted-suffix strip.
+    * ``set debuginfod`` before both — the executable's symbols are fetched on
+      ``file``, but a library's only after ``attach``, which is with the
+      workload *stopped*. gdb waits ``DEBUGINFOD_TIMEOUT`` per library and its
+      own default for that is 90 seconds, so the seat bounds it two ways:
+      :data:`podbench.agent.DEBUGINFOD_TIMEOUT_SECONDS` in the environment, and
+      a start-up probe that drops ``DEBUGINFOD_URLS`` from an ssh session
+      whose seat cannot reach the server at all. ``--no-debuginfod`` is the
+      per-run switch, for a server that is reachable and slow.
     """
     root = sysroot_path(pid)
     commands = [
@@ -522,7 +530,10 @@ def _dbg_command(
             bool,
             typer.Option(
                 "--no-debuginfod",
-                help="do not enable debuginfod (it needs ca-certificates and network)",
+                help="do not enable debuginfod (it needs ca-certificates and "
+                "network). Library symbols are fetched after the attach, with "
+                "the target stopped, so this is the flag to reach for when the "
+                "pause is what costs",
             ),
         ] = False,
         run_it: Annotated[

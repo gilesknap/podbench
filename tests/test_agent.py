@@ -1221,10 +1221,116 @@ def test_session_env_forwards_podbench_variables_and_the_named_few() -> None:
 
 
 def test_a_named_variable_that_is_unset_is_simply_absent() -> None:
-    """``DEBUGINFOD_TIMEOUT`` is named here before anything sets it, so that the
-    value arrives on the day something does. Naming it must cost nothing."""
+    """The allow-list names variables, not requirements: a session whose
+    environment carries none of them is written without them rather than with
+    empty values, which sshd would parse as pairs of its own."""
     assert "DEBUGINFOD_TIMEOUT" in agent.SESSION_ENV_NAMES
     assert agent.session_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+# -- the symbol server, bounded and checked ---------------------------------
+
+
+def test_an_unreachable_symbol_server_is_withdrawn_from_the_session() -> None:
+    """gdb fetches a library's debuginfo *after* the attach, with the workload
+    stopped, and waits DEBUGINFOD_TIMEOUT for each one. A seat behind an egress
+    policy would pay that repeatedly for nothing, so the URL is dropped - which
+    is the off switch, since gdb's client has nothing to query without it."""
+    check = agent.check_debuginfod(
+        {"DEBUGINFOD_URLS": "https://debuginfod.debian.net", "PATH": "/usr/bin"},
+        reachable=lambda urls: False,
+    )
+
+    assert "DEBUGINFOD_URLS" not in check.env
+    assert check.env["PATH"] == "/usr/bin"
+    assert check.note is not None
+    # The way out for the one route no sshd config reaches.
+    assert "--no-debuginfod" in check.note
+
+
+def test_a_reachable_server_is_bounded_rather_than_taken_on_trust() -> None:
+    """Kept on - S3 got a fully symbolised backtrace out of it - but never
+    unbounded: gdb's own default is 90s per library."""
+    check = agent.check_debuginfod(
+        {"DEBUGINFOD_URLS": "https://debuginfod.debian.net"},
+        reachable=lambda urls: True,
+    )
+
+    assert check.env["DEBUGINFOD_URLS"] == "https://debuginfod.debian.net"
+    assert check.env["DEBUGINFOD_TIMEOUT"] == agent.DEBUGINFOD_TIMEOUT_SECONDS
+    assert check.note is None
+
+
+def test_a_timeout_the_image_already_set_is_left_alone() -> None:
+    """The image's ENV is the value that also bounds `kubectl exec` and the gdb
+    cpptools starts, so a seat that was given one is not second-guessed."""
+    check = agent.check_debuginfod(
+        {"DEBUGINFOD_URLS": "https://elsewhere", "DEBUGINFOD_TIMEOUT": "9"},
+        reachable=lambda urls: True,
+    )
+
+    assert check.env["DEBUGINFOD_TIMEOUT"] == "9"
+
+
+def test_nothing_is_probed_when_no_server_was_named() -> None:
+    """Without a URL gdb's debuginfod is already inert, and probing a server
+    nobody named would mean inventing one."""
+    asked: list[str] = []
+
+    def reachable(urls: str) -> bool:
+        asked.append(urls)
+        return True
+
+    check = agent.check_debuginfod({"PATH": "/usr/bin"}, reachable=reachable)
+
+    assert asked == []
+    assert check.note is None
+    assert "DEBUGINFOD_TIMEOUT" not in check.env
+
+
+def test_the_probe_answers_false_rather_than_raising() -> None:
+    """Every failure mode - no host, an unparseable port, a name that does not
+    resolve - means the same thing to the caller, and this runs in PID 1."""
+    assert not agent.debuginfod_reachable("not-a-url")
+    assert not agent.debuginfod_reachable("https://host:notaport")
+    assert not agent.debuginfod_reachable("")
+
+
+def test_a_seat_that_cannot_reach_the_server_says_so_and_writes_no_url(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decision has to reach the config, and the reason has to reach the
+    container's start-up log: an unreachable symbol server is invisible
+    otherwise until the first breakpoint, where it costs the pause."""
+
+    def unreachable(urls: str, *, timeout: float = 0.0) -> bool:
+        return False
+
+    monkeypatch.setattr(agent, "debuginfod_reachable", unreachable)
+    layout = make_layout(tmp_path, root=False)
+
+    report = agent.ensure_all(
+        layout,
+        env={**env, "DEBUGINFOD_URLS": "https://debuginfod.debian.net"},
+        runner=FakeRunner(),
+    )
+
+    written = Path(layout.config_path).read_text()
+    assert "DEBUGINFOD_URLS" not in written
+    assert any("debuginfod is off" in change for change in report.changes)
+    assert report.ok
+
+
+def test_the_image_sets_the_timeout_the_agent_would_have_supplied() -> None:
+    """The ENV is what bounds the routes no sshd config reaches - a kubectl exec
+    shell, and the gdb cpptools starts through gdb-podbench. Two copies of one
+    number, so the drift is what this pins."""
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+
+    assert (
+        f"ENV DEBUGINFOD_TIMEOUT={agent.DEBUGINFOD_TIMEOUT_SECONDS}"
+        in dockerfile.read_text()
+    )
 
 
 def test_a_path_sshd_cannot_carry_is_reported_rather_than_dropped(

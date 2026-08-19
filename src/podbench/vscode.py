@@ -1777,7 +1777,10 @@ def main(
             bool,
             typer.Option(
                 "--no-debuginfod",
-                help="do not enable debuginfod (it needs ca-certificates and network)",
+                help="do not enable debuginfod (it needs ca-certificates and "
+                "network). Library symbols are fetched after the attach, with "
+                "the target stopped, so this is the flag to reach for when the "
+                "pause is what costs",
             ),
         ] = False,
         lldb: Annotated[

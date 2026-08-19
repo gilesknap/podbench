@@ -30,6 +30,7 @@ from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
 from podbench.probe import AttachOutcome
 from podbench.proc import DEFAULT_PROC
+from podbench.provision import INJECTION_TIMEOUT_SECONDS
 from podbench.vscode import (
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
@@ -1118,13 +1119,19 @@ class InstallingUv:
     def __init__(self, *, inject_rc: int = 0) -> None:
         self.argv: list[str] = []
         self.injected: str | None = None
+        self.bound: list[str] = []
         self.inject_rc = inject_rc
 
     def __call__(
         self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
     ) -> CommandResult:
-        if list(argv[:2]) == ["sh", "-c"]:
-            self.injected = argv[2]
+        if argv[0] == "timeout":
+            # The injection reaches the shell only through a bound: #76 was a
+            # pause that lasted as long as gdb felt like waiting, and a fake
+            # that answered a bare `sh -c` would let that come back unnoticed.
+            assert list(argv[-3:-1]) == ["sh", "-c"]
+            self.bound = list(argv[1:-3])
+            self.injected = argv[-1]
             if self.inject_rc != 0:
                 return CommandResult(tuple(argv), self.inject_rc, "", "ptrace: denied")
             return CommandResult(tuple(argv), 0, "", "")
@@ -1185,6 +1192,11 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
     # target's version rather than this seat's.
     assert uv.injected is not None
     assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in uv.injected
+    # And it names the seat's interpreter in full: the seat has two, and the
+    # one this recipe means is the venv the image resolved debugpy against.
+    assert " /app/.venv/bin/python -m debugpy" in uv.injected
+    # The ptrace pause is bounded by podbench and not by gdb's patience (#76).
+    assert str(INJECTION_TIMEOUT_SECONDS) in uv.bound
     for caveat in ("egress", "restart", "ephemeral storage"):
         assert caveat in captured.err
 

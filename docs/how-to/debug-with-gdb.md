@@ -205,7 +205,7 @@ Every line earns its place:
 | `set sysroot /proc/<pid>/root` **before** `attach` | gdb resolves the *target's* loader and shared libraries, not the debug image's. gdb 13's default sysroot is `target:`, which needs `CAP_SYS_ADMIN` and fails loudly without it |
 | `directory /proc/<pid>/root` | sysroot does **not** cover source lookup. This is what turns `victim.c: No such file or directory` into real source text |
 | `add-auto-load-safe-path /proc/<pid>/root` | setting a sysroot makes gdb decline to auto-load the target's `libthread_db.so.1` — no `info threads`, no per-thread backtraces. Narrow, never `set auto-load safe-path /` |
-| `set debuginfod enabled on` | symbols for stripped binaries and system libraries. Symbols only — see below |
+| `set debuginfod enabled on` | symbols for stripped binaries and system libraries. Symbols only — see below. A library's are fetched *after* the attach, with the target stopped, so the image bounds each fetch at `DEBUGINFOD_TIMEOUT=2` and `--no-debuginfod` turns the whole thing off for one run |
 | `file /proc/<pid>/root$(readlink /proc/<pid>/exe)` **before** `attach` | this is what recovers the *user* frames. A trailing ` (deleted)` is stripped |
 
 ### When that `file` line names `/tmp` instead

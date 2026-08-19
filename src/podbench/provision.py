@@ -272,6 +272,38 @@ def _last_line(result: CommandResult) -> str:
     return "it said nothing"
 
 
+INJECTION_TIMEOUT_SECONDS = 30
+"""How long the injection may hold the workload before podbench takes it back.
+
+Issue #76: the attach ran to whatever end gdb reached, and the duration
+:class:`Injected` reported was therefore the one number here podbench did not
+control. It stops the app for the whole of it, against readiness budgets
+:mod:`podbench.budget` computes in tens of seconds, so an injection that has
+not returned is not "still working" in any sense the pod agrees with.
+
+Thirty seconds is an order of magnitude above the 3.4 s measured on the k3s
+bench and well below the point at which a stopped app has any chance of still
+being in its Service. It is a bound, not a budget: the good case never meets it.
+"""
+
+_INJECTION_KILL_AFTER_SECONDS = 5
+"""Grace between the TERM and the KILL, in seconds.
+
+gdb quits on TERM and quitting detaches an inferior it attached to, so the app
+resumes with its state intact. The KILL is for one too stuck to do even that,
+and the app resumes there too - the kernel detaches a tracee whose tracer dies.
+"""
+
+_TIMED_OUT_CODES = frozenset({124, 128 + 9})
+"""``timeout``'s own exit codes: 124 when it fired, 137 when the KILL was needed.
+
+GNU ``timeout`` reserves 124 for itself and reports a killed command as
+128+signal, so these read as "podbench stopped this" rather than as anything the
+driver said - which is why the message they select describes the bound and does
+not put words in gdb's mouth.
+"""
+
+
 @dataclass(frozen=True)
 class Injected:
     """What the injection did, and how long the target was held to do it."""
@@ -285,6 +317,10 @@ class Injected:
     the app answers no probe while it is stopped, and the readiness budget is
     tens of seconds. 3.4 s measured on the k3s bench against an 11-16 s
     readiness budget, matching issue #45's ~3 s.
+
+    Bounded as well as measured since #76: it cannot now exceed
+    :data:`INJECTION_TIMEOUT_SECONDS` by more than the grace period, whatever
+    the driver was waiting for.
     """
 
     messages: tuple[str, ...] = ()
@@ -295,6 +331,7 @@ def inject_debugpy(
     *,
     runner: Runner | None = None,
     port: int,
+    timeout: int = INJECTION_TIMEOUT_SECONDS,
     clock: Callable[[], float] = time.monotonic,
 ) -> Injected:
     """Run the injection ``command`` this seat would otherwise have printed.
@@ -304,15 +341,61 @@ def inject_debugpy(
     cannot drift into a paste that works and a run that does not, and the
     continuation backslash is handled by ``sh`` for both.
 
-    Timed rather than merely run. The ptrace attach *stops the app*, so on a
-    probed pod the duration is the thing that decides whether this was free or
-    whether the pod quietly left its Service. ``clock`` is a seam so the unit
-    suite can assert the number without one.
+    Timed rather than merely run, and now bounded as well (#76). The ptrace
+    attach *stops the app*, so on a probed pod the duration is the thing that
+    decides whether this was free or whether the pod quietly left its Service —
+    and a duration nothing limits is a pause nothing limits. ``clock`` is a seam
+    so the unit suite can assert the number without one.
+
+    The bound is coreutils ``timeout`` and deliberately not ``subprocess``'s:
+    the driver forks gdb, and a Python-side timeout kills only the ``sh`` we
+    started, leaving that gdb attached to the workload with nobody waiting for
+    it. ``timeout`` puts the command in a process group of its own and signals
+    the group, so the thing actually holding the app is what receives the
+    signal. The ``command`` inside the wrapper is still untouched, which is what
+    keeps it character for character what was printed.
     """
     run = runner if runner is not None else run_subprocess
     started = clock()
-    result = run(["sh", "-c", command])
+    argv = [
+        "timeout",
+        f"--kill-after={_INJECTION_KILL_AFTER_SECONDS}",
+        str(timeout),
+        "sh",
+        "-c",
+        command,
+    ]
+    try:
+        result = run(argv)
+    except OSError as error:
+        # An in-pod verb may not traceback at somebody: `timeout` is coreutils
+        # and is in podbench's image, but this is the one line here that assumes
+        # a binary other than `sh`, and the workload was never touched.
+        return Injected(
+            False,
+            clock() - started,
+            (
+                f"the injection did not start: {argv[0]} could not be run "
+                f"({error}), and podbench will not attach without the bound it "
+                "provides. The workload was not stopped",
+            ),
+        )
     seconds = clock() - started
+    if result.returncode in _TIMED_OUT_CODES:
+        return Injected(
+            False,
+            seconds,
+            (
+                f"injection did not return within {timeout}s and was stopped "
+                f"after {seconds:.1f}s: {_last_line(result)}",
+                "the app resumes as soon as its tracer dies, so the pause ends "
+                "here rather than lasting as long as gdb felt like waiting. A "
+                "slow symbol server is the usual reason: this seat drops "
+                "DEBUGINFOD_URLS from ssh sessions when it cannot reach the "
+                "server at all, and bounds each fetch with DEBUGINFOD_TIMEOUT "
+                "when it can",
+            ),
+        )
     if result.returncode != 0:
         return Injected(
             False,

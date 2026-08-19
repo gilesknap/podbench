@@ -272,6 +272,17 @@ RUN set -eu; \
 # only makes the setting visible and gives the launcher one place to override.
 ENV DEBUGINFOD_URLS=https://debuginfod.debian.net
 
+# And a bound on it, because gdb's default is 90 seconds *per shared library*
+# and it spends them after the attach, with the workload stopped - against
+# readiness deadlines podbench computes in tens of seconds. Two seconds is the
+# value agent.DEBUGINFOD_TIMEOUT_SECONDS supplies to a session that arrives
+# without one; this ENV is what bounds the routes no sshd config reaches, the
+# kubectl exec shell and the gdb cpptools starts through gdb-podbench. The seat
+# also probes the server once at start-up and drops the URL above from ssh
+# sessions when nothing answers (agent.check_debuginfod), so this timeout is the
+# bound on a server that is reachable and slow, not on one that is absent.
+ENV DEBUGINFOD_TIMEOUT=2
+
 # The static uv binary, not the install script: no curl at build time and a
 # digest renovate can bump. uvx is skipped (~35 MiB for what `uv tool run` does).
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv

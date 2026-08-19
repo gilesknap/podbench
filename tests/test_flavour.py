@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 
 from podbench.flavour import (
+    SEAT_DEBUGPY_PATH,
+    SEAT_PYTHON,
     Assessment,
     Debugger,
     Flavour,
@@ -823,6 +825,20 @@ def test_the_injection_command_loads_the_targets_debugpy() -> None:
     command = injection_command(target, seat)
     assert f"PYTHONPATH=/proc/{PID}/root/" in command
     assert "/opt/podbench/debugpy" not in command
+
+
+def test_the_injection_command_names_the_seats_interpreter_in_full() -> None:
+    """A bare ``python`` names whichever of the seat's two interpreters a PATH
+    reaches, and only one of them is the one the image resolved debugpy for.
+    The recipe is also printed to be pasted - into a ``kubectl exec``, which has
+    no sshd config carrying a PATH at all - so it may not depend on one."""
+    target = Target(pid=PID, language=Language.PYTHON, program="/usr/bin/python3")
+    seat = Seat(machine="x86_64", cap_sys_ptrace=True, debugpy_here=SEAT_DEBUGPY_PATH)
+
+    command = injection_command(target, seat)
+
+    assert f" {SEAT_PYTHON} -m debugpy" in command
+    assert SEAT_PYTHON.startswith("/")
 
 
 # -- the inventory ----------------------------------------------------------

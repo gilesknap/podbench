@@ -75,6 +75,7 @@ from .provision import PROVISION_DEST, provision_paste
 __all__ = [
     "DEBUGPY_PORT",
     "SEAT_DEBUGPY_PATH",
+    "SEAT_PYTHON",
     "Assessment",
     "Debugger",
     "Flavour",
@@ -109,6 +110,24 @@ runtime dependency and that is the CLI, an invariant ``tests/test_packaging.py``
 asserts; and this copy has to be put on ``PYTHONPATH`` by hand for the injection
 recipe, which is easier to state when it is one path rather than a venv's
 site-packages.
+"""
+
+SEAT_PYTHON = "/app/.venv/bin/python"
+"""The interpreter that drives the injection, named in full rather than found.
+
+The seat ships two: this venv, and the uv-managed CPython under
+``/python/cpython-<version>-<triple>/`` that ``UV_PYTHON_INSTALL_DIR`` points at
+so a workspace ``uv venv`` does not download a third. Only one of them can run
+the driver — the image resolves debugpy against this one
+(``uv pip install --python /app/.venv/bin/python --target``
+:data:`SEAT_DEBUGPY_PATH`) — and a bare ``python`` names whichever of the two a
+``PATH`` happens to reach.
+
+That ``PATH`` is not ours to assume. The transport now carries the image's own
+(:data:`podbench.agent.SESSION_ENV_NAMES`), but ``SetEnv`` is a directive an
+sshd may refuse, and the recipe is printed to be *pasted* — into a
+``kubectl exec``, into a shell the launcher never saw, into a bug report. An
+absolute path costs nothing and resolves the same way in all of them.
 """
 
 _HELPER_RELATIVE = "debugpy/_vendored/pydevd/pydevd_attach_to_process"
@@ -1176,16 +1195,20 @@ def injection_command(target: Target, seat: Seat, port: int = DEBUGPY_PORT) -> s
     import the *target's* debugpy so that the path it injects resolves in the
     target's mount namespace too.
 
+    The interpreter is :data:`SEAT_PYTHON` and not a bare ``python``: this line
+    is as often pasted as run, and it has to reach the same one of the seat's
+    two interpreters wherever it is pasted.
+
     >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
     >>> seat = Seat(machine="x86_64", cap_sys_ptrace=True,
     ...             debugpy_there="/proc/7/root/usr/lib/python3/dist-packages")
     >>> print(injection_command(target, seat))
     PYTHONPATH=/proc/7/root/usr/lib/python3/dist-packages \\
-      python -m debugpy --listen 127.0.0.1:5678 --pid 7
+      /app/.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid 7
     """
     return (
         f"PYTHONPATH={seat.debugpy_there or seat.debugpy_here} \\\n"
-        f"  python -m debugpy --listen 127.0.0.1:{port} --pid {target.pid}"
+        f"  {SEAT_PYTHON} -m debugpy --listen 127.0.0.1:{port} --pid {target.pid}"
     )
 
 

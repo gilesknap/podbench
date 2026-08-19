@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import pwd
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -34,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import typer
 
@@ -69,8 +71,15 @@ __all__ = [
     "VSCODE_SETTINGS_WAY_OUT",
     "CheckResult",
     "CommandRunner",
+    "DEBUGINFOD_PROBE_SECONDS",
+    "DEBUGINFOD_TIMEOUT_ENV",
+    "DEBUGINFOD_TIMEOUT_SECONDS",
+    "DEBUGINFOD_URLS_ENV",
+    "DebuginfodCheck",
     "EnsureReport",
     "ReaperStatus",
+    "check_debuginfod",
+    "debuginfod_reachable",
     "ensure_all",
     "ensure_authorized_keys",
     "ensure_home_dir",
@@ -752,7 +761,10 @@ is already installed in authorized_keys and has no business in a session
 environment.
 """
 
-SESSION_ENV_NAMES = frozenset({"PATH", "DEBUGINFOD_URLS", "DEBUGINFOD_TIMEOUT"})
+DEBUGINFOD_URLS_ENV = "DEBUGINFOD_URLS"
+DEBUGINFOD_TIMEOUT_ENV = "DEBUGINFOD_TIMEOUT"
+
+SESSION_ENV_NAMES = frozenset({"PATH", DEBUGINFOD_URLS_ENV, DEBUGINFOD_TIMEOUT_ENV})
 """The image's own variables the transport carries as well, by exact name.
 
 The prefix above was the whole rule once, and the same missing mechanism showed
@@ -766,9 +778,11 @@ inherits none of the image's ``ENV``:
   transport podbench generates, while working under ``kubectl exec``, which
   does inherit the image's environment. Two routes into the same container
   disagreeing about symbols is the confusing half.
-* ``DEBUGINFOD_TIMEOUT`` — a bound on that fetch. Nothing sets it yet; a
-  variable that is unset is simply absent from the session, so listing it here
-  costs nothing and means the value arrives on the day something does.
+* ``DEBUGINFOD_TIMEOUT`` — a bound on that fetch, which the image sets to
+  :data:`DEBUGINFOD_TIMEOUT_SECONDS` and :func:`check_debuginfod` supplies for
+  a session whose environment somehow arrived without one. gdb's own default is
+  90 seconds and it spends that *per shared library*, after the attach, with
+  the workload stopped.
 
 An allow-list rather than the whole environment: the sshd config is a
 world-readable file, and a seat's environment is where the launcher's secrets
@@ -791,6 +805,126 @@ def session_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
         if (name.startswith(SESSION_ENV_PREFIX) or name in SESSION_ENV_NAMES)
         and name not in _SESSION_ENV_EXCLUDE
     }
+
+
+DEBUGINFOD_TIMEOUT_SECONDS = "2"
+"""How long a session lets gdb wait on the symbol server, in seconds.
+
+A string because it is an environment value, and a small one because of *when*
+it is spent. The executable's symbols are fetched on ``file``, but a shared
+library's are fetched after the ``attach`` — with the workload stopped, against
+the readiness and liveness deadlines :mod:`podbench.budget` computes from the
+pod spec. gdb's own default is 90 seconds and it spends it per library, so one
+unreachable server turns a pause worth seconds into one worth minutes.
+
+The image sets the same number in its ``ENV``, which is what bounds the
+``kubectl exec`` route and the gdb cpptools starts through ``gdb-podbench``;
+this copy is for a session whose environment arrived without one.
+"""
+
+DEBUGINFOD_PROBE_SECONDS = 2.0
+"""How long start-up spends finding out whether that server answers at all."""
+
+
+def debuginfod_reachable(
+    urls: str, *, timeout: float = DEBUGINFOD_PROBE_SECONDS
+) -> bool:
+    """Whether any server named in ``urls`` accepts a connection from this seat.
+
+    A TCP connect rather than an HTTP request: debuginfod's endpoints are
+    ``/buildid/<id>/…`` and ``GET /`` answers 404, so a request would have to
+    count a 404 as success and would prove nothing the connect does not. What is
+    being asked is whether this seat has egress to that host at all, which is
+    precisely what a restrictive NetworkPolicy takes away.
+
+    It never raises. A name that does not resolve, a refused connection and a
+    URL with no host in it all mean the same thing to the caller.
+
+    >>> debuginfod_reachable("")
+    False
+
+    ``timeout`` bounds the connect but not the name lookup, because stdlib
+    ``getaddrinfo`` takes no deadline. That cost is the resolver's own, it is
+    paid once, and it is paid at start-up with nothing stopped — which is the
+    reason the question is asked here rather than at the first breakpoint.
+    """
+    for url in urls.split():
+        parts = urlsplit(url)
+        try:
+            host, port = parts.hostname, parts.port
+        except ValueError:  # a URL whose port is not a number
+            continue
+        if not host:
+            continue
+        try:
+            with socket.create_connection(
+                (host, port or (443 if parts.scheme == "https" else 80)),
+                timeout=timeout,
+            ):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+@dataclass(frozen=True)
+class DebuginfodCheck:
+    """The environment a session should carry, and what to say about it."""
+
+    env: Mapping[str, str]
+    note: str | None = None
+
+
+def check_debuginfod(
+    env: Mapping[str, str] | None = None,
+    *,
+    reachable: Callable[[str], bool] | None = None,
+) -> DebuginfodCheck:
+    """Bound the symbol fetch, and withdraw it if nothing answers.
+
+    debuginfod stays on by default — S3 got a fully symbolised backtrace out of
+    it for 4.7 MB of cache (report 3.2) and that is most of what a stripped
+    target's frames are worth. What it may not do is cost an unbounded pause: a
+    seat behind an egress policy pays :data:`DEBUGINFOD_TIMEOUT_SECONDS` per
+    library with the workload stopped, for nothing.
+
+    Withdrawn by dropping the URL rather than by adding an off switch, because
+    gdb's client has nothing to query without ``DEBUGINFOD_URLS``: the
+    variable's absence *is* the off switch, and it is the only one that reaches
+    every gdb an ssh session starts — ``podbench dbg``, the ``gdb-podbench`` that
+    cpptools runs, and a plain ``gdb`` somebody types.
+
+    >>> check_debuginfod({}, reachable=lambda urls: False).note is None
+    True
+    >>> check = check_debuginfod({"DEBUGINFOD_URLS": "https://elsewhere"},
+    ...                          reachable=lambda urls: True)
+    >>> check.env["DEBUGINFOD_TIMEOUT"], check.note
+    ('2', None)
+    >>> check = check_debuginfod({"DEBUGINFOD_URLS": "https://elsewhere"},
+    ...                          reachable=lambda urls: False)
+    >>> "DEBUGINFOD_URLS" in check.env
+    False
+    """
+    probe = debuginfod_reachable if reachable is None else reachable
+    source = dict(os.environ if env is None else env)
+    urls = source.get(DEBUGINFOD_URLS_ENV, "").strip()
+    if not urls:
+        # Nothing to bound and nothing to withdraw: gdb's debuginfod is already
+        # inert, and probing a server nobody named would be inventing one.
+        return DebuginfodCheck(source)
+    if not probe(urls):
+        del source[DEBUGINFOD_URLS_ENV]
+        return DebuginfodCheck(
+            source,
+            f"debuginfod is off for ssh sessions: nothing answered at {urls} "
+            f"within {DEBUGINFOD_PROBE_SECONDS:g}s, and gdb would have spent "
+            f"{DEBUGINFOD_TIMEOUT_ENV} on every shared library after the "
+            "attach, with the workload stopped. A kubectl exec session still "
+            "inherits the image's URL; `podbench dbg --no-debuginfod` is the "
+            "same decision there.",
+        )
+    source.setdefault(DEBUGINFOD_TIMEOUT_ENV, DEBUGINFOD_TIMEOUT_SECONDS)
+    return DebuginfodCheck(source)
 
 
 def ensure_sshd_config(
@@ -1098,12 +1232,21 @@ def ensure_all(
         f"updated {layout.authorized_keys_path}",
         lambda: ensure_authorized_keys(layout, env=env),
     )
-    # `env=env` like every other step: the session environment the config
-    # carries is the container's, and a caller that supplied one meant it.
+    # Asked once, here, and not at the first breakpoint: the answer decides what
+    # the config below carries, and a seat behind an egress policy would
+    # otherwise discover it with the workload stopped, one library at a time.
+    # No `step` of its own because there is nothing for one to catch -
+    # `check_debuginfod` turns every failure of the probe into "unreachable".
+    debuginfod = check_debuginfod(env)
+    if debuginfod.note is not None:
+        changes.append(debuginfod.note)
+    # `env=debuginfod.env` rather than the caller's: the session environment the
+    # config carries is the container's, less the one variable this seat has
+    # just measured to be worthless here.
     step(
         "sshd-config",
         f"wrote {layout.config_path}",
-        lambda: ensure_sshd_config(layout, env=env),
+        lambda: ensure_sshd_config(layout, env=debuginfod.env),
     )
     # After the passwd entry, which is what decides the home this lands in: an
     # `attach` seat's record is written by the step above and a session's $HOME

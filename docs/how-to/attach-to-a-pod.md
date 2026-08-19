@@ -63,6 +63,19 @@ and "you have twenty seconds" are different facts and you need to know which
 one you are in. For an unlimited pause on a probed workload use
 [`podbench dev`](iterate-on-python.md), which strips all three probes by
 construction; [Debug with gdb](debug-with-gdb.md) has the measurements.
+
+**Symbol fetches are spent out of that same budget.** gdb fetches the
+executable's debuginfo when it opens the file, but a shared library's only
+*after* the attach — which is with the workload stopped — and waits
+`DEBUGINFOD_TIMEOUT` for each one. gdb's own default for that is 90 seconds,
+which is longer than most of the deadlines above, so the seat does three
+things: the image sets `DEBUGINFOD_TIMEOUT=2`; the agent opens a connection to
+the symbol server once at start-up and drops `DEBUGINFOD_URLS` from ssh
+sessions when nothing answers, saying so in the container's start-up log; and
+`podbench dbg --no-debuginfod` (or `podbench debug-config --no-debuginfod`)
+turns it off for one run, which is the flag to reach for when the server is
+reachable but slow. Symbols are worth having — see
+[Debug with gdb](debug-with-gdb.md) — so it stays on by default, bounded.
 :::
 
 ## Attach, and re-attach

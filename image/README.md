@@ -189,6 +189,11 @@ before, which is what a seat with a broken venv still deserves.
    does not reach an ssh session, so the agent names it in the sshd config's
    `SetEnv` line as well; without that, `set debuginfod enabled on` was inert
    over podbench's own transport and worked under `kubectl exec`.
+   `DEBUGINFOD_TIMEOUT=2` goes with it, because gdb's default is 90 seconds and
+   it spends them *per shared library*, after the attach, with the workload
+   stopped. The agent also connects to that server once at start-up and drops
+   the URL from ssh sessions when nothing answers, so an egress policy costs one
+   connect rather than a timeout per library at the first breakpoint.
 6. **The per-subcommand helpers are gone.** The brief's `bin/` sketch names
    `pids`, `dbg`, `capreport`, `debug-config`, `dev-bootstrap` and `run`/`stop`
    as files on `PATH`; the image ships none of them ([#47]). Each was literally
