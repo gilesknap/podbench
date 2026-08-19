@@ -47,6 +47,32 @@ falsified the first field diagnosis: running the seat's gdb on
 ``/python/.../python3.11`` and watching it resolve ``PyGILState_Ensure``
 perfectly reads as "the binary is fine, BFD is not too old" — but that command
 opened the seat's inode, never the target's.
+
+**The cure is gdb's, and does not transfer to lldb.** That was measured rather
+than assumed, because the two debuggers fail the same way for different
+reasons. gdb canonicalises *the path it is given*, so a path nothing shadows is
+enough. lldb **ignores** the path it is given: after the attach it re-resolves
+the executable from the process and overrides the target's exec file with the
+name as resolved in the seat's own mount namespace, announcing it as ``warning:
+Executable binary changed from "/tmp/podbench-exe/<pid>/victim" to
+"/app/victim"``. A staged copy is loaded and then dropped, so there is no path
+to hand it that survives; ``settings set target.exec-search-paths`` does not
+help either, and moving the seat's own file aside does — the same mechanism, in
+a debugger with no remedy for it. So :func:`shadowing_file` is asked twice for
+two opposite conclusions: gdb gets a copy, and ``flavour._assess_lldb``
+withdraws the CodeLLDB configuration entirely, on the rule that a configuration
+is worth emitting only where it debugs the user's own code. lldb is *louder*
+than gdb here — it warns — but the warning lands in a debug console and the
+session carries the seat's symbols regardless.
+
+Measured 2026-08-19 on the k3s bed with **standalone lldb 21.1.8**, against a
+real mount namespace (a chroot does not reproduce this: the kernel then answers
+``readlink("/proc/<pid>/root")`` with an expressible path and canonicalisation
+is correct). **CodeLLDB's own bundled lldb, running in a remote extension host,
+was not observed** — there was no VS Code client in that run. What has not been
+tried is ``platform select remote-linux`` against an lldb-server started inside
+the target's namespace, which is the shape that would resolve the executable in
+the right namespace to begin with.
 """
 
 from __future__ import annotations
@@ -88,7 +114,14 @@ def shadowing_file(pid: int, exe: str, *, proc: Path = DEFAULT_PROC) -> str | No
 
     The answer is a path rather than a bool so the warning can name it: it is
     the path BFD prints, which is what makes issue #90's message look like a
-    complaint about the target's binary.
+    complaint about the target's binary. It is also what the lldb refusal names,
+    since there the path is the whole of the explanation and there is no staged
+    copy to point at instead.
+
+    "gdb" in the summary line is the caller this was written for and no longer
+    the only one — lldb reads the same wrong file for a different reason, and
+    the module docstring says why one of them can be worked around and the
+    other cannot.
     """
     path = strip_deleted(exe)
     if same_root(pid, proc=proc):

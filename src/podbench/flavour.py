@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .elf import ElfInfo, debugpy_helper_name, debugpy_helper_published, read_elf
+from .execfile import shadowing_file
 from .proc import (
     DEFAULT_PROC,
     ptrace_readable,
@@ -518,6 +519,24 @@ class Seat:
     and only the first one is fatal. A binary whose ``.gnu.version_r`` this
     seat's binutils rejects cannot be read at all — see the glossary's *symbol
     versioning*.
+    """
+
+    exec_file_shadow: str | None = None
+    """A file *of this seat's own* standing at the target's exe path, if any.
+
+    :func:`podbench.execfile.shadowing_file`'s answer, carried here because it
+    decides two flavours in opposite directions. gdb is handed a staged copy at
+    a path nothing shadows and debugs the right binary (issue #90); lldb cannot
+    be, because it discards the path it is given and re-resolves the executable
+    from the process after attaching, in this seat's mount namespace. So the
+    same fact that costs gdb a megabyte of ``/tmp`` withdraws the CodeLLDB
+    configuration outright.
+
+    Measured 2026-08-19 on the k3s bed with **standalone lldb 21.1.8**;
+    CodeLLDB's own bundled lldb in a remote extension host was not observed.
+    ``None`` is both "nothing shadows it" and "the exe is unknown", which agree:
+    ``_no_program`` has already refused every flavour that needs a
+    ``program`` by then.
     """
 
     target_attach_ok: bool | None = None
@@ -1061,6 +1080,15 @@ def survey_seat(
         listening_owner=listening_owner,
         provision_dest=provision_dest,
         program_load_error=program_load_error,
+        # Read here rather than handed in: it is one `lexists` through
+        # `/proc/self/root`, so it costs what the rest of this survey costs and
+        # touches the target not at all. The staging it decides for gdb happens
+        # elsewhere and does copy bytes — this only answers the question.
+        exec_file_shadow=(
+            shadowing_file(target.pid, target.program, proc=proc)
+            if target.program
+            else None
+        ),
         target_attach_ok=target_attach_ok,
         # Not a second read: the gate above *is* the PTRACE_MODE_READ check,
         # so the field and the search that was or was not run cannot disagree.
@@ -1282,8 +1310,18 @@ def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
             f"gdb cannot read {target.program}, so cpptools would abort on "
             f"startup rather than attach. gdb said: {seat.program_load_error}",
             remedy=(
-                "use the lldb entry beside this one - CodeLLDB brings its own "
-                "reader and does not go through binutils. A `.gnu.version_r` "
+                # The lldb offer is withdrawn where lldb is: this seat keeping
+                # a file at the target's exe path refuses that entry too (see
+                # `_assess_lldb`), and offering the reader an entry that is not
+                # in the file sends them looking for a bug in VS Code.
+                (
+                    "there is no lldb entry beside this one - this seat's own "
+                    f"{seat.exec_file_shadow} refuses that flavour as well. "
+                    if seat.exec_file_shadow is not None
+                    else "use the lldb entry beside this one - CodeLLDB brings "
+                    "its own reader and does not go through binutils. "
+                )
+                + "A `.gnu.version_r` "
                 "complaint means this seat's binutils is older than the "
                 "toolchain that linked the target, which is an image change, "
                 "not a flag. `podbench dbg` still attaches: a failed symbol "
@@ -1420,7 +1458,38 @@ def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
         )
     # No image check: CodeLLDB ships its own lldb and installs it into the
     # *remote* extension host, so the seat having none decides nothing.
-    return _no_program(Flavour.LLDB, target) or Assessment(
+    denial = _no_program(Flavour.LLDB, target)
+    if denial is not None:
+        return denial
+    if seat.exec_file_shadow is not None:
+        # Issue #90 in lldb, and the one refusal here whose remedy is "there
+        # isn't one". gdb keeps its entry because `execfile.gdb_exec_file`
+        # hands it a copy at an unshadowed path; that was measured *not* to
+        # work for lldb, which overrides the exec file after the attach with a
+        # name it re-resolves in this seat's namespace. Emitting anyway would
+        # ship the failure this module exists to prevent — believable frames
+        # off the wrong build — with a debug-console warning as its only
+        # notice.
+        return Assessment(
+            Flavour.LLDB,
+            False,
+            f"this seat has its own {seat.exec_file_shadow}, and after "
+            "attaching lldb re-resolves the executable from the process and "
+            "overrides `program` with the copy it finds here - so the session "
+            "would carry this seat's symbols for the target's code (issue #90, "
+            "measured in lldb)",
+            remedy=(
+                "no lldb setting fixes it: staging a copy elsewhere, which is "
+                "what keeps the gdb entry correct, is undone by that override, "
+                "and `target.exec-search-paths` was measured not to help. Use "
+                "the gdb entry beside this one, or `podbench dbg` - both are "
+                "given the target's binary at a path nothing here shadows. "
+                "Measured with a standalone lldb on a test bed, against a "
+                "real mount namespace; a podbench seat and CodeLLDB's own "
+                "bundled lldb were not observed"
+            ),
+        )
+    return Assessment(
         Flavour.LLDB,
         True,
         f"{target.language.value} target; CodeLLDB brings its own lldb to the "

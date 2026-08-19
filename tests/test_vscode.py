@@ -149,6 +149,42 @@ def test_program_names_the_staged_copy_where_this_seat_shadows_the_target(
     )
 
 
+def test_no_lldb_entry_is_written_where_this_seat_shadows_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same collision, and the other debugger, which cannot be staged out of
+    it.
+
+    cppdbg keeps its entry because ``program`` can name a copy. CodeLLDB was
+    measured to override ``program`` after attaching, re-resolving the
+    executable from the process in *this* seat's namespace, so the entry would
+    debug the file above with a warning in the debug console as its only
+    notice. Nothing is emitted instead, and the refusal names the file.
+    """
+    proc = tmp_path / "proc"
+    (proc / str(PID)).mkdir(parents=True)
+    (proc / str(PID) / "exe").symlink_to(EXE)
+    for view, text in (
+        (proc / "self" / "root", "ours\n"),
+        (proc / str(PID) / "root", "theirs\n"),
+    ):
+        (view / "app").mkdir(parents=True)
+        (view / "app" / "victim").write_text(text)
+    monkeypatch.setattr(
+        vscode,
+        "gdb_exec_file",
+        partial(gdb_exec_file, staging=tmp_path / "staged"),
+    )
+
+    assert cli([str(PID), "--print-config"], proc) == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+
+    assert [entry["type"] for entry in document["configurations"]] == ["cppdbg"]
+    assert "lldb unavailable" in captured.err
+    assert EXE in captured.err
+
+
 def test_mi_debugger_is_the_wrapper_not_usr_bin_gdb() -> None:
     """`/usr/bin/gdb` segfaults under cpptools' inherited deleted cwd.
 

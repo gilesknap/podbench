@@ -717,6 +717,21 @@ def lldb_configuration(
     >>> config = lldb_configuration(597, "/app/victim")
     >>> config["type"], config["pid"]
     ('lldb', 597)
+
+    A fourth difference is the missing ``exec_file`` parameter, and it is not an
+    oversight. cppdbg takes one because a staged copy is how gdb is kept off the
+    seat's own binary at the target's path (issue #90); lldb was measured to
+    *override* whatever ``program`` says once it has attached, re-resolving the
+    executable from the process in this seat's mount namespace, so there is no
+    path this function could be given that would survive. The collision is
+    refused instead of worked around — ``flavour._assess_lldb`` withdraws the
+    flavour where :func:`podbench.execfile.shadowing_file` finds one, and this
+    function is reached only for the targets nothing here shadows, where the
+    sysroot-prefixed ``program`` is right and lldb keeps it.
+
+    Measured 2026-08-19 with standalone lldb 21.1.8 on the k3s bed, against a
+    mount namespace built with podman - not in a podbench seat, and not with
+    CodeLLDB's own bundled lldb in a remote extension host.
     """
     root = sysroot_path(pid)
     configuration: dict[str, Any] = {

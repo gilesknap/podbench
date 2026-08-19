@@ -253,6 +253,36 @@ wrapper passes each as `-iex` before a third-party `gdb --pid <n>` attaches, so
 `gdb -p`, cpptools and debugpy all get the sysroot, the staged exec file, the
 auto-load path and the SIGURG handling that `podbench dbg` gets.
 
+### The staged copy is gdb's fix, and lldb has no equivalent
+
+lldb has the same bug and cannot be given the same cure, which was measured
+rather than assumed. gdb canonicalises *the path you hand it*, so a path nothing
+shadows is enough. lldb **ignores** the path you hand it: once it has attached
+it re-resolves the executable from the process and overrides the target with the
+name as resolved in the seat's own mount namespace —
+
+```
+warning: Executable binary changed from "/tmp/podbench-exe/1/victim" to "/app/victim".
+Executable binary set to "/app/victim".
+```
+
+— so the staged copy is loaded and then dropped. `settings set
+target.exec-search-paths` does not help either; moving the seat's own file aside
+does, which is the same mechanism as gdb's under a remedy nobody has in a pod.
+It is at least *loud*, unlike gdb's second failure mode, but the warning lands
+in the debug console and the session carries the wrong symbols regardless.
+
+So `debug-config` **emits no lldb entry at all** where this seat has a file at
+the target's exe path, and says which file refused it. The gdb entry beside it
+is unaffected — that one gets the staged copy — and so is `podbench dbg`.
+
+Measured 2026-08-19 with a **standalone lldb 21.1.8** on a test bed, against a
+real mount namespace built with podman - **not inside a podbench seat**. **CodeLLDB's own bundled lldb, running in a remote extension
+host, has not been observed doing this**; the refusal assumes it behaves as the
+lldb it ships. Untried, and the shape that would actually be correct:
+`platform select remote-linux` against an lldb-server started inside the
+target's namespace, which never resolves anything in the seat's.
+
 ## 5. Breakpoint, source, step
 
 `victim` declares no probes, so this pause is unlimited and you can take as long
@@ -512,6 +542,13 @@ analogue of gdb's `set sysroot` for `/proc/<pid>/root`, so the executable path
 must be sysroot-prefixed explicitly and the library search paths set by hand.
 The `/rustc/<commit-hash>` key is what `rustc` bakes into standard-library debug
 info; `rustup component add rust-src` provides the right-hand side.
+
+That `program` holds only while **this container has no file of its own at
+`/app/myapp`**. Where it does, lldb discards the path after attaching and reads
+the seat's copy — "The staged copy is gdb's fix, and lldb has no equivalent",
+under section 4 above, has the measurement and the warning it prints.
+`debug-config` withdraws the entry in that case rather than writing one, so a
+template copied by hand is the only way to get it back, and it will be wrong.
 
 ## The wrong-sysroot failure, verbatim
 

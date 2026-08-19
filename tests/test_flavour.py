@@ -587,6 +587,95 @@ def test_an_unreadable_maps_is_unmeasured_and_never_bare(tmp_path: Path) -> None
     assert "debuginfod" in reason
 
 
+def shadow_the_exe(tmp_path: Path, exe: str = "/app/victim") -> None:
+    """Give the *seat* a file of its own at the target's exe path.
+
+    Issue #90's precondition, and one podbench's own image meets by
+    construction for any Python target: the seat and any uv-managed workload
+    both install an interpreter under ``/python/cpython-<version>-<triple>/``.
+    """
+    ours = tmp_path / "seat-root" / exe.lstrip("/")
+    ours.parent.mkdir(parents=True, exist_ok=True)
+    ours.write_bytes(build_elf([".text"]))
+
+
+def test_a_shadowed_exe_withdraws_lldb_and_keeps_gdb(tmp_path: Path) -> None:
+    """Issue #90 in lldb, where the fix that saves the gdb entry does not work.
+
+    gdb is handed a staged copy at a path nothing shadows and stays. lldb
+    discards the path it is given and re-resolves the executable from the
+    process after attaching, in *this* seat's mount namespace, so no path it
+    could be handed survives - measured with a standalone lldb in a seat, with
+    CodeLLDB's own bundled lldb not observed. A configuration that debugs the
+    seat's binary and says so in a debug console is worse than no
+    configuration, so the flavour is withdrawn.
+    """
+    proc = make_proc(tmp_path)
+    shadow_the_exe(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(target, proc=proc, which=which_of(*FULL_SEAT), debugpy_root=None)
+    results = assess(target, Mode.OBSERVE, seat)
+
+    assert seat.exec_file_shadow == "/app/victim"
+    result = verdict(results, Flavour.LLDB)
+    assert not result.available
+    assert not result.language_mismatch
+    assert "/app/victim" in result.reason
+    assert "#90" in result.reason
+    assert verdict(results, Flavour.GDB).available
+
+
+def test_the_lldb_refusal_offers_gdb_and_denies_that_a_flag_exists(
+    tmp_path: Path,
+) -> None:
+    """The remedy has to say "there is none", not invent one.
+
+    ``target.exec-search-paths`` and a staged copy were both measured and
+    neither helps, so naming either as a fix would send the reader after an
+    hour of settings that cannot work.
+    """
+    proc = make_proc(tmp_path)
+    shadow_the_exe(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(target, proc=proc, which=which_of(*FULL_SEAT), debugpy_root=None)
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.LLDB).remedy or ""
+    assert "no lldb setting fixes it" in remedy
+    assert "gdb entry" in remedy
+    assert "not observed" in remedy
+
+
+def test_lldb_stays_where_this_seat_shadows_nothing(tmp_path: Path) -> None:
+    """The refusal is the collision's, not lldb's: no shadow, no withdrawal."""
+    proc = make_proc(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(target, proc=proc, which=which_of(*FULL_SEAT), debugpy_root=None)
+    assert seat.exec_file_shadow is None
+    assert verdict(assess(target, Mode.OBSERVE, seat), Flavour.LLDB).available
+
+
+def test_a_shadowed_exe_stops_the_gdb_refusal_offering_lldb(tmp_path: Path) -> None:
+    """Both refusals can fire at once, and then the first one lies.
+
+    "use the lldb entry beside this one" is the remedy for a binary this seat's
+    binutils cannot read - and where the seat also shadows the exe path there
+    is no such entry in the file, which sends the reader looking for a bug in
+    VS Code.
+    """
+    proc = make_proc(tmp_path)
+    shadow_the_exe(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(
+        target,
+        proc=proc,
+        which=which_of(*FULL_SEAT),
+        debugpy_root=None,
+        program_load_error=".gnu.version_r invalid entry",
+    )
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.GDB).remedy or ""
+    assert "no lldb entry" in remedy
+    assert "use the lldb entry" not in remedy
+
+
 def test_lldb_survives_an_unreadable_binary(tmp_path: Path) -> None:
     """Language unknown must not withdraw a configuration that works.
 

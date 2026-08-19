@@ -45,7 +45,11 @@ target, bookworm's binutils 2.40 rejected `/usr/bin/bash` outright —
 level, and the two are indistinguishable from the editor. A target built by a
 newer toolchain than the image ships is an image bump rather than something the
 launcher can work around; CodeLLDB is the escape hatch, since it carries its own
-reader. `debug-config` now asks gdb before emitting a `cppdbg` entry — **but
+reader — except where this seat keeps a file at the target's exe path, which
+withdraws the lldb entry as well: lldb has issue #90 too and, unlike gdb, cannot
+be staged out of it (measured with a standalone lldb; CodeLLDB's own bundled
+lldb was not observed). `debug-config` now asks gdb before emitting a `cppdbg`
+entry — **but
 that refusal has never fired in a cluster**, because the one binary that
 triggers it is the one target selection now avoids.
 
