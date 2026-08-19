@@ -14,7 +14,8 @@ capability bit instead, each wrong in a different direction:
 * ``vscode.py``'s ``--provision`` said the injection "cannot be driven from
   here" two lines before driving it from here;
 * ``model.py``'s ``Rung.description`` was a static per-rung string, so ``status``
-  called a seat that had just live-attached "read-only inspection".
+  called a seat that had just live-attached "read-only inspection" — it has since
+  been removed in favour of what the seat measures in itself.
 
 The measured run this file reproduces printed, in the same minute:
 
@@ -58,8 +59,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-
-from podbench.model import Rung
 
 from .conftest import FIRST_SEAT, KubectlCli, NamespaceFactory, PodbenchCli
 
@@ -501,11 +500,13 @@ def test_status_does_not_call_a_seat_read_only_when_it_live_attached(
 ) -> None:
     """``status``'s verdict column must not contradict the probe.
 
-    The column is ``Rung.description``, a static string per rung, and the rung
+    The column was ``Rung.description``, a static string per rung, and the rung
     is read back off the landed container — where a stripped ``capabilities.add``
     beside ``runAsUser: 0`` is indistinguishable from the degraded rung
     (``launcher.py::seat_layout`` says so, citing the same cluster). So the one
-    line a user checks a day later says the opposite of what the seat can do.
+    line a user checks a day later said the opposite of what the seat can do.
+    That prose is gone outright: a rung has no description of its own any more,
+    and ``attach`` cites the seat's own ``/proc/self/status`` instead.
     """
     _require_live_attach(capreport, app_pid)
     cli = PodbenchCli(
@@ -520,10 +521,10 @@ def test_status_does_not_call_a_seat_read_only_when_it_live_attached(
         f"status listed no seat for {TARGET_POD}, so it was not asked about the "
         f"one under test:\n{result.stdout}"
     )
-    assert Rung.DEGRADED.description not in printed, (
-        f"status describes {FIRST_SEAT} as {Rung.DEGRADED.description!r} — a "
-        "verdict derived from the rung the container reads back as, not from "
-        f"the probe.\nmeasured, in that seat:\n{_measured(capreport)}\n"
+    assert "all capabilities dropped" not in printed, (
+        f"status describes {FIRST_SEAT} by the securityContext it reads back "
+        "with — a verdict derived from the rung, not from the probe.\n"
+        f"measured, in that seat:\n{_measured(capreport)}\n"
         f"claimed, by status:\n{result.stdout.strip()}"
     )
     assert "read-only inspection" not in printed, (

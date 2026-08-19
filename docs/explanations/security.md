@@ -90,7 +90,9 @@ first-class mode rather than an error state.
 | *(seat)* | whatever the cluster will admit | anything | editor, shell, git, uv |
 
 The launcher walks them and falls down on refusal, then reports the rung it
-landed on. Which rung it *starts* at is the target's to imply: a target at a
+*measured* — the seat's own uid and `CapEff`, read from `/proc/self/status`
+once it is up, because a securityContext is what admission agreed to store and
+not what the kernel gave the container. Which rung it *starts* at is the target's to imply: a target at a
 known non-root uid gets the degraded rung first, since that rung already matches
 its credentials and the row above buys nothing the row below does not — see
 [the capability ladder](attach-flow.md). Every rung is rehearsed through a

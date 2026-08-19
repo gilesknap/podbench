@@ -126,7 +126,7 @@ the spec podbench asked for:
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
 target      web
 version     0.4.0b1, the same build as this launcher
-rung        full - root plus CAP_SYS_PTRACE
+rung        full - uid 0, gid 0, CapEff 00000000a80c25fb
 ladder
   full      landed   admitted by the API server and the kubelet
 supports
@@ -153,9 +153,12 @@ Four lines are worth learning to read:
   the node serves the copy it already has, and a fix that is in the launcher but
   not in the seat reads exactly like a fix that does not work. When the two
   differ the report says so, on one `WARNING` line.
-* **`rung`** — what the *cluster* admitted. `degraded` means `SYS_PTRACE` was
-  refused by Pod Security Admission and podbench fell back to the target's own
-  UID. That is a normal outcome, not a failure, and the command still exits `0`.
+* **`rung`** — what the seat *is*, read from its own `/proc/self/status`, which
+  is why the line cites the numbers behind it. `degraded` means the seat runs at
+  the target's own UID with nothing effective — a normal outcome, not a failure,
+  and the command still exits `0`. What podbench asked admission for is on the
+  `ladder` lines below, and the two can differ: a policy that rewrites a request
+  rather than refusing it leaves a container the spec no longer describes.
 * **`blocker`** — what actually stops ptrace, if anything. Four unrelated
   subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
   `EPERM`; this line names which.

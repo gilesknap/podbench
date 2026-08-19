@@ -67,7 +67,7 @@ container it just created**, so the report is measured rather than inferred from
 the spec it asked for:
 
 ```
-rung        full - root plus CAP_SYS_PTRACE
+rung        full - uid 0, gid 0, CapEff 00000000a80c25fb
 supports
   [x] live attach (gdb -p <pid>)
   [x] read-only inspect (/proc/<pid>/root, maps, environ)

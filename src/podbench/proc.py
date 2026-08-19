@@ -42,6 +42,7 @@ __all__ = [
     "READ_MATRIX_PATHS",
     "Attribution",
     "Capabilities",
+    "Credentials",
     "ProcessListing",
     "apparmor_profile",
     "candidate_note",
@@ -65,6 +66,7 @@ __all__ = [
     "seccomp_filter_count",
     "seccomp_mode",
     "self_capabilities",
+    "status_field",
     "strip_container_scheme",
     "strip_deleted",
     "sysroot_path",
@@ -167,6 +169,50 @@ class Capabilities:
         return "unreadable" if self.effective is None else f"{self.effective:016x}"
 
 
+@dataclass(frozen=True)
+class Credentials:
+    """What a ``/proc/<pid>/status`` says a process is *running* as.
+
+    The three facts the ptrace credential check turns on, read from the one
+    file that cannot be wrong about them. A container spec can be: admission
+    rewrites it, and the image's own ``USER`` is not in it at all, so a uid
+    read back off a securityContext is what the API server stored rather than
+    what the kernel gave the process (measured at DLS 2026-08-19 — a seat whose
+    stored spec carries thirteen capabilities reports ``CapEff:
+    0000000000000000``, report §3.10).
+    """
+
+    uid: int | None
+    gid: int | None
+    capabilities: Capabilities
+
+    @classmethod
+    def from_status(cls, text: str) -> Credentials | None:
+        """Decode a ``/proc/<pid>/status``, or ``None`` if that is not one.
+
+        ``None`` is for the empty stdout of an exec that never ran, which must
+        not be mistaken for a process with no ids.
+
+        >>> status = "Name:\\tcat\\nUid:\\t0\\t0\\t0\\t0\\nGid:\\t0\\t0\\t0\\t0\\n"
+        >>> creds = Credentials.from_status(status + "CapEff:\\t0000000000000000")
+        >>> creds.uid, creds.gid, creds.capabilities.effective_hex
+        (0, 0, '0000000000000000')
+        >>> Credentials.from_status("") is None
+        True
+        """
+        if status_field(text, "Uid") is None:
+            return None
+        return cls(
+            uid=_first_of(status_field(text, "Uid")),
+            gid=_first_of(status_field(text, "Gid")),
+            capabilities=Capabilities(
+                effective=_parse_hex(status_field(text, "CapEff")),
+                bounding=_parse_hex(status_field(text, "CapBnd")),
+                ambient=_parse_hex(status_field(text, "CapAmb")),
+            ),
+        )
+
+
 def _has_bit(mask: int | None, bit: int) -> bool:
     return mask is not None and bool(mask & (1 << bit))
 
@@ -201,18 +247,31 @@ def _parse_int(value: str | None) -> int | None:
         return None
 
 
-def read_status_field(
-    pid: int | str, field: str, *, proc: Path = DEFAULT_PROC
-) -> str | None:
-    """Return one field of ``/proc/<pid>/status``, or ``None`` if unavailable."""
-    text = _read_text(_pid_dir(pid, proc) / "status")
-    if text is None:
-        return None
+def status_field(text: str, field: str) -> str | None:
+    """One field of an already-read ``/proc/<pid>/status``, or ``None``.
+
+    Split out from :func:`read_status_field` because the same file arrives by
+    two routes: read from a mounted ``/proc`` in the seat, and relayed over
+    ``kubectl exec`` to the launcher, which has no ``/proc`` to point at.
+
+    >>> status_field("Uid:\\t1000\\t1000\\t1000\\t1000", "Uid")
+    '1000\\t1000\\t1000\\t1000'
+    >>> status_field("Name:\\tcat", "CapEff") is None
+    True
+    """
     prefix = f"{field}:"
     for line in text.splitlines():
         if line.startswith(prefix):
             return line[len(prefix) :].strip()
     return None
+
+
+def read_status_field(
+    pid: int | str, field: str, *, proc: Path = DEFAULT_PROC
+) -> str | None:
+    """Return one field of ``/proc/<pid>/status``, or ``None`` if unavailable."""
+    text = _read_text(_pid_dir(pid, proc) / "status")
+    return None if text is None else status_field(text, field)
 
 
 def read_uid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:

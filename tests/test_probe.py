@@ -32,6 +32,7 @@ from podbench.probe import (
 )
 from podbench.proc import (
     Attribution,
+    Credentials,
     apparmor_profile,
     list_processes,
     no_new_privs,
@@ -243,6 +244,40 @@ def test_self_capabilities_bit_19(tmp_path: Path) -> None:
     assert caps.sys_ptrace_effective is False
     assert caps.sys_ptrace_bounding is True
     assert caps.effective_hex == CAP_WITHOUT_PTRACE
+
+
+def test_credentials_decode_the_seat_measured_at_dls() -> None:
+    """Verbatim shape from ``bl47p-ea-fastcs-01-0``, 2026-08-19.
+
+    The stored spec of that seat carries thirteen capabilities and its process
+    reports none effective, because capabilities beside a non-zero ``runAsUser``
+    reach ``CapBnd`` and stop there (report §3.10). Both halves are here, since
+    it is the *pair* that says the spec is not the container.
+    """
+    status = (
+        "Name:\tcat\n"
+        "Uid:\t37887\t37887\t37887\t37887\n"
+        "Gid:\t37887\t37887\t37887\t37887\n"
+        "CapBnd:\t00000000a80425fb\n"
+        "CapEff:\t0000000000000000\n"
+        "CapAmb:\t0000000000000000\n"
+    )
+    credentials = Credentials.from_status(status)
+
+    assert credentials is not None
+    assert (credentials.uid, credentials.gid) == (37887, 37887)
+    assert credentials.capabilities.effective == 0
+    assert credentials.capabilities.sys_ptrace_effective is False
+    assert credentials.capabilities.effective_hex == "0000000000000000"
+    # Not "no capabilities were granted" - the mask that grants nothing to a
+    # non-root uid is still populated, which is exactly the silent no-op.
+    assert credentials.capabilities.bounding == 0xA80425FB
+
+
+def test_credentials_from_an_exec_that_answered_nothing() -> None:
+    """Empty stdout is a refused exec, not a process with no ids."""
+    assert Credentials.from_status("") is None
+    assert Credentials.from_status("cannot exec: permission denied") is None
 
 
 def test_apparmor_empty_attribute_means_unconfined(tmp_path: Path) -> None:

@@ -257,4 +257,8 @@ def test_the_cli_reports_a_degraded_seat_as_success(
         timeout=420,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert Rung.DEGRADED.description in result.stdout, result.stdout
+    # Measured even here: `--no-probe` skips the capability report, not the one
+    # exec that reads the seat's own /proc/self/status, so the rung line is a
+    # reading rather than a restatement of what the walk asked for.
+    assert f"rung        {Rung.DEGRADED.value} - uid " in result.stdout, result.stdout
+    assert "CapEff 0000000000000000" in result.stdout, result.stdout

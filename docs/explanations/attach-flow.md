@@ -226,8 +226,10 @@ ptrace cannot read `/proc/<pid>/root`, `maps` or `environ` either.
 
 Neither arm of the walk sees anything, so rung 1 "succeeds" and rungs 2 and 3 are
 never tried. The spec reads back afterwards as `runAsUser: 0` with nothing added,
-which is indistinguishable from rung 2 (issue #94) — the honest answer about such
-a seat is never its rung, only what `capreport` measured.
+which is indistinguishable from rung 2 (issue #94) — so no rung read off a spec
+is an honest answer about such a seat. The rung `attach` prints is not read off
+one: every attach ends by asking the seat for its own `/proc/self/status`, and
+the uid and `CapEff` in it are what the line names.
 
 So the rung is rehearsed first. Every rung goes through `?dryRun=All` before it is
 created: the API server runs the whole admission chain, returns the object as it
@@ -269,6 +271,11 @@ their own cluster reaches for. Measured at DLS, 2026-08-18.
         /api/v1/namespaces/NS/pods/POD/ephemeralcontainers -f -
  8  kubectl -n NS get pod POD -o json                    # polled until running
  --- always: ---
+ 8' kubectl -n NS exec -c SEAT POD -- cat /proc/self/status
+                                                        # the measured rung: the
+                                                        # uid and CapEff the
+                                                        # kernel gave the seat
+ 8" kubectl -n NS exec -c SEAT POD -- podbench --version # which build answered
  9  kubectl -n NS exec -c SEAT POD -- podbench agent --print-login-user
 10  kubectl -n NS exec -c SEAT POD -- podbench capreport --json
                                                         # unless --no-probe

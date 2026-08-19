@@ -46,9 +46,11 @@ from podbench.launcher import (
     parse_mount,
     plan_ladder,
     pod_choices,
+    probe_seat_credentials,
     probe_seat_versions,
     resolve_pod,
     resolve_pod_name,
+    seat_layout,
     seats,
     ssh_config_path,
     try_resize,
@@ -262,6 +264,7 @@ class FakeCluster:
         seat_version: str | None = __version__,
         mutate: Callable[[dict[str, Any]], None] | None = None,
         allowed_uids: Sequence[int] = (),
+        seat_status: str | None = None,
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -293,6 +296,11 @@ class FakeCluster:
         # every other test is two halves that agree; `None` is the image too
         # old to have a root `--version` at all.
         self.seat_version = seat_version
+        # What `cat /proc/self/status` answers. Derived from the landed spec by
+        # default (`_seat_status`), so the fake says what the kernel would; set
+        # this to make the two disagree, which is the whole of issue #94 and
+        # cannot be expressed by a securityContext.
+        self.seat_status = seat_status
         self.limit_ranges = [dict(entry) for entry in limit_ranges]
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
@@ -476,8 +484,38 @@ class FakeCluster:
             )
         return _ok("")
 
+    def _seat_status(self, container: str | None) -> str:
+        """``/proc/self/status`` as the kernel would write it for that seat.
+
+        Built from the securityContext the seat actually landed with, and with
+        report §3.10 built in: capabilities reach ``CapEff`` only at uid 0, so a
+        spec that added ``SYS_PTRACE`` beside a non-zero ``runAsUser`` answers
+        an effective mask of zero here exactly as the kernel does. The uid
+        defaults to 0 for a seat that pinned none, because podbench's image
+        declares no ``USER``.
+        """
+        if self.seat_status is not None:
+            return self.seat_status
+        empty: dict[str, Any] = {}
+        spec = next(
+            (entry for entry in self._ephemeral_specs() if entry["name"] == container),
+            empty,
+        )
+        security = cast(dict[str, Any], spec.get("securityContext", {}))
+        uid = cast(int, security.get("runAsUser", 0))
+        gid = cast(int, security.get("runAsGroup", 0))
+        added = cast(
+            list[str],
+            cast(dict[str, Any], security.get("capabilities", {})).get("add", []),
+        )
+        effective = 1 << 19 if uid == 0 and "SYS_PTRACE" in added else 0
+        return status_text(uid, gid, effective)
+
     def _exec(self, rest: list[str], stdin: str | None = None) -> CommandResult:
         command = rest[rest.index("--") + 1 :]
+        if command == ["cat", "/proc/self/status"]:
+            container = rest[rest.index("-c") + 1] if "-c" in rest else None
+            return _ok(self._seat_status(container))
         # Matched as the two-token verb, not as a bare `debug-config`: the
         # image has no per-subcommand aliases on PATH, so a launcher that sent
         # one would exec nothing in a real seat and must miss here too.
@@ -525,6 +563,18 @@ class FakeCluster:
                 return _fail(NO_LOGIN_USER)
             return _ok(self.login_user + "\n")
         raise AssertionError(f"unexpected exec: {command}")
+
+
+def status_text(uid: int, gid: int, effective: int = 0) -> str:
+    """The four lines of ``/proc/self/status`` the launcher reads."""
+    return (
+        f"Name:\tcat\n"
+        f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+        f"Gid:\t{gid}\t{gid}\t{gid}\t{gid}\n"
+        f"CapEff:\t{effective:016x}\n"
+        f"CapBnd:\t{effective:016x}\n"
+        f"CapAmb:\t0000000000000000\n"
+    )
 
 
 def _ok(stdout: str, returncode: int = 0) -> CommandResult:
@@ -1883,15 +1933,16 @@ def test_the_login_name_is_the_one_the_seat_answered_not_the_rung_default(
     assert "User root" in capsys.readouterr().out
 
 
-def test_a_stripped_root_seat_is_not_described_as_running_at_the_targets_uid() -> None:
+def test_a_stripped_root_seat_is_reported_as_what_it_measures() -> None:
     """The rung line's half of #89, which the verdict column's fix left behind.
 
     ``rung_of_spec`` reads a pinned ``runAsUser`` and no added capability as
     :attr:`Rung.DEGRADED`, which is true of a seat authored at that rung *and*
     of a full-rung seat a mutating policy took the capability from. Only the
-    first is at the target's uid — this one is root against a uid-1000 target —
-    so a rung description naming the target's UID tells a reconnecting user
-    their seat is running as somebody it is not.
+    first is at the target's uid — this one is root against a uid-1000 target.
+    The rung line used to weaken its wording to survive that ambiguity ("a
+    pinned UID"); the ambiguity is in the *source*, so the reconnect measures
+    the seat instead and the line names both numbers.
 
     The target is uid 1000 here rather than the root one
     :func:`stripped_root_seat` builds, because against a root target "the
@@ -1907,11 +1958,120 @@ def test_a_stripped_root_seat_is_not_described_as_running_at_the_targets_uid() -
     )
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert session.rung is Rung.SEAT, (
+        "root with no effective capability is not the degraded rung: it reads "
+        "three of the six probe paths where that rung reads all six (3.11)"
+    )
     assert session.uid == 0, "the seat admission left behind is root"
     text = format_session(session)
-    assert "degraded - a pinned UID, all capabilities dropped" in text
+    assert "rung        seat - uid 0, gid 0, CapEff 0000000000000000" in text
     assert "the target's UID" not in text
+    assert "a pinned UID" not in text
+
+
+def test_the_rung_line_is_measured_where_the_spec_says_otherwise() -> None:
+    """The opposite direction, and the one a dry run cannot reach.
+
+    A seat whose spec pins the target's uid and adds nothing reads back as the
+    degraded rung, and this one is running as root with CAP_SYS_PTRACE anyway —
+    a node whose runtime granted more than the stored spec asked for. The spec
+    is not the container in either direction, so the label comes from the only
+    place that can settle it.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        seat_status=status_text(0, 0, 1 << 19),
+        login_user="root",
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.FULL
+    assert "rung        full - uid 0, gid 0, CapEff 0000000000080000" in format_session(
+        session
+    )
+
+
+def test_an_unreadable_seat_reports_the_rung_as_asked_for_and_says_so() -> None:
+    """``cat`` is universal, but an exec can still be refused.
+
+    Nothing may fail an attach that has landed (report 4.2), so the rung
+    reverts to the walk's own claim — labelled as one, because a rung that is
+    not a measurement is exactly what issue #94 was.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), seat_status="")
+    session = attach(talking_to(cluster), "target")
+
+    assert session.credentials is None
+    assert session.rung is Rung.DEGRADED
+    text = format_session(session)
+    assert "rung        degraded - as asked for; the seat's own" in text
+
+
+def test_no_probe_still_measures_the_rung() -> None:
+    """The cheap question and the expensive one are not the same flag.
+
+    ``--no-probe`` declines to ptrace the target. Reading the seat's own
+    ``/proc/self/status`` attempts nothing against anybody, so it stays — which
+    is what leaves a ``--no-probe`` attach with one measured line rather than
+    with none.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 0}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        login_user="root",
+    )
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert session.report is None
+    assert session.rung is Rung.SEAT
+    text = format_session(session)
+    assert "rung        seat - uid 0, gid 0, CapEff 0000000000000000" in text
+    assert "\nmeasured\n" not in text, "the capability report block still ran"
+
+
+def test_the_ssh_stanza_names_the_login_the_seat_runs_as_not_the_rungs() -> None:
+    """The #94 seat, reached by the verb that only ever sees the spec.
+
+    ``ssh-config`` builds its session from the container's securityContext, and
+    this one pins uid 1000 while the container runs as root — a node's runtime
+    granting more than the stored spec asked for. Both halves of the transport
+    turn on that uid: sshd's config lives in ``/etc/podbench`` for root and
+    under ``$HOME`` for anybody else, and ``podbench`` is a login name NSS
+    cannot resolve at uid 0.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        seat_status=status_text(0, 0),
+        # The seat cannot say either: an image with no account for uid 0 beyond
+        # `root` answers with nothing, which is what leaves the fallback in
+        # charge of the whole transport.
+        login_user=None,
+    )
+    session = Session(
+        seat=ContainerRef(PodRef("demo", "target"), "podbench-1"),
+        workload="app",
+        rung=Rung.DEGRADED,
+        reused=True,
+        uid=1000,
+        credentials=probe_seat_credentials(
+            talking_to(cluster), ContainerRef(PodRef("demo", "target"), "podbench-1")
+        ),
+    )
+
+    assert session.root_seat
+    assert seat_layout(session).run_as_root
+    assert seat_layout(session).config_path.startswith("/etc/podbench")
 
 
 def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
@@ -2151,11 +2311,17 @@ def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() ->
 
     assert session.rung is Rung.DEGRADED
     rewrite = [
-        warning for warning in session.warnings if "admission rewrites" in warning
+        warning for warning in session.warnings if "admission rewrote" in warning
     ]
     assert len(rewrite) == 1
     assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
-    assert "podbench status target" in rewrite[0]
+    # The stored spec is not the container, so the warning does not send the
+    # reader to `status` to find out what landed - the rung line above it is
+    # already a measurement, and the capabilities admission added are in
+    # `CapBnd` at this uid rather than in the effective set (report 3.10).
+    assert "read from the seat itself" in rewrite[0]
+    assert session.credentials is not None
+    assert session.credentials.capabilities.effective == 0
 
 
 def test_an_allow_listed_run_as_user_refusal_names_the_uids_and_the_flag() -> None:
@@ -3270,7 +3436,10 @@ def test_status_reports_the_probe_rather_than_the_rung_it_landed_on(
 
     assert "live attach available" in out
     assert "read-only" not in out
-    assert Rung.DEGRADED.description not in out
+    # The per-rung prose this column once borrowed is gone outright: a rung has
+    # no description of its own any more, and `attach` cites the seat's own
+    # /proc/self/status instead (`podbench.model.describe_credentials`).
+    assert "all capabilities dropped" not in out
 
 
 def test_status_says_not_probed_and_claims_nothing_when_it_measured_nothing(

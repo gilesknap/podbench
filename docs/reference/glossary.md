@@ -97,12 +97,16 @@ rung
   will admit. There is no rung between full and degraded, because a capability added
   to a non-root container is a silent no-op.
 
-  A rung is what was *asked for*, and the seat's rung is read back off the container
-  the cluster admitted — which is not the same as what the seat can do. A mutating
-  webhook that strips `capabilities.add` leaves a root seat indistinguishable from
-  the degraded rung while it attaches perfectly well, so the rung names no verdict.
-  What a seat can do is measured by {term}`capreport`, and `status` reports that
-  measurement — or `not probed`, never the rung — beside each seat it lists.
+  `attach` reports the rung it *measured*, from the seat's own `/proc/self/status`:
+  the uid the kernel gave the container and its `CapEff`. The rung it asked for is
+  on the ladder lines, and the two can differ in both directions — a mutating
+  webhook that strips `capabilities.add` leaves a root seat whose spec is
+  indistinguishable from the degraded rung, and a stored spec carrying thirteen
+  capabilities can belong to a container with none effective.
+
+  A rung is still not a verdict. What a seat can *do* is measured by
+  {term}`capreport`, and `status` reports that measurement — or `not probed`,
+  never the rung — beside each seat it lists.
 
 seat
   A podbench container you can work in: an editor, a shell, git and a debugger, inside

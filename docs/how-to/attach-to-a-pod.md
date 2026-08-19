@@ -136,7 +136,7 @@ Nothing to do — that is the normal path. podbench catches the refusal and fall
 to the next rung automatically, and still exits `0`:
 
 ```
-rung        degraded - a pinned UID, all capabilities dropped
+rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
   full      refused  Pod Security Admission: must not include "SYS_PTRACE" in
                      securityContext.capabilities.add
@@ -183,7 +183,7 @@ nothing. A stripped capability is visible there, and the rung is withdrawn
 instead of spent:
 
 ```
-rung        degraded - a pinned UID, all capabilities dropped
+rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
   full      refused  admission would take it and remove SYS_PTRACE from it,
                      landing a root seat with no capability: that reads three of
@@ -197,8 +197,16 @@ ladder
 A rewrite that costs the rung nothing is reported rather than acted on, as one
 `WARNING` line naming what admission changed — a DLS policy adds thirteen
 capabilities to a container that asked for none, which is the cluster's house
-default and harms nothing. Either way the rung line names what podbench asked
-for; `podbench status <pod>` reads back what landed.
+default and harms nothing. The line cannot tell you *which* controller did it,
+and neither can anything else you can run as a namespaced user: the API server
+attributes a mutation to the field manager of the request that triggered it —
+podbench's own — rather than to the webhook or policy that made it, and
+`mutatingwebhookconfigurations` is cluster-scoped. Ask whoever administers the
+cluster. The rung line is unaffected either way: it is read
+from the seat's own `/proc/self/status` after the seat is up, so it says what
+the container *is* rather than what was asked for or what was stored. Those
+thirteen capabilities do not appear in it, because capabilities beside a
+non-zero `runAsUser` land in `CapBnd` and never reach `CapEff`.
 
 You can still state the cap up front, which spends no dry run either:
 

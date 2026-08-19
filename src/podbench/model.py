@@ -38,9 +38,11 @@ __all__ = [
     "Rung",
     "Verdict",
     "as_dict",
+    "describe_credentials",
     "describe_gated_fallback",
     "describe_reads",
     "image_tag_for",
+    "measured_rung",
     "measured_verdict",
     "ptrace_reads_ok",
 ]
@@ -546,6 +548,13 @@ class Rung(enum.Enum):
     The launcher tries these in order and falls to the next one when admission
     refuses the previous, so that a restricted namespace still gets a working
     seat instead of an error.
+
+    Each member says what a seat *is*, so it may only be applied to one that
+    was measured: :func:`measured_rung` reads the seat's own
+    ``/proc/self/status``. ``podbench.launcher.rung_of_spec`` names the rung a
+    container was *authored* at, which is a weaker claim about a different
+    thing — it reads a securityContext, and a securityContext is not a
+    container.
     """
 
     FULL = "full"
@@ -558,36 +567,75 @@ class Rung(enum.Enum):
     SEAT = "seat"
     """Whatever the cluster will admit. Editor, shell and git only."""
 
-    @property
-    def description(self) -> str:
-        """The *securityContext* this rung reads as, for a rung column.
 
-        Not what the seat turned out to be able to do, which these lines used
-        to end in — "(live attach)", "(read-only inspection)", "(editor only)".
-        Those are verdicts, and a rung cannot carry one: the spec that lands is
-        the spec admission left behind, so a mutating webhook that strips
-        ``capabilities.add`` leaves a root seat reading back as
-        :attr:`DEGRADED` while it ptraces the target perfectly well (issue #89,
-        measured at DLS 2026-08-16 — see ``launcher.seat_layout``). ``status``
-        printed the parenthetical in a verdict column and so called that seat
-        read-only, contradicting the probe it had just run.
+def measured_rung(
+    uid: int | None, *, sys_ptrace: bool, target_uid: int | None
+) -> Rung | None:
+    """Which rung a seat's own ``/proc/self/status`` puts it on, or ``None``.
 
-        The same stripped seat is why :attr:`DEGRADED` says "a pinned UID"
-        rather than "the target's UID". A reconnect derives the rung from the
-        spec (:func:`podbench.launcher.rung_of_spec`), which sees a pinned
-        ``runAsUser`` and no added capability — true of a seat authored at this
-        rung *and* of a full-rung seat with its capability taken away. Only the
-        first is at the target's uid; naming it here would tell the second's
-        user that their root seat is running as somebody it is not.
+    The rung podbench *asked* for is not evidence of anything (issue #94). The
+    spec that lands is the spec admission left behind, and even that is not the
+    container: the image's own ``USER`` never appears in it, and a capability
+    stored in ``securityContext`` reaches ``CapEff`` only at uid 0 (report
+    §3.10). Both directions were measured at DLS on 2026-08-19 — podbench asks
+    for ``capabilities: {drop: [ALL]}`` and admission stores thirteen added
+    capabilities, while the seat carrying them reports ``CapEff:
+    0000000000000000`` at uid 37887. So the label comes from the two numbers
+    the kernel will actually check.
 
-        A verdict is measured: :func:`measured_verdict`, or :data:`NOT_PROBED`
-        where nothing measured one.
-        """
-        return {
-            Rung.FULL: "root plus CAP_SYS_PTRACE",
-            Rung.DEGRADED: "a pinned UID, all capabilities dropped",
-            Rung.SEAT: "all capabilities dropped, no UID insisted on",
-        }[self]
+    The capability decides first, because it is the whole of the full rung and
+    it is exempt from the credential check:
+
+    >>> measured_rung(0, sys_ptrace=True, target_uid=1000).name
+    'FULL'
+
+    Below it, the rung is the uid *match*, not the pin: matching the target is
+    what buys the ``PTRACE_MODE_READ`` paths, and root without the capability
+    reads three of the six where the target's own uid reads all six (report
+    §3.11). So a stripped full rung — root, no capability — is named for what
+    it can do rather than for the securityContext it now resembles:
+
+    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000).name
+    'DEGRADED'
+    >>> measured_rung(0, sys_ptrace=False, target_uid=1000).name
+    'SEAT'
+    >>> measured_rung(65532, sys_ptrace=False, target_uid=1000).name
+    'SEAT'
+
+    ``None`` means the seat could not be read at all, which is not a rung and
+    must not be reported as one — the caller falls back to naming what was
+    asked for, and says so.
+
+    >>> measured_rung(None, sys_ptrace=False, target_uid=1000) is None
+    True
+    """
+    if uid is None:
+        return None
+    if sys_ptrace:
+        return Rung.FULL
+    if uid and uid == target_uid:
+        return Rung.DEGRADED
+    return Rung.SEAT
+
+
+def describe_credentials(uid: int | None, gid: int | None, effective_hex: str) -> str:
+    """The measurement a rung column cites, in one line.
+
+    Was a :class:`Rung`-to-prose lookup, which could only ever restate the
+    label. These are the numbers behind it, so a reader can see the rung is
+    reported rather than assumed - and the one shape that used to be
+    unsayable, root with nothing effective, says itself.
+
+    >>> describe_credentials(0, 0, "0000000000000000")
+    'uid 0, gid 0, CapEff 0000000000000000'
+    >>> describe_credentials(None, None, "unreadable")
+    'uid unknown, gid unknown, CapEff unreadable'
+    """
+    return (
+        f"uid {uid if uid is not None else 'unknown'}, "
+        f"gid {gid if gid is not None else 'unknown'}, "
+        f"CapEff {effective_hex}"
+    )
 
 
 @dataclass(frozen=True)

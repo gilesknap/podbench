@@ -68,7 +68,10 @@ from .model import (
     Rung,
     Verdict,
     as_dict,
+    describe_credentials,
+    measured_rung,
 )
+from .proc import Credentials
 from .resize import (
     CPU,
     MEMORY,
@@ -110,6 +113,7 @@ from .sshcfg import (
 )
 
 __all__ = [
+    "ADMISSION_MUTATION_WARNING",
     "CAPREPORT_ARGV",
     "CONFIG_D",
     "CONTAINER_BASE",
@@ -123,6 +127,7 @@ __all__ = [
     "OOM_WARNING",
     "RESIZE_WARNING",
     "SEAT_IDENTITY_MOUNTS",
+    "SEAT_STATUS_ARGV",
     "UNKNOWN_SEAT_VERSION",
     "VERSION_ARGV",
     "VERSION_SKEW_WARNING",
@@ -163,6 +168,7 @@ __all__ = [
     "parse_mount",
     "plan_ladder",
     "pod_choices",
+    "probe_seat_credentials",
     "probe_seat_version",
     "probe_seat_versions",
     "probe_seats",
@@ -225,6 +231,21 @@ an image tag can move under a name that has not, ``IfNotPresent`` will not
 re-check, and a fix pushed to a branch tag is served from the node's cache with
 no event anywhere. Spelled with a bare ``podbench`` for the reason
 :data:`CAPREPORT_ARGV` is."""
+
+SEAT_STATUS_ARGV: tuple[str, ...] = ("cat", "/proc/self/status")
+"""Asks the seat what the kernel gave it: its uid, its gid and ``CapEff``.
+
+``cat`` rather than a podbench verb, alone among the seat probes. Three
+reasons, all of them about who can be asked: it works on a seat landed by an
+*older* launcher, since it adds nothing to the two halves' protocol; it needs
+no image change to arrive; and it is a world-readable read of the process
+running it, so it costs a round trip and touches nothing. That is what lets the
+rung be measured on every attach, ``--no-probe`` included — the expensive
+question, whether this seat can ptrace *that* target, is
+:data:`CAPREPORT_ARGV`'s and stays behind the flag.
+
+An exec runs with the container's own uid and capability set, so the ``cat``'s
+own status is the seat's."""
 
 NON_ROOT_HOME = "/tmp/podbench-home"
 """``$HOME`` for a non-root seat.
@@ -770,10 +791,15 @@ def running_seat(
 
 
 def rung_of_spec(container: Mapping[str, Any]) -> Rung:
-    """Which rung an existing container was authored at.
+    """Which rung an existing container was *authored* at.
 
-    Read back from the spec rather than remembered, so a reconnect from another
-    machine — or from another user — describes the seat correctly.
+    Read back from the spec rather than remembered, so a listing from another
+    machine — or from another user — still has an answer. It is the weaker of
+    the two answers, and deliberately not the one ``attach`` reports: a
+    securityContext is what admission agreed to store, which is neither what
+    podbench asked for nor what the kernel gave the container.
+    :func:`probe_seat_credentials` reads the seat itself, and
+    :func:`podbench.model.measured_rung` labels what it finds.
     """
     security = as_dict(container.get("securityContext"))
     added = [
@@ -904,10 +930,12 @@ def plan_ladder(
     only dropped when something *refuses* it, and a **mutating** admission
     policy does not refuse — it rewrites. A cluster that strips
     ``capabilities.add`` admits the full rung and leaves a root seat with no
-    capability, which no signal the walk reads distinguishes from a granted one
-    (issue #94; measured at DLS 2026-08-18). ``--max-rung degraded`` is how
-    somebody who knows their cluster does that skips the rung that cannot work
-    there, instead of spending a permanent container name to find out.
+    capability (issue #94; measured at DLS 2026-08-18). :func:`_dry_run_rung`
+    now sees that coming and drops the rung itself, so this is no longer the
+    only defence — but it is the one that needs no round trip, and a cluster
+    that will not serve a dry run leaves the walk with no signal at all.
+    ``--max-rung degraded`` is how somebody who knows their cluster strips
+    capabilities skips the rung that cannot work there.
 
     Two skips are pre-emptive rather than reactive. A pod with
     ``runAsNonRoot: true`` accepts a root ephemeral container at the API server
@@ -1036,6 +1064,15 @@ class Session:
     seat: ContainerRef
     workload: str
     rung: Rung
+    """What the seat *is*, measured in it by :func:`probe_seat_credentials`.
+
+    Not what the walk asked admission for, which is on the :class:`LadderStep`
+    that landed and belongs there: a rung is a claim about a running container
+    and the two come apart in both directions (issue #94). It falls back to the
+    authored rung only where the seat could not be read at all, and
+    :func:`format_session` says so on the line rather than quietly.
+    """
+
     reused: bool
     uid: int | None = None
     """``runAsUser`` as actually pinned in the container's securityContext —
@@ -1094,9 +1131,33 @@ class Session:
     something else entirely. :func:`seat_version_fact` renders it.
     """
 
+    credentials: Credentials | None = None
+    """The seat's own ``/proc/self/status``, ``None`` when it would not say.
+
+    The evidence behind :attr:`rung`, kept rather than reduced to it, because
+    the report cites it and two decisions turn on the uid alone."""
+
     @property
     def pod(self) -> PodRef:
         return self.seat.pod
+
+    @property
+    def root_seat(self) -> bool:
+        """Whether this seat runs as uid 0, which decides sshd's layout and login.
+
+        Measured where the seat could be read, and taken from the pin
+        otherwise. Never from the rung, which was only ever a proxy for it: the
+        full rung is the one that writes ``runAsUser: 0``
+        (:func:`podbench.spec._rung_security_context`), so the pin already says
+        everything the label did - and says it about a seat whose label
+        admission rewrote, which is the seat that made this a measurement.
+        """
+        if self.credentials is not None and self.credentials.uid is not None:
+            return self.credentials.uid == 0
+        # Compared against 0 rather than tested for truth: `self.uid or ...`
+        # reads a seat pinned to uid 0 - the root seat - as one that pinned
+        # nothing.
+        return self.uid == 0
 
 
 def attach(
@@ -1134,9 +1195,15 @@ def attach(
     ``max_rung`` caps the walk: the rungs above it are skipped and the ones
     below still tried. It is for the cluster whose policy *mutates* rather than
     refuses, where the full rung is admitted and silently stripped of the
-    capability it exists for, so no signal the walk reads says to drop a rung
-    (issue #94). A running seat above the ceiling is not reused, because an
-    ephemeral container's securityContext is fixed for the pod's lifetime.
+    capability it exists for (issue #94) — a dry run reads that back before a
+    name is spent, and this is how somebody who already knows saves the round
+    trip. A running seat above the ceiling is not reused, because an ephemeral
+    container's securityContext is fixed for the pod's lifetime.
+
+    The rung on the returned session is *measured*, not planned: every attach
+    reads the seat's own ``/proc/self/status`` (:func:`probe_seat_credentials`),
+    ``probe`` or not. What the walk asked for is on the ladder steps, which is
+    where a question about what podbench did belongs.
 
     ``target_uid`` and ``target_gid`` override what the pod spec says, for the
     manifest that states neither or only one of them. They are *pins*: an id
@@ -1284,6 +1351,19 @@ def attach(
             timeout=timeout,
             poll_interval=poll_interval,
         )
+
+    # Both branches above set `rung` to what was *asked* for - the walk's plan,
+    # or the label `rung_of_spec` reads off a container somebody else authored.
+    # The seat is right there, so ask it. One read settles both directions of
+    # issue #94: a stripped full rung stops being reported as the degraded one,
+    # and a reconnect stops inheriting a spec's answer to a question only the
+    # kernel can settle.
+    credentials = probe_seat_credentials(kubectl, session.seat)
+    session = replace(
+        session,
+        credentials=credentials,
+        rung=_measured_or_asked(session.rung, credentials, target_uid=wanted_uid),
+    )
 
     # Before the OOM warning, because it is about which *code* is running and
     # every other line in the report is only true of the version that is.
@@ -1617,6 +1697,31 @@ def _walk_ladder(
     )
 
 
+ADMISSION_MUTATION_WARNING = (
+    "admission rewrote this seat's securityContext before storing it: it "
+    "{rewrites}. Nothing in the response names the controller responsible. It "
+    "cost this rung nothing - a rewrite that did would have dropped it - and "
+    "the rung above is read from the seat itself, not from the spec this "
+    "changed."
+)
+"""One line for the half of admission that issues no refusal.
+
+Measured at DLS on 2026-08-19, in both directions: podbench asks for
+``capabilities: {drop: [ALL]}`` and the stored spec comes back with thirteen
+capabilities added, while the seat carrying them reports ``CapEff:
+0000000000000000`` at uid 37887 (report §3.10). So the *warning* is what the
+dry run saw admission do, and the *rung* is what the seat says it is - the two
+questions are answered by the two sources that can answer them, and neither
+answers the other's.
+
+That the controller cannot be named is a fact about the API and not an
+omission: a mutating webhook's changes are attributed to the requester's field
+manager rather than to the webhook, and ``mutatingwebhookconfigurations`` is a
+cluster-scoped resource a namespaced seat's credentials cannot list (both
+measured on the same cluster).
+"""
+
+
 def _dry_run_rung(
     kubectl: Kubectl, pod: str, spec: Mapping[str, Any], rung: Rung
 ) -> tuple[LadderStep | None, tuple[str, ...]]:
@@ -1687,11 +1792,7 @@ def _dry_run_rung(
     rewrites = admission_rewrites(spec, admitted)
     if not rewrites:
         return None, ()
-    return None, (
-        f"admission rewrites this seat's securityContext: it "
-        f"{'; '.join(rewrites)}. The rung names what podbench asked for, so "
-        f"read `podbench status {pod}` for what landed.",
-    )
+    return None, (ADMISSION_MUTATION_WARNING.format(rewrites="; ".join(rewrites)),)
 
 
 def _refusal_detail(error: KubectlError, *, dry_run: bool = False) -> str:
@@ -1837,6 +1938,56 @@ def probe_seat_version(kubectl: Kubectl, seat: ContainerRef) -> str | None:
     if result.returncode != 0 or len(version.split()) != 1:
         return None
     return version
+
+
+def probe_seat_credentials(kubectl: Kubectl, seat: ContainerRef) -> Credentials | None:
+    """What ``seat`` is really running as, or ``None`` if it would not say.
+
+    The rung the walk authored is what podbench *asked* for, and the spec that
+    landed is what admission agreed to store - neither is the container. Both
+    were measured to be wrong, in opposite directions and on the same cluster
+    (DLS, 2026-08-19): admission adds thirteen capabilities to a seat that
+    asked for none, and the seat carrying them runs at uid 37887 with ``CapEff:
+    0000000000000000``, because capabilities beside a non-zero ``runAsUser``
+    land in ``CapBnd`` and never reach the effective set (report §3.10). This
+    reads the two numbers the kernel will check.
+
+    ``check=False`` and every failure folds to ``None``, for
+    :func:`probe_seat_version`'s reason: the seat is an ephemeral container and
+    cannot be relanded, so no diagnostic may fail an attach that has landed.
+    The report then names the rung that was asked for and says that is what it
+    is doing.
+    """
+    result = kubectl.exec_(
+        seat.pod.name, SEAT_STATUS_ARGV, container=seat.container, check=False
+    )
+    if result.returncode != 0:
+        return None
+    return Credentials.from_status(result.stdout)
+
+
+def _measured_or_asked(
+    asked: Rung, credentials: Credentials | None, *, target_uid: int | None
+) -> Rung:
+    """The measured rung, falling back to the one that was asked for.
+
+    ``target_uid`` is the pod spec's, or the flag's - what the walk pinned the
+    seat to - because it has to be available on an attach that probed nothing.
+    That is enough for the comparison the rung turns on: the degraded rung
+    exists only where the manifest or the caller named a uid, since
+    :func:`podbench.spec.ephemeral_container_spec` refuses to author it without
+    one.
+    """
+    if credentials is None:
+        return asked
+    return (
+        measured_rung(
+            credentials.uid,
+            sys_ptrace=credentials.capabilities.sys_ptrace_effective,
+            target_uid=target_uid,
+        )
+        or asked
+    )
 
 
 def run_capreport(
@@ -2197,7 +2348,7 @@ def format_session(session: Session) -> str:
             first="version     ",
             indent=" " * 12,
         ),
-        f"rung        {session.rung.value} - {session.rung.description}",
+        f"rung        {session.rung.value} - {_rung_evidence(session)}",
         "ladder",
     ]
     for step in session.steps:
@@ -2248,6 +2399,27 @@ def format_session(session: Session) -> str:
     return "\n".join(lines)
 
 
+def _rung_evidence(session: Session) -> str:
+    """What the rung on this line is a reading of.
+
+    The numbers rather than a restatement of the label: the line used to end in
+    a fixed phrase per rung, so it could not be wrong-aware, and "a pinned UID,
+    all capabilities dropped" was printed for a container running as root with
+    thirteen capabilities in its stored spec (issue #94, DLS 2026-08-19). It is
+    also the only place a ``--no-probe`` attach reports any measurement at all.
+    """
+    credentials = session.credentials
+    if credentials is None:
+        # Named as unmeasured rather than passed off as measured. The seat is
+        # running - the attach returned - so this is an exec that was refused
+        # or an answer this launcher could not parse, and the rung reverts to
+        # being the walk's own claim about what it asked for.
+        return "as asked for; the seat's own /proc/self/status could not be read"
+    return describe_credentials(
+        credentials.uid, credentials.gid, credentials.capabilities.effective_hex
+    )
+
+
 def _yama(scope: int | None) -> str:
     if scope is None:
         return "absent (no Yama LSM on this node - not the same as scope 0)"
@@ -2263,17 +2435,16 @@ def seat_layout(session: Session) -> SshdLayout:
     It has to be derived, not guessed: the ProxyCommand names sshd's config file
     by absolute path, and the two layouts put it in different places. The agent
     settles it inside the container with
-    ``SshdLayout.for_uid(os.geteuid())``, so the *uid* is what decides and the
-    rung is only a proxy for it — one a reconnect cannot lean on.
-    :func:`rung_of_spec` reads the rung back off the container, and a mutating
-    admission webhook that strips ``capabilities.add`` leaves a root seat
-    looking exactly like the degraded rung: ``runAsUser: 0``, nothing added.
-    Landing such a seat works, because the ladder remembers the rung it asked
-    for; reconnecting to it named
+    ``SshdLayout.for_uid(os.geteuid())``, so the *uid* is what decides — and
+    :attr:`Session.root_seat` answers from the seat's own
+    ``/proc/self/status`` where it could be read. Deriving it from the rung
+    instead cost a whole transport once: a mutating admission webhook that
+    strips ``capabilities.add`` leaves a root seat looking exactly like the
+    degraded rung, and reconnecting to it named
     ``/tmp/podbench-home/.podbench/sshd_config`` in the ProxyCommand of a
-    container whose agent had written ``/etc/podbench/sshd_config``, and the
-    whole symptom was ``No such file or directory`` in an editor's ssh log
-    (DLS, 2026-08-16).
+    container whose agent had written ``/etc/podbench/sshd_config``. The whole
+    symptom was ``No such file or directory`` in an editor's ssh log (DLS,
+    2026-08-16).
 
     The home is read from the seat rather than assumed to be
     :data:`NON_ROOT_HOME`, because a pod that declares
@@ -2282,9 +2453,7 @@ def seat_layout(session: Session) -> SshdLayout:
     connection with nothing to say why. It decides nothing for a root seat,
     whose layout ignores ``$HOME`` at both ends.
     """
-    # Compared against 0 rather than tested for truth: `session.uid or ...`
-    # reads a seat pinned to uid 0 — the root seat — as one that pinned nothing.
-    if session.rung is Rung.FULL or session.uid == 0:
+    if session.root_seat:
         return SshdLayout.for_uid(0, home=session.home)
     # Any non-zero uid selects the same non-root layout, so an unpinned seat can
     # be given a placeholder: the paths that follow come from `home` alone.
@@ -2763,17 +2932,15 @@ def emit_ssh_config(
         write_known_hosts(binding, known_hosts)
 
     alias = host_alias or default_host_alias(session.pod, session.seat.container)
-    # The seat's own answer beats the rung's prediction of it, and they come
-    # apart on the shape that made this a measurement in the first place: a root
+    # The seat's own answer beats any prediction of it, and the fallback below
+    # is a prediction from the seat's *uid* rather than from its rung: a root
     # seat whose `capabilities.add` a mutating webhook stripped reads back as
     # the degraded rung, whose login name is `podbench` — a name that resolves
     # to nothing here, because the agent registers it only for a uid NSS cannot
     # already resolve, and uid 0 is always `root`. sshd refuses an unresolvable
     # login before it looks at a key, so the prediction costs the whole seat.
     measured = session.ssh.login if session.ssh is not None else None
-    login = (
-        user or measured or ("root" if session.rung is Rung.FULL else DEFAULT_SEAT_USER)
-    )
+    login = user or measured or ("root" if session.root_seat else DEFAULT_SEAT_USER)
     stanza = ssh_stanza(
         session,
         identity_file=identity,
@@ -4099,14 +4266,24 @@ def _build_app(
                 "run `podbench attach` first"
             )
         reference = ContainerRef(PodRef(kube.namespace, name), seat.name)
+        workload = seat.target or target_container_name(pod_json)
+        # Measured here for the reason `seat_layout` exists: this command
+        # regenerates the ProxyCommand, which names sshd's config file by
+        # absolute path, and which of the two paths is right is decided by the
+        # uid the seat runs as - not by the rung its securityContext reads back
+        # as, which is what got that path wrong at DLS (2026-08-16).
+        credentials = probe_seat_credentials(kube, reference)
         session = Session(
             seat=reference,
-            workload=seat.target or target_container_name(pod_json),
-            rung=seat.rung,
+            workload=workload,
+            rung=_measured_or_asked(
+                seat.rung, credentials, target_uid=target_uid_gid(pod_json, workload)[0]
+            ),
             reused=True,
             uid=seat.uid,
             home=seat.home,
             identity_mounted=seat.identity_mounted,
+            credentials=credentials,
             # Asked again rather than assumed: this command exists to regenerate
             # a stanza from another machine, where nothing of the original
             # attach is in hand.
