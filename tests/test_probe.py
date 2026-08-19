@@ -13,15 +13,17 @@ import ctypes
 import errno
 import json
 import os
+import signal
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from podbench.model import Blocker, Verdict
+from podbench.model import ATTACH_PROBE, SEIZE_PROBE, Blocker, Verdict
 from podbench.probe import (
     PTRACE_ATTACH,
     PTRACE_DETACH,
+    PTRACE_SEIZE,
     AttachOutcome,
     CtypesAttacher,
     SkippedAttacher,
@@ -182,8 +184,10 @@ class FakeAttacher:
         return self._target
 
 
-OK = AttachOutcome(ok=True)
-EPERM = AttachOutcome(ok=False, errno=1, message="Operation not permitted")
+OK = AttachOutcome(ok=True, method=SEIZE_PROBE)
+EPERM = AttachOutcome(
+    ok=False, errno=1, message="Operation not permitted", method=SEIZE_PROBE
+)
 
 
 def attacher(
@@ -898,9 +902,18 @@ class FakeLibc:
     its own syscall layer instead.
     """
 
-    def __init__(self, *, attach_errno: int = 0, detach_errno: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        seize_errno: int = 0,
+        attach_errno: int = 0,
+        detach_errno: int = 0,
+        stops: bool = False,
+    ) -> None:
         self.requests: list[int] = []
+        self._stops = stops
         self._failures = {
+            PTRACE_SEIZE: seize_errno,
             PTRACE_ATTACH: attach_errno,
             PTRACE_DETACH: detach_errno,
         }
@@ -909,6 +922,12 @@ class FakeLibc:
         self.requests.append(request)
         failure = self._failures.get(request, 0)
         ctypes.set_errno(failure)
+        if self._stops and not failure and request == PTRACE_ATTACH:
+            # What the kernel does, and what the reap after it is waiting for:
+            # without a stop to collect, `_reap` blocks until the child dies of
+            # something else. Only for tests that pass a pid they really forked
+            # — the rest hand this their own pid on purpose.
+            os.kill(pid, signal.SIGSTOP)
         return -1 if failure else 0
 
 
@@ -916,10 +935,41 @@ def ctypes_attacher(libc: FakeLibc) -> CtypesAttacher:
     return CtypesAttacher(cast(ctypes.CDLL, libc))
 
 
-def test_a_successful_attach_detaches_and_leaves_no_note() -> None:
+def test_the_live_probe_seizes_and_leaves_nothing_to_undo() -> None:
+    """The measurement the workload does not pay for.
+
+    ``libc.requests`` being empty *in this process* is the whole point rather
+    than an accident of the fake: the seize is issued by a child whose exit is
+    the detach, so nothing here is holding a tracee, there is no stop to reap
+    and no detach to fail.
+    """
     libc = FakeLibc()
     outcome = ctypes_attacher(libc).attach(os.getpid())
     assert outcome.ok
+    assert outcome.method == SEIZE_PROBE
+    assert libc.requests == []
+    assert outcome.notes == ()
+
+
+def test_a_denied_seize_is_not_retried_with_the_stopping_attach() -> None:
+    """Both primitives take ``PTRACE_MODE_ATTACH_REALCREDS``, so a refusal is
+    the same refusal — and retrying it would stop a workload to be told so."""
+    libc = FakeLibc(seize_errno=errno.EPERM)
+    outcome = ctypes_attacher(libc).attach(4242)
+    assert not outcome.ok
+    assert outcome.errno == errno.EPERM
+    assert outcome.method == SEIZE_PROBE
+    assert libc.requests == []
+    assert outcome.notes == ()
+
+
+def test_a_kernel_without_seize_falls_back_to_the_stopping_pair() -> None:
+    """EIO is a kernel older than 3.4 answering a request it has never heard
+    of, and the only answer worth asking the other way."""
+    libc = FakeLibc(seize_errno=errno.EIO)
+    outcome = ctypes_attacher(libc).attach(os.getpid())
+    assert outcome.ok
+    assert outcome.method == ATTACH_PROBE
     assert libc.requests == [PTRACE_ATTACH, PTRACE_DETACH]
     assert outcome.notes == ()
 
@@ -929,8 +979,10 @@ def test_a_failed_detach_resumes_the_target_rather_than_freezing_it() -> None:
 
     capreport freezing the workload it was asked to describe is worse than any
     verdict it could print, so the detach result is checked and the stop lifted.
+    The seize made this path rare, not unreachable: it is what a pre-3.4 kernel
+    still gets.
     """
-    libc = FakeLibc(detach_errno=errno.ESRCH)
+    libc = FakeLibc(seize_errno=errno.EIO, detach_errno=errno.ESRCH)
     # SIGCONT to our own already-running process is a no-op, so this is safe.
     outcome = ctypes_attacher(libc).attach(os.getpid())
     assert outcome.ok
@@ -947,19 +999,83 @@ def test_a_failed_detach_that_cannot_be_resumed_says_so(
         raise ProcessLookupError("No such process")
 
     monkeypatch.setattr(os, "kill", refuse)
-    outcome = ctypes_attacher(FakeLibc(detach_errno=errno.ESRCH)).attach(os.getpid())
+    outcome = ctypes_attacher(
+        FakeLibc(seize_errno=errno.EIO, detach_errno=errno.ESRCH)
+    ).attach(os.getpid())
     assert outcome.ok
     assert "SIGCONT failed too" in outcome.notes[0]
 
 
 def test_a_failed_attach_never_detaches() -> None:
     # Nothing was attached, so there is no stop to lift and nothing to say.
-    libc = FakeLibc(attach_errno=errno.EPERM)
+    libc = FakeLibc(seize_errno=errno.EIO, attach_errno=errno.EPERM)
     outcome = ctypes_attacher(libc).attach(4242)
     assert not outcome.ok
     assert outcome.errno == errno.EPERM
+    assert outcome.method == ATTACH_PROBE
     assert libc.requests == [PTRACE_ATTACH]
     assert outcome.notes == ()
+
+
+def _forked(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record every pid this process forks, so a test can check it was reaped."""
+    pids: list[int] = []
+    real_fork = os.fork
+
+    def spy() -> int:
+        pid = real_fork()
+        if pid:
+            pids.append(pid)
+        return pid
+
+    monkeypatch.setattr(os, "fork", spy)
+    return pids
+
+
+def test_the_scratch_attach_stops_its_own_child_and_reaps_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The structural probe keeps the stopping pair, and really forks.
+
+    Its tracee exists to be stopped and is killed a line later, so the pause
+    costs nothing — and it must stay a *descendant* of this process, because
+    Yama ``ptrace_scope=1`` exempts descendants and nothing else.
+    """
+    forked = _forked(monkeypatch)
+    libc = FakeLibc(stops=True)
+    outcome = ctypes_attacher(libc).attach_child()
+    assert outcome.ok
+    assert libc.requests == [PTRACE_ATTACH, PTRACE_DETACH]
+    assert len(forked) == 1
+    with pytest.raises(ChildProcessError):
+        os.waitpid(forked[0], os.WNOHANG)
+
+
+def test_a_refused_kill_still_reaps_the_scratch_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#92: the kill was unguarded, so a raising ``os.kill`` skipped the reap.
+
+    The child then went on calling ``signal.pause()`` holding the seat's
+    ``kubectl exec`` pipes open, and the launcher waited for an EOF that could
+    not come — a hang, from the one call in the probe that had nothing to say.
+    """
+    forked = _forked(monkeypatch)
+    real_kill = os.kill
+
+    def kill_then_complain(pid: int, sig: int) -> None:
+        # Kills for real, then reports what a seccomp filter or an exotic LSM
+        # would: the test is about the raise, not about orphaning a process.
+        # Narrowed to SIGKILL so the fake libc's own SIGSTOP still lands.
+        real_kill(pid, sig)
+        if sig == signal.SIGKILL:
+            raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", kill_then_complain)
+    outcome = ctypes_attacher(FakeLibc(stops=True)).attach_child()
+    assert outcome.ok
+    with pytest.raises(ChildProcessError):
+        os.waitpid(forked[0], os.WNOHANG)
 
 
 def test_an_unresumable_target_is_reported_in_the_notes(tmp_path: Path) -> None:
@@ -1000,6 +1116,10 @@ JSON_KEYS = {
     "node_name",
     "child_attach_ok",
     "target_attach_ok",
+    # Which primitive the live attach used, because the two cost the workload
+    # different things and a report that cannot say which was paid cannot be
+    # checked before it is run.
+    "attach_method",
     "proc_reads",
     # The corrected boolean, so a shell branching on --json need not know which
     # three of the six reads ptrace gates (issue #51).
@@ -1057,6 +1177,39 @@ def test_human_report_names_the_mechanism(tmp_path: Path) -> None:
     assert Blocker.YAMA_SCOPE.explanation.split(":")[0] in text
     assert "scratch attach (own child) OK" in text
     assert "live attach (pid 1)" in text
+
+
+def test_the_report_names_the_primitive_and_states_the_pause(
+    tmp_path: Path,
+) -> None:
+    """Which call was made, and what it cost the workload, on every report.
+
+    Proven against live `p47-blueapi-0` pid 1 (195 threads) from a capless seat
+    on 2026-08-19: `S (sleeping)` before the seize, during it and after.
+    """
+    report = probe(
+        1,
+        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=0),
+        attacher=attacher(target=OK),
+    )
+    text = format_report(report, False)
+    assert "OK via PTRACE_SEIZE" in text
+    assert "workload pause" in text
+    assert "none - PTRACE_SEIZE does not stop the tracee" in text
+    assert json.loads(format_report(report, True))["attach_method"] == SEIZE_PROBE
+
+
+def test_a_fallback_attach_admits_the_pause_it_cost(tmp_path: Path) -> None:
+    """A pre-3.4 kernel gets the stopping primitive, and the report says so
+    rather than repeating the reassurance the seize had earned."""
+    report = probe(
+        1,
+        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=0),
+        attacher=attacher(target=AttachOutcome(ok=True, method=ATTACH_PROBE)),
+    )
+    text = format_report(report, False)
+    assert "OK via PTRACE_ATTACH" in text
+    assert "brief - PTRACE_ATTACH stopped it until the probe detached" in text
 
 
 def test_human_report_without_target(tmp_path: Path) -> None:

@@ -319,7 +319,7 @@ class Seat:
     """
 
     target_attach_ok: bool | None = None
-    """Whether a real ``PTRACE_ATTACH`` to the target succeeded from this seat.
+    """Whether a real ptrace attach to the target succeeded from this seat.
 
     The same measurement ``capreport`` lands in
     :attr:`~podbench.model.CapabilityReport.target_attach_ok`, and it is carried
@@ -636,8 +636,9 @@ def survey_seat(
     """Gather every fact :func:`assess` needs, with no side effects.
 
     Deliberately *not* a ptrace probe itself: measuring attach means really
-    attaching, which SIGSTOPs the workload for an instant, and gathering facts
-    must not do that behind the caller's back. So the three facts that cost
+    attaching, and gathering facts must not touch the workload behind the
+    caller's back - which is a rule about consent, not about cost, and so
+    outlives the seize that made the attach free. So the three facts that cost
     something to learn — ``listening_port``, ``program_load_error`` and
     ``target_attach_ok`` — are handed in by a caller that decided each was worth
     its price. What is read here costs a stat and a read of

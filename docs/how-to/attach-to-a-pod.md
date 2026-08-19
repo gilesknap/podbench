@@ -254,7 +254,7 @@ supports
       the three paths this line names take PTRACE_MODE_READ, which the
       mechanism that refused attach gates too - see the blocker below
   [x] debug launched processes (podbench dbg --launch ./prog)
-measured
+measured    --no-probe skips this block
   verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
 ```
 
@@ -267,6 +267,34 @@ descendant needs no capability and no Yama exemption. So go straight to
 `cmdline`, `status` and `fd` staying readable is not a partial win: they need no
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.
+
+## What the probe itself does to the workload
+
+Nothing, and the report says so on the line it is measured on:
+
+```
+measured    --no-probe skips this block
+  ...
+  pause       none - PTRACE_SEIZE does not stop the tracee
+```
+
+The question `capreport` has to answer is whether the kernel would let gdb
+attach, and `PTRACE_SEIZE` answers it through the same
+`PTRACE_MODE_ATTACH_REALCREDS` check that `PTRACE_ATTACH` takes — but without
+stopping the tracee. So there is no stop to reap, no detach to race, and no
+window in which a failed detach leaves the workload frozen. Measured against a
+live Diamond `blueapi` PID 1 with 195 threads, from a seat holding no
+capabilities: `State: S (sleeping)` before the seize, during it, and after.
+
+`PTRACE_ATTACH` is still there, as the fallback on a kernel older than 3.4 —
+that one *does* stop the workload while the probe reaps the stop and detaches,
+and the same line then reads `brief - PTRACE_ATTACH stopped it until the probe
+detached`. It is also what the *scratch* attach on the probe's own forked child
+uses, where the tracee exists to be stopped and is killed a line later.
+
+`--no-probe` skips the exec entirely, on `attach` and on `status` alike. Reach
+for it when the pod must not be touched at all rather than when a pause would
+be expensive: since the seize there is no pause to avoid.
 
 ## Making memory and CPU headroom first
 

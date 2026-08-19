@@ -69,6 +69,7 @@ from .model import (
     Verdict,
     as_dict,
     describe_credentials,
+    describe_pause,
     measured_rung,
 )
 from .proc import Credentials
@@ -2124,6 +2125,10 @@ def capability_report_from_json(payload: Mapping[str, Any]) -> CapabilityReport:
         node_name=_as_str(payload.get("node_name")),
         child_attach_ok=_as_bool(payload.get("child_attach_ok")),
         target_attach_ok=_as_bool(payload.get("target_attach_ok")),
+        # Absent from an image older than the seize, and `None` has to survive
+        # that: `describe_pause` reads it as "not measured" rather than as an
+        # assurance that the seat stopped nothing.
+        attach_method=_as_str(payload.get("attach_method")),
         proc_reads=reads,
         notes=notes,
     )
@@ -2419,7 +2424,11 @@ def format_session(session: Session) -> str:
 
     report = session.report
     if report is not None:
-        lines.append("measured")
+        # The flag rides on the heading because this block is the whole of what
+        # it skips, and because a row is where a reader looks for a value: a
+        # flush-left label with a value is drawn exactly as the bare heading was
+        # (`console._styled`), so naming it costs no layout.
+        lines.append("measured    --no-probe skips this block")
         lines.append(f"  verdict     {report.verdict.summary}")
         lines.append(f"  blocker     {report.blocker.value}")
         lines.append(f"  node        {report.node_name or 'unknown'}")
@@ -2430,6 +2439,13 @@ def format_session(session: Session) -> str:
         lines.append(
             f"  ids         seat {_ids(report.self_uid, report.self_gid)}, "
             f"target {_ids(report.target_uid, report.target_gid)}"
+        )
+        # What the probe cost the workload, said on every attach rather than
+        # only when it cost something. The complaint this answers was not the
+        # stop but its silence, on pods where a stop is forbidden.
+        lines.append(
+            f"  pause       "
+            f"{describe_pause(report.attach_method, report.target_attach_ok)}"
         )
         if report.notes:
             lines.append("notes")

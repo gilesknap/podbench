@@ -351,6 +351,12 @@ def _measured(capreport: str) -> str:
     )
 
 
+def _live_attach(capreport: str, app_pid: int) -> bool:
+    """Whether the probe attached to ``app_pid``, whichever primitive it used."""
+    value = _probe_line(capreport, f"live attach (pid {app_pid})")
+    return value is not None and value.startswith("OK")
+
+
 def _probe_line(capreport: str, key: str) -> str | None:
     """A capreport row's value, or ``None`` when the row is not there.
 
@@ -408,7 +414,9 @@ def test_the_seat_lands_capless_and_attaches_anyway(
         "the seat was expected to have no CAP_SYS_PTRACE in its effective set, "
         f"so that everything below measures a capless seat:\n{_measured(capreport)}"
     )
-    assert _probe_line(capreport, f"live attach (pid {app_pid})") == "OK", (
+    # `startswith`, because the row now names the primitive it used - "OK via
+    # PTRACE_SEIZE" - and which one that is belongs to the pause line, not here.
+    assert _live_attach(capreport, app_pid), (
         "the probe could not attach, so this node cannot reproduce #89 — it "
         "needs kernel.yama.ptrace_scope=0 and a seat sharing the target's "
         f"uid:\n{_measured(capreport)}"
@@ -428,7 +436,9 @@ def _require_live_attach(capreport: str, app_pid: int) -> None:
     in a CI log, and "podbench claimed X" is only a defect once the reader can
     see, in the same message, that the probe measured otherwise.
     """
-    assert _probe_line(capreport, f"live attach (pid {app_pid})") == "OK", (
+    # `startswith`, because the row now names the primitive it used - "OK via
+    # PTRACE_SEIZE" - and which one that is belongs to the pause line, not here.
+    assert _live_attach(capreport, app_pid), (
         "this run measured no live attach, so nothing below is a defect. The "
         f"node was checked for {YAMA_SYSCTL} = 0 before the seat was attached, "
         "so what changed under the fixture is the seat's uid, the target's, or "

@@ -28,6 +28,7 @@ from podbench.execfile import gdb_exec_file
 from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
 from podbench.gdbcmd import attach_commands
 from podbench.kubectl import CommandResult
+from podbench.model import SEIZE_PROBE
 from podbench.probe import AttachOutcome
 from podbench.proc import DEFAULT_PROC
 from podbench.provision import INJECTION_TIMEOUT_SECONDS
@@ -974,9 +975,10 @@ def test_an_arm64_python_target_names_the_missing_helper(
 #
 # Issue #89: the pid injection is `gdb --pid`, so the question is ptrace, and
 # CAP_SYS_PTRACE is one of four ways to have it. What is pinned here is *when*
-# the seat is allowed to answer that question by really attaching — a
-# PTRACE_ATTACH stops the workload for the instant it takes, and this verb
-# otherwise only authors a file.
+# the seat is allowed to answer that question by really attaching. The probe is
+# a PTRACE_SEIZE now and stops nothing, so what these guards protect is no
+# longer the workload's uptime but the caller's consent: a verb that only
+# authors a file does not touch the workload behind their back.
 
 
 class RecordingAttacher:
@@ -1028,8 +1030,8 @@ def test_a_synthetic_proc_is_never_ptraced(
 def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The #89 case: the one call worth stopping the workload for."""
-    attacher = RecordingAttacher(AttachOutcome(ok=True))
+    """The #89 case: the answer is measured, not read off CapEff."""
+    attacher = RecordingAttacher(AttachOutcome(ok=True, method=SEIZE_PROBE))
     measured = measured_attach(
         PYTHON_TARGET,
         Mode.OBSERVE,
@@ -1039,9 +1041,35 @@ def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
     )
     assert measured is True
     assert attacher.attached == [PID]
-    # Said out loud: the answer changed *because* something was done to the
-    # workload, and the reader has to be able to connect the two.
-    assert "stopped the workload" in capsys.readouterr().err
+    # Said out loud, and with the cost named: the answer changed because
+    # something was done to the workload, so the reader is told which primitive
+    # did it and what it cost — which here is nothing.
+    warned = capsys.readouterr().err
+    assert SEIZE_PROBE in warned
+    assert "Pause to the workload: none" in warned
+
+
+def test_printing_a_configuration_measures_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--print-config`` writes no file, so it touches no workload either.
+
+    The probe fires per candidate pid, so this was N real attaches on a pod
+    with N candidates, for a run that changes nothing. Free is not the same as
+    invited (finding 17.4), and the reader is told what was not measured.
+    """
+    attacher = RecordingAttacher(AttachOutcome(ok=True, method=SEIZE_PROBE))
+    measured = measured_attach(
+        PYTHON_TARGET,
+        Mode.OBSERVE,
+        Seat(machine="x86_64", cap_sys_ptrace=False),
+        proc=DEFAULT_PROC,
+        attacher=attacher,
+        probe=False,
+    )
+    assert measured is None
+    assert attacher.attached == []
+    assert "--print-config" in capsys.readouterr().err
 
 
 def test_a_refused_attach_is_measured_as_a_refusal_not_as_silence() -> None:

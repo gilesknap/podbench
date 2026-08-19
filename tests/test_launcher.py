@@ -60,11 +60,13 @@ from podbench.model import (
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
+    SEIZE_PROBE,
     Blocker,
     ContainerRef,
     PodRef,
     Rung,
     Verdict,
+    describe_pause,
 )
 from podbench.sshcfg import SEAT_USER
 
@@ -231,6 +233,7 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "node_name": "node02",
         "child_attach_ok": True,
         "target_attach_ok": True,
+        "attach_method": SEIZE_PROBE,
         # All three, because the launcher recomputes the read-only tick from
         # exactly these and a subset is no longer a yes: the healthy default
         # has to be a healthy matrix.
@@ -1721,6 +1724,32 @@ def test_an_unknown_verdict_is_said_rather_than_flattened() -> None:
     assert report.verdict is Verdict.NONE
     assert any("single_step_only" in note for note in report.notes)
     assert any("single-step only" in note for note in report.notes)
+
+
+def test_the_pause_a_probe_cost_is_stated_and_the_flag_that_skips_it_named() -> None:
+    """Both halves of finding 14: the probe stops nothing now, and it says so.
+
+    The complaint was never the stop — it was that a pause happened silently,
+    on pods where a pause is forbidden. A line that appears only when something
+    went wrong cannot be checked beforehand, so this one is unconditional, and
+    it sits under a heading naming the flag that skips the whole block.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    text = format_session(attach(talking_to(cluster), "target"))
+    assert "measured    --no-probe skips this block" in text
+    assert "pause       none - PTRACE_SEIZE does not stop the tracee" in text
+
+
+def test_an_image_older_than_the_seize_reports_an_unmeasured_pause() -> None:
+    """A missing key is "this seat is older than the question", and must not be
+    rendered as an assurance that nothing was stopped."""
+    payload = capreport_payload()
+    del payload["attach_method"]
+    report = capability_report_from_json(payload)
+    assert report.attach_method is None
+    assert describe_pause(report.attach_method, report.target_attach_ok) == (
+        "not measured"
+    )
 
 
 def test_capability_report_from_json_keeps_an_unreadable_target_uid_none() -> None:

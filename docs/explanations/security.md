@@ -193,7 +193,10 @@ Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
 All four return `EPERM`. `capreport` reads the capability sets, `Seccomp`,
 `NoNewPrivs`, both AppArmor profiles and the Yama scope, then runs a scratch
 `PTRACE_ATTACH` on its own forked child — always permitted by Yama, so a failure
-*there* is structural — and a live attach on the target. It names the mechanism.
+*there* is structural — and a live attach on the target. The live one is a
+`PTRACE_SEIZE`, which takes the identical permission check and leaves the
+workload running rather than stopping it; the report states what the probe
+cost, which is normally nothing. It names the mechanism.
 
 Yama is per node and differs by **kernel flavour, not architecture**: two arm64
 nodes in the same cluster disagreed, one denying and one allowing the

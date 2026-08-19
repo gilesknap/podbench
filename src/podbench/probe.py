@@ -7,6 +7,11 @@ by reporting a stale ``ENOTTY`` as ``ptrace: Inappropriate ioctl for device``
 (spike S5, finding 4). So the probe never infers the answer from a failure: it
 reads the kernel's own accounting, then measures ptrace twice.
 
+Neither measurement stops the workload. The live one is a ``PTRACE_SEIZE``,
+which takes the same permission check as gdb's attach and leaves the tracee
+running (finding 14); ``PTRACE_ATTACH``, which stops it, is kept for the scratch
+attach on our own child and as the fallback on a kernel older than 3.4.
+
 The two measurements are the whole trick. The first attaches to a child the
 probe **forked itself** — the credential check always passes against your own
 child and Yama exempts descendants below ``ptrace_scope=2``, so a failure there
@@ -22,6 +27,7 @@ parsing anything.
 from __future__ import annotations
 
 import ctypes
+import errno
 import json
 import os
 import signal
@@ -35,11 +41,14 @@ import typer
 from .cli import new_app, run
 from .flavour import Debugger, format_inventory, inventory
 from .model import (
+    ATTACH_PROBE,
+    SEIZE_PROBE,
     TARGET_CID_ENV,
     Blocker,
     CapabilityReport,
     Verdict,
     describe_gated_fallback,
+    describe_pause,
     describe_reads,
     ptrace_reads_ok,
 )
@@ -74,6 +83,36 @@ __all__ = [
 
 PTRACE_ATTACH = 16
 PTRACE_DETACH = 17
+PTRACE_SEIZE = 0x4206
+
+SEIZE_OPTIONS = 0
+"""``PTRACE_SEIZE``'s ``data`` word, which is an options mask and not padding.
+
+The old helper hard-wired ``(request, pid, 0, 0)`` and so would have passed this
+by accident. It is spelled out because of what else lives in this word:
+``PTRACE_O_EXITKILL`` (0x00100000) asks the kernel to **SIGKILL the tracee when
+the tracer exits**, and the tracer exiting is exactly how
+:meth:`CtypesAttacher.attach` detaches. A stray options word would turn a probe
+that stops nothing into one that kills the workload.
+"""
+
+_SEIZE_UNREPORTED = 255
+"""Exit code for a seizing child that could not name an errno.
+
+Well clear of every errno ``ptrace(2)`` returns (EPERM, ESRCH, EIO, EFAULT,
+EBUSY, EINVAL), which is what the rest of the exit status carries.
+"""
+
+_CHILD_LIFETIME_SECONDS = 30
+"""How long the scratch child may live if nothing kills it.
+
+Belt to :func:`_kill`'s braces, and the other half of #92: the child holds the
+inherited stdout, and ``kubectl exec`` returns only once every holder of that
+pipe has gone. A ``signal.pause()`` with no alarm meant one refused ``kill``
+hung the launcher for ever; SIGALRM's default action is to terminate, so the
+worst case is now bounded by this constant instead. Orders of magnitude longer
+than the microseconds the probe needs, so it cannot fire mid-measurement.
+"""
 
 YAMA_MEANINGS = {
     0: "classic ptrace permissions - any same-UID attach allowed",
@@ -94,13 +133,20 @@ SECCOMP_MEANINGS = {
 
 @dataclass(frozen=True)
 class AttachOutcome:
-    """What one ``PTRACE_ATTACH`` attempt did."""
+    """What one ptrace attempt did, and what it cost the tracee."""
 
     ok: bool
     errno: int = 0
     message: str = "OK"
     skipped: bool = False
     """No way to issue ptrace at all, so this is not evidence either way."""
+
+    method: str = ""
+    """Which primitive produced this - :data:`~podbench.model.SEIZE_PROBE` or
+    :data:`~podbench.model.ATTACH_PROBE` - empty when nothing was issued.
+
+    Carried rather than assumed by the reader, because the two cost the tracee
+    different things and the report has to be able to say which was paid."""
 
     notes: tuple[str, ...] = ()
     """Anything the attempt did to the target that the user must be told about.
@@ -123,7 +169,7 @@ class AttachOutcome:
 
 
 class Attacher(Protocol):
-    """Something that can issue ``PTRACE_ATTACH``."""
+    """Something that can issue a ptrace attach."""
 
     def attach_child(self) -> AttachOutcome:
         """Attach to a freshly forked child of this process."""
@@ -158,22 +204,126 @@ class CtypesAttacher:
     def __init__(self, libc: ctypes.CDLL) -> None:
         self._libc = libc
 
-    def _ptrace(self, request: int, pid: int) -> AttachOutcome:
+    def _ptrace(
+        self, request: int, pid: int, method: str, *, data: int = 0
+    ) -> AttachOutcome:
+        # `data` is passed rather than left to the old hard-wired zero: it is
+        # PTRACE_SEIZE's options word, and see SEIZE_OPTIONS for what one of
+        # those bits would do to the workload.
         ctypes.set_errno(0)
-        rc = int(self._libc.ptrace(request, pid, 0, 0))
+        rc = int(self._libc.ptrace(request, pid, 0, data))
         err = ctypes.get_errno()
         if rc == 0:
-            return AttachOutcome(ok=True)
-        return AttachOutcome(ok=False, errno=err, message=os.strerror(err))
+            return AttachOutcome(ok=True, method=method)
+        return AttachOutcome(
+            ok=False, errno=err, message=os.strerror(err), method=method
+        )
 
     def attach(self, pid: int) -> AttachOutcome:
-        outcome = self._ptrace(PTRACE_ATTACH, pid)
+        """Probe ptrace against a process this container did not fork.
+
+        The question is only whether the kernel would let gdb attach, and
+        ``PTRACE_SEIZE`` answers it through the same
+        ``PTRACE_MODE_ATTACH_REALCREDS`` check without stopping the workload -
+        so the answer arrives with no pause to reap, no detach to race, and no
+        window in which a failed detach leaves the pod frozen. ``PTRACE_ATTACH``
+        remains, as the fallback for a kernel older than 3.4.
+        """
+        seize = self._seize_from_a_child(pid)
+        if seize is not None and (seize.ok or seize.errno != errno.EIO):
+            # EIO is the only "ask the other way" answer: a denial from SEIZE is
+            # a denial of the identical credential check ATTACH would take, and
+            # retrying it would stop a workload to be told the same thing.
+            return seize
+        return self._attach_and_detach(pid)
+
+    def _seize_from_a_child(self, pid: int) -> AttachOutcome | None:
+        """Seize ``pid`` from a process that immediately exits. ``None`` if the
+        fork failed, so the caller can fall back rather than invent a verdict.
+
+        The fork is what makes the *undo* free, and it is not decoration.
+        ``PTRACE_DETACH`` needs its tracee in a ptrace-stop and answers ESRCH to
+        a seized-but-running one (measured), so the only detach that costs no
+        stop is the kernel's own: a tracer that exits detaches every tracee it
+        holds and leaves it running. That also bounds the one hazard a seize
+        carries - while a process is traced, any signal delivered to it traps
+        and waits for its tracer, and a tracer off formatting a report is a
+        tracee frozen until the report is printed (measured: a seized process
+        sending ticks stopped dead on SIGUSR1 and resumed the moment its tracer
+        exited). Here the tracer's whole life is one syscall.
+
+        The seize is *not* done this way for :meth:`attach_child`, and must not
+        be: Yama ``ptrace_scope=1`` exempts descendants of the tracer and
+        nothing else, so a grandchild seizing its sibling is refused EPERM
+        where this process seizing its own child is allowed (report 3.12's
+        second row, re-measured in the devcontainer, which runs at scope 1).
+        A structural probe that answered EPERM on every Yama node would report
+        the seat as broken and withdraw the one rung that still works.
+        """
+        try:
+            child = os.fork()
+        except OSError:
+            return None
+        if child == 0:  # pragma: no cover - the child never returns
+            code = _SEIZE_UNREPORTED
+            try:
+                outcome = self._ptrace(
+                    PTRACE_SEIZE, pid, SEIZE_PROBE, data=SEIZE_OPTIONS
+                )
+                if outcome.ok:
+                    code = 0
+                elif 0 < outcome.errno < _SEIZE_UNREPORTED:
+                    code = outcome.errno
+            finally:
+                # The seize is undone by this exit, so nothing here may run an
+                # exit handler, flush an inherited buffer, or raise on the way.
+                os._exit(code)
+        status = _wait_status(child)
+        if status is None:
+            return AttachOutcome.skip(
+                "could not reap the child that probes ptrace; nothing was measured"
+            )
+        if os.WIFSIGNALED(status):
+            # A SECCOMP_MODE_STRICT filter kills the caller of ptrace(2) outright.
+            # In a child that is a measurement; in this process it would have been
+            # capreport dying instead of reporting.
+            return AttachOutcome(
+                ok=False,
+                method=SEIZE_PROBE,
+                message=(
+                    f"the probe's own child was killed by signal "
+                    f"{os.WTERMSIG(status)} issuing {SEIZE_PROBE}"
+                ),
+            )
+        code = os.WEXITSTATUS(status)
+        if code == 0:
+            return AttachOutcome(ok=True, method=SEIZE_PROBE)
+        if code == _SEIZE_UNREPORTED:
+            return AttachOutcome(
+                ok=False,
+                method=SEIZE_PROBE,
+                message=f"{SEIZE_PROBE} failed and the probe's child named no errno",
+            )
+        return AttachOutcome(
+            ok=False, errno=code, message=os.strerror(code), method=SEIZE_PROBE
+        )
+
+    def _attach_and_detach(self, pid: int) -> AttachOutcome:
+        """The stopping primitive, and everything undoing it takes.
+
+        Kept whole for the two callers that still need it - a pre-3.4 kernel,
+        and the scratch attach on our own child - because the goal was that the
+        stop need not happen, not that the safety net could go. A bare
+        ``PTRACE_ATTACH`` with no ``waitpid``, hand-rolled against live blueapi
+        on 2026-08-19, left it ``State: T (stopped)`` for ninety seconds.
+        """
+        outcome = self._ptrace(PTRACE_ATTACH, pid, ATTACH_PROBE)
         if not outcome.ok:
             return outcome
         # PTRACE_ATTACH leaves the tracee SIGSTOPped until it is detached, so
         # reaping the stop and detaching is not optional politeness.
         _reap(pid)
-        detach = self._ptrace(PTRACE_DETACH, pid)
+        detach = self._ptrace(PTRACE_DETACH, pid, ATTACH_PROBE)
         if detach.ok:
             return outcome
         # A detach can genuinely fail — an ESRCH swallowed by waitpid, a tracee
@@ -181,20 +331,32 @@ class CtypesAttacher:
         # workload stopped. capreport freezing the process it was asked to
         # describe is worse than any verdict it could print, so the stop is
         # lifted by hand and said out loud.
-        return AttachOutcome(ok=True, notes=(_resume(pid, detach),))
+        return AttachOutcome(
+            ok=True, method=ATTACH_PROBE, notes=(_resume(pid, detach),)
+        )
 
     def attach_child(self) -> AttachOutcome:
+        """Attach to a child forked for the purpose.
+
+        ``PTRACE_ATTACH`` and not the seize: this tracee exists to be stopped,
+        it is killed a line later, and the question here is the structural one -
+        whether ptrace(2) can be issued at all - which is best asked with the
+        call gdb itself makes.
+        """
         pid = os.fork()
         if pid == 0:  # pragma: no cover - the child never returns
             try:
+                # Bounded rather than endless: see _CHILD_LIFETIME_SECONDS for
+                # what an unkillable child does to the launcher (#92).
+                signal.alarm(_CHILD_LIFETIME_SECONDS)
                 while True:
                     signal.pause()
             finally:
                 os._exit(0)
         try:
-            return self.attach(pid)
+            return self._attach_and_detach(pid)
         finally:
-            os.kill(pid, signal.SIGKILL)
+            _kill(pid)
             _reap(pid)
 
 
@@ -214,11 +376,39 @@ def _resume(pid: int, detach: AttachOutcome) -> str:
     )
 
 
-def _reap(pid: int) -> None:
+def _kill(pid: int) -> None:
+    """SIGKILL a child, without letting the kill become the failure.
+
+    Unguarded, this was #92: an ``os.kill`` that raises skips the ``_reap``
+    below it, and the forked child goes on calling ``signal.pause()`` holding
+    the ``kubectl exec`` pipes open - so the launcher waits for an EOF that
+    never comes, however the probe itself turned out. There is nothing to do
+    about a refused kill except carry on and let the child's own alarm end it.
+    """
     try:
-        os.waitpid(pid, 0)
+        os.kill(pid, signal.SIGKILL)
     except OSError:
         pass
+
+
+def _reap(pid: int) -> None:
+    # WUNTRACED, because the stop this is here to collect is not the only stop
+    # that can happen to the tracee. A ptrace-stop is reported to the tracer
+    # with or without the flag, but a child stopped for any other reason is not,
+    # and a wait that returns only for the stop we expected is a wait that hangs
+    # when the expectation is wrong.
+    try:
+        os.waitpid(pid, os.WUNTRACED)
+    except OSError:
+        pass
+
+
+def _wait_status(pid: int) -> int | None:
+    """The raw wait status of one of our own children, or ``None``."""
+    try:
+        return os.waitpid(pid, 0)[1]
+    except OSError:
+        return None
 
 
 def _load_libc() -> ctypes.CDLL | None:
@@ -357,6 +547,12 @@ def probe(
         child_attach_ok=child.measured_ok,
         target_attach_ok=(
             target_attach.measured_ok if target_attach is not None else None
+        ),
+        # What the live attach cost the workload is derived from this and
+        # nothing else, so an unprobed target must leave it None rather than
+        # inherit the primitive some other attempt happened to use.
+        attach_method=(
+            target_attach.method or None if target_attach is not None else None
         ),
         proc_reads=reads,
         notes=notes,
@@ -706,6 +902,11 @@ def _json_payload(
         "node_name": report.node_name,
         "child_attach_ok": report.child_attach_ok,
         "target_attach_ok": report.target_attach_ok,
+        # Added after the shape was published, so an older launcher ignores it
+        # and a newer one reads a missing key as "this seat is older than the
+        # question" - which `describe_pause` renders as "not measured", never
+        # as an assurance that nothing was stopped.
+        "attach_method": report.attach_method,
         "proc_reads": report.proc_reads,
         # Derived, and emitted anyway, so a shell branching on `--json` gets the
         # same answer as the verdict without re-deriving which of the six reads
@@ -765,7 +966,16 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
     if report.target_pid is not None:
         kv(
             f"live attach (pid {report.target_pid})",
-            _attach_text(report.target_attach_ok),
+            f"{_attach_text(report.target_attach_ok)}"
+            + (f" via {report.attach_method}" if report.attach_method else ""),
+        )
+        # Stated on every report, not only when a pause happened: what the probe
+        # does to the workload is exactly the thing a reader of this report is
+        # entitled to check before running it, and "none" is only reassuring if
+        # it is the same line that would have said otherwise.
+        kv(
+            "workload pause",
+            describe_pause(report.attach_method, report.target_attach_ok),
         )
 
     if debuggers:

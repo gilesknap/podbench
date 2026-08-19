@@ -96,7 +96,7 @@ from .gdbcmd import (
     sysroot_path,
 )
 from .kubectl import Runner, run_subprocess
-from .model import as_dict
+from .model import as_dict, describe_pause
 from .probe import Attacher, default_attacher
 from .proc import DEFAULT_PROC
 from .provision import (
@@ -1072,6 +1072,7 @@ def measured_attach(
     *,
     proc: Path,
     attacher: Attacher | None,
+    probe: bool = True,
 ) -> bool | None:
     """Whether this seat can really ptrace ``target``, or ``None`` for unasked.
 
@@ -1082,13 +1083,15 @@ def measured_attach(
     Diamond seat the injection that ``capreport`` had measured working, from the
     same seat, against the same pid, in the same minute (issue #89).
 
-    So it is asked, with the ``PTRACE_ATTACH``/``PTRACE_DETACH`` pair
-    ``capreport`` uses. That attach SIGSTOPs the workload for the instant it
-    takes, which is a real cost to put on a verb that otherwise only authors a
-    file, so it is spent in exactly the case that would otherwise be refused
-    wrongly: a Python target, in attach mode, with nothing already listening,
-    in a seat whose capability bit is clear. Every other call returns ``None``,
-    stops nothing, and leaves :func:`assess` reading the bit as before.
+    So it is asked, with the probe ``capreport`` uses — a ``PTRACE_SEIZE``,
+    which answers the same permission question without stopping the workload.
+    It stays narrowed to the case that would otherwise be refused wrongly (a
+    Python target, in attach mode, with nothing already listening, in a seat
+    whose capability bit is clear) because a measurement that costs nothing is
+    still an answer nobody asked for anywhere else.
+
+    ``probe=False`` is ``--print-config``: printing what *would* be written must
+    not touch the workload, however cheap touching it has become.
 
     A synthetic ``/proc`` is never probed. Its pids name unrelated processes on
     whatever machine is running, so an attach there would measure something
@@ -1102,8 +1105,18 @@ def measured_attach(
         # container, and a non-Python target has no injection to drive.
         return None
     if seat.listening_port is not None or seat.cap_sys_ptrace:
-        # Nothing would be refused, so nothing is worth stopping the workload
-        # for.
+        # Nothing would be refused, so there is nothing worth measuring.
+        return None
+    if not probe:
+        # Said only here, where the answer would otherwise have differed: every
+        # return above is `None` whether or not a probe was allowed, so warning
+        # earlier would be a paragraph about nothing on most runs.
+        _warn(
+            f"--print-config touches nothing, so ptrace to pid {target.pid} was "
+            "not measured and the debugpy injection is judged on CapEff alone. "
+            "Re-run `podbench debug-config` without --print-config, or "
+            "`podbench capreport`, to measure it"
+        )
         return None
     outcome = (default_attacher() if attacher is None else attacher).attach(target.pid)
     # Notes travel with the outcome because they are about what the attach *did*
@@ -1114,9 +1127,9 @@ def measured_attach(
     if outcome.ok:
         _warn(
             f"measured ptrace to pid {target.pid} rather than reading CapEff: "
-            "PTRACE_ATTACH succeeded, so the injection is offered on the "
-            "measurement and not refused on the capability bit. The attach "
-            "stopped the workload for the instant it took"
+            f"{outcome.method or 'the ptrace probe'} succeeded, so the injection "
+            "is offered on the measurement and not refused on the capability "
+            f"bit. Pause to the workload: {describe_pause(outcome.method, True)}"
         )
     return outcome.measured_ok
 
@@ -1441,6 +1454,10 @@ def _run(
                 which=which,
                 debugpy_root=debugpy_root,
                 hint=primary,
+                # A verb that prints rather than writes touches nothing, and the
+                # probe is per candidate: N candidates were N real attaches on
+                # the workload for a run that changes no file.
+                probe=not print_config,
             )
         )
 
@@ -1478,6 +1495,7 @@ def _for_target(
     which: Which,
     debugpy_root: str | None,
     hint: bool,
+    probe: bool = True,
 ) -> list[dict[str, Any]]:
     """Everything one candidate pid contributes to ``launch.json``."""
     target = inspect_target(pid, proc=proc, program=program)
@@ -1520,8 +1538,8 @@ def _for_target(
 
     # Asked at most once, and reused when the seat is re-measured after an
     # install: whether this seat may ptrace the target is not a question
-    # installing a wheel can change, and each attach stops the workload for the
-    # instant it takes.
+    # installing a wheel can change. The latch is per candidate pid, so this is
+    # also the only thing between a five-candidate pod and five probes.
     attach_ok: bool | None = None
     attach_asked = False
 
@@ -1560,7 +1578,12 @@ def _for_target(
         if not attach_asked:
             attach_asked = True
             attach_ok = measured_attach(
-                target, target_mode, surveyed, proc=proc, attacher=attacher
+                target,
+                target_mode,
+                surveyed,
+                proc=proc,
+                attacher=attacher,
+                probe=probe,
             )
         return replace(surveyed, target_attach_ok=attach_ok)
 
@@ -1825,7 +1848,8 @@ def main(
             bool,
             typer.Option(
                 "--print-config",
-                help="print the configuration instead of writing it",
+                help="print the configuration instead of writing it, and "
+                "measure nothing: this run touches no workload",
             ),
         ] = False,
         output: Annotated[

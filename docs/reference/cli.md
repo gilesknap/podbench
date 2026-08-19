@@ -923,7 +923,15 @@ It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
 profile of both itself and the target, and `yama/ptrace_scope`; then runs a
 scratch `PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a
 failure there is structural) and a live attach on the target; then a six-path
-`/proc` read matrix. Yama is a **node-level** knob that differs by kernel
+`/proc` read matrix.
+
+The live attach is a `PTRACE_SEIZE`, which takes the same
+`PTRACE_MODE_ATTACH_REALCREDS` check as `PTRACE_ATTACH` and leaves the tracee
+**running**, so probing costs the workload no pause. The report says which
+primitive was used and what it cost — `attach_method` in the JSON, and a
+`workload pause` line in the human form, normally `none`. `PTRACE_ATTACH` is the
+fallback where the kernel answers `EIO` (pre-3.4), and that one does stop the
+workload for as long as reaping the stop and detaching takes. Yama is a **node-level** knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.
 
 Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
@@ -1113,7 +1121,8 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │                                                     resolve against, when it cannot be read from │
 │                                                     the target itself                            │
 │ --print-config                                      print the configuration instead of writing   │
-│                                                     it                                           │
+│                                                     it, and measure nothing: this run touches no │
+│                                                     workload                                     │
 │ --output                  PATH                      where to write it (default:                  │
 │                                                     ./.vscode/launch.json)                       │
 │ --help                                              Show this message and exit.                  │

@@ -23,6 +23,8 @@ __all__ = [
     "NOT_PROBED",
     "PTRACE_READ_PATHS",
     "WORLD_READ_PATHS",
+    "ATTACH_PROBE",
+    "SEIZE_PROBE",
     "SEAT_GROUP_KEY",
     "SEAT_HOME_PATH",
     "SEAT_HOME_VOLUME",
@@ -40,6 +42,7 @@ __all__ = [
     "as_dict",
     "describe_credentials",
     "describe_gated_fallback",
+    "describe_pause",
     "describe_reads",
     "image_tag_for",
     "measured_rung",
@@ -194,6 +197,21 @@ verdict taken from all six reads is taken mostly from constants — it was true
 on a Diamond pod that could read none of these (issue #51), which is the
 overclaim this split exists to make impossible.
 """
+
+SEIZE_PROBE = "PTRACE_SEIZE"
+"""The primitive the live-attach probe issues, and the reason it costs no pause.
+
+``PTRACE_SEIZE`` goes through the same ``PTRACE_MODE_ATTACH_REALCREDS`` check as
+``PTRACE_ATTACH`` - so a seize that succeeds proves gdb's attach would too - but
+it leaves the tracee running rather than stopping it. Measured against live
+``p47-blueapi-0`` pid 1 (195 threads) from a capless seat on 2026-08-19: state
+``S`` before, ``S`` while seized, ``S`` after. In the kernel since 3.4.
+"""
+
+ATTACH_PROBE = "PTRACE_ATTACH"
+"""The stopping primitive: the scratch attach, and the fallback on a pre-3.4
+kernel that answers ``EIO`` to a seize. It SIGSTOPs the tracee until the probe
+reaps the stop and detaches, which is a pause the workload pays."""
 
 WORLD_READ_PATHS = ("cmdline", "status", "fd")
 """Reads that need no ptrace permission at all, so they prove nothing.
@@ -618,6 +636,43 @@ def measured_rung(
     return Rung.SEAT
 
 
+def describe_pause(method: str | None, attach_ok: bool | None) -> str:
+    """What the live-attach probe cost the workload, in one line.
+
+    Said out loud on every report rather than only when it is bad news, because
+    the complaint the seize answers was never the stop itself: it was that a
+    pause happened *silently*, on pods where a pause is forbidden (finding 14).
+    A line that only appears when something went wrong cannot be checked before
+    the fact.
+
+    >>> describe_pause(SEIZE_PROBE, True)
+    'none - PTRACE_SEIZE does not stop the tracee'
+    >>> describe_pause(ATTACH_PROBE, True)
+    'brief - PTRACE_ATTACH stopped it until the probe detached'
+    >>> describe_pause(ATTACH_PROBE, False)
+    'none - the attach was refused, so nothing stopped'
+    >>> describe_pause(None, None)
+    'not measured'
+    >>> describe_pause("PTRACE_LATER", True)
+    'unknown - the seat probed with PTRACE_LATER'
+    """
+    if not method or attach_ok is None:
+        # An empty method is a probe that issued nothing, which is the same
+        # silence as a report from before this line existed.
+        return "not measured"
+    if method == SEIZE_PROBE:
+        return f"none - {SEIZE_PROBE} does not stop the tracee"
+    if not attach_ok:
+        # Nothing was traced, so nothing was stopped, whichever primitive asked.
+        return "none - the attach was refused, so nothing stopped"
+    if method == ATTACH_PROBE:
+        return f"brief - {ATTACH_PROBE} stopped it until the probe detached"
+    # A newer image probing with something this launcher has not been taught.
+    # Naming it and declining to characterise it beats claiming either answer:
+    # "none" would be an assurance nobody measured.
+    return f"unknown - the seat probed with {method}"
+
+
 def describe_credentials(uid: int | None, gid: int | None, effective_hex: str) -> str:
     """The measurement a rung column cites, in one line.
 
@@ -738,6 +793,15 @@ class CapabilityReport:
     decision about the target."""
 
     target_attach_ok: bool | None = None
+    attach_method: str | None = None
+    """Which ptrace primitive the live attach used, or ``None`` when there was
+    no live attach - and from an image older than the seize, which is why the
+    pause line reads "not measured" rather than "none" when it is missing.
+
+    Reported because the two primitives cost the workload different things:
+    :data:`SEIZE_PROBE` leaves it running, :data:`ATTACH_PROBE` stops it. See
+    :func:`describe_pause`."""
+
     proc_reads: dict[str, bool] = field(default_factory=dict[str, bool])
     notes: list[str] = field(default_factory=list[str])
 
