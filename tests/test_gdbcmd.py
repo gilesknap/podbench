@@ -22,6 +22,7 @@ import pytest
 from podbench import execfile, gdbcmd
 from podbench.gdbcmd import (
     EXIT_USAGE,
+    MAX_OFFERED_PIDS,
     attach_commands,
     command_file_text,
     format_process_table,
@@ -30,10 +31,12 @@ from podbench.gdbcmd import (
     main,
     read_exe,
     resolve_target_pid,
+    resolve_target_pids,
     strip_deleted,
 )
 from podbench.model import Blocker, Verdict
 from podbench.probe import AttachOutcome, SkippedAttacher
+from proc_samples import CID, sample, write_tree
 
 TARGET_CID = "87d20e2380a1c0ffee0b1e5deadbeef00d15ea5e0000111122223333444455556"
 OTHER_CID = "7206c89b11111111222222223333333344444444555555556666666677777777"
@@ -301,7 +304,17 @@ def test_pids_table_marks_only_the_target(
     proc = make_proc(tmp_path)
     assert main(["pids", "--container-id", TARGET_CID], proc=proc) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["PID", "UID", "TARGET", "CONTAINER", "COMM", "CMDLINE"]
+    assert lines[0].split() == [
+        "PID",
+        "UID",
+        "TARGET",
+        "ST",
+        "THR",
+        "PTRACE",
+        "CONTAINER",
+        "COMM",
+        "CMDLINE",
+    ]
     marked = [line for line in lines[1:] if line.split()[2] == "yes"]
     assert [line.split()[0] for line in marked] == [str(TARGET_PID)]
     assert "/app/victim --loop" in "\n".join(lines)
@@ -365,8 +378,8 @@ def test_empty_table_still_has_a_header(
     proc = tmp_path / "proc"
     proc.mkdir()
     main(["pids", "--container-id", TARGET_CID], proc=proc)
-    assert (
-        capsys.readouterr().out.strip() == "PID  UID  TARGET  CONTAINER  COMM  CMDLINE"
+    assert capsys.readouterr().out.strip() == (
+        "PID  UID  TARGET  ST  THR  PTRACE  CONTAINER  COMM  CMDLINE"
     )
 
 
@@ -750,3 +763,71 @@ def test_main_requires_a_subcommand() -> None:
     # A usage error, not a success: `podbench` alone must not look like a
     # command that ran.
     assert main([]) == 2
+
+
+# -- what is offered, and what is only ranked --------------------------------
+
+
+def test_the_offering_is_capped_and_says_what_it_left_out(tmp_path: Path) -> None:
+    """opis: 98 offerable processes, one dropdown.
+
+    Every offered pid becomes a full set of launch.json entries, so an
+    unbounded offering is a dropdown that is scrolled rather than read. The cap
+    is not silent: what it left out is named, counted, and pointed at the pid
+    argument that reaches it.
+    """
+    proc = write_tree(tmp_path / "proc", sample("opis"))
+    pids, notes = resolve_target_pids(None, CID, proc=proc)
+    assert len(pids) == MAX_OFFERED_PIDS
+    assert pids[0] == 1
+    dropped = next(note for note in notes if "not offered" in note)
+    assert "of 98 candidates" in dropped
+    assert "33 (nginx)" in dropped
+    assert "and 89 more" in dropped
+    assert "podbench pids" in dropped
+
+
+def test_a_zombie_is_never_offered_though_a_shell_still_is(tmp_path: Path) -> None:
+    """The asymmetry between the two fallbacks, in one pod.
+
+    blueapi's zombie is ranked last and then dropped: an entry for it is an
+    entry that can only fail, whatever seat selects it. A shell is dropped only
+    because something better ran — on a container that is nothing but a shell it
+    is still offered.
+    """
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    pids, _ = resolve_target_pids(None, CID, proc=proc)
+    assert pids == [1, 233, 10, 232]
+
+
+def test_the_pids_table_marks_the_disqualified(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "Run `podbench pids` to choose another" has to show what to choose on.
+
+    The listing is in raw pid order, so the columns are all the reader has:
+    a `Z` under ST is a process no seat can attach to, and a DENIED under
+    PTRACE is one this seat in particular cannot.
+    """
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    assert main(["pids", "--container-id", CID, "--targets"], proc=proc) == 0
+    rows = {
+        line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()
+    }
+    assert rows["1"][3:6] == ["S", "195", "ok"]
+    assert rows["518"][3:6] == ["Z", "1", "DENIED"]
+
+
+def test_pids_json_carries_the_new_measurements(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Additive keys: an older seat omits them, and a consumer must not read a
+    missing key as a measured `false`."""
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    main(["pids", "--container-id", CID, "--targets", "--json"], proc=proc)
+    payload = json.loads(capsys.readouterr().out)
+    zombie = next(p for p in payload["processes"] if p["pid"] == 518)
+    assert zombie["state"] == "Z"
+    assert zombie["threads"] == 1
+    assert zombie["ptrace_readable"] is False
+    assert zombie["ppid"] == 233

@@ -51,6 +51,7 @@ from .probe import Attacher, probe
 from .proc import (
     DEFAULT_PROC,
     DELETED_SUFFIX,
+    NAMED_IN_NOTE,
     ProcessListing,
     candidate_note,
     debug_candidates,
@@ -65,6 +66,7 @@ from .proc import (
 __all__ = [
     "DELETED_SUFFIX",
     "EXIT_USAGE",
+    "MAX_OFFERED_PIDS",
     "GdbRunner",
     "attach_blocked_message",
     "attach_commands",
@@ -87,6 +89,24 @@ GdbRunner = Callable[[Sequence[str]], int]
 
 EXIT_USAGE = 2
 """Exit code for "there is nothing to debug", matching a usage error's own."""
+
+MAX_OFFERED_PIDS = 5
+"""How many candidates :func:`resolve_target_pids` will offer at once.
+
+The offering used to be unbounded, which is fine on the four-process IOC pod it
+was written for and useless on the opis pod: 112 processes, 111 of them
+identical ``nginx`` workers, each contributing a full set of launch.json entries
+to a dropdown that is scrolled rather than read.
+
+Five, because a ranked list nobody scrolls past the top of is worth exactly as
+much as its first few entries, and what the cap leaves out is *named* in a note
+rather than silently gone.
+
+It also bounds what ``debug-config`` does to the workload. That verb runs one
+``PTRACE_SEIZE`` probe *per candidate*, so the cap is what turns an unbounded
+number of probes on a 112-process pod into five. The *ranking* itself issues no
+ptrace at all — see :func:`podbench.proc.ptrace_readable`.
+"""
 
 _PIDS_DESCRIPTION = (
     "List the processes in this pod's shared PID namespace, and say which "
@@ -258,13 +278,19 @@ def resolve_target_pids(
     *,
     proc: Path = DEFAULT_PROC,
 ) -> tuple[list[int], list[str]]:
-    """Every process in the target container worth debugging, best first.
+    """The processes in the target container worth offering, best first.
 
     With neither an explicit pid nor a container id we refuse to guess: "the
     target is PID 1" is wrong under ``shareProcessNamespace: true``, where PID 1
     is ``/pause`` (3.15). An explicit pid is taken as given and is the only
     answer — the caller named a process, so offering it three others is not
     helpfulness.
+
+    Otherwise at most :data:`MAX_OFFERED_PIDS`, and never a dead one. This is
+    where :func:`podbench.proc.debug_candidates`'s "sort, never exclude"
+    discipline is spent: a report has to name something whatever the container
+    looks like, but every pid returned here becomes a *selectable entry* in a
+    dropdown, and the two are not the same obligation.
     """
     if pid is not None:
         return [pid], []
@@ -283,12 +309,39 @@ def resolve_target_pids(
     note = candidate_note(candidates, "debugging")
     if note is not None:
         notes.append(note)
+    # A zombie is dropped outright and a shell is not. The asymmetry is the
+    # point: a shell is a legitimate last resort - a `podbench dev` seat has
+    # nothing else - while a dead process cannot be attached by any seat with
+    # any capability, so an entry for one is an entry that can only fail.
+    alive = [info for info in candidates if info.alive]
+    if not alive:
+        return [], [
+            *notes,
+            "every process in the target container is dead (a zombie awaiting a "
+            "reaper): nothing here can be attached by any seat. Run `podbench "
+            "pids` to see the container's state",
+        ]
     # Shells are a *fallback* target, not an extra one. Where something else
     # ran they are dropped rather than offered, because "attach to bash" in the
     # dropdown beside "attach to ioc" is the original bug with one more step:
     # the entry is selectable, it attaches, and it shows nothing.
-    offered = [info for info in candidates if not is_shell(info)] or candidates
+    ranked = [info for info in alive if not is_shell(info)] or alive
+    offered = ranked[:MAX_OFFERED_PIDS]
+    if len(ranked) > MAX_OFFERED_PIDS:
+        notes.append(_dropped_note(ranked[MAX_OFFERED_PIDS:]))
     return [info.pid for info in offered], notes
+
+
+def _dropped_note(dropped: Sequence[ProcInfo]) -> str:
+    """Name what the cap left out, so the cap is not a silent decision."""
+    named = ", ".join(f"{info.pid} ({info.comm})" for info in dropped[:NAMED_IN_NOTE])
+    extra = len(dropped) - NAMED_IN_NOTE
+    tail = named if extra <= 0 else f"{named} and {extra} more"
+    return (
+        f"offering the best {MAX_OFFERED_PIDS} of "
+        f"{MAX_OFFERED_PIDS + len(dropped)} candidates; not offered: {tail}. "
+        "Run `podbench pids` for the full list and pass one as the pid argument"
+    )
 
 
 def attach_blocked_message(report: CapabilityReport, pid: int) -> str:
@@ -358,7 +411,25 @@ def _launch_alternative(report: CapabilityReport) -> str:
     )
 
 
-_HEADERS = ("PID", "UID", "TARGET", "CONTAINER", "COMM", "CMDLINE")
+_HEADERS = (
+    "PID",
+    "UID",
+    "TARGET",
+    "ST",
+    "THR",
+    "PTRACE",
+    "CONTAINER",
+    "COMM",
+    "CMDLINE",
+)
+"""``ST``, ``THR`` and ``PTRACE`` are the three signals the ranking added.
+
+The note this listing answers is "run `podbench pids` to choose another", so it
+has to show what the ranking ranked on — otherwise the reader who disagrees with
+the choice is picking from raw pid order with no more information than the pid.
+``ST`` in particular is the one that reads as a disqualifier: a ``Z`` there is a
+process no seat can attach to, whatever else the row says about it.
+"""
 
 
 def _row(process: ProcInfo) -> tuple[str, ...]:
@@ -369,6 +440,11 @@ def _row(process: ProcInfo) -> tuple[str, ...]:
         # (D6) is that an unknown uid must not be shown as a known one.
         "-" if process.uid is None else str(process.uid),
         "yes" if process.is_target else "-",
+        process.state or "?",
+        "-" if process.threads is None else str(process.threads),
+        # Same rule as uid: unmeasured is `?` and not `no`, since "this seat
+        # cannot read that process" is the sentence a reader will act on.
+        {True: "ok", False: "DENIED", None: "?"}[process.ptrace_readable],
         # Twelve hex digits is what every other container tool prints, and the
         # full 64 would push cmdline off the terminal.
         (process.container_id or "-")[:12],
@@ -407,6 +483,14 @@ def pids_payload(
                 "cmdline": process.cmdline,
                 "container_id": process.container_id,
                 "is_target": process.is_target,
+                # Added after the shape was published, so a consumer must treat
+                # a missing key as "this seat is older than the question" and
+                # never as `null` meaning "measured, and the answer is no" -
+                # which is also what a present `null` means here.
+                "ppid": process.ppid,
+                "state": process.state,
+                "threads": process.threads,
+                "ptrace_readable": process.ptrace_readable,
             }
             for process in processes
         ],

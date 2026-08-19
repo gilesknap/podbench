@@ -541,15 +541,20 @@ def launch_setup_commands(
 
 
 def _name(action: str, target: str, flavour: Flavour) -> str:
-    """Every configuration is named for its flavour.
+    """Every configuration is named for its flavour, and for its process.
 
     ``launch.json`` holds a list and VS Code's dropdown shows the names, so the
     flavour has to be *in* the name — two configurations called "podbench:
     attach to app" are a coin toss, and picking the wrong one produces a
     debugger that attaches and then shows nothing useful.
 
-    >>> _name("attach to", "demo_service.py", Flavour.DEBUGPY)
-    'podbench: attach to demo_service.py (debugpy)'
+    ``target`` is :attr:`podbench.flavour.Target.label` at every call site here
+    for the same reason one step further out: the ranking now offers up to five
+    candidates, and ordering them is worthless if the dropdown reads "attach to
+    python" three times.
+
+    >>> _name("attach to", "demo_service.py [pid 12 python]", Flavour.DEBUGPY)
+    'podbench: attach to demo_service.py [pid 12 python] (debugpy)'
     """
     return f"podbench: {action} {target} ({flavour.value})"
 
@@ -828,11 +833,16 @@ def configurations_for(
     here would be the same exclusive guess this module exists to avoid.
     """
     program = target.program or ""
+    # Every name is built from `Target.label`, never from the program alone: N
+    # candidates each get a full set of entries, and `merge_launch_configs`
+    # matches by name, so two candidates sharing a basename do not merely read
+    # alike in the dropdown - the second silently replaces the first.
     if flavour is Flavour.GDB:
         if mode is Mode.DEV:
             return [
                 cppdbg_launch_configuration(
                     program,
+                    name=_name("launch", target.label, Flavour.GDB),
                     cwd=target.cwd,
                     source_dirs=source_dirs,
                     debuginfod=debuginfod,
@@ -843,6 +853,7 @@ def configurations_for(
             cppdbg_configuration(
                 target.pid,
                 program,
+                name=_name("attach to", target.label, Flavour.GDB),
                 exec_file=exec_file,
                 source_dirs=source_dirs,
                 source_map=source_map,
@@ -851,9 +862,23 @@ def configurations_for(
             )
         ]
     if flavour is Flavour.LLDB:
-        return [lldb_configuration(target.pid, program, source_map=source_map)]
+        return [
+            lldb_configuration(
+                target.pid,
+                program,
+                name=_name("attach to", target.label, Flavour.LLDB),
+                source_map=source_map,
+            )
+        ]
     if flavour is Flavour.DELVE:
-        return [delve_configuration(target.pid, program, source_map=source_map)]
+        return [
+            delve_configuration(
+                target.pid,
+                program,
+                name=_name("attach to", target.label, Flavour.DELVE),
+                source_map=source_map,
+            )
+        ]
     return _debugpy_configurations(target, mode, seat, port=port)
 
 
@@ -863,7 +888,7 @@ def _debugpy_configurations(
     source_root = target.source_root
     connect = debugpy_attach_configuration(
         target.pid,
-        name=_name("connect to", target.name, Flavour.DEBUGPY),
+        name=_name("connect to", target.label, Flavour.DEBUGPY),
         port=port,
         source_root=source_root,
         mode=mode,
@@ -872,7 +897,7 @@ def _debugpy_configurations(
         return [
             debugpy_attach_configuration(
                 target.pid,
-                name=_name("attach to", target.name, Flavour.DEBUGPY),
+                name=_name("attach to", target.label, Flavour.DEBUGPY),
                 port=port,
                 source_root=source_root,
                 mode=mode,
@@ -880,7 +905,11 @@ def _debugpy_configurations(
         ]
     if target.script:
         return [
-            debugpy_launch_configuration(target.script, cwd=target.cwd),
+            debugpy_launch_configuration(
+                target.script,
+                name=_name("launch", target.label, Flavour.DEBUGPY),
+                cwd=target.cwd,
+            ),
             connect,
         ]
     # `python -m pkg` names a module rather than a file, so there is nothing to
@@ -1639,7 +1668,15 @@ def _for_target(
             f"pid {pid} ({target.name}): nothing emitted"
             + (f" — {refused.reason}" if refused else "")
         )
-    if hint and configurations:
+    # `hint` alone, never `and configurations`. `hint` means "this is the best
+    # candidate"; whether the hint is *owed* is a question about the seat, and
+    # _hint's own guards - Python, not dev mode, nothing already listening - are
+    # the ones that answer it. Coupling it to a non-empty emission withheld the
+    # actionable half of a failure on exactly the run that failed, and it only
+    # happens not to fire today because _emit and _hint gate on the same
+    # `wanted`/`available` pair. The next flavour that assesses available and
+    # contributes nothing makes it fire.
+    if hint:
         _hint(target, mode, seat, assessments, wanted, port=port)
     return configurations
 

@@ -1090,6 +1090,16 @@ def _discover_target(
     With no container id at all we deliberately refuse to guess: "the target is
     PID 1" is wrong under ``shareProcessNamespace: true``, where PID 1 is
     ``/pause`` (report §3.15).
+
+    **The pid is always named.** Every number in the report below - the read
+    matrix, the live attach, the verdict - is a measurement of one process, and
+    a report that does not say which one cannot be checked or disagreed with.
+
+    **A dead process is not scored.** A zombie has no ``mm_struct``, so
+    ``maps`` opens with no ptrace check and the read matrix comes back "3/6 ok"
+    while the attach comes back ``EPERM`` - which reads exactly like a partial
+    LSM denial and was diagnosed as one for months (issue #52). Reporting on
+    this seat alone is the honest answer: the denial is not about the seat.
     """
     cid = container_id or env_target_container_id()
     if cid is None:
@@ -1103,7 +1113,35 @@ def _discover_target(
         return None, [f"no process found in a cgroup matching container id {cid}"]
     notes = [] if listing.warning is None else [listing.warning]
     candidates = debug_candidates(targets)
+    chosen = candidates[0]
+    if not chosen.alive:
+        # The ranking sorts the living first, so a dead head means they are all
+        # dead. There is no pid here worth a verdict.
+        return None, [
+            *notes,
+            f"the best of {len(candidates)} processes in the target container is "
+            f"pid {chosen.pid} ({chosen.comm}), and it is dead (state "
+            f"{chosen.state}): no seat can attach to a zombie, so this report "
+            "covers this container only. Run `podbench pids` for the container's "
+            "state",
+        ]
     note = candidate_note(candidates, "probing")
-    if note is not None:
-        notes.append(note)
-    return candidates[0].pid, notes
+    # candidate_note answers "why this one of several" and returns None when
+    # there was only one. The identity is owed either way, so the one-process
+    # case says it in the short form rather than saying nothing.
+    notes.append(
+        note
+        if note is not None
+        else f"probing pid {chosen.pid} ({chosen.comm}), the only process here"
+    )
+    if chosen.ptrace_readable is False:
+        # Said before the reads are taken, not derived from them afterwards:
+        # `status`, `cmdline` and `fd` answer on any pod whatsoever, so a
+        # matrix taken at the wrong credentials still scores 3/6 and the number
+        # flatters the seat unless something names the reason next to it.
+        notes.append(
+            f"pid {chosen.pid} is not ptrace-readable from this seat, and it is "
+            "the most readable process in the container: the /proc reads below "
+            "are the ones that need no permission"
+        )
+    return chosen.pid, notes

@@ -1,0 +1,24 @@
+# p47-rabbitmq, captured in the seat 2026-08-19. Verbatim, except that
+# the one NUL byte in the capture shell's own cmdline is written \0, so git and
+# every editor treat this as text. That line is a continuation, not a record.
+# pid|ppid|comm|state|uid|gid|threads|cmdline
+1|0|beam.smp|S|999|999|208|/opt/erlang/lib/erlang/erts-15.2.7.12/bin/beam.smp -W w -MBas ageffcbf -MHas ageffcbf -MBlmbcs 512 -MHlmbcs 512 -MMmcs 30 -pc unicode -P 1048576 -t 5000000 -stbt db -zdbbl 128000 -sbwt none -sbwtdcpu none -sbwtdio none -- -root /opt/erlang/lib/erlang -bindir /opt/erlang/lib/erlang/erts-15.2.7.12/bin -progname erl -- -home /var/lib/rabbitmq -- -pa  -noshell -noinput -s rabbit boot -boot start_sasl -syslog logger [] -syslog syslog_error_logger false -kernel prevent_overlapping_partitions false -- 
+16|1|erl_child_setup|S|999|999|1|erl_child_setup 1024 
+223|16|inet_gethost|S|999|999|1|/opt/erlang/lib/erlang/erts-15.2.7.12/bin/inet_gethost 4 
+224|223|inet_gethost|S|999|999|1|/opt/erlang/lib/erlang/erts-15.2.7.12/bin/inet_gethost 4 
+234|1|epmd|S|999|999|1|/opt/erlang/lib/erlang/erts-15.2.7.12/bin/epmd -daemon 
+3537551|0|podbench|S|999|999|1|/app/.venv/bin/python /app/.venv/bin/podbench agent 
+447|16|sh|S|999|999|1|/bin/sh -s rabbit_disk_monitor 
+631538|0|sh|S|999|999|1|sh -c 
+    for d in /proc/[0-9]*; do
+      p=${d#/proc/}
+      [ -r "$d/status" ] || { echo "$p|UNREADABLE"; continue; }
+      name=$(sed -n "s/^Name:	//p" "$d/status")
+      state=$(sed -n "s/^State:	//p" "$d/status" | cut -c1)
+      ppid=$(sed -n "s/^PPid:	//p" "$d/status")
+      uid=$(sed -n "s/^Uid:	//p" "$d/status" | cut -f1)
+      gid=$(sed -n "s/^Gid:	//p" "$d/status" | cut -f1)
+      thr=$(sed -n "s/^Threads:	//p" "$d/status")
+      cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
+      echo "$p|$ppid|$name|$state|$uid|$gid|$thr|$cmd"
+    done 

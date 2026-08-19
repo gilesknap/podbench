@@ -189,9 +189,9 @@ now — it adds the line above any `Host *` block, which is where it has to be
 ```
 $ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
-PID  UID  TARGET  CONTAINER      COMM    CMDLINE
-1    0    yes     87d20e23a1b4   python  python -m http.server 8080
-42   0    no      7206c89bf0e1   sleep   sleep infinity
+PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
+1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
+42   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
 ```
 
 There is no listening socket in that pod, no port-forward and no pod IP

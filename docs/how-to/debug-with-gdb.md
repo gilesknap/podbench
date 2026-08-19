@@ -160,9 +160,9 @@ Then ssh in with the alias it printed.
 ```
 $ ssh podbench-podbench-gdb-victim
 root@victim:~# podbench pids
-PID  UID  TARGET  CONTAINER      COMM    CMDLINE
-1    0    yes     87d20e23a1b4   victim  /app/victim
-38   0    no      7206c89bf0e1   sleep   sleep infinity
+PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
+1    0    yes     S   3    ok      87d20e23a1b4   victim  /app/victim
+38   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
 ```
 
 `podbench pids` is not `ps`. Under a shared PID namespace every process in the
@@ -173,6 +173,16 @@ PID 1" breaks under `shareProcessNamespace: true` (PID 1 is `/pause`), and
 matching mount namespaces breaks there too.
 
 If the `TARGET` column is a guess rather than a fact, `podbench pids` says so.
+
+`ST`, `THR` and `PTRACE` are the columns to read when you disagree with the pid
+`dbg` or `debug-config` chose, because they are what it chose on. `ST` is the
+kernel's process state: a `Z` there is a zombie, which no seat can attach to
+however good its credentials — it is the entry `--pid` should never be pointed
+at. `PTRACE` says whether *this* seat may read that process at all; a `DENIED`
+beside a live process is usually a uid the seat does not share (see
+[Attach to a pod](attach-to-a-pod.md) for the rung that fixes it). `THR` is the
+thread count, which is what separates a workload from the short-lived helper it
+forks.
 
 ## 4. Attach gdb
 
@@ -339,9 +349,14 @@ debug-config: native target, observe mode, x86_64
 debug-config: emitting gdb: native target, observe mode
 debug-config: emitting lldb: native target; CodeLLDB brings its own lldb to the seat
 debug-config written to /root/.vscode/launch.json
-  Run and Debug -> "podbench: attach to victim (gdb)"
-  Run and Debug -> "podbench: attach to victim (lldb)"
+  Run and Debug -> "podbench: attach to victim [pid 1 victim] (gdb)"
+  Run and Debug -> "podbench: attach to victim [pid 1 victim] (lldb)"
 ```
+
+The pid and the kernel's name for the process are in every entry name because
+up to five candidates are offered at once, and an entrypoint script's children
+are routinely three processes all called `python`. Anything the ranking left
+out is named in a `debug-config:` line, and `podbench pids` lists the rest.
 
 It fills in the pid, the sysroot-prefixed `program`, the setup ordering, the
 architecture, `miDebuggerPath` and the mode's path mappings from what it can

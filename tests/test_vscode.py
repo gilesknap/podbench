@@ -556,14 +556,18 @@ def test_every_applicable_flavour_is_emitted_and_named(
     """``launch.json`` holds a list, so no exclusive guess has to be made.
 
     The flavour has to be *in* the name: VS Code's dropdown shows names, and two
-    entries called "podbench: attach to victim" are a coin toss.
+    entries called "podbench: attach to victim" are a coin toss. So does the
+    pid, for the same reason one level up — the ranking offers several
+    candidates and three of them are routinely called ``python``. This tree has
+    no ``comm`` file, which is the graceful case: the pid alone still separates
+    them.
     """
     assert cli([str(PID), "--print-config"], proc_tree) == 0
     document = json.loads(capsys.readouterr().out)
     names = [entry["name"] for entry in document["configurations"]]
     assert names == [
-        "podbench: attach to victim (gdb)",
-        "podbench: attach to victim (lldb)",
+        f"podbench: attach to victim [pid {PID}] (gdb)",
+        f"podbench: attach to victim [pid {PID}] (lldb)",
     ]
 
 
@@ -1556,3 +1560,28 @@ def test_provision_without_ptrace_says_so_and_still_installs(
     assert "outlives this seat" in captured.err
     assert "CAP_SYS_PTRACE is not in this seat's effective set" in captured.err
     assert uv.argv[:3] == ["uv", "pip", "install"]
+
+
+def test_two_candidates_with_one_basename_get_two_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ordering the candidates is worthless if the dropdown cannot tell them apart.
+
+    `merge_launch_configs` matches by name, so identical names are worse than
+    confusing: re-running with a different winner silently replaces an entry the
+    user already had rather than adding one.
+    """
+    proc = container_tree(
+        tmp_path,
+        (
+            (1, "bash", "/usr/bin/bash", 0),
+            (8, "worker", "/app/bin/worker", 1),
+            (13, "worker", "/app/bin/worker", 1),
+        ),
+    )
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    names = [entry["name"] for entry in document["configurations"]]
+    assert len(names) == len(set(names))
+    assert all("worker [pid " in name for name in names)
+    assert any("[pid 13 worker]" in name for name in names)

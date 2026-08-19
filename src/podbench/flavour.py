@@ -65,6 +65,7 @@ from .elf import ElfInfo, debugpy_helper_name, debugpy_helper_published, read_el
 from .proc import (
     DEFAULT_PROC,
     read_cmdline,
+    read_comm,
     read_exe,
     same_root,
     self_capabilities,
@@ -222,6 +223,15 @@ class Target:
     cwd: str | None = None
     """The target's working directory, in its *own* rootfs's spelling."""
 
+    comm: str | None = None
+    """The kernel's own name for the process, or ``None`` if it was unreadable.
+
+    Kept beside :attr:`program` because it is the half of the identity that
+    distinguishes two candidates a launch.json entry name would otherwise
+    confuse: three children of one entrypoint script are all ``python``,
+    and their :attr:`name` is the same word three times.
+    """
+
     notes: tuple[str, ...] = ()
 
     @property
@@ -241,6 +251,33 @@ class Target:
             if candidate:
                 return Path(candidate).name
         return f"pid {self.pid}"
+
+    @property
+    def label(self) -> str:
+        """The name *and* the process, for a launch.json entry.
+
+        ``launch.json`` holds one flat list and VS Code's dropdown shows nothing
+        but these names, so an entry that names only the program is unusable the
+        moment two candidates share a basename — which is the normal case, not
+        the exotic one: an entrypoint script's children are three ``python``
+        processes, and ``merge_launch_configs`` matches existing entries *by
+        name*, so three identical names also silently replace one another in a
+        file the user already had.
+
+        >>> Target(12, Language.PYTHON, "/usr/bin/python3",
+        ...        script="/app/serve.py", comm="python").label
+        'serve.py [pid 12 python]'
+
+        The pid is not repeated when it is already the whole name:
+
+        >>> Target(603, Language.NATIVE, None, comm="victim").label
+        'pid 603 [victim]'
+        """
+        bare = f"pid {self.pid}"
+        if self.name == bare:
+            return bare if self.comm is None else f"{bare} [{self.comm}]"
+        inner = bare if self.comm is None else f"{bare} {self.comm}"
+        return f"{self.name} [{inner}]"
 
     @property
     def source_root(self) -> str | None:
@@ -420,6 +457,7 @@ def inspect_target(
             _python_version(exe, argv, root) if interpreter == "python" else None
         ),
         cwd=_read_cwd(pid, proc=proc),
+        comm=read_comm(pid, proc=proc),
         notes=tuple(notes),
     )
 

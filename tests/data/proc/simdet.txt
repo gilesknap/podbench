@@ -1,0 +1,3 @@
+# p47-simdet, captured in the seat 2026-08-19. Verbatim.
+# pid|ppid|comm|state|uid|gid|threads|cmdline
+1|0|stdio-socket|S|37887|37887|2|/venv/bin/python /venv/bin/stdio-socket /epics/ioc/start.sh 

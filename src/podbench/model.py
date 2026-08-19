@@ -17,6 +17,7 @@ from typing import Any, cast
 from . import __version__
 
 __all__ = [
+    "DEAD_STATES",
     "DEFAULT_IMAGE",
     "FLOATING_TAG",
     "IMAGE_REPOSITORY",
@@ -212,6 +213,15 @@ ATTACH_PROBE = "PTRACE_ATTACH"
 """The stopping primitive: the scratch attach, and the fallback on a pre-3.4
 kernel that answers ``EIO`` to a seize. It SIGSTOPs the tracee until the probe
 reaps the stop and detaches, which is a pause the workload pays."""
+
+DEAD_STATES = frozenset({"Z", "X", "x"})
+"""``/proc/<pid>/status`` ``State:`` letters that mean there is nothing left.
+
+``Z`` is a zombie awaiting a reaper, ``X``/``x`` a task already gone. All three
+answer ``EPERM`` to ``PTRACE_ATTACH`` however good the tracer's credentials are
+— measured against ``p47-blueapi-0`` pid 518, where pid 1 attached from the same
+seat in the same second.
+"""
 
 WORLD_READ_PATHS = ("cmdline", "status", "fd")
 """Reads that need no ptrace permission at all, so they prove nothing.
@@ -731,10 +741,13 @@ class ProcInfo:
     exe that are the whole point of that rung, and the launcher picks
     ``runAsUser`` from here (report 3.11).
 
-    ``ppid`` is read for one reason: an image whose entrypoint is a script has
-    the shell as its lowest pid, and the process worth debugging is somewhere
-    below it. Depth in the tree is what separates the two, and nothing else
-    measurable does — see :func:`podbench.proc.debug_candidates`.
+    ``ppid`` is read because an image whose entrypoint is a script has the shell
+    as its lowest pid, and the process worth debugging is somewhere below it.
+    Depth in the tree separates those two — but it is *not* the only measurable
+    signal, and ranking on it alone picked a zombie on blueapi, a DNS helper on
+    rabbitmq and an unattachable worker on opis. :attr:`state`, :attr:`threads`
+    and :attr:`ptrace_readable` are the other three, each a measured correction
+    to one of those pods; see :func:`podbench.proc.debug_candidates`.
     """
 
     pid: int
@@ -745,6 +758,50 @@ class ProcInfo:
     is_target: bool = False
     ppid: int | None = None
     """The parent, or ``None`` when ``/proc/<pid>/status`` could not be read."""
+
+    state: str | None = None
+    """The kernel's one-letter ``State:``, or ``None`` when status was unreadable.
+
+    Carried so that a *dead* process can be told from a live one. A zombie has
+    no ``mm_struct``, so ``/proc/<pid>/maps`` opens with no ptrace check at all
+    and the read matrix scores it as partly working — which is how blueapi's
+    unreaped ``multiprocessing`` child read as "3/6 ok" and was reported as an
+    LSM denial for months (issue #52). Nothing can attach to it.
+    """
+
+    threads: int | None = None
+    """``Threads:`` from status, or ``None`` when it was unreadable.
+
+    A comparator, never a threshold. It is what separates rabbitmq's
+    ``beam.smp`` (208) from the ``inet_gethost`` helper it forks (1), and
+    blueapi's real server (19 warming up, 195 warm) from its zombie (1) — the
+    two ends of that range are why no absolute number here would mean anything.
+    """
+
+    ptrace_readable: bool | None = None
+    """Whether this seat may take ``PTRACE_MODE_READ`` on the process.
+
+    ``None`` is "not measured", which must not be read as a denial. See
+    :func:`podbench.proc.ptrace_readable` for what is measured and why a
+    *denial* here is conclusive while a success is only encouraging.
+    """
+
+    @property
+    def alive(self) -> bool:
+        """Whether there is still a process here to attach to.
+
+        An unknown state counts as alive: ``None`` means ``status`` could not be
+        read, and refusing to debug a process because we could not read a file
+        is a worse answer than trying and being told no.
+
+        >>> ProcInfo(518, 1000, "python", "", state="Z").alive
+        False
+        >>> ProcInfo(1, 1000, "python", "python -m blueapi", state="S").alive
+        True
+        >>> ProcInfo(1, 1000, "python", "python -m blueapi").alive
+        True
+        """
+        return self.state not in DEAD_STATES
 
 
 @dataclass(frozen=True)

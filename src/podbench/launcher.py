@@ -2436,9 +2436,14 @@ def format_session(session: Session) -> str:
         # uid *and* gid, because the credential check wants both and a report
         # that showed only the uid is how a seat at 1000:0 against a target at
         # 1000:1000 read as a match for a year (#103).
+        # The target's pid rides on this line rather than being left to the
+        # notes: every number in this block is a measurement of one process,
+        # and a reader who disagrees with the choice cannot say so until the
+        # report says which process it measured.
+        target_pid = "" if report.target_pid is None else f" (pid {report.target_pid})"
         lines.append(
             f"  ids         seat {_ids(report.self_uid, report.self_gid)}, "
-            f"target {_ids(report.target_uid, report.target_gid)}"
+            f"target {_ids(report.target_uid, report.target_gid)}{target_pid}"
         )
         # What the probe cost the workload, said on every attach rather than
         # only when it cost something. The complaint this answers was not the

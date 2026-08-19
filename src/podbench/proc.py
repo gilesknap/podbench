@@ -26,7 +26,7 @@ import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .model import (
     PTRACE_READ_PATHS,
@@ -39,6 +39,7 @@ __all__ = [
     "CAP_SYS_PTRACE_BIT",
     "DEFAULT_PROC",
     "DELETED_SUFFIX",
+    "NAMED_IN_NOTE",
     "READ_MATRIX_PATHS",
     "Attribution",
     "Capabilities",
@@ -52,13 +53,16 @@ __all__ = [
     "list_processes",
     "no_new_privs",
     "proc_read_matrix",
+    "ptrace_readable",
     "read_cgroup",
     "read_cmdline",
     "read_comm",
     "read_exe",
     "read_gid",
     "read_ppid",
+    "read_state",
     "read_status_field",
+    "read_threads",
     "read_tracer_pid",
     "read_uid",
     "same_root",
@@ -66,6 +70,7 @@ __all__ = [
     "seccomp_filter_count",
     "seccomp_mode",
     "self_capabilities",
+    "state_letter",
     "status_field",
     "strip_container_scheme",
     "strip_deleted",
@@ -320,6 +325,58 @@ def read_tracer_pid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
     return _parse_int(read_status_field(pid, "TracerPid", proc=proc))
 
 
+def read_state(pid: int | str, *, proc: Path = DEFAULT_PROC) -> str | None:
+    """The one-letter ``State:`` from status, or ``None`` if unreadable.
+
+    Only the letter: the kernel writes ``Z (zombie)`` and the parenthesised
+    gloss is neither stable across versions nor needed by anything here.
+    """
+    field = read_status_field(pid, "State", proc=proc)
+    return None if field is None else state_letter(field)
+
+
+def state_letter(field: str) -> str | None:
+    """The letter out of a raw ``State:`` value.
+
+    >>> state_letter("Z (zombie)")
+    'Z'
+    >>> state_letter("") is None
+    True
+    """
+    stripped = field.strip()
+    return stripped[0] if stripped else None
+
+
+def read_threads(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:
+    """``Threads:`` from status, or ``None`` if unreadable."""
+    return _parse_int(read_status_field(pid, "Threads", proc=proc))
+
+
+def ptrace_readable(pid: int | str, *, proc: Path = DEFAULT_PROC) -> bool:
+    """Whether this seat may take ``PTRACE_MODE_READ`` on ``pid``.
+
+    Measured by opening ``/proc/<pid>/root``, which the kernel gates on
+    ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)`` — the same
+    ``__ptrace_may_access()`` credential comparison an attach takes. It issues
+    **no ptrace syscall and touches the target not at all**: the process is
+    neither stopped, signalled nor traced, which is what makes it affordable
+    once per process in the namespace rather than once per report.
+
+    The implication runs one way, and the ranking uses it only in that
+    direction. A denial here is conclusive — ``PTRACE_MODE_ATTACH`` is strictly
+    stronger than ``PTRACE_MODE_READ``, so nothing that refuses the read will
+    permit the attach — while a success only means the credentials match, since
+    Yama and the LSMs gate attach and not read. So it *demotes* candidates that
+    provably cannot be debugged and never promotes one it has not proved.
+
+    ``root`` rather than ``maps`` or ``environ``, which are gated identically:
+    those two are served out of the ``mm_struct``, and a zombie has none, so
+    they open with no permission check at all. That is precisely how blueapi's
+    zombie scored "maps=ok" (issue #52).
+    """
+    return _listable(_pid_dir(pid, proc) / "root")
+
+
 def read_comm(pid: int | str, *, proc: Path = DEFAULT_PROC) -> str | None:
     """The process's ``comm``."""
     text = _read_text(_pid_dir(pid, proc) / "comm")
@@ -528,18 +585,28 @@ def scan_processes(
             continue  # the process exited while we walked /proc
         cgroup = read_cgroup(pid, proc=proc)
         cmdline = read_cmdline(pid, proc=proc)
+        # One read of `status` for the four fields taken from it, rather than
+        # one read each. The walk now covers four fields instead of two and
+        # runs over every process in the namespace — 112 of them on the opis
+        # pod — so re-opening the same file per field is the difference between
+        # a listing that is free and one that is noticeable.
+        status = _read_text(_pid_dir(pid, proc) / "status") or ""
+        state = status_field(status, "State")
         processes.append(
             ProcInfo(
                 pid=pid,
                 # Not `or 0`: an unreadable uid is not root. Collapsing the two
                 # would hand the degraded rung a runAsUser of 0, which the
                 # report forbids outright (3.11).
-                uid=read_uid(pid, proc=proc),
+                uid=_first_of(status_field(status, "Uid")),
                 comm=comm,
                 cmdline=cmdline or f"[{comm}]",
                 container_id=_container_id_from_cgroup(cgroup),
                 is_target=_is_target(cid, cgroup, own_cgroup, comm),
-                ppid=read_ppid(pid, proc=proc),
+                ppid=_parse_int(status_field(status, "PPid")),
+                state=None if state is None else state_letter(state),
+                threads=_parse_int(status_field(status, "Threads")),
+                ptrace_readable=ptrace_readable(pid, proc=proc),
             )
         )
 
@@ -559,7 +626,10 @@ def scan_processes(
 _SHELLS = frozenset(
     {"sh", "bash", "dash", "ash", "ksh", "mksh", "zsh", "busybox", "tini", "dumb-init"}
 )
-"""``comm`` values that are never the thing anyone came to debug.
+"""Process names that are never the thing anyone came to debug.
+
+Matched against ``comm`` *and* against ``argv[0]``'s basename — see
+:func:`is_shell` for why one of the two is not enough.
 
 Entrypoint shells and init shims: they have no debug info, breaking in one stops
 the supervisor rather than the workload, and on any image whose entrypoint is a
@@ -572,29 +642,64 @@ shells.
 def is_shell(info: ProcInfo) -> bool:
     """Whether this process is an entrypoint shell or an init shim.
 
-    >>> is_shell(ProcInfo(1, 0, "bash", "/bin/bash /epics/ioc/start.sh"))
+    Two sources, because neither alone is reliable. ``comm`` is truncated at 15
+    characters and any process may rewrite it with ``PR_SET_NAME``, so it can
+    fail to say "shell" when the process is one; ``argv[0]`` is the image's own
+    spelling and says what was actually exec'd.
+
+    Only ``argv[0]``, and only its basename — never the rest of the line. The
+    simdet IOC runs ``/venv/bin/python /venv/bin/stdio-socket
+    /epics/ioc/start.sh`` under ``comm=stdio-socket``: a rule that looked for
+    ``start.sh`` anywhere in the command line would drop the one process that
+    pod has (measured on ``p47-simdet`` 2026-08-19).
+
+    >>> is_shell(ProcInfo(447, 999, "sh", "/bin/sh -s rabbit_disk_monitor"))
     True
-    >>> is_shell(ProcInfo(13, 0, "ioc", "/epics/ioc/bin/linux-x86_64/ioc"))
+    >>> is_shell(ProcInfo(1, 37887, "stdio-socket",
+    ...                   "/venv/bin/python /venv/bin/stdio-socket "
+    ...                   "/epics/ioc/start.sh"))
+    False
+    >>> is_shell(ProcInfo(1, 999, "beam.smp", "/opt/erlang/bin/beam.smp -W w"))
     False
     """
-    return info.comm in _SHELLS
+    if info.comm in _SHELLS:
+        return True
+    argv = info.cmdline.split()
+    return bool(argv) and PurePosixPath(argv[0]).name in _SHELLS
 
 
 def debug_candidates(targets: Sequence[ProcInfo]) -> list[ProcInfo]:
     """The target container's processes worth debugging, best first.
 
-    Two rules, in order, and both of them come from a real IOC pod whose lowest
-    pid was ``/bin/bash /epics/ioc/start.sh`` (issue #92):
+    **Sorted, never filtered.** A container that is only a shell, or only
+    zombies, still has to name something, and the degraded rung has to have a
+    pid to report on. What gets *dropped* is a decision for the consumer —
+    :func:`podbench.gdbcmd.resolve_target_pids` drops the dead and caps the
+    rest, because a dropdown entry is selectable and a report is not.
 
-    * **shells sort last**, never out — a container that is *only* a shell still
-      has to have a target, and the degraded rung has to name something. Among
-      themselves they keep pid order rather than depth order, so the fallback
-      stays the container's own entrypoint;
-    * among the rest, **deepest first**. An entrypoint script is an ancestor of
-      the thing it starts, so depth is what separates a wrapper from a workload,
-      and it is the only signal in ``/proc`` that does. Ties break on pid, so the
-      answer is stable across two calls a second apart.
+    The key, best first. Every element after the first is a measured correction
+    to a pod where depth alone picked the wrong process (2026-08-19, p47):
 
+    #. **not a shell.** An entrypoint script is a wrapper; see :func:`is_shell`.
+    #. **alive.** blueapi leaves an unreaped ``multiprocessing`` child two levels
+       below pid 1, and depth picked it on every fresh pod. It has no
+       ``mm_struct``, so the read matrix scored it 3/6 and the verdict came back
+       "ptrace denied, blocker unknown" — while ``PTRACE_ATTACH`` to pid 1 in the
+       same second succeeded (issue #52 is this, not an LSM).
+    #. **ptrace-readable from this seat.** opis runs an ``nginx`` master at uid 0
+       and 111 workers at uid 101; the seat is root but capless, so it can ptrace
+       the master and none of the workers — and depth prefers a worker. See
+       :func:`ptrace_readable` for why a denial counts and a success does not.
+    #. **thread count, descending.** rabbitmq's ``beam.smp`` carries 208 threads
+       at depth 1 and loses to the ``inet_gethost`` DNS helper it forks, which
+       carries one at depth 3. A comparator only: see
+       :attr:`~podbench.model.ProcInfo.threads`.
+    #. **depth, deepest first** — the original signal, now the tie-break it was
+       always better suited to being.
+    #. **pid**, so the answer is stable across two calls a second apart.
+
+    Shells contribute neither threads nor depth to the key, so among themselves
+    they stay in pid order and the fallback is the container's own entrypoint.
     A process whose parent is outside ``targets`` has depth 0, which is what puts
     the container's own pid 1 at the top when nothing else survives.
 
@@ -606,14 +711,47 @@ def debug_candidates(targets: Sequence[ProcInfo]) -> list[ProcInfo]:
     ... ]
     >>> [p.pid for p in debug_candidates(tree)]
     [13, 8, 1, 11]
+
+    The zombie blueapi produces on every restart, which depth put first:
+
+    >>> blueapi = [
+    ...     ProcInfo(1, 1000, "python", "python -m blueapi serve",
+    ...              state="S", threads=195, ptrace_readable=True),
+    ...     ProcInfo(233, 1000, "python", "python -c spawn_main", ppid=1,
+    ...              state="S", threads=81, ptrace_readable=True),
+    ...     ProcInfo(518, 1000, "python", "[python]", ppid=233,
+    ...              state="Z", threads=1, ptrace_readable=False),
+    ... ]
+    >>> [p.pid for p in debug_candidates(blueapi)]
+    [1, 233, 518]
     """
     depths = _depths(targets)
 
-    def rank(info: ProcInfo) -> tuple[bool, int, int]:
+    def rank(info: ProcInfo) -> tuple[bool, bool, bool, int, int, int]:
         shell = is_shell(info)
-        return (shell, 0 if shell else -depths[info.pid], info.pid)
+        return (
+            shell,
+            not info.alive,
+            # `is False`, not `not`: None means the readability was never
+            # measured, and an unmeasured process must rank with the readable
+            # ones rather than be demoted for a question nobody asked.
+            info.ptrace_readable is False,
+            0 if shell else -(info.threads or 0),
+            0 if shell else -depths[info.pid],
+            info.pid,
+        )
 
     return sorted(targets, key=rank)
+
+
+NAMED_IN_NOTE = 4
+"""How many of the runners-up :func:`candidate_note` names before counting.
+
+Four, so the note lists exactly what ``debug-config`` offers
+(:data:`podbench.gdbcmd.MAX_OFFERED_PIDS`, the chosen one plus these). opis
+carries 111 identical ``nginx`` workers, and naming them all turned a one-line
+note into a paragraph nobody would read.
+"""
 
 
 def candidate_note(candidates: Sequence[ProcInfo], verb: str) -> str | None:
@@ -623,40 +761,106 @@ def candidate_note(candidates: Sequence[ProcInfo], verb: str) -> str | None:
     folds notes itself, and a newline here would land inside ``debug-config:``'s
     per-line prefix.
 
-    The skipped wrappers are *named* rather than counted. "4 processes, debugging
-    pid 13" reads like a coin toss, and the whole point of
-    :func:`debug_candidates` is that it is not one — while the reader who
-    disagrees with the choice needs the pid of the thing they would rather have.
+    The runners-up are *named* rather than counted, up to
+    :data:`NAMED_IN_NOTE`. "4 processes, debugging pid 13" reads like a coin
+    toss, and the whole point of :func:`debug_candidates` is that it is not one
+    — while the reader who disagrees with the choice needs the pid of the thing
+    they would rather have.
+
+    The disqualified are named under what disqualified them rather than lumped
+    in with the alternatives, because "attach to it explicitly" is only advice
+    worth taking for a process that could be attached.
 
     >>> tree = [
-    ...     ProcInfo(13, 0, "ioc", "ioc", ppid=11),
-    ...     ProcInfo(8, 0, "python", "python", ppid=1),
-    ...     ProcInfo(1, 0, "bash", "bash", ppid=0),
+    ...     ProcInfo(13, 0, "ioc", "ioc", ppid=11, threads=27),
+    ...     ProcInfo(8, 0, "python", "python", ppid=1, threads=3),
+    ...     ProcInfo(1, 0, "bash", "bash", ppid=0, threads=1),
     ... ]
     >>> for sentence in candidate_note(tree, "debugging").split(". "):
     ...     print(sentence)
-    target container has 3 processes; debugging pid 13 (ioc), the deepest non-shell
+    target container has 3 processes; debugging pid 13 (ioc), 27 threads against 3
     Also debuggable: 8 (python)
     Skipped as a wrapper: 1 (bash)
+    Run `podbench pids` to choose another.
+
+    blueapi, whose zombie used to be the answer:
+
+    >>> blueapi = debug_candidates([
+    ...     ProcInfo(1, 1000, "python", "python -m blueapi",
+    ...              state="S", threads=195, ptrace_readable=True),
+    ...     ProcInfo(518, 1000, "python", "[python]", ppid=1,
+    ...              state="Z", threads=1, ptrace_readable=False),
+    ... ])
+    >>> for sentence in candidate_note(blueapi, "probing").split(". "):
+    ...     print(sentence)
+    target container has 2 processes; probing pid 1 (python), the only live process here
+    Skipped as dead: 518 (python)
     Run `podbench pids` to choose another.
     """
     if len(candidates) < 2:
         return None
     chosen, rest = candidates[0], candidates[1:]
-    # A shell at the head means every candidate was one, since shells sort last.
-    why = "the only process here" if is_shell(chosen) else "the deepest non-shell"
     parts = [
         f"target container has {len(candidates)} processes; "
-        f"{verb} pid {chosen.pid} ({chosen.comm}), {why}"
+        f"{verb} pid {chosen.pid} ({chosen.comm}), {_why(chosen, rest[0])}"
     ]
-    others = [f"{p.pid} ({p.comm})" for p in rest if not is_shell(p)]
-    shells = [f"{p.pid} ({p.comm})" for p in rest if is_shell(p)]
-    if others:
-        parts.append(f"Also debuggable: {', '.join(others)}")
-    if shells:
-        parts.append(f"Skipped as a wrapper: {', '.join(shells)}")
+    for label, group in (
+        ("Also debuggable", [p for p in rest if _usable(p)]),
+        ("Skipped as a wrapper", [p for p in rest if is_shell(p)]),
+        ("Skipped as dead", [p for p in rest if not is_shell(p) and not p.alive]),
+        (
+            "Not ptrace-readable from this seat",
+            [
+                p
+                for p in rest
+                if not is_shell(p) and p.alive and p.ptrace_readable is False
+            ],
+        ),
+    ):
+        if group:
+            parts.append(f"{label}: {_named(group)}")
     parts.append("Run `podbench pids` to choose another.")
     return ". ".join(parts)
+
+
+def _usable(info: ProcInfo) -> bool:
+    """Whether this candidate is one the reader could actually switch to."""
+    return not is_shell(info) and info.alive and info.ptrace_readable is not False
+
+
+def _named(group: Sequence[ProcInfo]) -> str:
+    named = ", ".join(f"{p.pid} ({p.comm})" for p in group[:NAMED_IN_NOTE])
+    extra = len(group) - NAMED_IN_NOTE
+    return named if extra <= 0 else f"{named} and {extra} more"
+
+
+def _why(chosen: ProcInfo, runner_up: ProcInfo) -> str:
+    """The predicate that actually separated the winner from the next one.
+
+    Not a fixed phrase and not a recital of the winner's own fields: on opis
+    every process has one thread, so "1 threads" would be true, useless, and
+    would name the wrong reason. The list is sorted on the key in
+    :func:`debug_candidates`, so the first element of that key on which these
+    two differ *is* the reason, and every phrase below is exactly true because
+    of the sort — "the only live process here" is safe precisely because a
+    second live one would have been the runner-up.
+    """
+    # A shell at the head means every candidate was one, since shells sort last.
+    if is_shell(chosen):
+        return "the only process here"
+    if not chosen.alive:
+        return "dead, and nothing here is alive - no seat can attach to this pod"
+    if chosen.ptrace_readable is False:
+        return "not ptrace-readable from this seat, and nothing here is"
+    if is_shell(runner_up):
+        return "the only process here that is not a wrapper"
+    if not runner_up.alive:
+        return "the only live process here"
+    if runner_up.ptrace_readable is False:
+        return "the only process here this seat can ptrace-read"
+    if chosen.threads and runner_up.threads and chosen.threads > runner_up.threads:
+        return f"{chosen.threads} threads against {runner_up.threads}"
+    return "the deepest live process this seat can read"
 
 
 def _depths(targets: Sequence[ProcInfo]) -> dict[int, int]:

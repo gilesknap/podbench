@@ -48,6 +48,7 @@ from podbench.proc import (
     strip_container_scheme,
     yama_scope,
 )
+from proc_samples import CID, sample, write_tree
 
 TARGET_CID = "87d20e2380a1c0ffee0b1e5deadbeef00d15ea5e0000111122223333444455556"
 OTHER_CID = "7206c89b11111111222222223333333344444444555555556666666677777777"
@@ -1258,3 +1259,56 @@ def test_main_refuses_to_guess_the_target(
     assert payload["target_pid"] is None
     assert code == Verdict.LIVE_ATTACH.value
     assert any("PODBENCH_TARGET_CID" in note for note in payload["notes"])
+
+
+# -- the verdict names the pid it is a verdict about -------------------------
+
+
+def test_the_verdict_names_the_pid_and_why_it_was_chosen(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every number in the report is a measurement of one process.
+
+    blueapi's is pid 1, and it says so — with the predicate that beat the
+    zombie, so a reader who disagrees can name the pid they wanted instead.
+    """
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    main(["--json", "--container-id", CID], proc=proc, attacher=attacher())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["target_pid"] == 1
+    assert any("probing pid 1 (python)" in note for note in payload["notes"])
+    assert any("Skipped as dead: 518" in note for note in payload["notes"])
+
+
+def test_a_container_of_zombies_is_not_scored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A zombie's `maps` opens with no ptrace check, so it scores 3/6 and reads
+    like a partial LSM denial (issue #52). The honest answer is to score nothing
+    and say the target is dead, because the denial is not about this seat."""
+    dead = [
+        info
+        for info in sample("blueapi")
+        if info.pid in (518, 525) or not info.is_target
+    ]
+    proc = write_tree(tmp_path / "proc", dead)
+    code = main(["--json", "--container-id", CID], proc=proc, attacher=attacher())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["target_pid"] is None
+    assert payload["proc_reads"] == {}
+    assert any("it is dead" in note for note in payload["notes"])
+    assert code == Verdict.LIVE_ATTACH.value
+
+
+def test_an_unreadable_best_candidate_says_so_beside_its_score(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`cmdline`, `status` and `fd` answer on any pod whatsoever, so a matrix
+    taken at the wrong credentials still scores 3/6. The number is only not
+    flattering if the reason is next to it."""
+    workers = [info for info in sample("opis") if info.uid == 101 or not info.is_target]
+    proc = write_tree(tmp_path / "proc", workers)
+    main(["--json", "--container-id", CID], proc=proc, attacher=attacher())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["target_pid"] is not None
+    assert any("not ptrace-readable from this seat" in n for n in payload["notes"])

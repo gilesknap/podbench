@@ -1,0 +1,116 @@
+# p47-opis, captured in the seat 2026-08-19. Verbatim, except that
+# the one NUL byte in the capture shell's own cmdline is written \0, so git and
+# every editor treat this as text. That line is a continuation, not a record.
+# pid|ppid|comm|state|uid|gid|threads|cmdline
+1|0|nginx|S|0|0|1|nginx: master process nginx -g daemon off; 
+100|1|nginx|S|101|101|1|nginx: worker process 
+101|1|nginx|S|101|101|1|nginx: worker process 
+102|1|nginx|S|101|101|1|nginx: worker process 
+103|1|nginx|S|101|101|1|nginx: worker process 
+104|1|nginx|S|101|101|1|nginx: worker process 
+105|1|nginx|S|101|101|1|nginx: worker process 
+106|1|nginx|S|101|101|1|nginx: worker process 
+107|1|nginx|S|101|101|1|nginx: worker process 
+108|1|nginx|S|101|101|1|nginx: worker process 
+109|1|nginx|S|101|101|1|nginx: worker process 
+110|1|nginx|S|101|101|1|nginx: worker process 
+111|1|nginx|S|101|101|1|nginx: worker process 
+112|1|nginx|S|101|101|1|nginx: worker process 
+113|1|nginx|S|101|101|1|nginx: worker process 
+114|1|nginx|S|101|101|1|nginx: worker process 
+115|1|nginx|S|101|101|1|nginx: worker process 
+116|1|nginx|S|101|101|1|nginx: worker process 
+117|1|nginx|S|101|101|1|nginx: worker process 
+118|1|nginx|S|101|101|1|nginx: worker process 
+119|1|nginx|S|101|101|1|nginx: worker process 
+120|1|nginx|S|101|101|1|nginx: worker process 
+121|1|nginx|S|101|101|1|nginx: worker process 
+122|1|nginx|S|101|101|1|nginx: worker process 
+123|1|nginx|S|101|101|1|nginx: worker process 
+124|1|nginx|S|101|101|1|nginx: worker process 
+125|0|podbench|S|0|0|1|/app/.venv/bin/python /app/.venv/bin/podbench agent 
+29|1|nginx|S|101|101|1|nginx: worker process 
+30|1|nginx|S|101|101|1|nginx: worker process 
+31|1|nginx|S|101|101|1|nginx: worker process 
+32|1|nginx|S|101|101|1|nginx: worker process 
+33|1|nginx|S|101|101|1|nginx: worker process 
+34|1|nginx|S|101|101|1|nginx: worker process 
+35|1|nginx|S|101|101|1|nginx: worker process 
+36|1|nginx|S|101|101|1|nginx: worker process 
+37|1|nginx|S|101|101|1|nginx: worker process 
+38|1|nginx|S|101|101|1|nginx: worker process 
+39|1|nginx|S|101|101|1|nginx: worker process 
+40|1|nginx|S|101|101|1|nginx: worker process 
+401|0|podbench|S|101|0|1|/app/.venv/bin/python /app/.venv/bin/podbench agent 
+41|1|nginx|S|101|101|1|nginx: worker process 
+42|1|nginx|S|101|101|1|nginx: worker process 
+43|1|nginx|S|101|101|1|nginx: worker process 
+44|1|nginx|S|101|101|1|nginx: worker process 
+45|1|nginx|S|101|101|1|nginx: worker process 
+46|1|nginx|S|101|101|1|nginx: worker process 
+47|1|nginx|S|101|101|1|nginx: worker process 
+479|0|sh|S|0|0|1|sh -c 
+    for d in /proc/[0-9]*; do
+      p=${d#/proc/}
+      [ -r "$d/status" ] || { echo "$p|UNREADABLE"; continue; }
+      name=$(sed -n "s/^Name:	//p" "$d/status")
+      state=$(sed -n "s/^State:	//p" "$d/status" | cut -c1)
+      ppid=$(sed -n "s/^PPid:	//p" "$d/status")
+      uid=$(sed -n "s/^Uid:	//p" "$d/status" | cut -f1)
+      gid=$(sed -n "s/^Gid:	//p" "$d/status" | cut -f1)
+      thr=$(sed -n "s/^Threads:	//p" "$d/status")
+      cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
+      echo "$p|$ppid|$name|$state|$uid|$gid|$thr|$cmd"
+    done 
+48|1|nginx|S|101|101|1|nginx: worker process 
+49|1|nginx|S|101|101|1|nginx: worker process 
+50|1|nginx|S|101|101|1|nginx: worker process 
+51|1|nginx|S|101|101|1|nginx: worker process 
+52|1|nginx|S|101|101|1|nginx: worker process 
+53|1|nginx|S|101|101|1|nginx: worker process 
+54|1|nginx|S|101|101|1|nginx: worker process 
+55|1|nginx|S|101|101|1|nginx: worker process 
+56|1|nginx|S|101|101|1|nginx: worker process 
+57|1|nginx|S|101|101|1|nginx: worker process 
+58|1|nginx|S|101|101|1|nginx: worker process 
+59|1|nginx|S|101|101|1|nginx: worker process 
+60|1|nginx|S|101|101|1|nginx: worker process 
+61|1|nginx|S|101|101|1|nginx: worker process 
+62|1|nginx|S|101|101|1|nginx: worker process 
+63|1|nginx|S|101|101|1|nginx: worker process 
+64|1|nginx|S|101|101|1|nginx: worker process 
+65|1|nginx|S|101|101|1|nginx: worker process 
+66|1|nginx|S|101|101|1|nginx: worker process 
+67|1|nginx|S|101|101|1|nginx: worker process 
+68|1|nginx|S|101|101|1|nginx: worker process 
+69|1|nginx|S|101|101|1|nginx: worker process 
+70|1|nginx|S|101|101|1|nginx: worker process 
+71|1|nginx|S|101|101|1|nginx: worker process 
+72|1|nginx|S|101|101|1|nginx: worker process 
+73|1|nginx|S|101|101|1|nginx: worker process 
+74|1|nginx|S|101|101|1|nginx: worker process 
+75|1|nginx|S|101|101|1|nginx: worker process 
+76|1|nginx|S|101|101|1|nginx: worker process 
+77|1|nginx|S|101|101|1|nginx: worker process 
+78|1|nginx|S|101|101|1|nginx: worker process 
+79|1|nginx|S|101|101|1|nginx: worker process 
+80|1|nginx|S|101|101|1|nginx: worker process 
+81|1|nginx|S|101|101|1|nginx: worker process 
+82|1|nginx|S|101|101|1|nginx: worker process 
+83|1|nginx|S|101|101|1|nginx: worker process 
+84|1|nginx|S|101|101|1|nginx: worker process 
+85|1|nginx|S|101|101|1|nginx: worker process 
+86|1|nginx|S|101|101|1|nginx: worker process 
+87|1|nginx|S|101|101|1|nginx: worker process 
+88|1|nginx|S|101|101|1|nginx: worker process 
+89|1|nginx|S|101|101|1|nginx: worker process 
+90|1|nginx|S|101|101|1|nginx: worker process 
+91|1|nginx|S|101|101|1|nginx: worker process 
+92|1|nginx|S|101|101|1|nginx: worker process 
+93|1|nginx|S|101|101|1|nginx: worker process 
+94|1|nginx|S|101|101|1|nginx: worker process 
+95|1|nginx|S|101|101|1|nginx: worker process 
+96|1|nginx|S|101|101|1|nginx: worker process 
+97|1|nginx|S|101|101|1|nginx: worker process 
+98|1|nginx|S|101|101|1|nginx: worker process 
+99|1|nginx|S|101|101|1|nginx: worker process 
