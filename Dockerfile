@@ -309,9 +309,12 @@ RUN uv pip install --python /app/.venv/bin/python \
 # Two files, both structural, and deliberately not the brief's per-subcommand
 # helpers - see image/README.md, deviation 6, for why those went away.
 #
-#   podbench      the venv at /app/.venv/bin is on no default PATH and sshd is
-#                 built UsePAM no, so `ssh <seat> podbench pids` gets sshd's
-#                 compiled-in PATH. This is the file that makes it resolve.
+#   podbench      the venv at /app/.venv/bin is on no default PATH, and
+#                 /usr/local/bin is on sshd's compiled-in one whatever happens.
+#                 The agent's sshd_config now carries the container's PATH into
+#                 a session with SetEnv, so this is no longer the only route -
+#                 it is the route that does not depend on that config having
+#                 been written, which is the point of it.
 #   gdb-podbench  installed as `gdb` below, for third-party callers.
 COPY --chmod=0755 image/bin/ /usr/local/bin/
 
@@ -324,10 +327,12 @@ COPY --chmod=0755 image/bin/ /usr/local/bin/
 # are unaffected: they set the sysroot themselves and never pass --pid.
 RUN ln -s gdb-podbench /usr/local/bin/gdb
 
-# sshd is built with UsePAM no in report 4.1's config, so login shells get
-# sshd's compiled-in default PATH and never see the ENV above. This fixes
-# interactive sessions; `ssh host <cmd>` sources nothing at all, which is why
-# /usr/local/bin/podbench calls the venv by absolute path.
+# For interactive login shells, and still needed after SetEnv: Debian's
+# /etc/profile assigns PATH outright rather than appending, so a login shell
+# overwrites whatever the session was handed and the ENV above is lost again.
+# This fragment is sourced afterwards and puts the venv back. Non-interactive
+# `ssh host <cmd>` sources none of it and is covered by SetEnv (agent.py,
+# SESSION_ENV_NAMES) plus /usr/local/bin/podbench naming the venv in full.
 RUN printf '%s\n' 'PATH="/app/.venv/bin:$PATH"' 'export PATH' \
     > /etc/profile.d/podbench.sh
 

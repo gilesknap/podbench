@@ -177,11 +177,13 @@ def test_a_podbench_verb_resolves_on_sshds_own_path(
     """The single file #47 left the image, exercised the only way it matters.
 
     sshd is built ``UsePAM no`` (report 4.1), so ``ssh host <cmd>`` sources no
-    profile and never sees the image's ``ENV PATH``: the venv at
-    ``/app/.venv/bin`` is invisible and ``/usr/local/bin/podbench`` is what
-    makes every in-pod verb resolve. A ``kubectl exec`` cannot prove this — it
-    inherits ``ENV PATH`` and would pass with the shim deleted — and since #47
-    there is no second file to fall back on.
+    profile and inherits none of the image's ``ENV PATH``. The agent's
+    generated config now carries the container's ``PATH`` in its ``SetEnv``
+    line, which puts the venv within reach of the first call below — so the
+    second call takes ``PATH`` back down to what sshd would have supplied on
+    its own, which is where ``/usr/local/bin/podbench`` is the only thing that
+    resolves the verb. Without it this test would pass with the shim deleted,
+    exactly as a ``kubectl exec`` always would.
 
     ``pids`` rather than ``--version``: it is the verb the README names for
     this path, and its table proves the shim reached the real CLI rather than
@@ -190,6 +192,19 @@ def test_a_podbench_verb_resolves_on_sshds_own_path(
     config, alias = ssh_config
     result = _ssh(config, alias, ["podbench", "pids"])
     listing = result.stdout.decode()
+    assert "PID" in listing and "CMDLINE" in listing, listing
+
+    without_the_venv = _ssh(
+        config,
+        alias,
+        [
+            "env",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "podbench",
+            "pids",
+        ],
+    )
+    listing = without_the_venv.stdout.decode()
     assert "PID" in listing and "CMDLINE" in listing, listing
 
 

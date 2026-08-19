@@ -202,10 +202,11 @@ CONTAINER_BASE = "podbench"
 CAPREPORT_ARGV: tuple[str, ...] = ("podbench", "capreport", "--json")
 """The probe, spelled as the verb rather than as a per-subcommand alias.
 
-``podbench`` unqualified is safe here and nowhere else: ``kubectl exec``
-inherits the image's own ``ENV PATH``, which has the venv on it, whereas an ssh
-session sources nothing and reaches the same program through
-``/usr/local/bin/podbench``."""
+``podbench`` unqualified is safe here and needs no help: ``kubectl exec``
+inherits the image's own ``ENV PATH``, which has the venv on it. An ssh session
+inherits none of it and gets whatever the agent's ``SetEnv`` line carried, or
+sshd's compiled-in default — which is why ``/usr/local/bin/podbench`` names the
+venv in full and reaches the same program either way."""
 
 HOST_KEY_ARGV: tuple[str, ...] = (
     *AGENT_COMMAND,

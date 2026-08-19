@@ -299,7 +299,9 @@ def test_ensure_sshd_config_matches_the_generator(
 ) -> None:
     layout = make_layout(tmp_path, root=False)
     agent.ensure_all(layout, env=env, runner=FakeRunner())
-    assert Path(layout.config_path).read_text() == sshd_config(layout)
+    assert Path(layout.config_path).read_text() == sshd_config(
+        layout, agent.session_env(env)
+    )
 
 
 def test_privsep_dir_created_only_for_root(tmp_path: Path) -> None:
@@ -1191,11 +1193,59 @@ def test_main_print_host_key(
     assert "ssh-ed25519 AAAAHOST podbench" in capsys.readouterr().out
 
 
-def test_session_env_forwards_podbench_variables_only() -> None:
+def test_session_env_forwards_podbench_variables_and_the_named_few() -> None:
+    """The transport carries the image's environment, not just podbench's.
+
+    sshd leaks none of its own environment, and one missing mechanism read as
+    three defects: no ``PATH``, so the injection recipe died with ``sh: 1:
+    python: not found``; no ``DEBUGINFOD_URLS``, so gdb's ``set debuginfod
+    enabled on`` was inert over podbench's own transport while working under
+    ``kubectl exec``; no ``PODBENCH_TARGET_CID``, so the helpers guessed. It is
+    still an allow-list — the sshd config is world-readable — so a variable
+    nobody named stays behind.
+    """
     forwarded = agent.session_env(
-        {"PODBENCH_TARGET_CID": "abc", "PATH": "/usr/bin", "HOME": "/root"}
+        {
+            "PODBENCH_TARGET_CID": "abc",
+            "PATH": "/app/.venv/bin:/usr/bin",
+            "DEBUGINFOD_URLS": "https://debuginfod.debian.net",
+            "HOME": "/root",
+            "LANG": "C.UTF-8",
+        }
     )
-    assert forwarded == {"PODBENCH_TARGET_CID": "abc"}
+    assert forwarded == {
+        "PODBENCH_TARGET_CID": "abc",
+        "PATH": "/app/.venv/bin:/usr/bin",
+        "DEBUGINFOD_URLS": "https://debuginfod.debian.net",
+    }
+
+
+def test_a_named_variable_that_is_unset_is_simply_absent() -> None:
+    """``DEBUGINFOD_TIMEOUT`` is named here before anything sets it, so that the
+    value arrives on the day something does. Naming it must cost nothing."""
+    assert "DEBUGINFOD_TIMEOUT" in agent.SESSION_ENV_NAMES
+    assert agent.session_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+def test_a_path_sshd_cannot_carry_is_reported_rather_than_dropped(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    """A ``PATH`` with a space in it is not hypothetical, and losing it silently
+    is the exact bug SetEnv was widened to fix. The config is still written —
+    with everything that did survive — and the step records the reason."""
+    layout = make_layout(tmp_path, root=False)
+
+    report = agent.ensure_all(
+        layout,
+        env={**env, "PATH": "/opt/my tools/bin", "PODBENCH_NODE_NAME": "nuc2"},
+        runner=FakeRunner(),
+    )
+
+    assert [failure.name for failure in report.failures] == ["ensure-sshd-config"]
+    assert "PATH" in report.failures[0].detail
+    written = Path(layout.config_path).read_text()
+    assert "SetEnv PODBENCH_NODE_NAME=nuc2 " in written
+    assert "my tools" not in written
 
 
 def test_the_ssh_public_key_is_never_forwarded_into_a_session() -> None:

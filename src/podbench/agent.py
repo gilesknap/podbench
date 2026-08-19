@@ -39,7 +39,13 @@ import typer
 
 from .cli import new_app, run
 from .model import SEAT_HOME_VOLUME, SEAT_IDENTITY_VOLUME, ContainerRef, PodRef
-from .sshcfg import SEAT_USER, SshdLayout, proxy_command, sshd_config
+from .sshcfg import (
+    SEAT_USER,
+    SshdLayout,
+    proxy_command,
+    sshd_config,
+    unsafe_set_env,
+)
 from .vscode import MACHINE_SETTINGS_PATH, merge_machine_settings
 
 __all__ = [
@@ -58,6 +64,8 @@ __all__ = [
     "PASSWD_PATH",
     "PUBKEY_ENV",
     "SEAT_NSS_PATH",
+    "SESSION_ENV_NAMES",
+    "SESSION_ENV_PREFIX",
     "VSCODE_SETTINGS_WAY_OUT",
     "CheckResult",
     "CommandRunner",
@@ -734,36 +742,85 @@ def nss_identity_check(
 
 
 SESSION_ENV_PREFIX = "PODBENCH_"
-"""Variables forwarded from the container's environment into ssh sessions.
+"""podbench's own variables, forwarded from the container into ssh sessions.
 
 The launcher injects the target's container id and the node name into the
 container spec, and sshd does not pass its own environment to the commands it
 runs — so without this the helpers fall back to guessing which processes belong
-to the target, and say the node is unknown. Only podbench's own variables are
-forwarded, and the ssh public key is excluded: it is already installed in
-authorized_keys and has no business in a session environment.
+to the target, and say the node is unknown. The ssh public key is excluded: it
+is already installed in authorized_keys and has no business in a session
+environment.
+"""
+
+SESSION_ENV_NAMES = frozenset({"PATH", "DEBUGINFOD_URLS", "DEBUGINFOD_TIMEOUT"})
+"""The image's own variables the transport carries as well, by exact name.
+
+The prefix above was the whole rule once, and the same missing mechanism showed
+up as three unrelated-looking defects, because a session started by sshd
+inherits none of the image's ``ENV``:
+
+* ``PATH`` — ``ssh <seat> '<cmd>'`` got sshd's compiled-in default, so the
+  seat's interpreter was not on it and the injection recipe died with
+  ``sh: 1: python: not found``.
+* ``DEBUGINFOD_URLS`` — gdb's ``set debuginfod enabled on`` was inert over the
+  transport podbench generates, while working under ``kubectl exec``, which
+  does inherit the image's environment. Two routes into the same container
+  disagreeing about symbols is the confusing half.
+* ``DEBUGINFOD_TIMEOUT`` — a bound on that fetch. Nothing sets it yet; a
+  variable that is unset is simply absent from the session, so listing it here
+  costs nothing and means the value arrives on the day something does.
+
+An allow-list rather than the whole environment: the sshd config is a
+world-readable file, and a seat's environment is where the launcher's secrets
+(a host key, a public key) live.
 """
 
 _SESSION_ENV_EXCLUDE = frozenset({PUBKEY_ENV, HOST_KEY_ENV})
 
 
 def session_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """The PODBENCH_* variables worth forwarding into an ssh session."""
+    """The variables worth forwarding into an ssh session.
+
+    >>> sorted(session_env({"PATH": "/bin", "HOME": "/root", "TERM": "xterm"}))
+    ['PATH']
+    """
     source = os.environ if env is None else env
     return {
         name: value
         for name, value in source.items()
-        if name.startswith(SESSION_ENV_PREFIX) and name not in _SESSION_ENV_EXCLUDE
+        if (name.startswith(SESSION_ENV_PREFIX) or name in SESSION_ENV_NAMES)
+        and name not in _SESSION_ENV_EXCLUDE
     }
 
 
 def ensure_sshd_config(
     layout: SshdLayout, *, env: Mapping[str, str] | None = None
 ) -> bool:
-    """Write the sshd config the ProxyCommand names with ``-f``."""
-    return _write_if_changed(
-        Path(layout.config_path), sshd_config(layout, session_env(env)), 0o644
+    """Write the sshd config the ProxyCommand names with ``-f``.
+
+    Raises after writing, never instead of writing, when a variable this seat
+    meant to forward is one sshd's ``SetEnv`` parser cannot carry: the config
+    holding everything that did survive beats no config at all, and
+    :func:`ensure_all` turns the exception into a recorded failure without
+    stopping the remaining steps. Silence is the one thing that is not on
+    offer — a ``PATH`` dropped without a word is the defect ``SetEnv`` was
+    widened to fix.
+    """
+    wanted = session_env(env)
+    changed = _write_if_changed(
+        Path(layout.config_path), sshd_config(layout, wanted), 0o644
     )
+    refused = unsafe_set_env(wanted)
+    if refused:
+        raise RuntimeError(
+            f"{layout.config_path} cannot carry {', '.join(refused)} into an ssh "
+            "session: sshd reads SetEnv as whitespace-separated NAME=value "
+            "pairs, so a name or a value containing whitespace or '=' would "
+            "silently become a different directive. Everything else was "
+            "written. `kubectl exec` sessions are unaffected - they inherit "
+            "the container's environment directly."
+        )
+    return changed
 
 
 def _authorized_keys_from(env: Mapping[str, str]) -> list[str]:
@@ -1041,8 +1098,12 @@ def ensure_all(
         f"updated {layout.authorized_keys_path}",
         lambda: ensure_authorized_keys(layout, env=env),
     )
+    # `env=env` like every other step: the session environment the config
+    # carries is the container's, and a caller that supplied one meant it.
     step(
-        "sshd-config", f"wrote {layout.config_path}", lambda: ensure_sshd_config(layout)
+        "sshd-config",
+        f"wrote {layout.config_path}",
+        lambda: ensure_sshd_config(layout, env=env),
     )
     # After the passwd entry, which is what decides the home this lands in: an
     # `attach` seat's record is written by the step above and a session's $HOME

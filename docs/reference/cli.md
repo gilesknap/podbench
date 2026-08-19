@@ -1380,6 +1380,14 @@ stream.
 | `PODBENCH_SSH_HOST_KEY` | agent | host private key, rather than minting one |
 | `PODBENCH_SSH_HOST_KEY_FILE` | agent | the same from a file. Default mount `/etc/podbench/ssh/ssh_host_ed25519_key` |
 | `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net` |
+| `DEBUGINFOD_TIMEOUT` | gdb, `dbg` | seconds gdb will wait on that server |
+
+sshd leaks none of its own environment to the commands it runs, so a variable
+set on the debug container reaches `kubectl exec` and a shell but not an ssh
+session. The agent's generated sshd config carries the ones the seat needs —
+every `PODBENCH_*` except the keys, plus `PATH`, `DEBUGINFOD_URLS` and
+`DEBUGINFOD_TIMEOUT` — and reports in the container's start-up log if a value
+contains whitespace, which sshd's `SetEnv` cannot carry.
 
 ## Exit codes
 

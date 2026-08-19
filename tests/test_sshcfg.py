@@ -34,6 +34,7 @@ from podbench.sshcfg import (
     proxy_command,
     proxy_command_string,
     sshd_config,
+    unsafe_set_env,
 )
 
 
@@ -316,13 +317,22 @@ def test_session_env_is_named_in_the_config_because_sshd_leaks_nothing() -> None
     """
     config = sshd_config(
         SshdLayout.for_uid(0),
-        {"PODBENCH_TARGET_CID": "abc", "PODBENCH_NODE_NAME": "n1"},
+        {
+            "PODBENCH_TARGET_CID": "abc",
+            "PODBENCH_NODE_NAME": "n1",
+            "PATH": "/app/.venv/bin:/usr/bin",
+            "DEBUGINFOD_URLS": "https://debuginfod.debian.net",
+        },
     )
     # One directive, not one per variable: sshd resolves each keyword
     # first-match-wins, so a second SetEnv line never takes effect. Found on a
     # real cluster, where only the alphabetically-first variable arrived.
     assert config.count("SetEnv ") == 1
-    assert "SetEnv PODBENCH_NODE_NAME=n1 PODBENCH_TARGET_CID=abc" in config
+    assert (
+        "SetEnv DEBUGINFOD_URLS=https://debuginfod.debian.net "
+        "PATH=/app/.venv/bin:/usr/bin "
+        "PODBENCH_NODE_NAME=n1 PODBENCH_TARGET_CID=abc" in config
+    )
 
 
 def test_a_name_or_value_sshd_would_misparse_is_dropped() -> None:
@@ -334,6 +344,15 @@ def test_a_name_or_value_sshd_would_misparse_is_dropped() -> None:
     assert "A=B" not in config
     assert "has space" not in config
     assert "SetEnv OK=fine" in config
+
+
+def test_the_names_sshd_would_misparse_are_reported_to_the_caller() -> None:
+    """Dropping them is not enough. The set carries ``PATH`` now, and a seat
+    that loses it silently is the defect this route exists to fix, so the
+    caller is handed the names to say so."""
+    assert unsafe_set_env({"PATH": "/opt/my tools/bin", "OK": "fine"}) == ("PATH",)
+    assert unsafe_set_env({"A=B": "y", "BAD NAME": "x"}) == ("A=B", "BAD NAME")
+    assert unsafe_set_env({"PODBENCH_TARGET_CID": "abc"}) == ()
 
 
 def test_no_session_env_leaves_the_config_as_it_was() -> None:

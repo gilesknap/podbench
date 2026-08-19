@@ -127,14 +127,18 @@ structural; neither is a convenience.
 
 | On PATH | What it is | Why it has to exist |
 |---|---|---|
-| `podbench` | `exec /app/.venv/bin/podbench "$@"` | the venv is on no default `PATH`, and report 4.1's sshd_config sets `UsePAM no`, so `ssh <seat> podbench pids` gets sshd's compiled-in `PATH`. That includes `/usr/local/bin` and not `/app/.venv/bin`. |
+| `podbench` | `exec /app/.venv/bin/podbench "$@"` | the venv is on no default `PATH`. The agent's generated sshd_config carries the container's `PATH` into a session with `SetEnv`, but this file is what makes the verb resolve when that line was never written or was refused — `/usr/local/bin` is on sshd's compiled-in `PATH` and `/app/.venv/bin` is on nothing's. |
 | `gdb-podbench` | a shell wrapper around `/usr/bin/gdb`, installed as `gdb` too | its caller is a *third party* — debugpy's injection shells out to `gdb --nw --nh --nx --pid 1`, and without the wrapper it gets no `set sysroot`, no exec file that survives gdb's canonicalisation (issue #90) and a cwd VS Code may have deleted. No podbench subcommand can stand in for it. |
 
 The `podbench` shim calls the venv by **absolute path** on purpose: `ssh <host>
 podbench capreport` runs a non-login, non-interactive shell that sources
-nothing, so the image's `ENV PATH` is not in effect. Interactive login shells
-are covered separately by `/etc/profile.d/podbench.sh`, needed for the same
-`UsePAM no` reason.
+nothing and inherits none of the image's `ENV PATH`. What it does get is the
+`SetEnv` line `podbench agent` writes into the sshd config — `PATH`,
+`DEBUGINFOD_URLS`, `DEBUGINFOD_TIMEOUT` and every `PODBENCH_*` — which is the
+transport's only route for the image's environment, and the shim is what
+survives its absence. Interactive login shells need
+`/etc/profile.d/podbench.sh` on top of both: Debian's `/etc/profile` assigns
+`PATH` outright, so it overwrites whatever the session was handed.
 
 Everything a seat can do is reached as `podbench <verb>` — `podbench pids`,
 `podbench dbg`, `podbench capreport`, `podbench debug-config`, `podbench
@@ -181,7 +185,10 @@ before, which is what a seat with a broken venv still deserves.
    Debian falls back to the same URL via `/etc/debuginfod/elfutils.urls` when the
    variable is unset (verified in-cluster), so this changes no behaviour — it
    makes the setting visible in `docker inspect` and gives the launcher one
-   place to point at a mirror. S3 measured the endpoint working.
+   place to point at a mirror. S3 measured the endpoint working. An `ENV` alone
+   does not reach an ssh session, so the agent names it in the sshd config's
+   `SetEnv` line as well; without that, `set debuginfod enabled on` was inert
+   over podbench's own transport and worked under `kubectl exec`.
 6. **The per-subcommand helpers are gone.** The brief's `bin/` sketch names
    `pids`, `dbg`, `capreport`, `debug-config`, `dev-bootstrap` and `run`/`stop`
    as files on `PATH`; the image ships none of them ([#47]). Each was literally

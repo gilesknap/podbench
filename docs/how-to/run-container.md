@@ -143,7 +143,7 @@ Two, and both are structural rather than convenient.
 
 | On `PATH` | What it is |
 |---|---|
-| `podbench` | `exec /app/.venv/bin/podbench "$@"` — the venv is on no default `PATH`, and `ssh <host> podbench capreport` runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve |
+| `podbench` | `exec /app/.venv/bin/podbench "$@"` — the venv is on no default `PATH`, and `ssh <host> podbench capreport` runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve even when the agent's `SetEnv` line did not reach the session |
 | `gdb-podbench` | installed as `gdb` as well, so anything that shells out to `gdb --pid <n>` in the seat gets a sysroot, an exec file gdb cannot canonicalise back into this container (issue #90) and a working directory that exists |
 
 Every in-pod verb is reached as `podbench <verb>`: `podbench pids`, `podbench
@@ -160,6 +160,15 @@ dbg`, `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
 | `PODBENCH_SSH_HOST_KEY` / `..._FILE` | supply a host key rather than minting one; the file default is `/etc/podbench/ssh/ssh_host_ed25519_key` |
 | `PODBENCH_TARGET_CID` | the target container's runtime ID, injected at attach time; how `podbench pids` and `podbench dbg` find the workload |
 | `DEBUGINFOD_URLS` | defaults to `https://debuginfod.debian.net`; point it at a mirror |
+| `DEBUGINFOD_TIMEOUT` | seconds gdb will wait on that server |
+
+sshd passes none of its own environment to the commands it runs, so `podbench
+agent` names the ones that matter in the sshd config it generates: every
+`PODBENCH_*` variable except the keys, plus `PATH`, `DEBUGINFOD_URLS` and
+`DEBUGINFOD_TIMEOUT`. Anything else you set on the container reaches `kubectl
+exec` and a shell, and not an ssh session. If a value contains whitespace sshd
+cannot carry it, and the agent says so in the container's start-up log rather
+than dropping it quietly — `kubectl logs <pod> -c <the debug container>`.
 
 ## Building it yourself
 
