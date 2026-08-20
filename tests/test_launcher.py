@@ -57,6 +57,7 @@ from podbench.launcher import (
     probe_seat_versions,
     resolve_pod,
     resolve_pod_name,
+    same_build,
     seat_layout,
     seats,
     ssh_config_path,
@@ -3289,6 +3290,42 @@ def test_a_skewed_seat_version_is_one_warning_carrying_no_numbers() -> None:
     leaders = [line for line in text.splitlines() if line.startswith("WARNING")]
     assert len(leaders) == len(session.warnings)
     assert "0.0.1b1" not in VERSION_SKEW_WARNING
+
+
+def test_a_dirty_build_of_our_own_commit_is_not_a_skew() -> None:
+    """The field defect: the warning fired on all eight attaches of the
+    2026-08-19 round, and its own remedy could not clear it.
+
+    setuptools_scm marks a dirty tree with a `.d<date>` component in the local
+    segment, which says when the wheel was built and nothing about what went
+    into it. The seat reported `...+g87be67bc8.d20260819` where this launcher
+    reported `...+g87be67bc8` — one commit, two wheels — and an exact string
+    comparison called that a skew.
+    """
+    seat = f"{__version__}.d20260819" if "+" in __version__ else __version__
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=seat)
+    session = attach(talking_to(cluster), "target")
+
+    assert VERSION_SKEW_WARNING not in session.warnings
+    # The row agrees with the warning block, which is the other half of the
+    # defect: a `version` line calling this a skew is the same false positive.
+    assert "in this launcher" not in " ".join(format_session(session).split())
+
+
+def test_same_build_reads_the_commit_and_not_the_build_date() -> None:
+    """Unit-level, because `__version__` here may be a clean checkout's and
+    then the attach above has no `.d<date>` to strip."""
+    assert same_build("0.4.0b2.dev24+g87be67bc8.d20260819", "0.4.0b2.dev24+g87be67bc8")
+    assert same_build(
+        "0.4.0b2.dev24+g87be67bc8.d20260819", "0.4.0b2.dev24+g87be67bc8.d20260820"
+    )
+    # The case the warning exists for, in both halves of the version.
+    assert not same_build("0.4.0b2.dev24+g87be67bc8", "0.4.0b2.dev25+gdeadbeef1")
+    assert not same_build("0.4.0b2.dev24+g87be67bc8", "0.4.0b1.dev0+g87be67bc8")
+    # No hash on either side leaves the whole string as the only evidence.
+    assert same_build("0.4.0", "0.4.0")
+    assert not same_build("0.4.0", "0.4.1")
+    assert not same_build("0.4.0", "0.4.0b2.dev24+g87be67bc8")
 
 
 def test_a_seat_that_cannot_be_asked_its_version_still_attaches() -> None:

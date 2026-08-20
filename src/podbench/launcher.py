@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -202,6 +203,7 @@ __all__ = [
     "resolve_pod",
     "resolve_pod_name",
     "run_capreport",
+    "same_build",
     "ssh_unavailable_note",
     "running_seat",
     "seat_identity_mounts",
@@ -1542,7 +1544,7 @@ def attach(
         stale = moving_tag_note(image, pull_policy)
         if stale is not None:
             warnings.append(stale)
-    elif seat_version != __version__:
+    elif not same_build(seat_version, __version__):
         warnings.append(VERSION_SKEW_WARNING)
     # Measured, not feared. The unconditional memory warning this replaces was
     # written against an assumption that 2026-08-19 falsified on DLS p47: ten
@@ -2575,6 +2577,54 @@ _WARNING_HANG = len(WARNING_LEAD) + 2
 the coloured leader plus its separator."""
 
 
+_BUILD_HASH = re.compile(r"(?:^|\.)g([0-9a-f]{7,40})(?:\.|$)")
+"""The commit setuptools_scm put in a PEP 440 local segment.
+
+``0.4.0b2.dev24+g87be67bc8.d20260819`` carries two components after the ``+``:
+the commit that was packaged, and — only when the tree was dirty — the date
+setuptools_scm ran. Only the first says anything about *what* was built.
+"""
+
+
+def _build_key(version: str) -> tuple[str, str] | None:
+    """The public version and the commit, or ``None`` where there is no commit."""
+    public, _, local = version.partition("+")
+    match = _BUILD_HASH.search(local)
+    return None if match is None else (public, match.group(1))
+
+
+def same_build(one: str, other: str) -> bool:
+    """Whether two podbench versions were built from the same commit.
+
+    Exact equality was the test, and it made :data:`VERSION_SKEW_WARNING` a
+    permanent false positive: on all eight attaches of the 2026-08-19 field
+    round the seat answered ``0.4.0b2.dev24+g87be67bc8.d20260819`` against a
+    launcher's ``0.4.0b2.dev24+g87be67bc8`` — the same commit, differing by the
+    ``.d<date>`` setuptools_scm adds for a dirty tree, which records *when* the
+    build happened and not *what* was in it. A warning whose own remedy
+    (``--pull always --new``) cannot clear it is one the reader learns to skip,
+    which costs the case it exists for.
+
+    >>> same_build("0.4.0b2.dev24+g87be67bc8.d20260819", "0.4.0b2.dev24+g87be67bc8")
+    True
+
+    A different commit is still a different build, which is that case:
+
+    >>> same_build("0.4.0b2.dev24+g87be67bc8", "0.4.0b2.dev25+gdeadbeef1")
+    False
+
+    Where neither string carries a hash — a release wheel has no local segment
+    at all — the whole string is the only thing left to compare, so it is:
+
+    >>> same_build("0.4.0", "0.4.0"), same_build("0.4.0", "0.4.1")
+    (True, False)
+    """
+    if one == other:
+        return True
+    key = _build_key(one)
+    return key is not None and key == _build_key(other)
+
+
 def seat_version_fact(seat_version: str | None) -> str:
     """The ``version`` row's value: which build the seat is, against this one.
 
@@ -2592,6 +2642,11 @@ def seat_version_fact(seat_version: str | None) -> str:
         return UNKNOWN_SEAT_VERSION
     if seat_version == __version__:
         return f"{seat_version}, the same build as this launcher"
+    # Both numbers still, because they differ and the reader can see that they
+    # do; what is asserted is only what `same_build` measured, which is that the
+    # difference is setuptools_scm's build date and not the code.
+    if same_build(seat_version, __version__):
+        return f"{seat_version}, the same commit as this launcher ({__version__})"
     return f"{seat_version} in the seat, {__version__} in this launcher"
 
 
