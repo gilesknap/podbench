@@ -8,13 +8,13 @@ in both places, rather than a launcher's guess and a helper's separate guess.
 
 ```
 $ podbench --help
-
- Usage: podbench [OPTIONS] COMMAND [ARGS]...
-
- A development seat inside a Kubernetes pod.
-
- Run `podbench VERB --help` for a verb's own options.
-
+                                                                                                    
+ Usage: podbench [OPTIONS] COMMAND [ARGS]...                                                        
+                                                                                                    
+ A development seat inside a Kubernetes pod.                                                        
+                                                                                                    
+ Run `podbench VERB --help` for a verb's own options.                                               
+                                                                                                    
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --version  -v        show the launcher's version and exit                                        │
 │ --help               Show this message and exit.                                                 │
@@ -22,6 +22,7 @@ $ podbench --help
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
 │ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
+│ vscode         land a seat sized and provisioned for an editor, and open it                      │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
@@ -42,7 +43,7 @@ $ podbench --help
 
 | Where it runs | Verbs |
 |---|---|
-| Your machine | `doctor`, `attach`, `ssh-config`, `status`, `list`, `dev`, `hotfix` |
+| Your machine | `doctor`, `attach`, `vscode`, `ssh-config`, `status`, `list`, `dev`, `hotfix` |
 | Inside the debug container | `agent`, `capreport`, `pids`, `dbg`, `debug-config`, `dev-bootstrap`, `run`, `stop` |
 
 Every verb below is written as `podbench <verb>`, which is the only spelling
@@ -357,18 +358,6 @@ what that seat can actually do.
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
-│ --open                                       open the seat's home in VS Code over Remote-SSH     │
-│                                              once it lands, with the /proc and /sys excludes,    │
-│                                              this target's launch.json and only the extensions   │
-│                                              its debugger needs. Needs `code` on PATH            │
-│ --provision                                  with --open, make the target debuggable: install    │
-│                                              debugpy when it cannot import one, then start the   │
-│                                              server so F5 has something to connect to -          │
-│                                              otherwise a stock Python workload gets no           │
-│                                              launch.json at all. Mutates the workload: ~15 MB of │
-│                                              shared ephemeral storage, needs egress from the     │
-│                                              pod, ptraces the app for a few seconds, and no      │
-│                                              restart survives it                                 │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -504,121 +493,289 @@ Notes:
     It is a pin, not a hint: the measurement never overrides it. `--no-correct-ids`
     keeps the first seat and leaves the mismatch reported as the
     `gid-mismatch` blocker.
-* **`--open`** takes the seat from "landed" to "bound breakpoint" in one
-  command. It needs `code` on your PATH, and the local VS Code needs the
-  **Remote - SSH** extension; both are checked at the point of use and named in
-  the failure rather than reported as a traceback. `code` is looked for
-  *before* the seat is landed, because an ephemeral container's name is
-  permanent and a run that was always going to end at "no `code`" must not burn
-  one.
-
-  It has to be the **desktop** `code`. Inside a Remote-SSH window, a
-  devcontainer or a Codespace, the `code` on your PATH is VS Code's *remote*
-  CLI, which forwards to the window that terminal already belongs to:
-  `--install-extension` would install into that machine rather than into the
-  seat, leaving breakpoints that never bind. podbench refuses that one by name
-  before landing anything — run it from a terminal on the machine your VS Code
-  itself runs on, or drop `--open` and use **Remote-SSH: Connect to Host**.
-
-  In order it:
-  * writes `<home>/.vscode/settings.json` with every exclude `podbench agent`
-    writes at machine scope — the watcher, search, Pylance and cpptools entries
-    for `/proc`, `/sys`, `/dev` and `~/.vscode-server` — **before** the window
-    opens, because the walk starts the moment it does. A single folder makes
-    that file the *workspace* settings, so none of the keys is dropped there,
-    and this is the one copy that survives *Kill/Uninstall VS Code Server on
-    Host*. Inside a home, `**/.vscode-server/**` is the entry that earns its
-    place first, and `C_Cpp.files.exclude` the only one that stops cpptools'
-    tag parser walking on its own account;
-  * runs `podbench debug-config --print-config` in the seat and merges the result into
-    `<home>/.vscode/launch.json`, matching on configuration name, so a second
-    `--open` updates its own entries rather than appending copies;
-  * installs **only** the extensions the emitted configurations name, with
-    `code --remote ssh-remote+<alias> --install-extension` — which is the
-    "Install in SSH: `<alias>`" button as a flag. A locally installed extension
-    runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
-    means anything, and the failure looks like a bad `launch.json`. They are
-    also recommended in `<home>/.vscode/extensions.json` as a fallback. An
-    install only unpacks into the seat's `~/.vscode-server`, so a window that
-    was **already** connected keeps the extension host it started and never
-    loads it — the adapter stays unregistered and its `launch.json` entry
-    cannot run. A first `--open` is unaffected, since the install finishes
-    before the window opens; a later run needs the reload only where it put a
-    *new* extension in the seat, and the *Developer: Reload Window* reminder is
-    printed whenever an install **succeeded**, because `code` exits 0 for
-    "already installed" too and this side cannot tell an open window from a
-    fresh one. A run whose every install failed prints no reminder, having
-    unpacked nothing;
-  * opens the **seat's home** — `/root`, or `/home/podbench` on a
-    `podbench-home` volume. Never `/`: a folder there points the watcher at
-    `/proc/<pid>/root`, which is a symlink into another container's rootfs, and
-    the walk has no bottom.
-
-  It cannot be combined with `--print-config`, which writes no stanza:
-  `code --remote ssh-remote+<alias>` resolves the alias through ssh, and ssh
-  reads the config dir. A target no debugger fits is not a failure — the
-  excludes, the folder and the terminals are the rest of the seat.
-
-  `debug-config`'s own stderr is relayed line by line rather than summarised.
-  It is the only thing in the run that can see the target, so its narration is
-  the diagnosis — it names every mechanism that said no, and on success it also
-  carries the injection command, which the emitted debugpy configuration needs
-  and cannot state: the entry is written once the *prerequisites* are met, and
-  nothing is listening until that command is run.
-* **`--provision`** passes through to that `debug-config` run and means *make
-  this target debuggable*. It is the answer to the commonest empty-handed case:
-  a Python target whose image has no debugpy. The injection bootstrap runs
-  inside the target's interpreter, so debugpy has to be importable *there*;
-  without it no configuration can be emitted and `--open` writes no
-  `launch.json` at all.
-
-  It does both halves. The seat installs debugpy into the target with `uv`,
-  resolved for the *target's* Python version rather than the seat's, and then
-  starts the debugpy server inside the app — so the emitted configuration has
-  something to connect to and F5 works when the command finishes. The two are
-  one flag because issue #45 ordered these mutations and put *installing* above
-  *injecting*: a run already allowed the larger one has been allowed the
-  smaller, and asking twice left the configuration emitted, the port closed and
-  the first F5 at `ECONNREFUSED`.
-
-  It is opt-in and stays so. It writes ~15 MB into the workload's writable
-  layer, on an ephemeral-storage budget the seat shares with the workload and
-  **cannot reserve** — an ephemeral container may not declare `resources`
-  (report 3.9); it needs egress from the pod, since uv resolves and downloads
-  from an index; starting the server ptraces the app, so it stops answering
-  probes for the few seconds that takes (~3 s measured, against the deadlines
-  the report above prints); and a restart of the target container ends the
-  debugging. The two halves do not expire together: the **server** never
-  survives a restart, being a live process in the container that died, while the
-  **install** survives one where `--provision-dest` names a volume mounted into
-  the target — an `emptyDir` is pod-scoped and outlives a container — and not at
-  the default `/opt/podbench-debugpy`, which is the container's own writable
-  layer. Either way the next step is `--provision` again, since without the
-  server nothing is listening. Installing debugpy into the app image, or baking
-  `debugpy.listen()` into the app, is the durable answer.
-
-  A **bare** `debug-config` still only prints the injection command. That is
-  `injection_command`'s rule unchanged — authoring a `launch.json` may not
-  ptrace the workload on its own — and `--provision` is what revokes it.
-
-  Without `--open` it is **refused**, not ignored: there is no `debug-config`
-  run for it to change, and a flag that reads as a promise to mutate the
-  workload must not quietly decline to keep it. Where the target's rootfs is
-  read-only the write fails with `EROFS` — the mount flag lives in the target's
-  mount namespace — and the seat's own `podbench debug-config --provision-dest`
-  is what points it at a writable volume instead.
-
-  Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
-  mode is on the **workload's** ephemeral-storage budget: a server plus one
-  extension measured 1215 MiB live, and `ms-vscode.cpptools` alone is 330 MiB.
-  That is why only the flavour's own extensions are installed — though "only"
-  is the *list*, not the outcome: VS Code resolves each entry's dependencies,
-  and `ms-python.python` is an extension pack, so a Python target also lands
-  `ms-python.vscode-pylance` (117 MiB) and `ms-python.vscode-python-envs`. The
-  excludes are written for what actually arrives, which is why
-  `python.analysis.exclude` is among them.
 * Exit code is `0` for any seat that lands, including a degraded one; `2` for a
   real error.
+
+### `vscode`
+
+Land a seat, size the pod for an editor, make the target debuggable, and open
+VS Code on it over Remote-SSH. Everything `attach` does, plus the three things a
+VS Code session needs that a bare seat does not — which is why it is a verb and
+not a flag: `attach` adds a container to the pod and touches the workload not at
+all, and two of these steps change it.
+
+```
+                                                                                                    
+ Usage: podbench vscode [OPTIONS] [POD]                                                             
+                                                                                                    
+ land a seat sized and provisioned for an editor, and open it                                       
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --target                    NAME             workload container name                             │
+│ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
+│                                              image built from this launcher's version)           │
+│ --target-uid                UID              the target's uid, when its pod spec does not say    │
+│ --target-gid                GID              the target's gid, when its pod spec does not say.   │
+│                                              The seat must share it: __ptrace_may_access         │
+│                                              compares the group ids as peers of the user ids, so │
+│                                              a seat at the target's uid in another group can log │
+│                                              in and cannot trace. Rarely needed - podbench       │
+│                                              measures the target's real gid from /proc and lands │
+│                                              a corrected seat itself - but it costs one          │
+│                                              container name instead of two, and it is not        │
+│                                              overridden by the measurement                       │
+│ --max-rung                  RUNG             highest rung of the capability ladder to try: full, │
+│                                              degraded or seat. It is where the walk starts, and  │
+│                                              the ladder still falls through the rungs below.     │
+│                                              Without it a target whose uid is known and not root │
+│                                              has its own rung tried first. Use `full` to insist  │
+│                                              on the capability rung - a node with Yama           │
+│                                              ptrace_scope >= 1 exempts nothing else - or         │
+│                                              `degraded` where a mutating admission policy strips │
+│                                              SYS_PTRACE instead of refusing it. A running seat   │
+│                                              above the ceiling is not reused                     │
+│ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
+│                                              seat, named by claim or by volume name. MOUNTPATH   │
+│                                              defaults to the application container's own, which  │
+│                                              Hotfix mode requires it to equal. Repeatable        │
+│ --new                                        add a container even if one is running (its name is │
+│                                              permanent)                                          │
+│ --no-correct-ids                             keep the first seat even when it landed in the      │
+│                                              wrong group. Without this, a seat whose measured    │
+│                                              uid:gid disagrees with the target's is replaced     │
+│                                              once by a corrected one, which spends a second      │
+│                                              container name for the pod's lifetime - an          │
+│                                              ephemeral container's securityContext cannot be     │
+│                                              changed in place. Use --target-gid to get it right  │
+│                                              on the first name                                   │
+│ --no-seat-identity                           do not mount the pod's podbench-home volume, which  │
+│                                              is otherwise mounted by convention when the pod     │
+│                                              declares it and keeps everything the seat writes    │
+│                                              off the workload's ephemeral-storage budget. The    │
+│                                              podbench-identity volume is never mounted by        │
+│                                              attach: it needs a subPath per file, which an       │
+│                                              ephemeral container may not have - a live-pod seat  │
+│                                              registers its own NSS record instead, and needs no  │
+│                                              volume for it                                       │
+│ --no-probe                                   skip capreport; the report then says nothing was    │
+│                                              measured                                            │
+│ --pull                      POLICY           imagePullPolicy for the seat: IfNotPresent          │
+│                                              (default), Always or Never. Use Always when         │
+│                                              iterating on a tag that moves - `main`, or a branch │
+│                                              image - since a node that already has a copy will   │
+│                                              otherwise serve it. It cannot be the default:       │
+│                                              Always is the one policy that needs a registry, so  │
+│                                              it breaks an image side-loaded with `kind load` or  │
+│                                              `ctr import`                                        │
+│                                              [default: IfNotPresent]                             │
+│ --resize                    MEMORY           raise the target's memory in place first, as LIMIT  │
+│                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
+│                                              is raised too where a LimitRange bounds             │
+│                                              limit/request                                       │
+│ --resize-cpu                CPU              raise the target's cpu in place first, as LIMIT or  │
+│                                              REQUEST:LIMIT, e.g. 4 or 500m:4                     │
+│ --no-resize                                  do not raise the target's memory for the editor.    │
+│                                              Without it, a pod with less headroom than           │
+│                                              vscode-server was measured to need has the target's │
+│                                              memory limit raised to cover it - the one mutation  │
+│                                              this verb makes that `--resize MEMORY` would        │
+│                                              otherwise have to be typed with a number. A pod     │
+│                                              that already has the room is left alone either way  │
+│ --no-provision                               author whatever fits the target as it stands.       │
+│                                              Without it, a Python workload that cannot import    │
+│                                              debugpy has it installed and its server started,    │
+│                                              because that target gets no launch.json at all      │
+│                                              otherwise. Mutates the workload: ~15 MB of shared   │
+│                                              ephemeral storage, needs egress from the pod,       │
+│                                              ptraces the app for a few seconds, and no restart   │
+│                                              survives it                                         │
+│ --identity                  KEY              ssh key to authorise in the seat and name in the    │
+│                                              generated stanza                                    │
+│                                              [default: ~/.ssh/id_ed25519]                        │
+│ --ssh-user                  NAME             login name to put in the stanza                     │
+│ --host-alias                NAME             ssh Host name for the seat                          │
+│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
+│                                              refused with the candidates instead. Already        │
+│                                              implied when stdin is not a tty                     │
+│ --namespace         -n      NAMESPACE        namespace (default: the kubeconfig context's own)   │
+│ --context                   NAME             kubeconfig context                                  │
+│ --kubectl                   BIN              kubectl binary to use [default: kubectl]            │
+│ --config-dir                DIR              where the generated ssh config and known_hosts live │
+│                                              (default ~/.podbench)                               │
+│ --help                                       Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+`POD` and every option `attach` takes mean the same thing here; only the four
+below are its own.
+
+#### Sizing the pod
+
+vscode-server measured **1215 MiB** live with a single extension, which does not
+fit in most of the pods it is aimed at. The headroom that decides is read on
+every attach already, so the verb uses it rather than asking for it back: where
+the free memory is under that figure, the *target's* memory limit is raised by
+the shortfall, rounded up to the next whole GiB, before the seat lands.
+
+The target's limit, because it is the only one a seat can move — an ephemeral
+container may not declare `resources` at all (report 3.9), so it lives in the
+pod's cgroup and the pod's ceiling is the sum of its containers' limits. Raising
+the target by the shortfall therefore raises that ceiling by the same amount.
+
+It says both the reading and the number it chose, and the raise carries every
+caveat `attach --resize` carries — chiefly that the raised limit lives on the
+pod and not on its controller, so the next rollout silently reverts it.
+
+* `--resize MEMORY` chooses the number yourself, and `--resize-cpu` is
+  untouched by any of this: no measurement says what vscode-server and a
+  language server want, so nothing guesses.
+* `--no-resize` declines the raise. Declining is not declining to be told — the
+  headroom is read again after the seat lands and the OOM warning is printed
+  against it either way, which is also what a pod whose resize was *refused*
+  sees. A container holding a `resources.claims` entry refuses every resize
+  until Kubernetes 1.36.
+* A pod with no memory limit anywhere leaves its cgroup unbounded, so there is
+  no ceiling to raise and nothing is patched. A pod with no metrics API cannot
+  be measured, and that is the one unmeasured case podbench warns about: the
+  verb undertook to size the pod, and quietly not doing it would leave you
+  believing it had.
+
+Memory is the half that can be fixed in place. **Disk is not.** `~/.vscode-server`
+reaches 1.1–1.3 GB, and in Observe mode that lands on the *workload's*
+ephemeral-storage budget, whose overrun evicts the whole pod rather than
+OOM-killing one container. The only mitigation is a `podbench-home` volume, and
+`spec.volumes` is immutable — it has to have been deployed. The verb says so
+when the pod has no such volume, and says so again when the pod *has* one and
+the seat landed on the root rung, where sshd takes `$HOME` from the passwd
+record and the image's own record for uid 0 already says `/root`
+([#42](https://github.com/gilesknap/podbench/issues/42)).
+
+#### Opening the editor
+
+This is the half that takes a seat from "landed" to "bound breakpoint". It needs
+`code` on your PATH, and the local VS Code needs the **Remote - SSH** extension;
+both are checked at the point of use and named in the failure rather than
+reported as a traceback. `code` is looked for *before* the seat is landed,
+because an ephemeral container's name is permanent and a run that was always
+going to end at "no `code`" must not burn one.
+
+It has to be the **desktop** `code`. Inside a Remote-SSH window, a devcontainer
+or a Codespace, the `code` on your PATH is VS Code's *remote* CLI, which
+forwards to the window that terminal already belongs to: `--install-extension`
+would install into that machine rather than into the seat, leaving breakpoints
+that never bind. podbench refuses that one by name before landing anything — run
+it from a terminal on the machine your VS Code itself runs on, or run `podbench
+attach` and use **Remote-SSH: Connect to Host**.
+
+In order it:
+* writes `<home>/.vscode/settings.json` with every exclude `podbench agent`
+  writes at machine scope — the watcher, search, Pylance and cpptools entries
+  for `/proc`, `/sys`, `/dev` and `~/.vscode-server` — **before** the window
+  opens, because the walk starts the moment it does. A single folder makes
+  that file the *workspace* settings, so none of the keys is dropped there,
+  and this is the one copy that survives *Kill/Uninstall VS Code Server on
+  Host*. Inside a home, `**/.vscode-server/**` is the entry that earns its
+  place first, and `C_Cpp.files.exclude` the only one that stops cpptools'
+  tag parser walking on its own account;
+* runs `podbench debug-config --print-config` in the seat and merges the result
+  into `<home>/.vscode/launch.json`, matching on configuration name, so a
+  second run updates its own entries rather than appending copies;
+* installs **only** the extensions the emitted configurations name, with
+  `code --remote ssh-remote+<alias> --install-extension` — which is the
+  "Install in SSH: `<alias>`" button as a flag. A locally installed extension
+  runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
+  means anything, and the failure looks like a bad `launch.json`. They are
+  also recommended in `<home>/.vscode/extensions.json` as a fallback. An
+  install only unpacks into the seat's `~/.vscode-server`, so a window that
+  was **already** connected keeps the extension host it started and never
+  loads it — the adapter stays unregistered and its `launch.json` entry
+  cannot run. A first run is unaffected, since the install finishes
+  before the window opens; a later run needs the reload only where it put a
+  *new* extension in the seat, and the *Developer: Reload Window* reminder is
+  printed whenever an install **succeeded**, because `code` exits 0 for
+  "already installed" too and this side cannot tell an open window from a
+  fresh one. A run whose every install failed prints no reminder, having
+  unpacked nothing;
+* opens the **seat's home** — `/root`, or `/home/podbench` on a
+  `podbench-home` volume. Never `/`: a folder there points the watcher at
+  `/proc/<pid>/root`, which is a symlink into another container's rootfs, and
+  the walk has no bottom.
+
+There is no `--print-config` here, and that is the reason: it writes no stanza,
+while `code --remote ssh-remote+<alias>` resolves the alias through ssh, which
+reads the config dir. Use `attach --print-config` for a stanza to paste. A
+target no debugger fits is not a failure — the excludes, the folder and the
+terminals are the rest of the seat.
+
+`debug-config`'s own stderr is relayed line by line rather than summarised.
+It is the only thing in the run that can see the target, so its narration is
+the diagnosis — it names every mechanism that said no, and on success it also
+carries the injection command, which the emitted debugpy configuration needs
+and cannot state: the entry is written once the *prerequisites* are met, and
+nothing is listening until that command is run.
+
+#### Provisioning
+
+Provisioning means *make this target debuggable*, and it is what the verb does
+unless `--no-provision` says otherwise. It is the answer to the commonest
+empty-handed case: a Python target whose image has no debugpy. The injection
+bootstrap runs inside the target's interpreter, so debugpy has to be importable
+*there*; without it no configuration can be emitted and the verb writes no
+`launch.json` at all.
+
+It does both halves. The seat installs debugpy into the target with `uv`,
+resolved for the *target's* Python version rather than the seat's, and then
+starts the debugpy server inside the app — so the emitted configuration has
+something to connect to and F5 works when the command finishes. The two are
+one step because issue #45 ordered these mutations and put *installing* above
+*injecting*: a run already allowed the larger one has been allowed the
+smaller, and asking twice left the configuration emitted, the port closed and
+the first F5 at `ECONNREFUSED`.
+
+It is a mutation and is reported as one. It writes ~15 MB into the workload's
+writable layer, on an ephemeral-storage budget the seat shares with the workload and
+**cannot reserve** — an ephemeral container may not declare `resources`
+(report 3.9); it needs egress from the pod, since uv resolves and downloads
+from an index; starting the server ptraces the app, so it stops answering
+probes for the few seconds that takes (~3 s measured, against the deadlines
+the report above prints); and a restart of the target container ends the
+debugging. The two halves do not expire together: the **server** never
+survives a restart, being a live process in the container that died, while the
+**install** survives one where `--provision-dest` names a volume mounted into
+the target — an `emptyDir` is pod-scoped and outlives a container — and not at
+the default `/opt/podbench-debugpy`, which is the container's own writable
+layer. Either way the next step is another `podbench vscode`, since without the
+server nothing is listening. Installing debugpy into the app image, or baking
+`debugpy.listen()` into the app, is the durable answer.
+
+A **bare** `debug-config` still only prints the injection command. That is
+`injection_command`'s rule unchanged — authoring a `launch.json` may not
+ptrace the workload on its own — and `--provision` is what revokes it.
+
+It happens only where the seat says it is the blocker. `debug-config` names
+`--provision` in its own refusal when debugpy is what is missing and for no
+other flavour — there is no `--provision` for a missing delve — so the retry is
+keyed on the seat's own words rather than on this side guessing the target's
+language a second time. A target that already has a debugger is not touched,
+and `--no-provision` gets the offer instead of the act. Where the target's
+rootfs is read-only the write fails with `EROFS` — the mount flag lives in the target's
+mount namespace — and the seat's own `podbench debug-config --provision-dest`
+is what points it at a writable volume instead.
+
+Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
+mode is on the **workload's** ephemeral-storage budget: a server plus one
+extension measured 1215 MiB live, and `ms-vscode.cpptools` alone is 330 MiB.
+That is why only the flavour's own extensions are installed — though "only"
+is the *list*, not the outcome: VS Code resolves each entry's dependencies,
+and `ms-python.python` is an extension pack, so a Python target also lands
+`ms-python.vscode-pylance` (117 MiB) and `ms-python.vscode-python-envs`. The
+excludes are written for what actually arrives, which is why
+`python.analysis.exclude` is among them.
 
 ### `ssh-config`
 

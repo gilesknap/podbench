@@ -46,7 +46,7 @@ from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV, SEAT_NSS_PATH
 from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
 from .console import WARNING_LEAD, emit, paragraph
-from .editor import EditorError, open_seat, resolve_editor
+from .editor import EditorError, Provision, open_seat, resolve_editor
 from .kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
     DEFAULT_POLL_INTERVAL,
@@ -93,9 +93,11 @@ from .resize import (
     ResizeError,
     ResizePlan,
     Want,
+    editor_limit,
     explain_claim_refusal,
     format_memory,
     namespace_limits,
+    parse_quantity,
     parse_top_memory,
     parse_want,
     plan_resize,
@@ -121,6 +123,7 @@ from .spec import (
     target_uid_gid,
 )
 from .sshcfg import (
+    ROOT_HOME,
     SEAT_USER,
     HostKeyBinding,
     HostKeyPolicy,
@@ -139,7 +142,11 @@ __all__ = [
     "CONFIG_D",
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
+    "EDITOR_ORPHAN_HOME_WARNING",
     "EDITOR_PROBE_REMINDER",
+    "EDITOR_RESIZE_NOTE",
+    "EDITOR_STORAGE_WARNING",
+    "EDITOR_UNMEASURED_WARNING",
     "HOST_KEY_ARGV",
     "ID_CORRECTION_WARNING",
     "LADDER",
@@ -332,20 +339,105 @@ to the pod in front of you.
 """
 
 EDITOR_HEADROOM_WARNING = (
-    "--open lands vscode-server here and it measured {needed} live with one "
+    "vscode-server lands here and it measured {needed} live with one "
     "extension, against {free} of headroom ({used} in use of {limit}): the "
     "overflow OOM-kills something in the pod cgroup and an ephemeral container "
     "does not come back. `--resize MEMORY` first, or `podbench dev`."
 )
-"""The memory cost that survived the measurement, on the flag that spends it.
+"""The memory cost that survived the measurement, on the verb that spends it.
 
 A bare seat is 13-23 MiB and no longer earns a word; an editor is three orders
 of magnitude more (1215 MiB with one extension, 2026-08-16, report R2) and does
-not fit in most of the pods measured. So this is keyed on ``--open``, which is
-podbench asking for the editor itself, and on the same reading of this pod that
-the seat's own line uses. Somebody who connects VS Code by hand afterwards is
-told by ``docs/how-to/vscode-remote-ssh.md`` instead - a warning cannot be
-printed for a decision that has not been made yet.
+not fit in most of the pods measured. So this is keyed on ``podbench vscode``,
+which is podbench asking for the editor itself, and on the same reading of this
+pod that the seat's own line uses. Somebody who connects VS Code by hand
+afterwards is told by ``docs/how-to/vscode-remote-ssh.md`` instead - a warning
+cannot be printed for a decision that has not been made yet.
+
+Since the verb sizes the pod itself, reaching this line means the raise did not
+take: a container holding a ``resources.claims`` entry refuses every resize
+(#107), and `--no-resize` declines one. Both leave the hazard exactly as it was,
+which is why the warning still names the flag.
+"""
+
+EDITOR_RESIZE_NOTE = (
+    "sized for the editor: {free} free is under the {needed} vscode-server "
+    "measured, so {container}'s memory limit was raised to {limit}. "
+    "`--no-resize` declines it; `--resize MEMORY` chooses the number."
+)
+"""Why ``vscode`` raised a limit nobody typed, printed before it tries.
+
+Before, so that a refusal - which :func:`try_resize` reports on the next line -
+is read against the intent rather than as an act with no motive. The two are one
+mutation and they are two lines because the second is the one that can fail.
+
+The number is arithmetic, not a default: :func:`podbench.resize.editor_limit`
+raises the target by the shortfall against
+:data:`podbench.resize.EDITOR_HEADROOM` and rounds up to the next whole GiB.
+Naming the container is what makes it checkable - the raise goes on the
+*target's* limit, because an ephemeral container may not declare ``resources``
+at all and the pod's ceiling is the sum of its containers'.
+"""
+
+EDITOR_STORAGE_WARNING = (
+    "this pod declares no {volume!r} volume, so vscode-server unpacks into the "
+    "seat's own writable layer: 1.1-1.3 GB on the *workload's* "
+    "ephemeral-storage budget, which a seat may not reserve and whose overrun "
+    "evicts the whole pod, application included. Declaring the volume is a "
+    "chart change - `spec.volumes` cannot be added to a running pod."
+)
+"""The editor cost that no flag on this verb can pay.
+
+Memory can be raised in place, and this cannot: ``spec.volumes`` is immutable,
+so the mitigation has to have been deployed. It is worth a line anyway, because
+the failure mode is the worst one podbench can cause - eviction takes the
+workload, not just the seat - and nothing else in the run mentions it.
+
+Not keyed on the target's declared ``ephemeral-storage`` limit, deliberately. A
+pod with no limit is not safe here, it is unbounded against the *node's* disk,
+and the eviction then arrives from the kubelet's imagefs pressure instead.
+"""
+
+EDITOR_ORPHAN_HOME_WARNING = (
+    "this pod declares {volume!r} and a root seat does not use it: sshd takes "
+    "a session's $HOME from the passwd record, which for uid 0 is the image's "
+    "own {home!r}. So vscode-server's 1.1-1.3 GB lands on the workload's "
+    "ephemeral-storage budget after all, and an overrun evicts the pod "
+    "(#42). `--max-rung degraded` lands a seat at the target's uid, which gets "
+    "a written record and uses the volume."
+)
+"""The volume is there, was deployed on purpose, and this rung ignores it.
+
+Worth saying rather than leaving silent precisely because the pod *looks*
+prepared: somebody added the volume for this, :func:`seat_identity_mounts`
+mounted it, and every layer is individually correct. What fails is the join -
+the launcher pins ``HOME`` in the container's environment and sshd obeys the
+passwd record instead, which is the rule :func:`podbench.agent.session_home`
+exists to state.
+
+It names ``--max-rung degraded`` rather than the volume, because the volume is
+already correct. That is a real trade and not a fix: the degraded rung has no
+``SYS_PTRACE``, so it buys the storage with the live attach. #42 is where the
+right answer - a passwd record for root that names the mount - is tracked.
+"""
+
+EDITOR_UNMEASURED_WARNING = (
+    "this pod's memory is not measured (no metrics API here), so nothing sized "
+    "it for the editor: vscode-server measured {needed} live, and overflowing "
+    "the pod cgroup OOM-kills a seat that cannot be restarted. `--resize "
+    "MEMORY` sets the limit yourself."
+)
+"""The one unmeasured case that earns a line, because this verb promised a size.
+
+Everywhere else in podbench an unreadable headroom is stated on the report's
+``memory`` row and left there: the metrics API is an add-on, its absence is
+ordinary, and a caution keyed on it would fire on every cluster without a
+metrics-server - which is the always-on memory warning the p47 measurement
+retired.
+
+``vscode`` is the exception because it undertook to do something. Silently not
+doing it leaves the user believing the pod was sized, which is worse than the
+warning is noisy, and the remedy is one flag away.
 """
 
 EDITOR_PROBE_REMINDER = (
@@ -354,7 +446,7 @@ EDITOR_PROBE_REMINDER = (
     "gdb fetches a library's debuginfo after the stop. `podbench dbg "
     "--no-debuginfod` in the seat spends none."
 )
-"""The last thing ``attach --open`` says, and the only thing it repeats.
+"""The last thing ``podbench vscode`` says, and the only thing it repeats.
 
 The numbers are :func:`podbench.budget.probe_qualifier`'s and stay there — a
 second copy is a second thing to keep true. What this adds is the timing: the
@@ -3184,7 +3276,7 @@ def default_host_alias(pod: PodRef, seat: str | None = None) -> str:
     * the stanza sets ``ControlMaster auto`` with ``ControlPersist``, and the
       multiplexing key includes the host *as typed*. So even with the file
       rewritten, every ``ssh`` - VS Code's included - kept riding the connection
-      already open to the **old** seat. Measured at DLS: ``--open`` wrote
+      already open to the **old** seat. Measured at DLS: the editor run wrote
       ``launch.json`` into ``podbench-2`` over ``kubectl exec`` while the editor
       read ``podbench-1``'s copy, and the debugger silently used the previous
       image's answer.
@@ -3420,9 +3512,9 @@ def emit_ssh_config(
     flag.
 
     ``opening`` drops the closing "run ``podbench debug-config`` in the seat"
-    line, because ``--open`` is about to run it and say what it got. Only that
+    line, because ``vscode`` is about to run it and say what it got. Only that
     one line: the alias, the ``Include`` and the ssh command are what the reader
-    needs whether or not a window opens, and ``--open``'s own exit code is not
+    needs whether or not a window opens, and that verb's own exit code is not
     evidence the window connected.
     """
     if session.ssh is not None and session.ssh.refused:
@@ -3495,7 +3587,7 @@ def emit_ssh_config(
                 # sysroot-prefixed program and setup ordering are all things
                 # this launcher already knows and a human cannot guess; every
                 # wrong answer fails silently rather than erroring. Dropped
-                # under --open, which runs that verb itself a few lines further
+                # under `vscode`, which runs that verb itself a few lines further
                 # down and reports what it actually got: a step the reader has
                 # already had done for them reads as a step that did not happen.
                 *(
@@ -4569,42 +4661,326 @@ _PrintConfig = Annotated[
 ]
 
 
-def _editor_for(
-    open_editor: bool,
-    print_config: bool,
-    which: Callable[[str], str | None],
+_Target = Annotated[
+    str | None,
+    typer.Option("--target", metavar="NAME", help="workload container name"),
+]
+
+_Image = Annotated[
+    str | None,
+    typer.Option(
+        "--image",
+        metavar="REF",
+        # Not the resolved value: DEFAULT_IMAGE is derived from this
+        # launcher's own version, so printing it here would advertise
+        # `:main` from a checkout as though it were the release tag.
+        help=f"debug image (default: ${IMAGE_ENV}, else the image "
+        "built from this launcher's version)",
+    ),
+]
+
+_TargetUid = Annotated[
+    int | None,
+    typer.Option(
+        "--target-uid",
+        metavar="UID",
+        help="the target's uid, when its pod spec does not say",
+    ),
+]
+
+_TargetGid = Annotated[
+    int | None,
+    typer.Option(
+        "--target-gid",
+        metavar="GID",
+        help="the target's gid, when its pod spec does not say. The "
+        "seat must share it: __ptrace_may_access compares the group "
+        "ids as peers of the user ids, so a seat at the target's uid "
+        "in another group can log in and cannot trace. Rarely needed - "
+        "podbench measures the target's real gid from /proc and lands "
+        "a corrected seat itself - but it costs one container name "
+        "instead of two, and it is not overridden by the measurement",
+    ),
+]
+
+_MaxRung = Annotated[
+    Rung | None,
+    typer.Option(
+        "--max-rung",
+        metavar="RUNG",
+        help="highest rung of the capability ladder to try: full, "
+        "degraded or seat. It is where the walk starts, and the ladder "
+        "still falls through the rungs below. Without it a target "
+        "whose uid is known and not root has its own rung tried first. "
+        "Use `full` to insist on the capability rung - a node with Yama "
+        "ptrace_scope >= 1 exempts nothing else - or `degraded` where a "
+        "mutating admission policy strips SYS_PTRACE instead of "
+        "refusing it. A running seat above the ceiling is not reused",
+    ),
+]
+
+_Mount = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--mount",
+        metavar="CLAIM:MOUNTPATH",
+        help="mount a volume the pod already declares into the seat, "
+        "named by claim or by volume name. MOUNTPATH defaults to the "
+        "application container's own, which Hotfix mode requires it to "
+        "equal. Repeatable",
+    ),
+]
+
+_ForceNew = Annotated[
+    bool,
+    typer.Option(
+        "--new",
+        help="add a container even if one is running (its name is permanent)",
+    ),
+]
+
+_NoCorrectIds = Annotated[
+    bool,
+    typer.Option(
+        "--no-correct-ids",
+        help="keep the first seat even when it landed in the wrong "
+        "group. Without this, a seat whose measured uid:gid disagrees "
+        "with the target's is replaced once by a corrected one, which "
+        "spends a second container name for the pod's lifetime - an "
+        "ephemeral container's securityContext cannot be changed in "
+        "place. Use --target-gid to get it right on the first name",
+    ),
+]
+
+_NoSeatIdentity = Annotated[
+    bool,
+    typer.Option(
+        "--no-seat-identity",
+        help="do not mount the pod's podbench-home volume, which is "
+        "otherwise mounted by convention when the pod declares it and "
+        "keeps everything the seat writes off the workload's "
+        "ephemeral-storage budget. The podbench-identity volume is "
+        "never mounted by attach: it needs a subPath per file, which an "
+        "ephemeral container may not have - a live-pod seat registers "
+        "its own NSS record instead, and needs no volume for it",
+    ),
+]
+
+_NoProbe = Annotated[
+    bool,
+    typer.Option(
+        "--no-probe",
+        help="skip capreport; the report then says nothing was measured",
+    ),
+]
+
+_Pull = Annotated[
+    str,
+    typer.Option(
+        "--pull",
+        metavar="POLICY",
+        help="imagePullPolicy for the seat: IfNotPresent (default), "
+        "Always or Never. Use Always when iterating on a tag that "
+        "moves - `main`, or a branch image - since a node that already "
+        "has a copy will otherwise serve it. It cannot be the default: "
+        "Always is the one policy that needs a registry, so it breaks "
+        "an image side-loaded with `kind load` or `ctr import`",
+    ),
+]
+
+_Resize = Annotated[
+    str | None,
+    typer.Option(
+        "--resize",
+        metavar="MEMORY",
+        help="raise the target's memory in place first, as LIMIT or "
+        "REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request is raised too "
+        "where a LimitRange bounds limit/request",
+    ),
+]
+
+_ResizeCpu = Annotated[
+    str | None,
+    typer.Option(
+        "--resize-cpu",
+        metavar="CPU",
+        help="raise the target's cpu in place first, as LIMIT or "
+        "REQUEST:LIMIT, e.g. 4 or 500m:4",
+    ),
+]
+
+_Timeout = Annotated[
+    float,
+    typer.Option("--timeout", metavar="SECONDS", help="seconds to wait for the seat"),
+]
+
+
+def _land(
+    kubectl: Kubectl,
+    pod: str,
     *,
-    provision: bool = False,
-) -> str | None:
-    """The editor ``--open`` will drive, or ``None`` when it was not asked for.
+    public_key: str,
+    target: str | None,
+    image: str | None,
+    target_uid: int | None,
+    target_gid: int | None,
+    max_rung: Rung | None,
+    mounts: Sequence[str],
+    force_new: bool,
+    correct_ids: bool,
+    seat_identity: bool,
+    pull: str,
+    probe: bool,
+    timeout: float,
+    resize: str | None,
+    resize_cpu: str | None,
+    editor: bool = False,
+    auto_resize: bool = False,
+) -> Session:
+    """Resize if asked, land the seat, and fold both outcomes into the report.
 
-    ``--print-config`` is refused rather than tolerated: it prints the stanza
-    instead of writing it, and ``code --remote ssh-remote+<alias>`` can only
-    reach a host **ssh** resolves — so the pair would land a seat, print a
-    stanza and then fail on a host that exists nowhere.
+    Shared by ``attach`` and ``vscode`` because the seat is the same seat: the
+    two verbs differ in what they spend on it and what they do afterwards, not
+    in how it lands.
 
-    ``--provision`` without ``--open`` is refused for a harsher reason than
-    "it does nothing": the flag reads as a promise to mutate the workload, and a
-    run that silently declines to keep it is one whose target the user now
-    believes has debugpy in it.
+    The resize goes first, and not merely early — the headroom has to exist
+    before vscode-server starts allocating into a limit podbench cannot reserve,
+    and a raise afterwards is a raise the editor has already overrun.
+
+    ``auto_resize`` is the whole of the difference. ``attach`` never passes it:
+    nothing there decides to spend the pod's memory, so a resize happens only
+    where a flag asked for one, which is #54's decision. ``vscode`` does,
+    because the editor it is about to open is the one cost measured not to fit
+    (:data:`podbench.resize.EDITOR_HEADROOM`), and the number that fixes it is
+    arithmetic on a headroom this code already reads.
+
+    ``editor`` is the separate question of whether that cost is about to be
+    *spent*, and the two come apart at ``--no-resize``: declining the raise is
+    not declining to be told the pod cannot hold what is being opened into it.
     """
-    if not open_editor:
-        if provision:
-            raise EditorError(
-                "--provision only has an effect with --open: it is a "
-                "pass-through to the debug-config run that authors launch.json, "
-                "and without --open there is no such run. To install debugpy "
-                "into the target on its own, exec the seat's own verb: "
-                "`kubectl exec -c <seat> -- podbench debug-config --provision`."
+    warnings: list[str] = []
+    if resize is None and auto_resize:
+        resize, note = _editor_memory(kubectl, pod, target)
+        if note is not None:
+            warnings.append(note)
+    if resize is not None or resize_cpu is not None:
+        # Re-read rather than reuse `_editor_memory`'s copy: `try_resize` needs
+        # the pod as it stands at the moment it patches, and an explicit
+        # `--resize` reaches here having read nothing at all.
+        pod_json = kubectl.get_pod(pod)
+        warnings.append(
+            try_resize(
+                kubectl,
+                pod,
+                target_container_name(pod_json, target),
+                resize,
+                cpu=resize_cpu,
+                pod_json=pod_json,
             )
-        return None
-    if print_config:
-        raise EditorError(
-            "--open needs the ssh stanza on disk and --print-config writes "
-            "none: `code --remote ssh-remote+<alias>` resolves the alias "
-            "through ssh, which reads the config dir. Use one or the other."
         )
-    return resolve_editor(which)
+
+    session = attach(
+        kubectl,
+        pod,
+        target=target,
+        image=image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE),
+        public_key=public_key,
+        target_uid=target_uid,
+        max_rung=max_rung,
+        mounts=mounts,
+        target_gid=target_gid,
+        force_new=force_new,
+        correct_ids=correct_ids,
+        seat_identity=seat_identity,
+        pull_policy=_pull_policy(pull),
+        probe=probe,
+        timeout=timeout,
+    )
+    if editor:
+        # Checked after the seat has landed rather than before, because this is
+        # the headroom the editor will actually meet: it is read again inside
+        # `attach`, with the seat in the sum. It is also the only thing that
+        # reports a raise which did not take - `--no-resize` declined one and a
+        # container holding a `resources.claims` entry refuses every one (#107)
+        # - so it is keyed on opening an editor and never on having resized.
+        editor_note = headroom_note(
+            session.headroom, needed=EDITOR_HEADROOM, template=EDITOR_HEADROOM_WARNING
+        )
+        if editor_note is not None:
+            warnings.append(editor_note)
+    return replace(session, warnings=(*session.warnings, *warnings))
+
+
+def _storage_note(pod_json: Mapping[str, Any], session: Session) -> str | None:
+    """Where vscode-server's 1.1-1.3 GB is about to land, when that is a hazard.
+
+    Two ways it lands on the workload's ephemeral-storage budget, and they read
+    identically from the terminal, so they are told apart here: the pod declares
+    no home volume at all, or it declares one that this seat's rung cannot use.
+    Silent otherwise - a seat writing into the volume is the case the volume was
+    deployed for, and saying so would be a warning about something working.
+
+    Asked of ``session`` rather than of the spec because the rung is measured:
+    :attr:`Session.root_seat` reads the seat's own ``/proc/self/status`` where it
+    could, which is the same reason :func:`seat_layout` does not trust the rung
+    label a mutating webhook may have rewritten.
+    """
+    if SEAT_HOME_VOLUME not in declared_volumes(pod_json):
+        return EDITOR_STORAGE_WARNING.format(volume=SEAT_HOME_VOLUME)
+    if session.root_seat:
+        return EDITOR_ORPHAN_HOME_WARNING.format(
+            volume=SEAT_HOME_VOLUME, home=ROOT_HOME
+        )
+    return None
+
+
+def _editor_memory(
+    kubectl: Kubectl, pod: str, target: str | None
+) -> tuple[str | None, str | None]:
+    """The memory limit ``vscode`` will ask the target for, and what to say.
+
+    Both halves are optional and they are independent: a pod with room needs
+    neither, and a pod nobody can measure needs the second alone.
+
+    The measurement is the same one ``attach`` prints on its ``memory`` row, and
+    reading it here costs one extra ``kubectl top pod`` before the seat lands.
+    That the seat is not yet in the sum errs by 13-23 MiB
+    (:data:`podbench.resize.SEAT_FOOTPRINT`) against a 1215 MiB threshold, which
+    is under a rounding step of the answer.
+
+    An unmeasured pod is the one case that earns a line without an action. It is
+    not a hazard - :attr:`podbench.resize.Headroom.summary` states it as
+    unmeasured on the report's own row, and a caution there would fire on every
+    cluster with no metrics-server - but this verb undertook to size the pod,
+    and silently not doing so is a promise quietly dropped.
+    """
+    pod_json = kubectl.get_pod(pod)
+    headroom = measure_headroom(kubectl, pod, pod_json)
+    if headroom.limit is None:
+        # No ceiling for the seat to share, so nothing to run out of and no
+        # limit worth raising. The report's memory row already says so.
+        return None, None
+    if headroom.used is None:
+        return None, EDITOR_UNMEASURED_WARNING.format(
+            needed=format_memory(EDITOR_HEADROOM)
+        )
+    workload = target_container_name(pod_json, target)
+    current = as_dict(_container_resources(pod_json, workload).get("limits")).get(
+        MEMORY
+    )
+    wanted = editor_limit(
+        headroom, None if current is None else parse_quantity(str(current))
+    )
+    if wanted is None:
+        return None, None
+    free = headroom.free
+    assert free is not None  # noqa: S101 - `editor_limit` answered on it
+    return format_memory(wanted), EDITOR_RESIZE_NOTE.format(
+        free=format_memory(free),
+        needed=format_memory(EDITOR_HEADROOM),
+        container=workload,
+        limit=format_memory(wanted),
+    )
 
 
 def _open_editor(
@@ -4613,7 +4989,7 @@ def _open_editor(
     wiring: SshSeat,
     *,
     editor: str,
-    provision: bool,
+    provision: Provision,
     runner: Runner | None,
 ) -> None:
     """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
@@ -4630,9 +5006,9 @@ def _open_editor(
     """
     if wiring.alias is None:
         raise EditorError(
-            "--open: this seat has no ssh alias, so there is nothing for "
-            "Remote-SSH to connect to. The block above names the mechanism and "
-            "the ways out; the kubectl exec helpers work now regardless."
+            "this seat has no ssh alias, so there is nothing for Remote-SSH "
+            "to connect to. The block above names the mechanism and the ways "
+            "out; the kubectl exec helpers work now regardless."
         )
     open_seat(
         kubectl,
@@ -4641,7 +5017,7 @@ def _open_editor(
         folder=seat_layout(session).home,
         # Wrapped like every other block this verb prints: two of these notes
         # are paragraphs rather than lines.
-        # Hung two further columns rather than bulleted: --open's notes are a
+        # Hung two further columns rather than bulleted: these notes are a
         # list of steps, but several of them carry a ` - ` of their own, and a
         # wrapped line that begins with one under a bulleted list reads as the
         # next step. The indent cannot be forged that way.
@@ -4670,173 +5046,24 @@ def _build_app(
     )
     def attach_command(
         pod: _Pod = None,
-        target: Annotated[
-            str | None,
-            typer.Option("--target", metavar="NAME", help="workload container name"),
-        ] = None,
-        image: Annotated[
-            str | None,
-            typer.Option(
-                "--image",
-                metavar="REF",
-                # Not the resolved value: DEFAULT_IMAGE is derived from this
-                # launcher's own version, so printing it here would advertise
-                # `:main` from a checkout as though it were the release tag.
-                help=f"debug image (default: ${IMAGE_ENV}, else the image "
-                "built from this launcher's version)",
-            ),
-        ] = None,
-        target_uid: Annotated[
-            int | None,
-            typer.Option(
-                "--target-uid",
-                metavar="UID",
-                help="the target's uid, when its pod spec does not say",
-            ),
-        ] = None,
-        target_gid: Annotated[
-            int | None,
-            typer.Option(
-                "--target-gid",
-                metavar="GID",
-                help="the target's gid, when its pod spec does not say. The "
-                "seat must share it: __ptrace_may_access compares the group "
-                "ids as peers of the user ids, so a seat at the target's uid "
-                "in another group can log in and cannot trace. Rarely needed - "
-                "podbench measures the target's real gid from /proc and lands "
-                "a corrected seat itself - but it costs one container name "
-                "instead of two, and it is not overridden by the measurement",
-            ),
-        ] = None,
-        max_rung: Annotated[
-            Rung | None,
-            typer.Option(
-                "--max-rung",
-                metavar="RUNG",
-                help="highest rung of the capability ladder to try: full, "
-                "degraded or seat. It is where the walk starts, and the ladder "
-                "still falls through the rungs below. Without it a target "
-                "whose uid is known and not root has its own rung tried first. "
-                "Use `full` to insist on the capability rung - a node with Yama "
-                "ptrace_scope >= 1 exempts nothing else - or `degraded` where a "
-                "mutating admission policy strips SYS_PTRACE instead of "
-                "refusing it. A running seat above the ceiling is not reused",
-            ),
-        ] = None,
-        mount: Annotated[
-            list[str] | None,
-            typer.Option(
-                "--mount",
-                metavar="CLAIM:MOUNTPATH",
-                help="mount a volume the pod already declares into the seat, "
-                "named by claim or by volume name. MOUNTPATH defaults to the "
-                "application container's own, which Hotfix mode requires it to "
-                "equal. Repeatable",
-            ),
-        ] = None,
-        force_new: Annotated[
-            bool,
-            typer.Option(
-                "--new",
-                help="add a container even if one is running (its name is permanent)",
-            ),
-        ] = False,
-        no_correct_ids: Annotated[
-            bool,
-            typer.Option(
-                "--no-correct-ids",
-                help="keep the first seat even when it landed in the wrong "
-                "group. Without this, a seat whose measured uid:gid disagrees "
-                "with the target's is replaced once by a corrected one, which "
-                "spends a second container name for the pod's lifetime - an "
-                "ephemeral container's securityContext cannot be changed in "
-                "place. Use --target-gid to get it right on the first name",
-            ),
-        ] = False,
-        no_seat_identity: Annotated[
-            bool,
-            typer.Option(
-                "--no-seat-identity",
-                help="do not mount the pod's podbench-home volume, which is "
-                "otherwise mounted by convention when the pod declares it and "
-                "keeps everything the seat writes off the workload's "
-                "ephemeral-storage budget. The podbench-identity volume is "
-                "never mounted by attach: it needs a subPath per file, which an "
-                "ephemeral container may not have - a live-pod seat registers "
-                "its own NSS record instead, and needs no volume for it",
-            ),
-        ] = False,
-        no_probe: Annotated[
-            bool,
-            typer.Option(
-                "--no-probe",
-                help="skip capreport; the report then says nothing was measured",
-            ),
-        ] = False,
-        pull: Annotated[
-            str,
-            typer.Option(
-                "--pull",
-                metavar="POLICY",
-                help="imagePullPolicy for the seat: IfNotPresent (default), "
-                "Always or Never. Use Always when iterating on a tag that "
-                "moves - `main`, or a branch image - since a node that already "
-                "has a copy will otherwise serve it. It cannot be the default: "
-                "Always is the one policy that needs a registry, so it breaks "
-                "an image side-loaded with `kind load` or `ctr import`",
-            ),
-        ] = DEFAULT_PULL_POLICY,
-        resize: Annotated[
-            str | None,
-            typer.Option(
-                "--resize",
-                metavar="MEMORY",
-                help="raise the target's memory in place first, as LIMIT or "
-                "REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request is raised too "
-                "where a LimitRange bounds limit/request",
-            ),
-        ] = None,
-        resize_cpu: Annotated[
-            str | None,
-            typer.Option(
-                "--resize-cpu",
-                metavar="CPU",
-                help="raise the target's cpu in place first, as LIMIT or "
-                "REQUEST:LIMIT, e.g. 4 or 500m:4",
-            ),
-        ] = None,
+        target: _Target = None,
+        image: _Image = None,
+        target_uid: _TargetUid = None,
+        target_gid: _TargetGid = None,
+        max_rung: _MaxRung = None,
+        mount: _Mount = None,
+        force_new: _ForceNew = False,
+        no_correct_ids: _NoCorrectIds = False,
+        no_seat_identity: _NoSeatIdentity = False,
+        no_probe: _NoProbe = False,
+        pull: _Pull = DEFAULT_PULL_POLICY,
+        resize: _Resize = None,
+        resize_cpu: _ResizeCpu = None,
         identity: _Identity = DEFAULT_IDENTITY,
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
-        open_editor: Annotated[
-            bool,
-            typer.Option(
-                "--open",
-                help="open the seat's home in VS Code over Remote-SSH once it "
-                "lands, with the /proc and /sys excludes, this target's "
-                "launch.json and only the extensions its debugger needs. Needs "
-                "`code` on PATH",
-            ),
-        ] = False,
-        provision: Annotated[
-            bool,
-            typer.Option(
-                "--provision",
-                help="with --open, make the target debuggable: install debugpy "
-                "when it cannot import one, then start the server so F5 has "
-                "something to connect to - otherwise a stock Python workload "
-                "gets no launch.json at all. Mutates the workload: ~15 MB of "
-                "shared ephemeral storage, needs egress from the pod, ptraces "
-                "the app for a few seconds, and no restart survives it",
-            ),
-        ] = False,
-        timeout: Annotated[
-            float,
-            typer.Option(
-                "--timeout", metavar="SECONDS", help="seconds to wait for the seat"
-            ),
-        ] = 120.0,
+        timeout: _Timeout = 120.0,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
@@ -4848,69 +5075,129 @@ def _build_app(
         # whichever pod is chosen, and asking someone to pick one first would
         # spend their answer on it.
         key_path, public_key = read_public_key(identity)
-        # Same rule, and it costs more here: an ephemeral container's name is
-        # permanent, so a run that was always going to end at "no `code`" must
-        # not burn one on the way.
-        editor = _editor_for(open_editor, print_config, which, provision=provision)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
-        chosen = image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE)
-
-        # Resize before attaching, not after: the headroom has to exist before
-        # vscode-server starts allocating into a limit podbench cannot reserve.
-        #
-        # And nothing at all when neither flag was given (#54). The line that
-        # used to stand here was an offer of a mode the user had not asked for,
-        # printed on every attach, in a report the sweep found was more than
-        # half warnings - and the premise under it, that a seat's memory is a
-        # live hazard, is what the p47 measurement retired. `--resize` is
-        # documented in `--help` and in docs/how-to/attach-to-a-pod.md, and the
-        # one place it is still named unasked is the warning that reads a
-        # genuinely thin pod.
-        resize_note: str | None = None
-        if resize is not None or resize_cpu is not None:
-            pod_json = kube.get_pod(name)
-            workload = target_container_name(pod_json, target)
-            resize_note = try_resize(
-                kube,
-                name,
-                workload,
-                resize,
-                cpu=resize_cpu,
-                pod_json=pod_json,
-            )
-
-        session = attach(
+        session = _land(
             kube,
             name,
-            target=target,
-            image=chosen,
             public_key=public_key,
+            target=target,
+            image=image,
             target_uid=target_uid,
+            target_gid=target_gid,
             max_rung=max_rung,
             mounts=mount or (),
-            target_gid=target_gid,
             force_new=force_new,
             correct_ids=not no_correct_ids,
             seat_identity=not no_seat_identity,
-            pull_policy=_pull_policy(pull),
+            pull=pull,
             probe=not no_probe,
             timeout=timeout,
+            resize=resize,
+            resize_cpu=resize_cpu,
         )
-        if resize_note is not None:
-            session = replace(session, warnings=(*session.warnings, resize_note))
-        # Checked here rather than in `attach`, because it is a question about
-        # this invocation and not about the seat: a bare seat is 13-23 MiB and
-        # earns no word at these headrooms, and an editor is a measured 1215 MiB
-        # that does not fit in most of the pods that were measured. `--open` is
-        # the only point at which podbench itself decides to spend that.
-        if editor is not None:
-            editor_note = headroom_note(
-                session.headroom,
-                needed=EDITOR_HEADROOM,
-                template=EDITOR_HEADROOM_WARNING,
-            )
-            if editor_note is not None:
-                session = replace(session, warnings=(*session.warnings, editor_note))
+        emit(format_session(session))
+        print()
+        emit(
+            _wire(
+                kube,
+                session,
+                identity=key_path,
+                config_dir=config_dir,
+                host_alias=host_alias,
+                ssh_user=ssh_user,
+                print_config=print_config,
+            ).note
+        )
+        raise typer.Exit(0)
+
+    @app.command(
+        name="vscode",
+        help="land a seat sized and provisioned for an editor, and open it",
+    )
+    def vscode_command(
+        pod: _Pod = None,
+        target: _Target = None,
+        image: _Image = None,
+        target_uid: _TargetUid = None,
+        target_gid: _TargetGid = None,
+        max_rung: _MaxRung = None,
+        mount: _Mount = None,
+        force_new: _ForceNew = False,
+        no_correct_ids: _NoCorrectIds = False,
+        no_seat_identity: _NoSeatIdentity = False,
+        no_probe: _NoProbe = False,
+        pull: _Pull = DEFAULT_PULL_POLICY,
+        resize: _Resize = None,
+        resize_cpu: _ResizeCpu = None,
+        no_resize: Annotated[
+            bool,
+            typer.Option(
+                "--no-resize",
+                help="do not raise the target's memory for the editor. Without "
+                "it, a pod with less headroom than vscode-server was measured "
+                "to need has the target's memory limit raised to cover it - the "
+                "one mutation this verb makes that `--resize MEMORY` would "
+                "otherwise have to be typed with a number. A pod that already "
+                "has the room is left alone either way",
+            ),
+        ] = False,
+        no_provision: Annotated[
+            bool,
+            typer.Option(
+                "--no-provision",
+                help="author whatever fits the target as it stands. Without it, "
+                "a Python workload that cannot import debugpy has it installed "
+                "and its server started, because that target gets no "
+                "launch.json at all otherwise. Mutates the workload: ~15 MB of "
+                "shared ephemeral storage, needs egress from the pod, ptraces "
+                "the app for a few seconds, and no restart survives it",
+            ),
+        ] = False,
+        identity: _Identity = DEFAULT_IDENTITY,
+        ssh_user: _SshUser = None,
+        host_alias: _HostAlias = None,
+        timeout: _Timeout = 120.0,
+        no_prompt: _NoPrompt = False,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+        config_dir: _ConfigDir = None,
+    ) -> None:
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        key_path, public_key = read_public_key(identity)
+        # Both before the namespace is listed, and `code` for a harsher reason
+        # than the key: an ephemeral container's name is permanent, so a run
+        # that was always going to end at "no `code`" must not burn one on the
+        # way.
+        editor = resolve_editor(which)
+        name = resolve_pod(kube, pod, prompt=not no_prompt)
+        session = _land(
+            kube,
+            name,
+            public_key=public_key,
+            target=target,
+            image=image,
+            target_uid=target_uid,
+            target_gid=target_gid,
+            max_rung=max_rung,
+            mounts=mount or (),
+            force_new=force_new,
+            correct_ids=not no_correct_ids,
+            seat_identity=not no_seat_identity,
+            pull=pull,
+            probe=not no_probe,
+            timeout=timeout,
+            resize=resize,
+            resize_cpu=resize_cpu,
+            editor=True,
+            auto_resize=not no_resize,
+        )
+        # After the seat, because which rung landed is half the question, and
+        # before the report, because it is a warning about this pod like every
+        # other one on it.
+        storage = _storage_note(kube.get_pod(name), session)
+        if storage is not None:
+            session = replace(session, warnings=(*session.warnings, storage))
         emit(format_session(session))
         print()
         wiring = _wire(
@@ -4920,32 +5207,36 @@ def _build_app(
             config_dir=config_dir,
             host_alias=host_alias,
             ssh_user=ssh_user,
-            print_config=print_config,
-            opening=editor is not None,
+            print_config=False,
+            opening=True,
         )
         emit(wiring.note)
-        if editor is not None:
+        print()
+        _open_editor(
+            kube,
+            session,
+            wiring,
+            editor=editor,
+            provision=Provision.NEVER if no_provision else Provision.IF_NEEDED,
+            runner=runner,
+        )
+        if session.probes:
+            # Last, because it is the thing they need at the instant their
+            # attention moves to the GUI, and the report that carries the
+            # numbers is now several blocks up. A pointer rather than a
+            # second copy: two sets of deadlines would be two things to keep
+            # true, and the readiness half is the one with no trace
+            # afterwards.
             print()
-            _open_editor(
-                kube, session, wiring, editor=editor, provision=provision, runner=runner
-            )
-            if session.probes:
-                # Last, because it is the thing they need at the instant their
-                # attention moves to the GUI, and the report that carries the
-                # numbers is now several blocks up. A pointer rather than a
-                # second copy: two sets of deadlines would be two things to keep
-                # true, and the readiness half is the one with no trace
-                # afterwards.
-                print()
-                emit(
-                    "\n".join(
-                        paragraph(
-                            EDITOR_PROBE_REMINDER,
-                            first=f"{WARNING_LEAD}  ",
-                            indent=" " * _WARNING_HANG,
-                        )
+            emit(
+                "\n".join(
+                    paragraph(
+                        EDITOR_PROBE_REMINDER,
+                        first=f"{WARNING_LEAD}  ",
+                        indent=" " * _WARNING_HANG,
                     )
                 )
+            )
         raise typer.Exit(0)
 
     @app.command(
@@ -5142,7 +5433,7 @@ def main(
     to the real ``kubectl``, which is what makes auth the kubeconfig's problem
     and not podbench's. It is also why the app is built here rather than at
     import time: every command closes over it. ``which`` is the same seam for
-    ``--open``: whether this laptop has ``code`` on PATH decides what that flag
+    ``vscode``: whether this laptop has ``code`` on PATH decides what that verb
     does, and a unit test must not answer it from the machine it runs on.
 
     A degraded seat is a success. Returning non-zero for "the cluster would not

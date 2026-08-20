@@ -48,9 +48,10 @@ from typing import Any, cast
 from .model import as_dict
 
 __all__ = [
-    "MEMORY",
     "CPU",
     "EDITOR_HEADROOM",
+    "GI",
+    "MEMORY",
     "MUTABLE_RESOURCES_REFUSAL",
     "SEAT_FOOTPRINT",
     "SEAT_HEADROOM",
@@ -58,6 +59,7 @@ __all__ = [
     "ResizeError",
     "ResizePlan",
     "Want",
+    "editor_limit",
     "explain_claim_refusal",
     "format_cpu",
     "format_memory",
@@ -106,6 +108,7 @@ _QUANTITY = re.compile(r"^(?P<number>[0-9]+(?:\.[0-9]+)?)(?P<suffix>[A-Za-z]*)$"
 
 MI = _BINARY["Mi"]
 KI = _BINARY["Ki"]
+GI = _BINARY["Gi"]
 
 
 class ResizeError(ValueError):
@@ -481,7 +484,8 @@ EDITOR_HEADROOM = Fraction(1215 * MI)
 
 vscode-server plus a single extension measured 1215 MiB live (2026-08-16,
 report R2), which does not fit in most of the beamline's pods. So the seat's
-own footprint stopped earning a warning and this did not: ``--open`` asks for
+own footprint stopped earning a warning and this did not: ``podbench
+vscode`` asks for
 both, and only this one has to be checked against the pod.
 """
 
@@ -567,6 +571,52 @@ class Headroom:
         """
         free = self.free
         return free is not None and free < needed
+
+
+def editor_limit(headroom: Headroom, current: Fraction | None) -> Fraction | None:
+    """The memory limit ``current`` has to become for an editor to fit, or ``None``.
+
+    ``podbench vscode`` is the caller. The number was always computable — the
+    headroom is read on every attach and :data:`EDITOR_HEADROOM` has been the
+    threshold since it was measured — and the only thing standing between the
+    two was that a warning named ``--resize`` instead of using it.
+
+    The raise goes on the *target's* limit because that is the only limit a seat
+    can move: an ephemeral container may not declare ``resources`` at all, so
+    the pod's ceiling is the sum of its containers' and the seat is charged
+    against it. Raising the target by the shortfall therefore raises the pod's
+    ceiling by exactly the same amount.
+
+    Rounded **up to the next whole GiB**, which is margin and a legible number
+    rather than arithmetic exactly on the edge — 1301Mi is the answer nobody can
+    check, 2Gi is the one they can.
+
+    ``None`` for every case that is not a measured shortfall, so a caller can
+    treat it as "nothing to do":
+
+    >>> tight = Headroom(Fraction(256 * MI), Fraction(86 * MI))
+    >>> format_memory(editor_limit(tight, Fraction(256 * MI)))
+    '2Gi'
+    >>> editor_limit(Headroom(Fraction(8 * GI), Fraction(MI)), Fraction(GI)) is None
+    True
+    >>> editor_limit(Headroom(Fraction(256 * MI), None), Fraction(MI)) is None
+    True
+    >>> editor_limit(Headroom(None, None), Fraction(MI)) is None
+    True
+
+    ``current`` of ``None`` is the container that declares no memory limit. It
+    cannot arise beside a measured headroom — :func:`pod_memory_limit` answers
+    ``None`` as soon as any container is unbounded — but it is answered rather
+    than asserted, because the two reads are of the same pod at different
+    moments and a crash is a poor way to report a resized pod:
+
+    >>> editor_limit(tight, None) is None
+    True
+    """
+    free = headroom.free
+    if free is None or current is None or free >= EDITOR_HEADROOM:
+        return None
+    return Fraction(math.ceil((current + EDITOR_HEADROOM - free) / GI)) * GI
 
 
 def pod_memory_limit(pod_json: Mapping[str, Any]) -> Fraction | None:

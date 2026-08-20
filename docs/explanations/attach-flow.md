@@ -110,7 +110,7 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
                                   ▼
         ssh podbench-<ns>-<pod>   ·   Remote-SSH: Connect to Host      exit 0
                                   │
-                                  ▼   (only with --open)
+                                  ▼   (only for `podbench vscode`)
 ┌──────────────────────────────────────────────────────────────────┐
 │ DRIVE THE CLIENT                                                 │
 │                                                                  │
@@ -423,9 +423,9 @@ return the same `EPERM`, and that naming is the point of the whole probe.
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
 whose pid, sysroot-prefixed program path and setup ordering are things the
-launcher knows and a human cannot guess. `attach --open` runs that same command
-over `kubectl exec` and follows it with the two steps nobody should have to get
-right by hand: which folder to open — a verb that picks the folder is a verb
+launcher knows and a human cannot guess. `podbench vscode` runs that same
+command over `kubectl exec` and follows it with the two steps nobody should have
+to get right by hand: which folder to open — a verb that picks the folder is a verb
 that cannot pick `/` — and installing the extension in the *remote* window,
 where the debug adapter has to run for any `/proc/<pid>/root` path to mean
 anything.

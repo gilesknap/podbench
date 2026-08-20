@@ -39,7 +39,8 @@ silent.
   the container's *limit*: the beamline's three smallest limits sit in its
   roomiest pod. A headroom that could not be read is reported as **unmeasured**
   on the `memory` row, never as fine. vscode-server, at a measured 1215 MiB, is
-  the one cost that still earns a warning, and only under `--open`.
+  the one cost that still earns a warning, and only under `podbench vscode` —
+  which is also the only verb that resizes a pod nobody asked it to.
 - **Never join a Service silently.** A dev pod carrying the origin's selector
   labels takes production traffic. Opt-in, behind an explicit flag, always.
 - **What a laptop verb prints is laid out by `console.py`, and a warning is one

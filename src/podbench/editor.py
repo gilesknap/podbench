@@ -49,6 +49,7 @@ made the one manual edit (``Include``) podbench has always asked for.
 
 from __future__ import annotations
 
+import enum
 import json
 import shutil
 from collections.abc import Callable, Sequence
@@ -72,6 +73,7 @@ __all__ = [
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_FLAG",
+    "Provision",
     "check_reachable",
     "open_seat",
     "remote_authority",
@@ -80,7 +82,7 @@ __all__ = [
 ]
 
 DEFAULT_EDITOR = "code"
-"""The only editor ``--open`` drives.
+"""The only editor ``podbench vscode`` drives.
 
 ``cursor``, ``codium`` and ``windsurf`` take the same flags and would cost a
 mapping and a flag, but none of the four has been driven against a podbench seat
@@ -104,7 +106,7 @@ command that never ran.
 """
 
 PROVISION_FLAG = "--provision"
-"""What ``--open --provision`` appends to :data:`DEBUG_CONFIG_ARGV`.
+"""What a provisioning run appends to :data:`DEBUG_CONFIG_ARGV`.
 
 Also the string the *unprovisioned* refusal is recognised by. ``debug-config``
 names this flag in its own remedy when debugpy is the blocker and does not name
@@ -113,6 +115,35 @@ matching on it offers the pass-through exactly where it is the answer, without
 this side of the wire guessing the target's language a second time.
 """
 
+
+class Provision(enum.Enum):
+    """Whether this run may make the target debuggable, and on whose say-so.
+
+    Three states rather than a boolean because the *decision* and the *consent*
+    are separate facts, and only the seat holds the first one. ``debug-config``
+    is the one thing that can see the target: it refuses on a Python workload
+    that cannot import debugpy, and names :data:`PROVISION_FLAG` in its own
+    refusal when — and only when — that is the blocker. So a run that already
+    has consent can answer the refusal itself instead of printing it.
+
+    :attr:`NEVER` and :attr:`ALWAYS` are what ``attach --open`` had.
+    :attr:`IF_NEEDED`
+    is what a verb named for the editor can offer: choosing ``podbench vscode``
+    *is* asking for a debuggable target, whereas ``attach``'s contract is that
+    it touches the workload not at all — which is why this is a mode and not a
+    new default.
+    """
+
+    NEVER = "never"
+    """Author whatever fits the target as it stands, and offer the flag."""
+
+    IF_NEEDED = "if-needed"
+    """Provision only where the seat itself said that is the blocker."""
+
+    ALWAYS = "always"
+    """Provision first, whether or not the target turns out to need it."""
+
+
 _REMOTE_CLI_MARKERS = ("/remote-cli/", "/.vscode-server/", "/.vscode-server-insiders/")
 """What a ``code`` that is not the desktop one looks like on disk.
 
@@ -120,7 +151,7 @@ VS Code puts ``<server>/bin/remote-cli`` on the PATH of a remote window's
 integrated terminal, so ``shutil.which`` finds *that* whenever podbench is run
 from inside a Remote-SSH window, a devcontainer or a Codespace — this repo's own
 workflow being a devcontainer. It forwards to the window it belongs to over
-``VSCODE_IPC_HOOK_CLI``, which is the one thing ``--open`` must not do: the
+``VSCODE_IPC_HOOK_CLI``, which is the one thing this verb must not do: the
 extensions would land on the machine the user is already on, and a seat with the
 adapter installed anywhere but in it is the silent "looks like a bad
 launch.json" failure this whole module exists to prevent.
@@ -154,14 +185,33 @@ a second thing to keep true.
 """
 
 _PROVISION_REMEDY = (
-    "re-run with `--open --provision` to install it from the seat first - "
-    "opt-in, because it mutates the workload with the costs named above."
+    "re-run without `--no-provision` to install it from the seat first - it is "
+    "what this verb does by default, and an opt-out rather than an opt-in "
+    "because it mutates the workload with the costs named above."
 )
-"""The pass-through, offered only where the seat itself named the flag.
+"""The offer, reached now only by somebody who declined the default.
 
-Issue #45 settled that provisioning is not implicit; what was missing is that
-the flag lived on the in-pod verb alone, so from a laptop the remedy could be
-read and not reached.
+Issue #45 settled that provisioning is not implicit, and it still is not: what
+changed is where the consent is given. It used to be a flag typed beside
+``--open`` on a verb whose contract is that it touches the workload not at all;
+it is now the name of the verb, which is why the only reader left here is one
+who said ``--no-provision`` and then met the refusal it leads to.
+"""
+
+_PROVISION_NEEDED = (
+    "the target cannot import debugpy, which is what the refusal above is; "
+    "provisioning it now, because that is what this verb is for. "
+    "`--no-provision` authors whatever fits the target as it stands instead."
+)
+"""Said instead of :data:`_PROVISION_REMEDY` when the answer is already known.
+
+The refusal it follows is relayed rather than swallowed, for the reason the
+module docstring gives about narration: ``debug-config`` is the only thing that
+can see the target, so its account of *why* debugpy is the blocker is the
+diagnosis, and a run that hid it would be asserting the need rather than showing
+it. What changes is only the last line — "re-run with the flag" becomes "doing
+it now", because :attr:`Provision.IF_NEEDED` means the flag was already typed,
+as the verb's own name.
 """
 
 _RELOAD_NOTE = (
@@ -170,7 +220,7 @@ _RELOAD_NOTE = (
     "this command opens for the first time does not, because the line above "
     "asked the seat and it is already unpacked there."
 )
-"""The step a *second* ``--open`` needs and a first one does not.
+"""The step a *second* run needs and a first one does not.
 
 Measured in the seat on 2026-08-16: the extension host started at 16:53 and
 never restarted, and `ms-python.debugpy` was unpacked into
@@ -196,7 +246,7 @@ OOM warning a few blocks up, so repeating it here would be the third telling.
 
 
 DEFAULT_SSH = "ssh"
-"""The client ``--open`` proves the seat with, and the one VS Code will use."""
+"""The client podbench proves the seat with, and the one VS Code will use."""
 
 SSH_CONNECT_TIMEOUT = 15
 """Seconds ssh may spend establishing the connection, matching what Remote-SSH
@@ -224,7 +274,7 @@ UNREACHABLE_CAUSES = """\
 
 
 class EditorError(RuntimeError):
-    """``--open`` cannot be honoured, and the sentence says which mechanism.
+    """The editor cannot be opened, and the sentence says which mechanism.
 
     A named error rather than a traceback because every cause here is something
     the user can fix in one step — install the CLI, add the ``Include`` line,
@@ -242,27 +292,28 @@ def resolve_editor(which: Callable[[str], str | None] = shutil.which) -> str:
     found = which(DEFAULT_EDITOR)
     if found is None:
         raise EditorError(
-            f"--open needs the VS Code CLI (`{DEFAULT_EDITOR}`) on PATH and "
+            f"`podbench vscode` needs the VS Code CLI (`{DEFAULT_EDITOR}`) on PATH "
+            "and "
             "there is none. From VS Code: Command Palette -> 'Shell Command: "
             "Install 'code' command in PATH'. That command has nothing to offer "
             "a flatpak install, which cannot reach the host PATH from its "
             "sandbox, and the forks (`cursor`, `codium`, `windsurf`) take the "
             "same flags but have no flag of their own here yet. From any of "
-            "them, drop --open and use Remote-SSH: Connect to Host on the alias "
-            "podbench prints."
+            "them, run `podbench attach` and use Remote-SSH: Connect to Host on "
+            "the alias it prints."
         )
     if any(marker in found for marker in _REMOTE_CLI_MARKERS):
         raise EditorError(
-            f"--open found `{found}`, which is VS Code's *remote* CLI rather "
+            f"found `{found}`, which is VS Code's *remote* CLI rather "
             "than the desktop one: it is what a Remote-SSH window, a "
             "devcontainer or a Codespace puts on the PATH of its integrated "
             "terminal, and it talks to the window this terminal is already in. "
             "--install-extension there installs into *this* machine and not "
             "into the seat, so the seat would get its .vscode files, no "
             "extensions, and breakpoints that never bind - the failure this "
-            "flag exists to prevent. Run podbench from a terminal on the "
-            "machine your VS Code itself runs on, or drop --open and use "
-            "Remote-SSH: Connect to Host on the alias podbench prints."
+            "verb exists to prevent. Run podbench from a terminal on the "
+            "machine your VS Code itself runs on, or run `podbench attach` "
+            "and use Remote-SSH: Connect to Host on the alias it prints."
         )
     return found
 
@@ -287,7 +338,7 @@ def check_reachable(
     Remote-SSH cannot be asked whether it will work. ``code --remote`` returns
     as soon as a window has the argv, so the connection — and every way it can
     fail — happens in the GUI afterwards, where the only trace is the Remote-SSH
-    log the user has to know to open. In between, ``--open`` bootstraps
+    log the user has to know to open. In between, the install bootstraps
     vscode-server in the seat, so the cost of finding out the hard way is
     several minutes and a 214 MiB download that also fails.
 
@@ -318,7 +369,7 @@ def check_reachable(
     if result.returncode == 0:
         return
     raise EditorError(
-        f"--open: `ssh {alias}` does not reach the seat, so VS Code was not "
+        f"`ssh {alias}` does not reach the seat, so VS Code was not "
         "started - a Remote-SSH window would have failed the same way, minutes "
         "and one vscode-server download later. ssh said:\n"
         f"{_quoted(result.stderr or result.stdout)}\n"
@@ -342,7 +393,7 @@ def open_seat(
     folder: str,
     report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
-    provision: bool = False,
+    provision: Provision = Provision.NEVER,
     ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
 ) -> None:
@@ -366,10 +417,11 @@ def open_seat(
     no route to ``update.code.visualstudio.com`` is otherwise minutes of nothing
     at all, indistinguishable from a hang.
 
-    ``provision`` is handed straight to ``debug-config`` and is the only argument
-    here that changes the *target*: it installs debugpy into the workload when
-    the workload cannot import one. Off by default for issue #45's reason, given
-    in the module docstring.
+    ``provision`` is the only argument here that changes the *target*: it
+    installs debugpy into the workload when the workload cannot import one.
+    :attr:`Provision.NEVER` by default for issue #45's reason, given in the
+    module docstring — a caller that has been given consent passes
+    :attr:`Provision.IF_NEEDED` and lets the seat decide whether to spend it.
 
     Anything that went wrong but left the seat usable is a line rather than an
     exception — a missing ``launch.json`` costs an F5, whereas the excludes and
@@ -377,7 +429,7 @@ def open_seat(
     """
     if not folder.startswith("/") or folder.strip("/") == "":
         raise EditorError(
-            f"--open will not open `{folder}` as a folder. It has to be an "
+            f"podbench will not open `{folder}` as a folder. It has to be an "
             "absolute path and it cannot be `/`: a folder at the root walks "
             "/proc/<pid>/root, which is a symlink into another container's "
             "rootfs, so the walk has no bottom and OOMs a seat that cannot be "
@@ -389,12 +441,12 @@ def open_seat(
     # this line travels over the alias, and the two steps that do - the
     # extension install and the window itself - both report success without it
     # (`code --install-extension` exits 0 having only queued the work for a
-    # window that has not connected yet). --provision is here too: it writes
-    # ~15 MB into the workload and ptraces it, which is not worth spending on a
-    # seat no editor can reach.
+    # window that has not connected yet). Provisioning is behind it too: it
+    # writes ~15 MB into the workload and ptraces it, which is not worth
+    # spending on a seat no editor can reach.
     check_reachable(alias, ssh=ssh, runner=run)
     report(f"`ssh {alias}` reaches the seat, so Remote-SSH will too")
-    # Everything from here is one line each: --open is a sequence of steps, and
+    # Everything from here is one line each: this is a sequence of steps, and
     # a step that explains itself in a paragraph buries the one that failed.
     configurations = _configurations(kubectl, seat, report, provision=provision)
     extensions = extensions_for(configurations)
@@ -594,16 +646,49 @@ def _configurations(
     seat: ContainerRef,
     report: Callable[[str], None],
     *,
-    provision: bool = False,
+    provision: Provision = Provision.NEVER,
 ) -> list[dict[str, Any]]:
     """What ``debug-config`` would write, asked for rather than recomputed.
 
-    A target no debugger fits is not a failure of ``--open``: the folder, the
+    A target no debugger fits is not a failure of the editor: the folder, the
     excludes and the terminals are the rest of the seat, and every mechanism
-    that said no was named on ``debug-config``'s stderr — which is relayed here
-    whether or not a configuration came back with it, since on success it also
-    carries the injection command an emitted debugpy entry needs before anything
-    is listening for it.
+    that said no was named on ``debug-config``'s stderr — which is relayed by
+    :func:`_author` whether or not a configuration came back with it.
+
+    :attr:`Provision.IF_NEEDED` is the whole of the retry. The seat has just
+    said, in its own words, that debugpy in the target is the blocker; consent
+    was given by the verb; so the second ask is the first one answered rather
+    than a second measurement of anything. It cannot loop — the retry runs with
+    :attr:`Provision.ALWAYS`, and only a run that did *not* provision reports
+    itself unprovisioned.
+    """
+    entries, unprovisioned = _author(
+        kubectl, seat, report, provision=provision is Provision.ALWAYS
+    )
+    if not unprovisioned:
+        return entries
+    if provision is not Provision.IF_NEEDED:
+        report(_PROVISION_REMEDY)
+        return entries
+    report(_PROVISION_NEEDED)
+    return _author(kubectl, seat, report, provision=True)[0]
+
+
+def _author(
+    kubectl: Kubectl,
+    seat: ContainerRef,
+    report: Callable[[str], None],
+    *,
+    provision: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    """One ``debug-config`` run, and whether debugpy is what it wanted.
+
+    The second half of the pair is the only thing :func:`_configurations` needs
+    that a list of configurations cannot carry: "empty" is the same answer for a
+    target with no debugger, a seat that could not run the verb at all, and a
+    Python workload one ``uv pip install`` away from working. Reading
+    :data:`PROVISION_FLAG` out of the seat's own stderr keeps the three apart
+    without this side of the wire guessing the target's language.
     """
     argv = [*DEBUG_CONFIG_ARGV, *([PROVISION_FLAG] if provision else [])]
     if provision:
@@ -619,21 +704,19 @@ def _configurations(
             if relayed
             else f"no launch.json: {_detail(result.stderr)}"
         )
-        if not provision and PROVISION_FLAG in result.stderr:
-            report(_PROVISION_REMEDY)
-        return []
+        return [], not provision and PROVISION_FLAG in result.stderr
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
         report(f"no launch.json: debug-config printed no JSON ({error})")
-        return []
+        return [], False
     if not isinstance(document, dict):
         report("no launch.json: debug-config printed no JSON object")
-        return []
+        return [], False
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
-    return [as_dict(entry) for entry in entries if isinstance(entry, dict)]
+    return [as_dict(entry) for entry in entries if isinstance(entry, dict)], False
 
 
 def _merge_into(
@@ -681,7 +764,7 @@ def _read(kubectl: Kubectl, seat: ContainerRef, path: str) -> str | None:
         return None
     if result.returncode != 0:
         raise EditorError(
-            f"cannot read {path} in the seat: {_detail(result.stderr)}. --open "
+            f"cannot read {path} in the seat: {_detail(result.stderr)}. podbench "
             "adds to that file rather than replacing it, so one it cannot read "
             "stops the run instead of being overwritten with podbench's own "
             "copy."
@@ -699,7 +782,7 @@ def _write(kubectl: Kubectl, seat: ContainerRef, path: str, text: str) -> None:
     which would tear down the CRI exec stream and truncate the write with a zero
     exit (report 3.1).
 
-    A refusal ends ``--open`` with a sentence rather than with ``kubectl``'s
+    A refusal ends the run with a sentence rather than with ``kubectl``'s
     argv, and ends it *before* the folder opens: the first of these files is the
     exclude list, and a window opened without it is the walk that OOMs a seat
     which cannot be restarted.

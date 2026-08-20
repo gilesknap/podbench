@@ -72,11 +72,13 @@ Which pod that lands in decides how much it matters:
 
 * **Iterate mode** (`podbench dev`) — the sidecar has its own memory and
   ephemeral-storage requests and a workspace volume. Ask for what you need.
-* **Observe mode** (`podbench attach`) — every byte competes with the live
-  workload's limits. Exceeding memory OOM-kills something in the pod cgroup;
-  exceeding ephemeral storage evicts the whole pod. Use `attach --resize 6Gi` to
-  raise the target's memory limit in place first, and read the caveats on
-  [Attach to a pod](attach-to-a-pod.md) before you rely on it.
+* **Observe mode** (`podbench attach`, `podbench vscode`) — every byte competes
+  with the live workload's limits. Exceeding memory OOM-kills something in the
+  pod cgroup; exceeding ephemeral storage evicts the whole pod. `podbench
+  vscode` raises the target's memory limit in place for you when the headroom is
+  short; read the caveats on [Attach to a pod](attach-to-a-pod.md) before you
+  rely on it. Ephemeral storage cannot be raised in place at all — that one
+  needs a `podbench-home` volume in the chart.
 
 ## Client setup
 
@@ -108,23 +110,30 @@ Which pod that lands in decides how much it matters:
 4. **Remote-SSH: Connect to Host…**, pick the alias, and wait out the first
    connect while the server downloads.
 
-### Or let `attach` do steps 3 and 4
+### Or let `podbench vscode` do all four
 
-`podbench attach --open` lands the seat and then drives the client for you:
+One verb lands the seat, sizes the pod, makes the target debuggable and opens
+the window:
 
 ```
-podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open
+podbench vscode pod/api-5f6c9b7d8-qz4tn -n demo
 ```
 
-It proves the alias first — one `ssh <alias> true`, before anything is written
-or downloaded — and if that does not reach the seat, it prints ssh's own words
-and stops rather than opening a window that will fail. This is the one thing
-VS Code cannot be asked: `code --remote` returns as soon as a window has the
-argv, so the connection happens in the GUI afterwards, and a `--install-extension`
-that never connected still exits 0. The successful probe also leaves a
-`ControlMaster` behind, so the window's own connect is the fast one.
+That is the whole command for the common case. It is a separate verb rather
+than a flag on `attach` because two of those steps *change the workload*, and
+`attach`'s contract is that it does not: choosing this verb is asking for an
+editor and for everything an editor costs.
 
-It writes `.vscode/settings.json`, `.vscode/launch.json` and
+**It proves the alias first** — one `ssh <alias> true`, before anything is
+written or downloaded — and if that does not reach the seat, it prints ssh's own
+words and stops rather than opening a window that will fail. This is the one
+thing VS Code cannot be asked: `code --remote` returns as soon as a window has
+the argv, so the connection happens in the GUI afterwards, and a
+`--install-extension` that never connected still exits 0. The successful probe
+also leaves a `ControlMaster` behind, so the window's own connect is the fast
+one.
+
+**It writes** `.vscode/settings.json`, `.vscode/launch.json` and
 `.vscode/extensions.json` into the folder it is about to open, installs only the
 extensions this target's debugger needs **in the remote window**, and opens the
 seat's home. Those are the two steps most easily got wrong by hand, and both
@@ -132,60 +141,81 @@ fail quietly: the wrong folder can end the seat, and a locally installed
 extension runs the debug adapter on your laptop. See
 [the CLI reference](../reference/cli.md) for the order and the refusals.
 
+**It sizes the pod.** vscode-server measured 1215 MiB live with one extension,
+and the headroom that decides is read on every attach anyway — so where this pod
+has less, the target's memory limit is raised by the shortfall before the seat
+lands, rounded up to the next whole GiB, and the number and the reading are both
+printed. `--resize MEMORY` chooses the number yourself; `--no-resize` declines
+the raise and keeps the warning. Read [Attach to a pod](attach-to-a-pod.md) on
+what an in-place resize costs — chiefly that it lives on the pod and not on its
+controller, so the next rollout takes it away.
+
+**It provisions the target when the target says it needs it** — see the next
+section.
+
 It needs `code` on your PATH — VS Code's Command Palette has *Shell Command:
 Install 'code' command in PATH* — and the local **Remote - SSH** extension,
-without which `--remote` cannot resolve anything. `--open` is on `attach` only,
-and drives `code` only; `cursor`, `codium` and `windsurf` take the same flags
-but have not been tried, and a flatpak VS Code cannot put `code` on the host
-PATH at all.
+without which `--remote` cannot resolve anything. It drives `code` only;
+`cursor`, `codium` and `windsurf` take the same flags but have not been tried,
+and a flatpak VS Code cannot put `code` on the host PATH at all.
 
-### A stock Python workload gets no `launch.json` without `--provision`
+`podbench attach` is still there and unchanged, for a seat with no editor in it.
 
-`--open` does not compute the debug configuration itself: it asks the seat, and
-`debug-config` is the only thing that can see the target. On a Python app whose
-image has no debugpy that ask *refuses*, because the injection bootstrap runs in
-the target's own interpreter and therefore needs debugpy importable **there**.
-You get the excludes, the folder and the alias, and no `launch.json` at all.
+### A stock Python workload needs debugpy, and this is where it gets it
 
-`--provision` is the way through:
+`podbench vscode` does not compute the debug configuration itself: it asks the
+seat, and `debug-config` is the only thing that can see the target. On a Python
+app whose image has no debugpy that ask *refuses*, because the injection
+bootstrap runs in the target's own interpreter and therefore needs debugpy
+importable **there**.
+
+The seat says so in its own words, and names `--provision` in the refusal — and
+it names it for debugpy and for no other flavour, since there is no
+`--provision` for a missing delve. So the answer is already in hand when the
+refusal arrives, and the verb acts on it: it installs debugpy into the target
+with `uv`, starts the debugpy server inside the app, and authors the
+configuration against it. F5 works when the command finishes.
+
+This used to be a round trip: podbench printed "re-run with `--provision`",
+asking you to retype a fact it had just measured.
+
+It is still a mutation and it is still refusable. It writes ~15 MB into the
+workload's writable layer, on an ephemeral-storage budget the seat *shares with
+the workload and cannot reserve*; it needs egress from the pod, since uv
+downloads from an index; starting the server ptraces the app, which stops
+answering probes for the few seconds that takes (~3 s measured — compare it
+against the deadlines the report prints); and a restart of the target container
+ends the debugging.
 
 ```
-podbench attach pod/api-5f6c9b7d8-qz4tn -n demo --open --provision
+podbench vscode pod/api-5f6c9b7d8-qz4tn -n demo --no-provision
 ```
 
-`--provision` means *make this target debuggable*, and it is both halves of
-that: the seat installs debugpy into the target with `uv`, then starts the
-debugpy server inside the app so the configuration it writes has something to
-connect to. F5 works when it finishes.
+declines it, and you get the offer printed where the act would have been: the
+excludes, the folder and the alias, and no `launch.json`.
 
-It is opt-in and stays that way. It writes ~15 MB into the workload's writable
-layer, on an ephemeral-storage budget the seat *shares with the workload and
-cannot reserve*; it needs egress from the pod, since uv downloads from an index;
-starting the server ptraces the app, which stops answering probes for the few
-seconds that takes (~3 s measured — compare it against the deadlines `attach`
-prints); and a restart of the target container ends the debugging. Without
-`--open` it is refused rather than ignored — there is no configuration run for
-it to change.
+A target that already has a debugger is never provisioned. The consent the verb
+carries is spent only where the seat said debugpy is the blocker.
 
 The two halves do not expire together. The **server** never survives a restart:
 it is a live process inside the one that died. The **install** survives one only
 where `--provision-dest` names a volume mounted into the target — an `emptyDir`
 is pod-scoped and outlives a container. At the default `/opt/podbench-debugpy`
 it does not: that is the container's own writable layer, which a restart
-rebuilds from the image. Either way you are re-running `--provision`, since
-without the server there is nothing to connect to.
+rebuilds from the image. Either way you are running `podbench vscode` again,
+since without the server there is nothing to connect to.
 
-Baking `debugpy.listen()` into the app image is the durable answer, and the only
-one that survives a restart. `--provision` is for the pod that is already
+Baking `debugpy.listen()` into the app is the durable answer, and the only one
+that survives a restart. Provisioning is for the pod that is already
 misbehaving.
 
-A **bare** `debug-config`, with no `--provision`, still only prints the
-injection command rather than running it: that really is authoring a
+A **bare** `debug-config` in the seat, with no `--provision`, still only prints
+the injection command rather than running it: that really is authoring a
 `launch.json` and nothing more, and ptracing the workload is not something it
-may do on its own. `--open` relays the seat's own output either way, so the
+may do on its own. The verb relays the seat's own output either way, so the
 command is printed with the rest, along with every mechanism that said no.
 
-### Re-running `--open` on a window that is already connected? Reload it
+### Re-running it on a window that is already connected? Reload it
 
 `--install-extension` unpacks into the seat's `~/.vscode-server`. A window that
 is *already* connected started its extension host before that, and does not pick
@@ -193,9 +223,9 @@ it up: the extension is installed, the debug adapter is not registered, and its
 `launch.json` entry cannot run. Nothing on the remote side says so — the
 debugger is simply not there.
 
-The first `--open` is unaffected, because the install finishes before the window
+The first run is unaffected, because the install finishes before the window
 opens. A later run needs **Command Palette → Developer: Reload Window** only if
-it actually put a *new* extension in the seat — but `--open` cannot tell that
+it actually put a *new* extension in the seat — but podbench cannot tell that
 from "already installed" (`code` exits 0 for both), and cannot tell an open
 window from a fresh one either, so it prints the reminder whenever an install
 succeeded. On the runs where nothing changed, reloading costs a few seconds and
@@ -208,9 +238,9 @@ into that machine instead of into the seat. podbench refuses that `code` by name
 rather than driving it.
 
 :::{warning}
-`--open` has not been driven against a real VS Code GUI client. The flags it
-uses were verified by hand on 2026-08-16; the sequence podbench runs them in has
-unit tests and no live proof.
+`podbench vscode` has not been driven against a real VS Code GUI client. The
+flags it uses were verified by hand on 2026-08-16; the sequence podbench runs
+them in has unit tests and no live proof.
 :::
 
 Do **not** reach an Iterate-mode dev pod with `podbench attach`. It works, but
@@ -396,11 +426,11 @@ that kills a seat is the first one.
 explorer, and reading the workload's files through `/proc/<pid>/root` is what
 Observe mode is for.
 
-`attach --open` writes all of those a second time, into the
+`podbench vscode` writes all of those a second time, into the
 `.vscode/settings.json` of the folder it opens. It opens a *single* folder, so
 that file is VS Code's **workspace** settings, where window- and resource-scoped
 keys are both honoured — including `C_Cpp.files.exclude`, which is the only one
-that stops cpptools' tag parser, and cpptools is what `--open` installs for a
+that stops cpptools' tag parser, and cpptools is what it installs for a
 C/C++ target. The folder copy matters because it is the one podbench fully
 controls: `~/.vscode-server` belongs to the client, and **Kill/Uninstall VS Code
 Server on Host** takes the machine file with it. Inside a home the entry that
