@@ -22,6 +22,7 @@ import pytest
 
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
+from podbench.console import console
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
     CommandResult,
@@ -4224,6 +4225,114 @@ def test_a_listing_that_measured_nothing_claims_no_version(tmp_path: Path) -> No
 
     assert "version   not probed" in text
     assert "ghcr.io/x/podbench:main" not in text
+
+
+LONG_POD = "fastcs-p47-ioc-example-01-5d8b9c7f4-xk2wq"
+"""A pod name of the length a Deployment on a real beamline produces.
+
+Long enough that the kubelet's own reference to it does not fit under the
+``state`` label, which is the whole defect: the length is the field's, not a
+number chosen to make a test fail.
+"""
+
+KUBELET_REFUSAL_WITH_POD_REF = (
+    f"{KUBELET_REFUSAL} "
+    f'(pod: "{LONG_POD}_hgv27681(2b1f8a3e-9c4d-4f21-b8e7-1a2c3d4e5f60)", '
+    "container: podbench-1)"
+)
+"""What the kubelet really sends: `format.Pod` appended to the message."""
+
+
+def refused_seat_listing(directory: Path) -> str:
+    """One pod whose first seat the kubelet refused, formatted for `list`."""
+    document = pod_document(
+        name=LONG_POD,
+        uid=1000,
+        ephemeral=[{"name": "podbench-1"}],
+        ephemeral_statuses=[
+            {
+                "name": "podbench-1",
+                "state": {
+                    "waiting": {
+                        "reason": CREATE_CONTAINER_CONFIG_ERROR,
+                        "message": KUBELET_REFUSAL_WITH_POD_REF,
+                    }
+                },
+            }
+        ],
+    )
+    return format_seats(
+        PodRef("hgv27681", LONG_POD), seats(document), directory=directory
+    )
+
+
+def test_a_refused_seats_state_row_does_not_run_past_the_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`"<pod>_<ns>(<uid>)",` has no space in it, so nothing can wrap it.
+
+    `console.wrap` breaks on whitespace and that token carries none, so the
+    `state` row ran four columns past a 100-column terminal - and no width
+    helps, since a 90-character token does not fit under a 14-column indent at
+    any terminal size. The fix is to print less, not to break the token.
+    """
+    monkeypatch.setenv("COLUMNS", "100")
+
+    facts = [
+        line
+        for line in refused_seat_listing(tmp_path / "cfg").splitlines()
+        if line.startswith("    ")
+    ]
+
+    assert facts, "the state row is what is being measured"
+    assert max(len(line) for line in facts) <= console().width
+
+
+def test_only_the_kubelets_reference_to_the_pod_is_dropped(tmp_path: Path) -> None:
+    """Elided because the reader has it twice already, not to save columns.
+
+    The listing is headed `namespace/pod` and the row above names the seat, so
+    what the tail adds is a pod UID nobody reading a pod by name can use. What
+    the kubelet actually said about the container has to survive it.
+    """
+    text = refused_seat_listing(tmp_path / "cfg")
+    # Flattened: the message wraps, so a phrase assertion would measure the
+    # wrap and not the elision (see tests/test_doctor.py::flowed).
+    flowed = " ".join(text.split())
+
+    assert CREATE_CONTAINER_CONFIG_ERROR in flowed
+    assert KUBELET_REFUSAL in flowed, "the refusal itself is the reason"
+    assert "2b1f8a3e" not in flowed
+    assert "(pod:" not in flowed
+
+
+def test_a_message_with_ordinary_parentheses_is_left_alone(tmp_path: Path) -> None:
+    """The elision is one kubelet format, not a rule about brackets.
+
+    Relayed text is not ours to edit generally; this is one machine-generated
+    tail whose every field is already on screen.
+    """
+    document = pod_document(
+        uid=1000,
+        ephemeral=[{"name": "podbench-1"}],
+        ephemeral_statuses=[
+            {
+                "name": "podbench-1",
+                "state": {
+                    "waiting": {
+                        "reason": CREATE_CONTAINER_CONFIG_ERROR,
+                        "message": 'secret "ioc-creds" not found (check the pod)',
+                    }
+                },
+            }
+        ],
+    )
+
+    text = format_seats(
+        PodRef("demo", "target"), seats(document), directory=tmp_path / "cfg"
+    )
+
+    assert "(check the pod)" in text
 
 
 def test_a_listing_says_which_container_each_seat_is_in(tmp_path: Path) -> None:

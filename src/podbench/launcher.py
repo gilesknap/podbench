@@ -1008,6 +1008,24 @@ def above_ceiling(
     return None
 
 
+_KUBELET_POD_REF = re.compile(r'\s*\(pod: "[^"]*"(?:, container: [^)]*)?\)')
+"""The kubelet's own ``(pod: "name_ns(uid)", container: x)`` tail, dropped.
+
+``format.Pod`` is appended to every container error the kubelet raises, and
+every field in it is already on screen: the listing is headed
+``namespace/pod`` and the row this sits under names the seat. The one fact that
+is not is the pod's UID, which nobody reading a pod they named can use.
+
+Elided rather than wrapped because it cannot be wrapped. ``"<pod>_<ns>(<uid>)",``
+carries no space, so :func:`~podbench.console.wrap` breaks nowhere in it and a
+``CreateContainerConfigError`` on a 40-character pod name ran the ``state`` row
+four columns past a 100-column terminal - and there is no width at which a
+90-character token fits under a 14-column indent. Shortening what is printed is
+the only fix that is not a broken token, and this is the half of it a reader
+already has twice.
+"""
+
+
 def _phase_of(status: Mapping[str, Any]) -> tuple[str, str]:
     state = as_dict(status.get("state"))
     running = as_dict(state.get("running"))
@@ -1021,7 +1039,9 @@ def _phase_of(status: Mapping[str, Any]) -> tuple[str, str]:
         # `state     PodInitializing:` - a colon introducing nothing, which
         # reads as a message this code dropped.
         reason = _as_str(waiting.get("reason")) or "?"
-        message = (_as_str(waiting.get("message")) or "").strip()
+        message = _KUBELET_POD_REF.sub(
+            "", _as_str(waiting.get("message")) or ""
+        ).strip()
         return "waiting", f"{reason}: {message}" if message else reason
     terminated = as_dict(state.get("terminated"))
     if terminated:
