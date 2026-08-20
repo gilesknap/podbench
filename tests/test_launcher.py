@@ -3830,6 +3830,47 @@ def waiting_status(name: str, reason: str = "ContainerCreating") -> dict[str, An
     }
 
 
+def test_a_waiting_reason_with_no_message_is_not_a_dangling_colon() -> None:
+    """`state     PodInitializing:` - a colon introducing nothing.
+
+    The kubelet sends `PodInitializing` and `ContainerCreating` bare; only the
+    error reasons carry prose. Formatting every reason as `reason: message`
+    printed the punctuation for a message that was never there, which reads to
+    a user as one this code dropped on the floor.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            ephemeral=[
+                {"name": "podbench-1", "securityContext": {"runAsUser": 1000}},
+                {"name": "podbench-2", "securityContext": {"runAsUser": 1000}},
+            ],
+            ephemeral_statuses=[
+                {"name": "podbench-1", "state": {"waiting": {"reason": "Pending"}}},
+                {
+                    "name": "podbench-2",
+                    "state": {"waiting": {"reason": "Blank", "message": "   "}},
+                },
+            ],
+        )
+    )
+
+    listed = {seat.name: seat for seat in seats(cluster.pod)}
+
+    assert listed["podbench-1"].detail == "Pending"
+    # Whitespace is not a message either: `console.wrap` would collapse it and
+    # leave the same colon at the end of the line.
+    assert listed["podbench-2"].detail == "Blank"
+
+
+def test_a_waiting_message_is_still_joined_to_its_reason() -> None:
+    """The colon earns its place wherever the kubelet did send prose."""
+    cluster = starting_cluster()
+
+    listed = {seat.name: seat for seat in seats(cluster.pod)}
+
+    assert listed["podbench-1"].detail == "ContainerCreating: pulling the image"
+
+
 class FakeTime:
     """A clock that moves only when the code under test sleeps.
 

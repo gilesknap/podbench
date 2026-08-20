@@ -1015,7 +1015,14 @@ def _phase_of(status: Mapping[str, Any]) -> tuple[str, str]:
         return "running", f"since {running.get('startedAt', 'unknown')}"
     waiting = as_dict(state.get("waiting"))
     if waiting:
-        return "waiting", f"{waiting.get('reason', '?')}: {waiting.get('message', '')}"
+        # A waiting reason without a message is ordinary, not a gap: the kubelet
+        # sends `PodInitializing` and `ContainerCreating` bare, and only the
+        # error reasons carry prose. Joined unconditionally, that printed
+        # `state     PodInitializing:` - a colon introducing nothing, which
+        # reads as a message this code dropped.
+        reason = _as_str(waiting.get("reason")) or "?"
+        message = (_as_str(waiting.get("message")) or "").strip()
+        return "waiting", f"{reason}: {message}" if message else reason
     terminated = as_dict(state.get("terminated"))
     if terminated:
         return (
