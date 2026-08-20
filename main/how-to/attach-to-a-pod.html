@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -505,11 +505,12 @@ the first PyPI release, as
 <p class="admonition-title">Warning</p>
 <p>On a live pod podbench shares the workload’s memory and ephemeral-storage limits
 and <strong>cannot reserve its own</strong> — an ephemeral container may not declare
-<code class="docutils literal notranslate"><span class="pre">resources</span></code> at all. A VS Code session is a 1.1–1.3 GB working set, so attaching
-to a tightly limited pod can get the workload OOM-killed or the whole pod
-evicted, and an OOM inside an ephemeral container is unrecoverable. Anything
-heavier than looking belongs in a dev pod
-(<a class="reference internal" href="iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>).</p>
+<code class="docutils literal notranslate"><span class="pre">resources</span></code> at all. What that costs is measured, and the seat is not the
+expensive half: ten live seats on the Diamond p47 beamline (2026-08-19) were
+<strong>13–23 MiB</strong> each. A <strong>vscode-server</strong> is, at <strong>1215 MiB</strong> live with one
+extension, and that is what gets a workload OOM-killed or a pod evicted — an OOM
+inside an ephemeral container being unrecoverable. Anything heavier than looking
+belongs in a dev pod (<a class="reference internal" href="iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>).</p>
 </div>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
@@ -548,6 +549,18 @@ and “you have twenty seconds” are different facts and you need to know which
 one you are in. For an unlimited pause on a probed workload use
 <a class="reference internal" href="iterate-on-python.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code></span></a>, which strips all three probes by
 construction; <a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a> has the measurements.</p>
+<p><strong>Symbol fetches are spent out of that same budget.</strong> gdb fetches the
+executable’s debuginfo when it opens the file, but a shared library’s only
+<em>after</em> the attach — which is with the workload stopped — and waits
+<code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_TIMEOUT</span></code> for each one. gdb’s own default for that is 90 seconds,
+which is longer than most of the deadlines above, so the seat does three
+things: the image sets <code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_TIMEOUT=2</span></code>; the agent opens a connection to
+the symbol server once at start-up and drops <code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS</span></code> from ssh
+sessions when nothing answers, saying so in the container’s start-up log; and
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--no-debuginfod</span></code> (or <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--no-debuginfod</span></code>)
+turns it off for one run, which is the flag to reach for when the server is
+reachable but slow. Symbols are worth having — see
+<a class="reference internal" href="debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a> — so it stays on by default, bounded.</p>
 </div>
 <section id="attach-and-re-attach">
 <h2>Attach, and re-attach<a class="headerlink" href="#attach-and-re-attach" title="Link to this heading">#</a></h2>
@@ -595,9 +608,18 @@ to match:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web --target api
 </pre></div>
 </div>
-<p>Without <code class="docutils literal notranslate"><span class="pre">--target</span></code> it picks the pod’s first container. On a multi-container pod,
-name it — the target choice determines the sysroot, the UID of the degraded
-rung, and what <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> calls a target process.</p>
+<p>Without <code class="docutils literal notranslate"><span class="pre">--target</span></code> it picks the pod’s first container, which is what <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> does. It does not do so silently — the report’s <code class="docutils literal notranslate"><span class="pre">target</span></code> row names the
+container it entered, and every other container the pod has, with the
+invocation that reaches each:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>target      p47-epics-gateways-ca-gateway; this pod also has
+            p47-epics-gateways-pva-gateway.
+            reach it with `--target p47-epics-gateways-pva-gateway`
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> heads its listing the same way, so a three-container pod does
+not read as a one-container pod from inside the seat either. The target choice
+determines the sysroot, the UID of the degraded rung, and what <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>
+calls a target process.</p>
 <p>If the pod spec does not state a <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> for the target (so the UID comes
 from the image), tell podbench with <code class="docutils literal notranslate"><span class="pre">--target-uid</span> <span class="pre">1000</span></code>. The degraded rung must
 match the target’s UID exactly; it never defaults to root, because root without
@@ -608,7 +630,7 @@ read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&
 <h2>When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code><a class="headerlink" href="#when-the-cluster-refuses-sys-ptrace" title="Link to this heading">#</a></h2>
 <p>Nothing to do — that is the normal path. podbench catches the refusal and falls
 to the next rung automatically, and still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">degraded</span> <span class="o">-</span> <span class="n">a</span> <span class="n">pinned</span> <span class="n">UID</span><span class="p">,</span> <span class="nb">all</span> <span class="n">capabilities</span> <span class="n">dropped</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">degraded</span> <span class="o">-</span> <span class="n">uid</span> <span class="mi">1000</span><span class="p">,</span> <span class="n">gid</span> <span class="mi">1000</span><span class="p">,</span> <span class="n">CapEff</span> <span class="mi">0000000000000000</span>
 <span class="n">ladder</span>
   <span class="n">full</span>      <span class="n">refused</span>  <span class="n">Pod</span> <span class="n">Security</span> <span class="n">Admission</span><span class="p">:</span> <span class="n">must</span> <span class="ow">not</span> <span class="n">include</span> <span class="s2">&quot;SYS_PTRACE&quot;</span> <span class="ow">in</span>
                      <span class="n">securityContext</span><span class="o">.</span><span class="n">capabilities</span><span class="o">.</span><span class="n">add</span>
@@ -640,37 +662,52 @@ container and rewriting its <code class="docutils literal notranslate"><span cla
 admission runs <em>before</em> validating admission, so by the time anything could
 refuse the request there is no capability left in it to object to. The API
 server returns success.</p>
-<p>podbench drops a rung when something refuses it. Nothing refused this, so the
-walk stops on the full rung and you get a <strong>root seat with no capability</strong> —
-which is strictly worse than the degraded rung, because root that cannot ptrace
-cannot read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> or <code class="docutils literal notranslate"><span class="pre">environ</span></code> either:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>rung        full - root plus CAP_SYS_PTRACE
+<p>podbench drops a rung when something refuses it, and nothing refuses this. Left
+alone the walk would stop on the full rung and hand you a <strong>root seat with no
+capability</strong> — strictly worse than the degraded rung, because root that cannot
+ptrace cannot read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> or <code class="docutils literal notranslate"><span class="pre">environ</span></code> either.</p>
+<p>So every rung is rehearsed first. Before a container name is committed to it,
+podbench submits the rung with <code class="docutils literal notranslate"><span class="pre">?dryRun=All</span></code>: the API server runs the whole
+admission chain, returns the container as it <em>would</em> have stored it, and stores
+nothing. A stripped capability is visible there, and the rung is withdrawn
+instead of spent:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
-  full      landed   running since 2026-08-18T09:01:33Z
-measured
-  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
-  blocker     uid-mismatch
+  full      refused  admission would take it and remove SYS_PTRACE from it,
+                     landing a root seat with no capability: that reads three of
+                     the six probe paths where the rung below, at the target&#39;s
+                     own uid, reads all six (report 3.11). A dry run read that
+                     back before a name was spent; `--max-rung degraded` says it
+                     up front
+  degraded  landed   running since 2026-08-18T09:01:33Z
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">capreport</span></code> measures the truth and says so — <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span> <span class="pre">(eff)</span> <span class="pre">no</span> <span class="pre">[bounding:</span> <span class="pre">no]</span></code> at <code class="docutils literal notranslate"><span class="pre">uid</span> <span class="pre">0</span></code> — but the rung line above it is the rung that was
-<em>asked for</em>. To confirm it is a mutation rather than anything about your image,
-read the landed spec back with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">pod</span> <span class="pre">&lt;pod&gt;</span> <span class="pre">-o</span> <span class="pre">jsonpath</span></code> over
-<code class="docutils literal notranslate"><span class="pre">.spec.ephemeralContainers[*].securityContext</span></code>. podbench submits exactly
-<code class="docutils literal notranslate"><span class="pre">{&quot;add&quot;:[&quot;SYS_PTRACE&quot;]}</span></code>; anything else in <code class="docutils literal notranslate"><span class="pre">add</span></code> — a list of <code class="docutils literal notranslate"><span class="pre">CHOWN</span></code>,
-<code class="docutils literal notranslate"><span class="pre">DAC_OVERRIDE</span></code>, <code class="docutils literal notranslate"><span class="pre">SETUID</span></code> and friends — is the cluster’s house default, put there
-by a policy that replaced the field rather than refusing it.</p>
-<p>The way past it is <code class="docutils literal notranslate"><span class="pre">--max-rung</span></code>, which caps the walk instead of waiting for a
-refusal that will never come:</p>
+<p>A rewrite that costs the rung nothing is reported rather than acted on, as one
+<code class="docutils literal notranslate"><span class="pre">WARNING</span></code> line naming what admission changed — a DLS policy adds thirteen
+capabilities to a container that asked for none, which is the cluster’s house
+default and harms nothing. The line cannot tell you <em>which</em> controller did it,
+and neither can anything else you can run as a namespaced user: the API server
+attributes a mutation to the field manager of the request that triggered it —
+podbench’s own — rather than to the webhook or policy that made it, and
+<code class="docutils literal notranslate"><span class="pre">mutatingwebhookconfigurations</span></code> is cluster-scoped. Ask whoever administers the
+cluster. The rung line is unaffected either way: it is read
+from the seat’s own <code class="docutils literal notranslate"><span class="pre">/proc/self/status</span></code> after the seat is up, so it says what
+the container <em>is</em> rather than what was asked for or what was stored. Those
+thirteen capabilities do not appear in it, because capabilities beside a
+non-zero <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> land in <code class="docutils literal notranslate"><span class="pre">CapBnd</span></code> and never reach <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>.</p>
+<p>You can still state the cap up front, which spends no dry run either:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach bl47p-mo-ioc-01-0 --max-rung degraded
 </pre></div>
 </div>
-<p>The full rung is then never submitted, the seat lands at the target’s own UID,
-and the ptrace credentials match. Two things worth knowing:</p>
+<p>The full rung is then never submitted at all, the seat lands at the target’s own
+UID, and the ptrace credentials match. Two things worth knowing:</p>
 <ul class="simple">
-<li><p>It is a <strong>ceiling, not a choice</strong>. The rungs below it are still tried, so a
+<li><p>It is a <strong>starting rung</strong>, not a choice. The rungs below it are still tried, so a
 target podbench cannot author a degraded rung for — one running as root, or
-one whose UID is not in the pod spec — still falls through to the seat rung.
-Where the UID is missing, pass <code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> as well; the ladder line says so.</p></li>
+one whose UID neither the pod spec nor the node’s container status reports —
+still falls through to the seat rung. Where the UID is genuinely missing, pass
+<code class="docutils literal notranslate"><span class="pre">--target-uid</span></code> as well; the ladder line says which of the two it was, and does
+not offer the flag against a target the node already reports as root.</p></li>
 <li><p>A running seat the ceiling would not have landed is <strong>not</strong> reconnected to.
 An ephemeral container’s <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> is fixed for the pod’s lifetime, so
 there is no reconnecting into a different one — podbench lands a new container
@@ -690,7 +727,7 @@ is distinguishable from this one at a glance:</p>
       the three paths this line names take PTRACE_MODE_READ, which the
       mechanism that refused attach gates too - see the blocker below
   [x] debug launched processes (podbench dbg --launch ./prog)
-measured
+measured    --no-probe skips this block
   verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
 </pre></div>
 </div>
@@ -702,6 +739,62 @@ descendant needs no capability and no Yama exemption. So go straight to
 <p><code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">fd</span></code> staying readable is not a partial win: they need no
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.</p>
+</section>
+<section id="what-the-probe-itself-does-to-the-workload">
+<h2>What the probe itself does to the workload<a class="headerlink" href="#what-the-probe-itself-does-to-the-workload" title="Link to this heading">#</a></h2>
+<p>Nothing, and the report says so on the line it is measured on:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">measured</span>    <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">probe</span> <span class="n">skips</span> <span class="n">this</span> <span class="n">block</span>
+  <span class="o">...</span>
+  <span class="n">pause</span>       <span class="n">none</span> <span class="o">-</span> <span class="n">PTRACE_SEIZE</span> <span class="n">does</span> <span class="ow">not</span> <span class="n">stop</span> <span class="n">the</span> <span class="n">tracee</span>
+</pre></div>
+</div>
+<p>The question <code class="docutils literal notranslate"><span class="pre">capreport</span></code> has to answer is whether the kernel would let gdb
+attach, and <code class="docutils literal notranslate"><span class="pre">PTRACE_SEIZE</span></code> answers it through the same
+<code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_ATTACH_REALCREDS</span></code> check that <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> takes — but without
+stopping the tracee. So there is no stop to reap, no detach to race, and no
+window in which a failed detach leaves the workload frozen. Measured against a
+live Diamond <code class="docutils literal notranslate"><span class="pre">blueapi</span></code> PID 1 with 195 threads, from a seat holding no
+capabilities: <code class="docutils literal notranslate"><span class="pre">State:</span> <span class="pre">S</span> <span class="pre">(sleeping)</span></code> before the seize, during it, and after.</p>
+<p><code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> is still there, as the fallback on a kernel older than 3.4 —
+that one <em>does</em> stop the workload while the probe reaps the stop and detaches,
+and the same line then reads <code class="docutils literal notranslate"><span class="pre">brief</span> <span class="pre">-</span> <span class="pre">PTRACE_ATTACH</span> <span class="pre">stopped</span> <span class="pre">it</span> <span class="pre">until</span> <span class="pre">the</span> <span class="pre">probe</span> <span class="pre">detached</span></code>. It is also what the <em>scratch</em> attach on the probe’s own forked child
+uses, where the tracee exists to be stopped and is killed a line later.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--no-probe</span></code> skips the exec entirely, on <code class="docutils literal notranslate"><span class="pre">attach</span></code> and on <code class="docutils literal notranslate"><span class="pre">status</span></code> alike. Reach
+for it when the pod must not be touched at all rather than when a pause would
+be expensive: since the seize there is no pause to avoid.</p>
+</section>
+<section id="how-much-room-this-pod-actually-has">
+<h2>How much room this pod actually has<a class="headerlink" href="#how-much-room-this-pod-actually-has" title="Link to this heading">#</a></h2>
+<p>Every attach reads it, and prints it as a row of the <code class="docutils literal notranslate"><span class="pre">measured</span></code> block:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">measured</span>    <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">probe</span> <span class="n">skips</span> <span class="n">this</span> <span class="n">block</span>
+  <span class="o">...</span>
+  <span class="n">memory</span>      <span class="mi">170</span><span class="n">Mi</span> <span class="n">free</span> <span class="n">of</span> <span class="mi">256</span><span class="n">Mi</span> <span class="p">(</span><span class="mi">86</span><span class="n">Mi</span> <span class="ow">in</span> <span class="n">use</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The ceiling is the sum of the pod’s container memory limits — a seat is charged
+against it and contributes nothing to it — and what the pod is using comes from
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">top</span> <span class="pre">pod</span></code>, so it needs a metrics-server and <code class="docutils literal notranslate"><span class="pre">get</span></code> on
+<code class="docutils literal notranslate"><span class="pre">pods.metrics.k8s.io</span></code>. Neither is required: without them the row reads</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="n">memory</span>      <span class="n">limit</span> <span class="mi">256</span><span class="n">Mi</span><span class="p">;</span> <span class="ow">in</span> <span class="n">use</span> <span class="ow">not</span> <span class="n">measured</span> <span class="p">(</span><span class="n">no</span> <span class="n">metrics</span> <span class="n">API</span> <span class="n">here</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>which says <strong>unmeasured</strong> and not <em>fine</em>. A pod where some container declares no
+memory limit gets <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">pod</span> <span class="pre">memory</span> <span class="pre">limit,</span> <span class="pre">so</span> <span class="pre">no</span> <span class="pre">ceiling</span> <span class="pre">for</span> <span class="pre">the</span> <span class="pre">seat</span> <span class="pre">to</span> <span class="pre">share</span></code>,
+because the kubelet leaves that pod’s cgroup unbounded.</p>
+<p><strong>podbench warns about this only when the margin is genuinely thin</strong> — under
+64 MiB free, which is three of the largest seat measured. The number that
+decides is the <em>headroom</em>, not the limit: p47’s three smallest limits are 100Mi
+socat containers, and they sit in the pod with the most room per byte used
+(300 MiB limit, 15 MiB in use). Across fifteen pods there, headroom ran from
+170 MiB to 3858 MiB, with up to three seats in one pod at once and no OOM in any
+of them. That is one beamline at one moment, so the threshold stays — a 100Mi
+pod really using 80 is a real case — but it does not fire on a pod that is fine.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> is checked against the other number. vscode-server measured 1215 MiB
+live with a single extension, which does not fit in most of those pods, so
+opening an editor into a pod with less headroom than that says so. Connecting
+VS Code by hand afterwards gets no warning, because there is no moment at which
+podbench learns you did — see
+<a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code over Remote-SSH</span></a>.</p>
 </section>
 <section id="making-memory-and-cpu-headroom-first">
 <h2>Making memory and CPU headroom first<a class="headerlink" href="#making-memory-and-cpu-headroom-first" title="Link to this heading">#</a></h2>
@@ -778,8 +871,9 @@ you resize to make a seat viable, raise the template too, or expect the next
 unrelated rollout to take it away.</p>
 <p>Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.</p>
-<p>It also needs <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code> <code class="docutils literal notranslate"><span class="pre">patch</span></code>, which the chart grants separately from the
-rest.</p>
+<p>It also needs <code class="docutils literal notranslate"><span class="pre">get</span></code> and <code class="docutils literal notranslate"><span class="pre">patch</span></code> on <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code>, which the chart grants
+separately from the rest. Both verbs: kubectl reads the subresource back before
+it sends the write, so <code class="docutils literal notranslate"><span class="pre">patch</span></code> alone fails on the GET.</p>
 </section>
 </section>
 <section id="opening-vs-code-on-the-seat">
@@ -822,7 +916,10 @@ window — on the connection already open to the <em>older</em> seat.</p></li>
 <em>requires</em> a reachable registry. Use it when you are iterating on a tag that
 moves, such as <code class="docutils literal notranslate"><span class="pre">main</span></code> or a branch image: a node that already has a copy will
 otherwise serve it, and a seat older than the launcher that started it has no
-symptom at all. <code class="docutils literal notranslate"><span class="pre">attach</span></code> names the tag in its report when this applies.</p></li>
+symptom at all. <code class="docutils literal notranslate"><span class="pre">attach</span></code> measures it rather than guessing — the <code class="docutils literal notranslate"><span class="pre">version</span></code> row
+of the report is what the seat itself answered — but a running seat is
+reconnected to rather than replaced, so re-checking the registry takes
+<code class="docutils literal notranslate"><span class="pre">--pull</span> <span class="pre">always</span> <span class="pre">--new</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ssh-user</span></code> — the login name. <code class="docutils literal notranslate"><span class="pre">root</span></code> on the full rung; <code class="docutils literal notranslate"><span class="pre">podbench</span></code> on a
 degraded one, which is the name in the record the seat registered for its own
 uid — unless that uid already has an account in the image, where it is whatever
@@ -855,7 +952,11 @@ re-attach.</p>
 $ podbench list -n demo        # every pod in the namespace carrying one
 </pre></div>
 </div>
-<p>Each seat is listed with the rung it was admitted on and, under it, a <code class="docutils literal notranslate"><span class="pre">verdict</span></code>.
+<p>Each seat is listed with the rung it was admitted on and, under it, a <code class="docutils literal notranslate"><span class="pre">target</span></code>
+and a <code class="docutils literal notranslate"><span class="pre">verdict</span></code>. The <code class="docutils literal notranslate"><span class="pre">target</span></code> is the container that seat’s namespaces are those
+of: two seats on one pod may have entered different containers, and an
+ephemeral container’s <code class="docutils literal notranslate"><span class="pre">targetContainerName</span></code> is fixed for its lifetime, so this
+is read back from the spec rather than assumed.
 The verdict is measured: <code class="docutils literal notranslate"><span class="pre">status</span></code> runs <code class="docutils literal notranslate"><span class="pre">capreport</span></code> in every <em>running</em> seat, on
 the node, exactly as <code class="docutils literal notranslate"><span class="pre">attach</span></code> did. It is not derived from the rung, which says
 only what was asked for — a mutating webhook that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code>
@@ -913,19 +1014,23 @@ for whatever it has written.</p>
 <td><p>the liveness budget expired; the seat shares the target’s namespaces</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--new</span></code> for a fresh seat (the old name is burnt), and debug in a dev pod if you need to stop for longer</p></td>
 </tr>
-<tr class="row-odd"><td><p>attach lands but <code class="docutils literal notranslate"><span class="pre">blocker:</span> <span class="pre">yama-scope</span></code></p></td>
+<tr class="row-odd"><td><p>every rung refused with <code class="docutils literal notranslate"><span class="pre">The</span> <span class="pre">fields</span> <span class="pre">spec.securityContext.runAsUser</span> <span class="pre">is</span> <span class="pre">set</span> <span class="pre">to</span> <span class="pre">an</span> <span class="pre">invalid</span> <span class="pre">value.</span> <span class="pre">Allowed</span> <span class="pre">runAsUser</span> <span class="pre">values</span> <span class="pre">are:</span> <span class="pre">&quot;36096|37887&quot;</span></code></p></td>
+<td><p>the cluster allow-lists the uid a pod may run as — standard where pods do host mounts — and no rung of the ladder may invent one</p></td>
+<td><p>re-run with <code class="docutils literal notranslate"><span class="pre">--target-uid</span> <span class="pre">36096</span></code>, one of the uids the refusal names. The ladder line names them and the flag</p></td>
+</tr>
+<tr class="row-even"><td><p>attach lands but <code class="docutils literal notranslate"><span class="pre">blocker:</span> <span class="pre">yama-scope</span></code></p></td>
 <td><p>Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span> <span class="pre">&gt;=</span> <span class="pre">1</span></code> on <strong>that node</strong> forbids attaching to non-descendants</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span></code>, or have the target call <code class="docutils literal notranslate"><span class="pre">prctl(PR_SET_PTRACER,</span> <span class="pre">PR_SET_PTRACER_ANY)</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>every library reports <code class="docutils literal notranslate"><span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code></p></td>
+<tr class="row-odd"><td><p>every library reports <code class="docutils literal notranslate"><span class="pre">missing</span> <span class="pre">debugging</span> <span class="pre">information</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ca-certificates</span></code> absent, so <code class="docutils literal notranslate"><span class="pre">libdebuginfod</span></code> fails the TLS handshake silently</p></td>
 <td><p>use the published image; it is mandatory there for exactly this reason</p></td>
 </tr>
-<tr class="row-odd"><td><p>attach works on one pod, is denied on the next</p></td>
+<tr class="row-even"><td><p>attach works on one pod, is denied on the next</p></td>
 <td><p>Yama differs <strong>per node</strong>, by kernel flavour, not by architecture</p></td>
 <td><p>nothing to fix. The report prints the node name and Yama state for this reason</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span> <span class="pre">&quot;web-...&quot;</span> <span class="pre">is</span> <span class="pre">forbidden:</span> <span class="pre">User</span> <span class="pre">cannot</span> <span class="pre">update</span> <span class="pre">resource</span> <span class="pre">&quot;pods/ephemeralcontainers&quot;</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span> <span class="pre">&quot;web-...&quot;</span> <span class="pre">is</span> <span class="pre">forbidden:</span> <span class="pre">User</span> <span class="pre">cannot</span> <span class="pre">update</span> <span class="pre">resource</span> <span class="pre">&quot;pods/ephemeralcontainers&quot;</span></code></p></td>
 <td><p>your kubeconfig lacks a verb podbench needs, discovered mid-attach</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">-n</span> <span class="pre">demo</span></code> asks for every verb up front and names the chart flag that grants it</p></td>
 </tr>
@@ -990,6 +1095,8 @@ would make an honest report look like a failure.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-refuses-sys-ptrace">When the cluster refuses <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-cluster-strips-sys-ptrace">When the cluster <em>strips</em> <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-the-reads-are-denied-too">When the reads are denied too</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-probe-itself-does-to-the-workload">What the probe itself does to the workload</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-much-room-this-pod-actually-has">How much room this pod actually has</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#making-memory-and-cpu-headroom-first">Making memory and CPU headroom first</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#requests-move-with-limits">Requests move with limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-container-with-a-resource-claim-cannot-be-resized-at-all">A container with a resource claim cannot be resized at all</a></li>

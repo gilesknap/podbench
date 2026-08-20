@@ -125,7 +125,8 @@ the spec podbench asked for:
 ```
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
 target      web
-rung        full - root plus CAP_SYS_PTRACE
+version     0.4.0b1, the same build as this launcher
+rung        full - uid 0, gid 0, CapEff 00000000a80c25fb
 ladder
   full      landed   admitted by the API server and the kubelet
 supports
@@ -141,14 +142,23 @@ measured
   blocker     none
   node        kind-worker
   yama        1
-  uids        seat 0, target 0
+  ids         seat 0:0, target 0:0
 ```
 
-Three lines are worth learning to read:
+Four lines are worth learning to read:
 
-* **`rung`** — what the *cluster* admitted. `degraded` means `SYS_PTRACE` was
-  refused by Pod Security Admission and podbench fell back to the target's own
-  UID. That is a normal outcome, not a failure, and the command still exits `0`.
+* **`version`** — which build of podbench answered, measured by running
+  `podbench --version` inside the seat. The launcher and the image are one
+  release in two places and can drift apart, most easily on a tag that moves:
+  the node serves the copy it already has, and a fix that is in the launcher but
+  not in the seat reads exactly like a fix that does not work. When the two
+  differ the report says so, on one `WARNING` line.
+* **`rung`** — what the seat *is*, read from its own `/proc/self/status`, which
+  is why the line cites the numbers behind it. `degraded` means the seat runs at
+  the target's own UID with nothing effective — a normal outcome, not a failure,
+  and the command still exits `0`. What podbench asked admission for is on the
+  `ladder` lines below, and the two can differ: a policy that rewrites a request
+  rather than refusing it leaves a container the spec no longer describes.
 * **`blocker`** — what actually stops ptrace, if anything. Four unrelated
   subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
   `EPERM`; this line names which.
@@ -179,9 +189,10 @@ now — it adds the line above any `Host *` block, which is where it has to be
 ```
 $ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
-PID  UID  TARGET  CONTAINER      COMM    CMDLINE
-1    0    yes     87d20e23a1b4   python  python -m http.server 8080
-42   0    no      7206c89bf0e1   sleep   sleep infinity
+container web: the processes in its PID namespace
+PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
+1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
+42   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
 ```
 
 There is no listening socket in that pod, no port-forward and no pod IP

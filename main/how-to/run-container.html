@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>The container image &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>The container image &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -640,10 +640,10 @@ construction. Do not prune <code class="docutils literal notranslate"><span clas
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">podbench</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">exec</span> <span class="pre">/app/.venv/bin/podbench</span> <span class="pre">&quot;$&#64;&quot;</span></code> — the venv is on no default <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, and <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;host&gt;</span> <span class="pre">podbench</span> <span class="pre">capreport</span></code> runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">exec</span> <span class="pre">/app/.venv/bin/podbench</span> <span class="pre">&quot;$&#64;&quot;</span></code> — the venv is on no default <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, and <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;host&gt;</span> <span class="pre">podbench</span> <span class="pre">capreport</span></code> runs a non-login, non-interactive shell that sources nothing, so this file by absolute path is what makes the verb resolve even when the agent’s <code class="docutils literal notranslate"><span class="pre">SetEnv</span></code> line did not reach the session</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code></p></td>
-<td><p>installed as <code class="docutils literal notranslate"><span class="pre">gdb</span></code> as well, so anything that shells out to <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span> <span class="pre">&lt;n&gt;</span></code> in the seat gets a sysroot, an exec file gdb cannot canonicalise back into this container (issue #90) and a working directory that exists</p></td>
+<td><p>installed as <code class="docutils literal notranslate"><span class="pre">gdb</span></code> as well, so anything that shells out to <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span> <span class="pre">&lt;n&gt;</span></code> in the seat gets the same startup sequence <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> runs — sysroot, an exec file gdb cannot canonicalise back into this container (issue #90), auto-load safe path and SIGURG handling — and a working directory that exists</p></td>
 </tr>
 </tbody>
 </table>
@@ -672,12 +672,26 @@ construction. Do not prune <code class="docutils literal notranslate"><span clas
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code></p></td>
 <td><p>the target container’s runtime ID, injected at attach time; how <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> find the workload</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET</span></code></p></td>
+<td><p>the target container’s name, injected at attach time; what <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> heads its listing with</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_POD_CONTAINERS</span></code></p></td>
+<td><p>every container in the pod, comma-separated, injected at attach time; how <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> names the containers this seat is not in</p></td>
+</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS</span></code></p></td>
-<td><p>defaults to <code class="docutils literal notranslate"><span class="pre">https://debuginfod.debian.net</span></code>; point it at a mirror</p></td>
+<td><p>defaults to <code class="docutils literal notranslate"><span class="pre">https://debuginfod.debian.net</span></code>; point it at a mirror. The agent connects to it once at start-up and drops it from ssh sessions when nothing answers</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_TIMEOUT</span></code></p></td>
+<td><p>seconds gdb will wait on that server, per file. Defaults to <code class="docutils literal notranslate"><span class="pre">2</span></code>; gdb’s own default is 90, spent after the attach with the workload stopped</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>sshd passes none of its own environment to the commands it runs, so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code> names the ones that matter in the sshd config it generates: every
+<code class="docutils literal notranslate"><span class="pre">PODBENCH_*</span></code> variable except the keys, plus <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, <code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_URLS</span></code> and
+<code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_TIMEOUT</span></code>. Anything else you set on the container reaches <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> and a shell, and not an ssh session. If a value contains whitespace sshd
+cannot carry it, and the agent says so in the container’s start-up log rather
+than dropping it quietly — <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span> <span class="pre">&lt;pod&gt;</span> <span class="pre">-c</span> <span class="pre">&lt;the</span> <span class="pre">debug</span> <span class="pre">container&gt;</span></code>.</p>
 </section>
 <section id="building-it-yourself">
 <h2>Building it yourself<a class="headerlink" href="#building-it-yourself" title="Link to this heading">#</a></h2>

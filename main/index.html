@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>podbench &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>podbench &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="_static/documentation_options.js?v=9a8bf976"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
@@ -530,7 +530,7 @@ missing; <code class="docutils literal notranslate"><span class="pre">--fix</spa
 lands the best seat the cluster will admit, and runs its probe <strong>inside the
 container it just created</strong>, so the report is measured rather than inferred from
 the spec it asked for:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">root</span> <span class="n">plus</span> <span class="n">CAP_SYS_PTRACE</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">uid</span> <span class="mi">0</span><span class="p">,</span> <span class="n">gid</span> <span class="mi">0</span><span class="p">,</span> <span class="n">CapEff</span> <span class="mi">00000000</span><span class="n">a80c25fb</span>
 <span class="n">supports</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspect</span> <span class="p">(</span><span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span><span class="p">,</span> <span class="n">maps</span><span class="p">,</span> <span class="n">environ</span><span class="p">)</span>
@@ -564,13 +564,20 @@ until the first release. Until then, run every command as
 <h2>Read this before you attach to a live pod<a class="headerlink" href="#read-this-before-you-attach-to-a-live-pod" title="Link to this heading">#</a></h2>
 <p>Not fine print — each of these has bitten a spike on a real cluster.</p>
 <ul class="simple">
-<li><p><strong>podbench can get your workload OOM-killed.</strong> An ephemeral container may not
-declare <code class="docutils literal notranslate"><span class="pre">resources</span></code> at all, so on a live pod the seat shares the workload’s
-memory and ephemeral-storage limits and <strong>cannot reserve its own</strong> — and a VS
-Code session is a 1.1–1.3 GB working set. Exceed memory and the kernel
-OOM-kills something in the pod cgroup; exceed ephemeral storage and the
-kubelet evicts the whole pod. Anything heavier than looking belongs in a dev
-pod, which is immune. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> buys headroom in place, opt-in.</p></li>
+<li><p><strong>A seat shares the pod’s limits and cannot reserve its own — and it is a VS
+Code session, not the seat, that spends them.</strong> An ephemeral container may not
+declare <code class="docutils literal notranslate"><span class="pre">resources</span></code> at all, so the seat lives in the pod’s cgroup: exceed
+memory and the kernel OOM-kills something in it, exceed ephemeral storage and
+the kubelet evicts the whole pod. How much that matters is now measured rather
+than assumed. Ten live seats on a Diamond beamline (2026-08-19) cost
+<strong>13–23 MiB</strong> each, against <strong>170–3858 MiB</strong> of headroom per pod, three seats
+to a pod, no OOM anywhere — so <code class="docutils literal notranslate"><span class="pre">attach</span></code> reads <em>this</em> pod’s headroom, prints it
+on the report’s <code class="docutils literal notranslate"><span class="pre">memory</span></code> row, and warns only when it is genuinely thin. A
+<strong>vscode-server</strong> is the case that still bites: 1215 MiB live with a single
+extension, which does not fit in most of those pods, so <code class="docutils literal notranslate"><span class="pre">--open</span></code> is checked
+against the same number. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span> <span class="pre">MEMORY</span></code> raises the target’s limit in
+place, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> gives the seat limits of its own. One beamline at one
+moment: that falsifies “always warn”, it does not prove no cluster is tight.</p></li>
 <li><p><strong>Being refused <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> is normal, not an error.</strong> It is outside both the
 baseline and the restricted Pod Security Standards, so podbench walks a ladder
 with two valid rungs and lands the better one the cluster admits. Four

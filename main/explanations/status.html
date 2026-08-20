@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -550,7 +550,11 @@ target, bookworm’s binutils 2.40 rejected <code class="docutils literal notran
 level, and the two are indistinguishable from the editor. A target built by a
 newer toolchain than the image ships is an image bump rather than something the
 launcher can work around; CodeLLDB is the escape hatch, since it carries its own
-reader. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> now asks gdb before emitting a <code class="docutils literal notranslate"><span class="pre">cppdbg</span></code> entry — <strong>but
+reader — except where this seat keeps a file at the target’s exe path, which
+withdraws the lldb entry as well: lldb has issue #90 too and, unlike gdb, cannot
+be staged out of it (measured with a standalone lldb; CodeLLDB’s own bundled
+lldb was not observed). <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> now asks gdb before emitting a <code class="docutils literal notranslate"><span class="pre">cppdbg</span></code>
+entry — <strong>but
 that refusal has never fired in a cluster</strong>, because the one binary that
 triggers it is the one target selection now avoids.</p>
 <p><strong>Admission engines beyond Pod Security Admission are handled, barely
@@ -587,17 +591,25 @@ a temp directory and a fake <code class="docutils literal notranslate"><span cla
 seat at the application’s own mountPath, so the workflow is reachable end to
 end; reachable is not the same as demonstrated. See
 <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
-<p><strong>Nothing tells you which half you are running.</strong> The launcher and the image are
-one release in two places, and they can differ: <code class="docutils literal notranslate"><span class="pre">uvx</span></code> resolves the launcher on
-every invocation, while a seat comes from whatever copy of the image tag the
-node already has. Every symptom of that mismatch looks like a bug in the newer
-half — a fix that is present in the launcher and absent from the seat reads
-exactly like a fix that does not work. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--version</span></code> inside the seat is
-the only thing that answers it, and nothing prints it unasked. When iterating on
-a tag that moves, <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--pull</span> <span class="pre">always</span></code> is what keeps the two in step.</p>
+<p><strong>Which half you are running is now measured, not guessed.</strong> The launcher and
+the image are one release in two places, and they can differ: <code class="docutils literal notranslate"><span class="pre">uvx</span></code> resolves the
+launcher on every invocation, while a seat comes from whatever copy of the image
+tag the node already has. Every symptom of that mismatch looks like a bug in the
+newer half — a fix present in the launcher and absent from the seat reads
+exactly like a fix that does not work. <code class="docutils literal notranslate"><span class="pre">attach</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> now run
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--version</span></code> in the seat and print it on a <code class="docutils literal notranslate"><span class="pre">version</span></code> row, and <code class="docutils literal notranslate"><span class="pre">attach</span></code>
+warns when it differs from its own; only where the seat will not answer does the
+report fall back to naming the tag as one that moves. When iterating on such a
+tag, <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--pull</span> <span class="pre">always</span> <span class="pre">--new</span></code> is what puts a current seat in the pod.</p>
+<p>What is <em>not</em> closed is the other end of it: a release image can be built from a
+tree that setuptools_scm marks <code class="docutils literal notranslate"><span class="pre">.dev</span></code>/<code class="docutils literal notranslate"><span class="pre">+g&lt;sha&gt;</span></code>, and one was — an image tagged
+<code class="docutils literal notranslate"><span class="pre">0.4.0b1</span></code> whose seat reported <code class="docutils literal notranslate"><span class="pre">0.4.0b2.dev0+g01d9ac8f8.d20260818</span></code>, a post-tag
+build of a dirty context. CI now refuses to publish a release tag from such a
+build, which stops it recurring but does not retag what is already in the
+registry.</p>
 <p>The security-side gaps — the untested seccomp branch of the capability probe,
-and the assumption that every container on a node shares one AppArmor profile —
-are listed under <em>Unproven areas</em> in the <a class="reference internal" href="security.html"><span class="std std-doc">Security model</span></a>.</p>
+and an LSM label mismatch never having been observed — are listed under
+<em>Unproven areas</em> in the <a class="reference internal" href="security.html"><span class="std std-doc">Security model</span></a>.</p>
 </section>
 </section>
 

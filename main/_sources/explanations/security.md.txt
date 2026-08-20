@@ -22,7 +22,7 @@ RBAC, in the namespace being debugged. That is the whole list:
 | `pods` | `create`, `delete` | mint and remove a dev pod | Iterate mode |
 | `services` | `get`, `list`, `patch` | repoint a Service at the dev pod | `--take-traffic` / `--cutover` only |
 | `persistentvolumeclaims` | `get`, `list` | granted by the chart for the optional scratch workspace claim. Nothing in the launcher reads it yet — the dev pod's workspace is always an `emptyDir` | Iterate mode |
-| `pods/resize` | `patch` | raise a running workload's memory limit before attaching | `attach --resize` only |
+| `pods/resize` | `get`, `patch` | raise a running workload's memory limit before attaching | `attach --resize` only |
 | `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout | Hotfix mode |
 | `apps`: `deployments`, `statefulsets` | `patch` | write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Hotfix mode relies on, so they go on the template — and that same edit is what rolls the workload | Hotfix mode |
 | `pods` | `patch`, `delete` | annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back | Hotfix mode |
@@ -89,10 +89,17 @@ first-class mode rather than an error state.
 | **degraded** | `runAsUser: <target's uid>`, `runAsGroup: <target's gid>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, and the target's own `seccompProfile` where it has one | **restricted**, verified | `/proc/<pid>/root`, `maps`, `environ`, `exe`, `cwd`; full source-level debugging of processes gdb starts itself |
 | *(seat)* | whatever the cluster will admit | anything | editor, shell, git, uv |
 
-The launcher tries them in order and falls down on refusal, then reports the
-rung it landed on. A degraded seat exits `0`: returning non-zero for "the
-cluster would not grant `SYS_PTRACE`" would make an honest report look like a
-failure.
+The launcher walks them and falls down on refusal, then reports the rung it
+*measured* — the seat's own uid and `CapEff`, read from `/proc/self/status`
+once it is up, because a securityContext is what admission agreed to store and
+not what the kernel gave the container. Which rung it *starts* at is the target's to imply: a target at a
+known non-root uid gets the degraded rung first, since that rung already matches
+its credentials and the row above buys nothing the row below does not — see
+[the capability ladder](attach-flow.md). Every rung is rehearsed through a
+server-side dry run before a container name is committed to it, so a policy that
+rewrites the request instead of refusing it is seen rather than landed. A
+degraded seat exits `0`: returning non-zero for "the cluster would not grant
+`SYS_PTRACE`" would make an honest report look like a failure.
 
 ### The seat mirrors the target's seccomp profile, and imposes none
 
@@ -178,15 +185,25 @@ Even with `CAP_SYS_PTRACE` granted, attach can be refused by:
    it, a DLS node denied it even on a self-forked child (2026-08-18), so only
    `capreport` can say which node you are on. It blocks
    `personality(ADDR_NO_RANDOMIZE)` either way, so gdb cannot disable ASLR;
-4. **AppArmor** — a profile denying ptrace between the two domains. Everything
-   observed ran under `cri-containerd.apparmor.d (enforce)`, which permits
-   ptrace between peers *in the same profile*; a target with a custom profile
-   breaks that.
+4. **the node's LSM** — SELinux or AppArmor, denying ptrace between two
+   *different* labels. Which one is active is read from `/sys` (selinuxfs, or
+   AppArmor's `enabled` parameter), because `/proc/<pid>/attr/current` is a
+   slot they share and the string in it does not say whose it is. A label on
+   its own decides nothing: containers in a pod normally carry the same one,
+   and ptrace is permitted within it. `capreport` therefore prints the seat's
+   label and the target's and names a blocker only when they *differ* —
+   differing MCS categories under SELinux, differing profiles under AppArmor.
+   The denial is logged on the node and nowhere the pod can read, so the report
+   names the node and the command: `ausearch -m avc -ts recent` under SELinux,
+   `dmesg | grep -i apparmor` under AppArmor.
 
 All four return `EPERM`. `capreport` reads the capability sets, `Seccomp`,
-`NoNewPrivs`, both AppArmor profiles and the Yama scope, then runs a scratch
+`NoNewPrivs`, both security labels and the Yama scope, then runs a scratch
 `PTRACE_ATTACH` on its own forked child — always permitted by Yama, so a failure
-*there* is structural — and a live attach on the target. It names the mechanism.
+*there* is structural — and a live attach on the target. The live one is a
+`PTRACE_SEIZE`, which takes the identical permission check and leaves the
+workload running rather than stopping it; the report states what the probe
+cost, which is normally nothing. It names the mechanism.
 
 Yama is per node and differs by **kernel flavour, not architecture**: two arm64
 nodes in the same cluster disagreed, one denying and one allowing the
@@ -268,10 +285,18 @@ automatically and prints why.
 
 ## Things worth knowing before you approve it
 
-* **The blast radius of the seat is the pod.** A podbench container sees that
-  pod's processes, that pod's network namespace and the target container's
-  filesystem — nothing outside. There is no node access, no host mount, no
-  hostNetwork, no hostPID.
+* **The blast radius of the seat is the pod's blast radius.** A podbench
+  container sees that pod's processes, that pod's network namespace and the
+  target container's filesystem. podbench adds no node access, no host mount,
+  no `hostNetwork` and no `hostPID` — but it inherits whatever the pod already
+  has, and an ephemeral container cannot decline them. **On a `hostNetwork: true`
+  pod the network namespace is the node's**, so `127.0.0.1` inside the seat is
+  the node's loopback, shared with every other hostNetwork pod and every node
+  daemon. `debug-config` states this, refuses to credit a listening port to
+  this pod unless it can attribute the socket to a container in it, and asks
+  the kernel for an unused port for any server `--provision` starts (issue
+  #87). A debugpy server authenticates nobody, so on such a pod it is an
+  arbitrary-code-execution endpoint for anything on the node until you stop it.
 * **The `/proc/<pid>/root` bridge is one-directional.** The debug container can
   read the app's rootfs; the app cannot see the debug container's. A compromised
   application container cannot reach the debug toolchain.
@@ -323,25 +348,30 @@ not known until the attach.
 So the seat registers a record for itself, and where it registers it is the
 question:
 
-* `/etc/passwd` **is not modified**. It stays as the image built it: root-owned,
-  group `root`, and mode 664 — `chmod g=u` makes it group-writable deliberately,
-  in the OpenShift convention. Only a seat in group 0 can use that, and a seat in
-  group 0 is no longer the target's group, which is a credential `ptrace`
-  compares: pinning
-  `runAsGroup: 0` buys the transport and loses the debugger (measured, issue
-  #98). That route survives as `attach --seat-gid-root` for images that need it
-  and is not the default.
+* `/etc/passwd` **is not modified by a seat that mirrors its target**. It stays
+  as the image built it: root-owned, group `root`, and mode 664 — `chmod g=u`
+  makes it group-writable deliberately, in the OpenShift convention. Only a seat
+  in group 0 can use that, and pinning `runAsGroup: 0` to get there is no longer
+  offered at all: the gid is a credential `ptrace` compares, so it buys the
+  transport and loses the debugger (measured, issue #98; the flag that did it
+  retired in #103). The mode remains for the one seat whose group genuinely *is*
+  0 — a target that really runs there — and for a `dev` sidecar's projection.
+  The image also pre-seeds this file with a static record for every free uid
+  below 500, which is the range the database below refuses; those seats resolve
+  with nothing writable anywhere.
 * Instead the image installs `libnss-extrausers`, points the `passwd` line of
   `/etc/nsswitch.conf` at it, and ships `/var/lib/extrausers/passwd` **empty and
   mode 0666**. The agent appends one line — `podbench:x:<uid>:<gid>:…` — and NSS
   resolves the uid with no capability, no gid and no change to the workload's
   manifest. Not for every seat: this NSS source has floors compiled in (uid and
   gid 500, gid 100 exempted) and ignores a record below them, for `getpwnam` as
-  well as `getpwuid`. A seat under a floor takes `/etc/passwd` instead, and the
-  commonest one can write it — a target that sets `runAsUser` and no
-  `runAsGroup` leaves the seat pinning no group, so it runs with the image's gid
-  0. `agent.extrausers_serves` decides which file, and the mode never enters
-  into it.
+  well as `getpwuid`. A seat under a floor takes `/etc/passwd` instead, where the
+  static records above already answer for it. The shape that used to dominate
+  that fallback has gone: a target setting `runAsUser` and no `runAsGroup` left
+  the seat pinning no group and running with the image's gid 0, and podbench now
+  measures the target's real gid from `/proc` and pins it (#103).
+  `agent.extrausers_serves` decides which file, and the mode never enters into
+  it.
 
 Why a world-writable file is not a privilege boundary here:
 
@@ -405,10 +435,11 @@ Stated so nobody relies on them:
   filter branch itself is no longer unproven: it fired at DLS on 2026-08-18,
   under a `RuntimeDefault` profile that denies ptrace, and named the right
   mechanism.
-* **AppArmor uniformity is an assumption.** Every container observed shared one
-  profile, and ptrace worked because that profile permits ptrace between peers
-  within it. A custom profile on the target breaks that, and the diagnostic text
-  for that case has never been seen in the field.
+* **A differing LSM label has never been seen in the field.** Every pair
+  measured matched — `cri-containerd.apparmor.d (enforce)` on the spike nodes,
+  `system_u:system_r:spc_t:s0` on both sides at DLS on 2026-08-19 — so the
+  comparison has only ever answered "same". The mismatch arm, and the audit-log
+  advice it prints, are untested against a real refusal.
 * **Targets in user namespaces**, and targets with unusual UID mappings, were
   never tested.
 * **Behaviour through konnectivity or an API gateway** is unknown; every

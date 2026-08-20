@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1580,6 +1580,14 @@ connection already open to the <em>older</em> seat. The measured consequence: <c
 into <code class="docutils literal notranslate"><span class="pre">podbench-2</span></code> over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, correctly, while the editor read <code class="docutils literal notranslate"><span class="pre">podbench-1</span></code>’s copy from
 hours earlier. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> showed it plainly — every vscode-server process in the old seat’s
 container id, nothing but an agent in the new one.</p>
+<p><em>The second half of that shipped later, on 2026-08-19.</em> Naming the seat in the <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code>
+settled the overwritten stanza; <code class="docutils literal notranslate"><span class="pre">ControlPath</span></code> stayed on the bare <code class="docutils literal notranslate"><span class="pre">%C</span></code> for two more days, and <code class="docutils literal notranslate"><span class="pre">%C</span></code>
+hashes the <strong>resolved</strong> <code class="docutils literal notranslate"><span class="pre">HostName</span></code> rather than the <code class="docutils literal notranslate"><span class="pre">Host</span></code> alias as typed, so the multiplexing key
+was still one per pod. The socket is now <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-cm/%C-&lt;digest&gt;</span></code>, the digest taken over the
+seat’s <code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> — the same identity that pins the key, so the two cannot come apart, and a
+pod deleted and recreated under its own name gets a new socket rather than the old master. Read
+the checklist entry in §4 with this correction: <code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">/tmp/podbench-cm/%C</span></code> on its own is
+the defect, not the recommendation.</p>
 <p><strong>R10 — Ephemeral-container state loss on pod restart.</strong> The apt-installed sshd, host keys,
 <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code>, the 690 MiB server and all extensions live in the ephemeral container’s writable
 layer, and the ephemeral container spec is immutable and unrestartable. A pod restart or an OOM

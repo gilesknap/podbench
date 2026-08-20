@@ -203,7 +203,10 @@ the same answer on both sides. Two implementations would be two answers.
   other in-pod verb — `podbench pids`, `podbench dbg`, `podbench capreport`,
   `podbench dev-bootstrap`, `podbench run`, `podbench stop`. One file,
   `/usr/local/bin/podbench`, is what puts them within reach of an ssh session
-  that sources no profile.
+  that sources no profile — sshd leaks none of the image's environment, so the
+  agent's generated config carries `PATH` (and `PODBENCH_TARGET_CID`, and the
+  debuginfod settings) into a session with `SetEnv`, and that one file is what
+  resolves the verb when it cannot.
 
 There is **one runtime dependency, and it is the CLI** — typer, which brings
 click and rich. The help a developer reads at 3 a.m. is part of the product, and
@@ -243,7 +246,8 @@ letting it be discovered.
 ## What the probe is for
 
 Four unrelated subsystems refuse `PTRACE_ATTACH` with the same `EPERM`: a
-missing capability, Yama's `ptrace_scope`, a seccomp filter, and AppArmor. A
+missing capability, Yama's `ptrace_scope`, a seccomp filter, and the node's
+LSM. A
 previous hand-rolled attempt at this tool reached same-UID and still could not
 tell which one had said no. Naming the blocker is the point of the whole probe —
 "denied by Yama (ptrace_scope=1)" is actionable; "ptrace: Operation not

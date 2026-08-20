@@ -31,7 +31,7 @@ $ podbench --help
 ╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
 │ agent          prepare the container for ssh and idle as its PID 1                               │
 │ capreport      name the mechanism that denies ptrace in this container                           │
-│ pids           list the pod's processes                                                          │
+│ pids           list the target container's processes                                             │
 │ dbg            debug a process                                                                   │
 │ debug-config   write VS Code's launch.json for this seat                                         │
 │ dev-bootstrap  clone, sync and editable-install a checkout                                       │
@@ -187,7 +187,7 @@ RBAC in demo (kubectl auth can-i, as your kubeconfig's user)
   [ok]    attach         all 5 verbs allowed
   [warn]  iterate        missing: create pods, delete pods
           grant it with the chart's rbac.iterate=true, or the equivalent Role
-  [warn]  resize         missing: patch pods/resize
+  [warn]  resize         missing: get pods/resize, patch pods/resize
           grant it with the chart's rbac.resize=true, or the equivalent Role
   [ok]    hotfix         all 5 verbs allowed
 ----------------------------------------------------------------------------
@@ -291,30 +291,39 @@ what that seat can actually do.
 │ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
 │                                              image built from this launcher's version)           │
 │ --target-uid                UID              the target's uid, when its pod spec does not say    │
-│ --max-rung                  RUNG             highest rung of the capability ladder to try: full  │
-│                                              (default), degraded or seat. The ladder still falls │
-│                                              through the rungs below. Use `degraded` where a     │
-│                                              mutating admission policy strips SYS_PTRACE instead │
-│                                              of refusing it - there the full rung is admitted,   │
-│                                              lands as root without the capability, and the walk  │
-│                                              has nothing to act on. A running seat above the     │
-│                                              ceiling is not reused                               │
+│ --target-gid                GID              the target's gid, when its pod spec does not say.   │
+│                                              The seat must share it: __ptrace_may_access         │
+│                                              compares the group ids as peers of the user ids, so │
+│                                              a seat at the target's uid in another group can log │
+│                                              in and cannot trace. Rarely needed - podbench       │
+│                                              measures the target's real gid from /proc and lands │
+│                                              a corrected seat itself - but it costs one          │
+│                                              container name instead of two, and it is not        │
+│                                              overridden by the measurement                       │
+│ --max-rung                  RUNG             highest rung of the capability ladder to try: full, │
+│                                              degraded or seat. It is where the walk starts, and  │
+│                                              the ladder still falls through the rungs below.     │
+│                                              Without it a target whose uid is known and not root │
+│                                              has its own rung tried first. Use `full` to insist  │
+│                                              on the capability rung - a node with Yama           │
+│                                              ptrace_scope >= 1 exempts nothing else - or         │
+│                                              `degraded` where a mutating admission policy strips │
+│                                              SYS_PTRACE instead of refusing it. A running seat   │
+│                                              above the ceiling is not reused                     │
 │ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
 │                                              seat, named by claim or by volume name. MOUNTPATH   │
 │                                              defaults to the application container's own, which  │
 │                                              Hotfix mode requires it to equal. Repeatable        │
 │ --new                                        add a container even if one is running (its name is │
 │                                              permanent)                                          │
-│ --seat-gid-root                              land the seat with runAsGroup: 0 so it can register │
-│                                              an /etc/passwd entry for the target's uid. Rarely   │
-│                                              needed: the seat registers its own record in        │
-│                                              /var/lib/extrausers/passwd without it, and what is  │
-│                                              left for this flag is a seat that database will not │
-│                                              serve - an image whose NSS does not consult it, or  │
-│                                              a uid or gid below 500. It drops the target's own   │
-│                                              group, and a seat whose gid no longer matches the   │
-│                                              target's cannot ptrace it - on a target whose gid   │
-│                                              is not 0 this buys ssh and takes the debugger       │
+│ --no-correct-ids                             keep the first seat even when it landed in the      │
+│                                              wrong group. Without this, a seat whose measured    │
+│                                              uid:gid disagrees with the target's is replaced     │
+│                                              once by a corrected one, which spends a second      │
+│                                              container name for the pod's lifetime - an          │
+│                                              ephemeral container's securityContext cannot be     │
+│                                              changed in place. Use --target-gid to get it right  │
+│                                              on the first name                                   │
 │ --no-seat-identity                           do not mount the pod's podbench-home volume, which  │
 │                                              is otherwise mounted by convention when the pod     │
 │                                              declares it and keeps everything the seat writes    │
@@ -384,13 +393,18 @@ Notes:
   [The container image](../how-to/run-container.md).
 * Re-running `attach` **reconnects** to a running seat. `--new` appends another
   ephemeral container, whose name is then burnt for the pod's lifetime.
-* `--target-uid` matters only for the degraded rung, which must match the
-  target's UID exactly and never defaults to root.
-* `--max-rung` caps the walk — the rungs above it are skipped, the ones below
-  still tried. It is for a cluster whose policy **mutates** rather than refuses:
-  there the full rung is admitted and quietly stripped of `SYS_PTRACE`, so the
-  walk sees no refusal to act on and stops on a root seat that cannot ptrace
-  anything. `--max-rung degraded` skips straight to the UID-matching rung. A
+* `--target-uid` matters to the degraded rung, which must match the target's UID
+  exactly and never defaults to root — and to the walk's *order*, since a known
+  non-root UID is what makes that rung the one tried first. It is also the
+  answer to a cluster that allow-lists `runAsUser`: the refusal names the UIDs
+  it would take, and this is how one of them is chosen.
+* `--max-rung` states where the walk starts — the rungs above it are skipped,
+  the ones below still tried. Without it the target decides: a target at a known
+  non-root UID has the UID-matching rung tried first, because that rung already
+  satisfies the kernel's credential check and a root seat whose capability was
+  stripped reads *fewer* of the target's `/proc` files than it does. Pass `full`
+  to insist on the capability rung, which is the only one Yama exempts, or
+  `degraded` on a cluster whose policy **mutates** rather than refuses. A
   running seat that the ceiling would not have landed is **not** reconnected to,
   since an ephemeral container's `securityContext` is fixed for the pod's
   lifetime. See {ref}`When the cluster strips SYS_PTRACE <stripped-sys-ptrace>`.
@@ -449,8 +463,9 @@ Notes:
     as. That is the whole mechanism: no capability, no `runAsGroup`, nothing in
     the workload's manifest. The exception is a seat under that database's
     compiled-in floors — it ignores a record whose uid or gid is below 500, gid
-    100 excepted — which falls back to `/etc/passwd` and so to
-    `--seat-gid-root`.
+    100 excepted — which falls back to `/etc/passwd`, where the image has
+    pre-seeded a static record for every free uid below 500 so that nothing
+    needs to be written.
   * The volume is for a seat that is an **ordinary** container, which is what
     `podbench dev` authors — `subPath` is legal there and nothing is written at
     runtime. (The dev sidecar does not mount it yet; see the follow-up note in
@@ -462,22 +477,33 @@ Notes:
     preparation failed. Where a seat *does* carry the identity, the same line
     credits it.
 * `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
-  `pods/resize` `patch`. An attach that used neither prints one line offering
-  them; one that used either prints what it cost — including that the raised
-  limit is on the pod and not on its controller, so a rollout reverts it.
+  `get` and `patch` on `pods/resize`. An attach that used neither prints one
+  line offering them; one that used either prints what it cost — including that
+  the raised limit is on the pod and not on its controller, so a rollout
+  reverts it.
   Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
   limit where a `LimitRange` bounds the ratio between them.
-* `--seat-gid-root` is a **fallback**, and one worth understanding before using.
-  GID 0 lets the agent append to the image's group-writable `/etc/passwd`, which
-  is what a seat had to do before `libnss-extrausers` shipped (issue #102) and
-  what it still does when that database will not serve it — an image whose NSS
-  does not consult it, or a uid or gid below its floor of 500. The cost is the
-  target's own group, and that group is not decoration: the kernel
-  compares the gid as well as the uid when a process without `CAP_SYS_PTRACE`
-  ptraces another, and a mismatch denies in both directions (measured, issue
-  #98). So against a target whose gid is not 0 — 36070 at Diamond — the flag buys
-  ssh and takes the debugger. Admission is not what makes it opt-in: the
-  restricted Pod Security Standard does not constrain `runAsGroup` at all.
+* **`--target-gid` and the automatic correction** are one mechanism seen from
+  two ends. `__ptrace_may_access()` compares `gid`, `egid` and `sgid` as peers
+  of `uid`, `euid` and `suid`, so a seat that mirrors the target's uid and
+  leaves the group at the debug image's `0` is denied every ptrace-gated
+  operation — live attach, and `/proc/<pid>/root`, `maps`, `environ` and `exe`
+  with it. That is the *usual* shape, because a manifest usually states
+  `runAsUser` and no `runAsGroup` and the real group comes from the workload
+  image's own user (p47-blueapi-0: `runAsUser: 1000`, real gid 1000).
+  * Nothing laptop-side can read that gid. `/proc/<pid>/status` can, it is
+    world-readable, and a seat at the wrong ids can still read it — so podbench
+    measures it *after* landing and, where it disagrees with what was authored,
+    lands one corrected seat by itself. An ephemeral container's
+    `securityContext` cannot be changed in place, so this spends a second
+    container name, permanently, and says so in one line.
+  * It happens **once**: the corrected attach cannot correct itself, and a later
+    attach finds the corrected seat instead of landing a third. A manifest that
+    states both ids costs one name as it always did.
+  * `--target-gid` states the group up front and costs one name instead of two.
+    It is a pin, not a hint: the measurement never overrides it. `--no-correct-ids`
+    keeps the first seat and leaves the mismatch reported as the
+    `gid-mismatch` blocker.
 * **`--open`** takes the seat from "landed" to "bound breakpoint" in one
   command. It needs `code` on your PATH, and the local VS Code needs the
   **Remote - SSH** extension; both are checked at the point of use and named in
@@ -655,6 +681,11 @@ burnt.
 │ --no-probe                       do not run capreport in the seats; every verdict then reads     │
 │                                  `not probed`, which is what this listing has to say when it has │
 │                                  measured nothing                                                │
+│ --timeout             SECONDS    wait this long for a seat that is still starting before         │
+│                                  reporting. The default reports what is there now; pass the same │
+│                                  number `attach --timeout` needed on a cluster whose image pull  │
+│                                  is slow                                                         │
+│                                  [default: 0.0]                                                  │
 │ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
 │                                  ~/.podbench)                                                    │
 │ --help                           Show this message and exit.                                     │
@@ -894,11 +925,21 @@ whose own forked child refuses to be traced can still read all three gated paths
 at the target's uid. `child_attach_ok` in the JSON is the only thing that claims
 that rung.
 
-It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the AppArmor
-profile of both itself and the target, and `yama/ptrace_scope`; then runs a
+It reads `CapEff`/`CapBnd`/`CapAmb`, `Seccomp`, `NoNewPrivs`, the security
+label of both itself and the target — under the name of whichever LSM the node
+runs, SELinux or AppArmor, and reported as a *pair* because only a difference
+between them denies anything — and `yama/ptrace_scope`; then runs a
 scratch `PTRACE_ATTACH` on its own forked child (always permitted by Yama, so a
 failure there is structural) and a live attach on the target; then a six-path
-`/proc` read matrix. Yama is a **node-level** knob that differs by kernel
+`/proc` read matrix.
+
+The live attach is a `PTRACE_SEIZE`, which takes the same
+`PTRACE_MODE_ATTACH_REALCREDS` check as `PTRACE_ATTACH` and leaves the tracee
+**running**, so probing costs the workload no pause. The report says which
+primitive was used and what it cost — `attach_method` in the JSON, and a
+`workload pause` line in the human form, normally `none`. `PTRACE_ATTACH` is the
+fallback where the kernel answers `EIO` (pre-3.4), and that one does stop the
+workload for as long as reaping the stop and detaching takes. Yama is a **node-level** knob that differs by kernel
 flavour, so this must be re-run per pod and never cached cluster-wide.
 
 Only three of those six paths decide the `10`. `root`, `maps` and `environ` take
@@ -945,14 +986,17 @@ arm64 the package is present and the mechanism is not.
 
 ### `pids`
 
-List the processes in the pod's shared PID namespace and say which container
-owns each.
+List the processes in the target container's PID namespace and say which
+container owns each. The listing is headed with the container the seat is in,
+and with the pod's other containers where there are any: defaulting to the first
+container matches `kubectl exec`, but a listing that says only "the pod's
+processes" leaves a three-container pod reading as a one-container pod.
 
 ```
 
  Usage: podbench pids [OPTIONS]
 
- List the processes in this pod's shared PID namespace, and say which container owns each one.
+ List the processes in the target container's PID namespace, and say which container owns each one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --container-id        ID  target container id (default: $PODBENCH_TARGET_CID)                    │
@@ -990,7 +1034,9 @@ produces a correct backtrace.
 │                                            so this is how source text outside the target's       │
 │                                            rootfs is found. Repeatable                           │
 │ --no-debuginfod                            do not enable debuginfod (it needs ca-certificates    │
-│                                            and network)                                          │
+│                                            and network). Library symbols are fetched after the   │
+│                                            attach, with the target stopped, so this is the flag  │
+│                                            to reach for when the pause is what costs             │
 │ --run                                      with --launch, start the program immediately          │
 │ --dry-run,--print-commands                 print the generated gdb commands and exit, without    │
 │                                            probing or starting gdb                               │
@@ -998,8 +1044,16 @@ produces a correct backtrace.
 │                                            exit. It is the target's own path under the sysroot   │
 │                                            unless this container has a file of its own at that   │
 │                                            path, in which case gdb would read ours (issue #90)   │
-│                                            and a copy is staged instead. What `gdb-podbench`     │
-│                                            calls for a third-party `gdb --pid`                   │
+│                                            and a copy is staged instead.                         │
+│                                            `--print-startup-commands` carries it as one line of  │
+│                                            the whole sequence, which is what `gdb-podbench` asks │
+│                                            for                                                   │
+│ --print-startup-commands                   print the gdb commands a caller doing its own attach  │
+│                                            must pass as `-iex`, one per line, and exit. Every    │
+│                                            line of `--dry-run` except the `attach` itself. What  │
+│                                            `gdb-podbench` calls, so that a third-party `gdb      │
+│                                            --pid` gets the same sysroot, exec file, auto-load    │
+│                                            path and SIGURG handling that `podbench dbg` does     │
 │ --launch                          PROGRAM  debug a program gdb starts itself instead of          │
 │                                            attaching. Needs no capability. Consumes the rest of  │
 │                                            the command line, so put other flags first            │
@@ -1018,6 +1072,15 @@ differ enough, and the wrong symbols in silence if they do not. Where that
 happens `dbg` copies the target's binary somewhere nothing shadows it, says so
 in one line, and points `file` at the copy; `--dry-run` prints the same command
 it would run, so the sequence stays pasteable.
+
+`--print-startup-commands` is what the image's `gdb-podbench` wrapper asks for:
+every line above except the `attach`, which the caller is making itself with
+`--pid`. Each becomes an `-iex`, because `--pid` attaches during *startup* and
+an `-ex` command would run after it. It is generated here rather than kept in
+the wrapper so that the two cannot disagree — the wrapper carried two of these
+lines by hand and was silently missing `add-auto-load-safe-path`, which costs
+every thread-aware command, and later `handle SIGURG`, which pins the default a
+Go session's readability rests on.
 
 ### `debug-config`
 
@@ -1050,9 +1113,12 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │                                                     to another container and needs path          │
 │                                                     mappings; dev launches in this one and must  │
 │                                                     not have any                                 │
-│ --port                    PORT                      the debugpy port to connect to (shared       │
-│                                                     network namespace, so always 127.0.0.1)      │
-│                                                     [default: 5678]                              │
+│ --port                    PORT                      pin the debugpy port. The default looks for  │
+│                                                     an existing server on 5678 and lets the      │
+│                                                     kernel choose a free port for one            │
+│                                                     --provision starts, so two seats on a node   │
+│                                                     cannot collide. Always on 127.0.0.1: the     │
+│                                                     seat shares the target's network namespace   │
 │ --program                 PATH                      the target's binary as its own rootfs spells │
 │                                                     it, when /proc/<pid>/exe cannot be read. It  │
 │                                                     is prefixed with the sysroot here, so do not │
@@ -1063,7 +1129,10 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │                                                     source` prints it) onto a readable path.     │
 │                                                     Repeatable                                   │
 │ --no-debuginfod                                     do not enable debuginfod (it needs           │
-│                                                     ca-certificates and network)                 │
+│                                                     ca-certificates and network). Library        │
+│                                                     symbols are fetched after the attach, with   │
+│                                                     the target stopped, so this is the flag to   │
+│                                                     reach for when the pause is what costs       │
 │ --lldb                                              shorthand for --flavour lldb                 │
 │ --provision                                         make the target debuggable: install debugpy  │
 │                                                     with uv when it cannot import one, then      │
@@ -1083,7 +1152,8 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 │                                                     resolve against, when it cannot be read from │
 │                                                     the target itself                            │
 │ --print-config                                      print the configuration instead of writing   │
-│                                                     it                                           │
+│                                                     it, and measure nothing: this run touches no │
+│                                                     workload                                     │
 │ --output                  PATH                      where to write it (default:                  │
 │                                                     ./.vscode/launch.json)                       │
 │ --help                                              Show this message and exit.                  │
@@ -1094,16 +1164,56 @@ flavour that does *not* apply gets a sentence naming the mechanism.
 
 | axis | how it is decided | what it changes |
 |---|---|---|
-| language | `/proc/<pid>/exe` and `argv[0]` for an interpreter; the target's ELF sections for Go (`.gopclntab`) | which adapter: `cppdbg`, CodeLLDB, the Go extension, debugpy |
+| language | `/proc/<pid>/exe` and `argv[0]` for an interpreter (`python`) or a runtime (`java`, `beam.smp`); `/proc/<pid>/maps` for a runtime behind a wrapper (`libjvm.so`); the target's ELF sections for Go (`.gopclntab`) and Rust (`.rustc`, an `rustc` producer string, `_ZN…17h<hash>E` mangling) | which adapter — `cppdbg`, CodeLLDB, the Go extension, debugpy — **or none at all** |
 | mode | whether the target shares this container's **mount namespace** — a `podbench dev` pod relaunches the app from the seat, so its process is on this side | attach vs launch, and whether `pathMappings` is populated **or empty** |
 | architecture | the target *binary*'s `e_machine`, not the node label | whether debugpy's attach-to-pid exists at all |
 
-`pathMappings` is the field with no error message: get it wrong and breakpoints
-simply never bind. In Observe mode the editor sees the source through
-`/proc/<pid>/root` and the debuggee reports its own path, so a mapping is
-required; in dev mode both are the same inodes and the mapping must be empty.
+A language is only ever reported as native once every other answer has been
+ruled out, and that ordering is the point. Java and Erlang are **refused**: gdb
+attaches to a JVM or to the BEAM perfectly well and shows named C++ frames
+inside somebody else's interpreter loop, which reads as progress and says
+nothing about the program. Those targets get a sentence naming JDWP (issue #114)
+or `erl -remsh`/`observer`, and no configuration. Go gets a `cppdbg` entry and a
+sentence saying it is a fallback — the image ships no `dlv` and the Go extension
+runs delve on the remote rather than shipping one (issue #115) — plus
+`handle SIGURG nostop noprint pass`, which pins the default the image's gdb
+13.1 already reports, so that Go's async preemption cannot fill the session with
+signal reports. Rust is served by the native path, with
+`/opt/podbench/gdb/rust_printers.py` sourced so `Vec`, `String` and `Option`
+print as themselves.
+
+"No symbols" is likewise asked of the whole address space and not of
+`/proc/<pid>/exe`: a launcher stub carries nothing while the runtime beside it
+carries tens of thousands of symbols, so the sentence names the mapped objects
+that have them. Where `/proc/<pid>/maps` cannot be read — it needs
+`PTRACE_MODE_READ`, the same check the rootfs takes — it says the address space
+is *unmeasured* rather than bare.
+
+`pathMappings` is the field with no error message, and it has two ways of being
+wrong: a mapping that binds nothing means breakpoints never bind, and a mapping
+that binds to the *wrong real file* means the editor shows confident, plausible,
+wrong source. In Observe mode the editor sees the target's filesystem through
+`/proc/<pid>/root` while the debuggee reports its own path, so a mapping is
+required, and podbench emits exactly one:
+
+```json
+"pathMappings": [{ "localRoot": "/proc/12/root", "remoteRoot": "/" }]
+```
+
+The **mount namespace**, not a guess at a source root. A root taken from `argv`
+is `/app/.venv/bin` for a console script — the ordinary shape for an
+epics-containers IOC — which holds no source, and podbench's own image installs
+under `/app/.venv` too, so that path exists on both sides with different
+contents and the wrong mapping resolves rather than failing (issue #112). In dev
+mode editor and interpreter are the same inodes and the mapping must be empty.
 `127.0.0.1` is right in both, because the seat and the app share the pod's
 network namespace — no port-forward, no tunnel.
+
+What has been verified of this is filesystem-level, on a DLS-alike IOC: the
+file a reported frame resolves to through `localRoot` is the target's own, and
+differs from this container's file at the same path. No VS Code client is
+driven anywhere in this project, so the adapter's own behaviour is not observed
+here.
 
 #### When a flavour cannot be emitted
 
@@ -1131,6 +1241,27 @@ names that tree: `PYTHONPATH` points the driver at the *target's* copy whenever
 there is one, so the seat's copy answers a different question. On amd64 the
 helper is in every wheel, so a tree without one is an incomplete install with a
 re-install to fix it, not the architecture.
+
+A seat the kernel refuses `/proc/<pid>/root` is refused **before** any of that,
+and the refusal says so on its own:
+
+```
+debug-config: debugpy unavailable: this seat may not read /proc/597/root, which the
+              kernel gates on the same ptrace_may_access() credentials an attach takes
+              - so nothing in the target's filesystem could be searched, and
+              PTRACE_MODE_ATTACH is strictly stronger than the read, so the injection's
+              `gdb --pid` would be refused too. Not the capability: the credentials
+debug-config:   `podbench capreport 597` names which of the four mechanisms says no;
+                where it is a uid mismatch, `podbench attach --max-rung full` lands a
+                seat that runs as root
+```
+
+Nothing about the target's own filesystem is claimed beside it. The search for
+its debugpy stats through that same directory, so "debugpy is not importable by
+the target" would be this one refusal reported a second time — with a remedy,
+`--provision`, that writes through the very path the kernel just refused. It is
+the whole flavour that declines and not the verb: any other candidate in the
+pod still gets its configurations, and the file is still written.
 
 #### Installing debugpy into the target (`--provision`)
 
@@ -1350,11 +1481,29 @@ stream.
 | `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides. Both override the default, which is `ghcr.io/gilesknap/podbench:` plus the launcher's own version (`main` for a dev build) |
 | `PODBENCH_CONFIG_DIR` | launcher, `dev` | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
 | `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `run` | the target container's runtime ID, injected at attach time |
+| `PODBENCH_TARGET` | `pids` | the target container's *name*, injected at attach time. What the listing is headed with |
+| `PODBENCH_POD_CONTAINERS` | `pids` | every container in the pod, comma-separated, injected at attach time. How the listing names the containers the seat is not in |
 | `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected into the seat's spec by `attach` and by `dev` |
 | `PODBENCH_SSH_PUBKEY_FILE` | agent | read it from a file instead. Default mount `/etc/podbench/ssh/authorized_keys` |
 | `PODBENCH_SSH_HOST_KEY` | agent | host private key, rather than minting one |
 | `PODBENCH_SSH_HOST_KEY_FILE` | agent | the same from a file. Default mount `/etc/podbench/ssh/ssh_host_ed25519_key` |
-| `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net` |
+| `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net`; the seat drops it from ssh sessions when nothing answers there |
+| `DEBUGINFOD_TIMEOUT` | gdb, `dbg` | seconds gdb will wait on that server, per file. The image sets `2`; gdb's own default is 90 |
+
+sshd leaks none of its own environment to the commands it runs, so a variable
+set on the debug container reaches `kubectl exec` and a shell but not an ssh
+session. The agent's generated sshd config carries the ones the seat needs —
+every `PODBENCH_*` except the keys, plus `PATH`, `DEBUGINFOD_URLS` and
+`DEBUGINFOD_TIMEOUT` — and reports in the container's start-up log if a value
+contains whitespace, which sshd's `SetEnv` cannot carry.
+
+`DEBUGINFOD_URLS` is the one of those the agent may decide *not* to carry. It
+opens a connection to that server once, at start-up, and drops the variable
+from the session when nothing answers — gdb's client has nothing to query
+without it, so its absence is the off switch. The reason is one line in the
+container's start-up log (`kubectl logs <pod> -c <seat>`). A `kubectl exec`
+session inherits the image's value regardless, where `podbench dbg
+--no-debuginfod` is the same decision taken per run.
 
 ## Exit codes
 

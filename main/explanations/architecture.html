@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Architecture &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Architecture &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -714,7 +714,10 @@ exactly the thing that outlives the command.</p></li>
 other in-pod verb — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>,
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>. One file,
 <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/podbench</span></code>, is what puts them within reach of an ssh session
-that sources no profile.</p></li>
+that sources no profile — sshd leaks none of the image’s environment, so the
+agent’s generated config carries <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (and <code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code>, and the
+debuginfod settings) into a session with <code class="docutils literal notranslate"><span class="pre">SetEnv</span></code>, and that one file is what
+resolves the verb when it cannot.</p></li>
 </ul>
 <p>There is <strong>one runtime dependency, and it is the CLI</strong> — typer, which brings
 click and rich. The help a developer reads at 3 a.m. is part of the product, and
@@ -751,7 +754,8 @@ letting it be discovered.</p>
 <section id="what-the-probe-is-for">
 <h2>What the probe is for<a class="headerlink" href="#what-the-probe-is-for" title="Link to this heading">#</a></h2>
 <p>Four unrelated subsystems refuse <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> with the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>: a
-missing capability, Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code>, a seccomp filter, and AppArmor. A
+missing capability, Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code>, a seccomp filter, and the node’s
+LSM. A
 previous hand-rolled attempt at this tool reached same-UID and still could not
 tell which one had said no. Naming the blocker is the point of the whole probe —
 “denied by Yama (ptrace_scope=1)” is actionable; “ptrace: Operation not

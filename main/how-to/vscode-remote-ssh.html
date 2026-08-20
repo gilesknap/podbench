@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -737,9 +737,9 @@ straight at <code class="docutils literal notranslate"><span class="pre">~/.podb
     <span class="n">ServerAliveInterval</span> <span class="mi">15</span>
     <span class="n">ServerAliveCountMax</span> <span class="mi">3</span>
     <span class="n">ControlMaster</span> <span class="n">auto</span>
-    <span class="n">ControlPath</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">cm</span><span class="o">/%</span><span class="n">C</span>
+    <span class="n">ControlPath</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">cm</span><span class="o">/%</span><span class="n">C</span><span class="o">-</span><span class="mi">2</span><span class="n">cbae7bf1f9161c8</span>
     <span class="n">ControlPersist</span> <span class="mi">10</span><span class="n">m</span>
-    <span class="n">HostKeyAlias</span> <span class="n">podbench</span><span class="o">-</span><span class="mi">3</span><span class="n">f2c1a90</span><span class="o">-</span><span class="mi">7</span><span class="n">b6d</span><span class="o">-</span><span class="mf">4e21</span><span class="o">-</span><span class="mi">9</span><span class="n">a55</span><span class="o">-</span><span class="mi">0</span><span class="n">c1e2f3a4b5c</span>
+    <span class="n">HostKeyAlias</span> <span class="n">podbench</span><span class="o">-</span><span class="mi">3</span><span class="n">f2c1a90</span><span class="o">-</span><span class="mi">7</span><span class="n">b6d</span><span class="o">-</span><span class="mf">4e21</span><span class="o">-</span><span class="mi">9</span><span class="n">a55</span><span class="o">-</span><span class="mi">0</span><span class="n">c1e2f3a4b5c</span><span class="o">-</span><span class="n">podbench</span><span class="o">-</span><span class="mi">1</span>
     <span class="n">UserKnownHostsFile</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">known_hosts</span>
     <span class="n">StrictHostKeyChecking</span> <span class="n">yes</span>
 </pre></div>
@@ -767,14 +767,14 @@ lines are load-bearing in ways that fail <em>silently</em>:</p>
 <tr class="row-even"><td><p>no <code class="docutils literal notranslate"><span class="pre">-t</span></code>, ever</p></td>
 <td><p>from a script kubectl silently degrades to non-tty and appears to work; with a <strong>real</strong> TTY forced onto the ProxyCommand the ssh client hangs indefinitely</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">/tmp/podbench-cm/%C</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">sun_path</span></code> is 108 bytes. A control socket next to a kubeconfig or in a workspace directory hits <code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span></code>. The multiplexed connection is also a ~6× speedup: 0.345 s cold, 0.058 s over the master</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">/tmp/podbench-cm/%C-&lt;digest&gt;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sun_path</span></code> is 108 bytes. A control socket next to a kubeconfig or in a workspace directory hits <code class="docutils literal notranslate"><span class="pre">ControlPath</span> <span class="pre">too</span> <span class="pre">long</span></code>. The multiplexed connection is also a ~6× speedup: 0.345 s cold, 0.058 s over the master. The digest is the seat’s, and it is what keeps the multiplexing honest: <code class="docutils literal notranslate"><span class="pre">%C</span></code> hashes the <em>resolved</em> <code class="docutils literal notranslate"><span class="pre">HostName</span></code>, which every seat in a pod shares, so on its own it would let a second alias ride the first seat’s connection — <strong>skipping the host-key check</strong>, since a multiplexed session never repeats it</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ServerAliveInterval</span></code>/<code class="docutils literal notranslate"><span class="pre">CountMax</span></code></p></td>
 <td><p>a <em>stalled</em> transport — what an apiserver or konnectivity hiccup looks like — hangs ssh <strong>forever</strong> without them, and fails in 19 s with them. A hard kill or pod deletion is detected instantly either way</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">HostKeyAlias</span></code> + <code class="docutils literal notranslate"><span class="pre">UserKnownHostsFile</span></code></p></td>
-<td><p>podbench manages its own <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code>, keyed on the pod UID, rather than teaching you <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code>. A re-created pod is a <em>new host</em>, not a MITM warning</p></td>
+<td><p>podbench manages its own <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code>, keyed on the pod UID <strong>and the seat</strong>, rather than teaching you <code class="docutils literal notranslate"><span class="pre">StrictHostKeyChecking</span> <span class="pre">no</span></code>. Every seat mints its own host key, so one alias over two of them would arrive as a host-key mismatch; a re-created pod is a <em>new host</em>, not a MITM warning</p></td>
 </tr>
 </tbody>
 </table>

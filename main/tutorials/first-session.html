@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Your first session &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -599,7 +599,8 @@ first.</p>
 the spec podbench asked for:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">seat</span>        <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">/</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="p">[</span><span class="n">podbench</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>  <span class="p">(</span><span class="n">new</span><span class="p">)</span>
 <span class="n">target</span>      <span class="n">web</span>
-<span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">root</span> <span class="n">plus</span> <span class="n">CAP_SYS_PTRACE</span>
+<span class="n">version</span>     <span class="mf">0.4.0</span><span class="n">b1</span><span class="p">,</span> <span class="n">the</span> <span class="n">same</span> <span class="n">build</span> <span class="k">as</span> <span class="n">this</span> <span class="n">launcher</span>
+<span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">uid</span> <span class="mi">0</span><span class="p">,</span> <span class="n">gid</span> <span class="mi">0</span><span class="p">,</span> <span class="n">CapEff</span> <span class="mi">00000000</span><span class="n">a80c25fb</span>
 <span class="n">ladder</span>
   <span class="n">full</span>      <span class="n">landed</span>   <span class="n">admitted</span> <span class="n">by</span> <span class="n">the</span> <span class="n">API</span> <span class="n">server</span> <span class="ow">and</span> <span class="n">the</span> <span class="n">kubelet</span>
 <span class="n">supports</span>
@@ -615,14 +616,23 @@ the spec podbench asked for:</p>
   <span class="n">blocker</span>     <span class="n">none</span>
   <span class="n">node</span>        <span class="n">kind</span><span class="o">-</span><span class="n">worker</span>
   <span class="n">yama</span>        <span class="mi">1</span>
-  <span class="n">uids</span>        <span class="n">seat</span> <span class="mi">0</span><span class="p">,</span> <span class="n">target</span> <span class="mi">0</span>
+  <span class="n">ids</span>         <span class="n">seat</span> <span class="mi">0</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="n">target</span> <span class="mi">0</span><span class="p">:</span><span class="mi">0</span>
 </pre></div>
 </div>
-<p>Three lines are worth learning to read:</p>
+<p>Four lines are worth learning to read:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">rung</span></code></strong> — what the <em>cluster</em> admitted. <code class="docutils literal notranslate"><span class="pre">degraded</span></code> means <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> was
-refused by Pod Security Admission and podbench fell back to the target’s own
-UID. That is a normal outcome, not a failure, and the command still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">version</span></code></strong> — which build of podbench answered, measured by running
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">--version</span></code> inside the seat. The launcher and the image are one
+release in two places and can drift apart, most easily on a tag that moves:
+the node serves the copy it already has, and a fix that is in the launcher but
+not in the seat reads exactly like a fix that does not work. When the two
+differ the report says so, on one <code class="docutils literal notranslate"><span class="pre">WARNING</span></code> line.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">rung</span></code></strong> — what the seat <em>is</em>, read from its own <code class="docutils literal notranslate"><span class="pre">/proc/self/status</span></code>, which
+is why the line cites the numbers behind it. <code class="docutils literal notranslate"><span class="pre">degraded</span></code> means the seat runs at
+the target’s own UID with nothing effective — a normal outcome, not a failure,
+and the command still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>. What podbench asked admission for is on the
+<code class="docutils literal notranslate"><span class="pre">ladder</span></code> lines below, and the two can differ: a policy that rewrites a request
+rather than refusing it leaves a container the spec no longer describes.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">blocker</span></code></strong> — what actually stops ptrace, if anything. Four unrelated
 subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
 <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>; this line names which.</p></li>
@@ -649,9 +659,10 @@ now — it adds the line above any <code class="docutils literal notranslate"><s
 (see <a class="reference internal" href="setup.html"><span class="std std-doc">Setup</span></a>). Then:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
-PID  UID  TARGET  CONTAINER      COMM    CMDLINE
-1    0    yes     87d20e23a1b4   python  python -m http.server 8080
-42   0    no      7206c89bf0e1   sleep   sleep infinity
+container web: the processes in its PID namespace
+PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
+1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
+42   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
 </pre></div>
 </div>
 <p>There is no listening socket in that pod, no port-forward and no pod IP

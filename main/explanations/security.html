@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Security model &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -560,7 +560,7 @@ without it. Everything else runs with capabilities dropped, non-root, under the
 <td><p>Iterate mode</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods/resize</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
 <td><p>raise a running workload’s memory limit before attaching</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> only</p></td>
 </tr>
@@ -663,10 +663,17 @@ first-class mode rather than an error state.</p>
 </tbody>
 </table>
 </div>
-<p>The launcher tries them in order and falls down on refusal, then reports the
-rung it landed on. A degraded seat exits <code class="docutils literal notranslate"><span class="pre">0</span></code>: returning non-zero for “the
-cluster would not grant <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>” would make an honest report look like a
-failure.</p>
+<p>The launcher walks them and falls down on refusal, then reports the rung it
+<em>measured</em> — the seat’s own uid and <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>, read from <code class="docutils literal notranslate"><span class="pre">/proc/self/status</span></code>
+once it is up, because a securityContext is what admission agreed to store and
+not what the kernel gave the container. Which rung it <em>starts</em> at is the target’s to imply: a target at a
+known non-root uid gets the degraded rung first, since that rung already matches
+its credentials and the row above buys nothing the row below does not — see
+<a class="reference internal" href="attach-flow.html"><span class="std std-doc">the capability ladder</span></a>. Every rung is rehearsed through a
+server-side dry run before a container name is committed to it, so a policy that
+rewrites the request instead of refusing it is seen rather than landed. A
+degraded seat exits <code class="docutils literal notranslate"><span class="pre">0</span></code>: returning non-zero for “the cluster would not grant
+<code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>” would make an honest report look like a failure.</p>
 <section id="the-seat-mirrors-the-target-s-seccomp-profile-and-imposes-none">
 <h3>The seat mirrors the target’s seccomp profile, and imposes none<a class="headerlink" href="#the-seat-mirrors-the-target-s-seccomp-profile-and-imposes-none" title="Link to this heading">#</a></h3>
 <p>The non-root rungs used to state <code class="docutils literal notranslate"><span class="pre">seccompProfile:</span> <span class="pre">RuntimeDefault</span></code> outright, to
@@ -773,15 +780,25 @@ this is the <em>runtime’s</em> business, not the name’s: the spike nodes per
 it, a DLS node denied it even on a self-forked child (2026-08-18), so only
 <code class="docutils literal notranslate"><span class="pre">capreport</span></code> can say which node you are on. It blocks
 <code class="docutils literal notranslate"><span class="pre">personality(ADDR_NO_RANDOMIZE)</span></code> either way, so gdb cannot disable ASLR;</p></li>
-<li><p><strong>AppArmor</strong> — a profile denying ptrace between the two domains. Everything
-observed ran under <code class="docutils literal notranslate"><span class="pre">cri-containerd.apparmor.d</span> <span class="pre">(enforce)</span></code>, which permits
-ptrace between peers <em>in the same profile</em>; a target with a custom profile
-breaks that.</p></li>
+<li><p><strong>the node’s LSM</strong> — SELinux or AppArmor, denying ptrace between two
+<em>different</em> labels. Which one is active is read from <code class="docutils literal notranslate"><span class="pre">/sys</span></code> (selinuxfs, or
+AppArmor’s <code class="docutils literal notranslate"><span class="pre">enabled</span></code> parameter), because <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/attr/current</span></code> is a
+slot they share and the string in it does not say whose it is. A label on
+its own decides nothing: containers in a pod normally carry the same one,
+and ptrace is permitted within it. <code class="docutils literal notranslate"><span class="pre">capreport</span></code> therefore prints the seat’s
+label and the target’s and names a blocker only when they <em>differ</em> —
+differing MCS categories under SELinux, differing profiles under AppArmor.
+The denial is logged on the node and nowhere the pod can read, so the report
+names the node and the command: <code class="docutils literal notranslate"><span class="pre">ausearch</span> <span class="pre">-m</span> <span class="pre">avc</span> <span class="pre">-ts</span> <span class="pre">recent</span></code> under SELinux,
+<code class="docutils literal notranslate"><span class="pre">dmesg</span> <span class="pre">|</span> <span class="pre">grep</span> <span class="pre">-i</span> <span class="pre">apparmor</span></code> under AppArmor.</p></li>
 </ol>
 <p>All four return <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>. <code class="docutils literal notranslate"><span class="pre">capreport</span></code> reads the capability sets, <code class="docutils literal notranslate"><span class="pre">Seccomp</span></code>,
-<code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>, both AppArmor profiles and the Yama scope, then runs a scratch
+<code class="docutils literal notranslate"><span class="pre">NoNewPrivs</span></code>, both security labels and the Yama scope, then runs a scratch
 <code class="docutils literal notranslate"><span class="pre">PTRACE_ATTACH</span></code> on its own forked child — always permitted by Yama, so a failure
-<em>there</em> is structural — and a live attach on the target. It names the mechanism.</p>
+<em>there</em> is structural — and a live attach on the target. The live one is a
+<code class="docutils literal notranslate"><span class="pre">PTRACE_SEIZE</span></code>, which takes the identical permission check and leaves the
+workload running rather than stopping it; the report states what the probe
+cost, which is normally nothing. It names the mechanism.</p>
 <p>Yama is per node and differs by <strong>kernel flavour, not architecture</strong>: two arm64
 nodes in the same cluster disagreed, one denying and one allowing the
 byte-identical container. podbench probes per pod and never caches a
@@ -859,10 +876,18 @@ automatically and prints why.</p>
 <section id="things-worth-knowing-before-you-approve-it">
 <h2>Things worth knowing before you approve it<a class="headerlink" href="#things-worth-knowing-before-you-approve-it" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>The blast radius of the seat is the pod.</strong> A podbench container sees that
-pod’s processes, that pod’s network namespace and the target container’s
-filesystem — nothing outside. There is no node access, no host mount, no
-hostNetwork, no hostPID.</p></li>
+<li><p><strong>The blast radius of the seat is the pod’s blast radius.</strong> A podbench
+container sees that pod’s processes, that pod’s network namespace and the
+target container’s filesystem. podbench adds no node access, no host mount,
+no <code class="docutils literal notranslate"><span class="pre">hostNetwork</span></code> and no <code class="docutils literal notranslate"><span class="pre">hostPID</span></code> — but it inherits whatever the pod already
+has, and an ephemeral container cannot decline them. <strong>On a <code class="docutils literal notranslate"><span class="pre">hostNetwork:</span> <span class="pre">true</span></code>
+pod the network namespace is the node’s</strong>, so <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code> inside the seat is
+the node’s loopback, shared with every other hostNetwork pod and every node
+daemon. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> states this, refuses to credit a listening port to
+this pod unless it can attribute the socket to a container in it, and asks
+the kernel for an unused port for any server <code class="docutils literal notranslate"><span class="pre">--provision</span></code> starts (issue
+#87). A debugpy server authenticates nobody, so on such a pod it is an
+arbitrary-code-execution endpoint for anything on the node until you stop it.</p></li>
 <li><p><strong>The <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is one-directional.</strong> The debug container can
 read the app’s rootfs; the app cannot see the debug container’s. A compromised
 application container cannot reach the debug toolchain.</p></li>
@@ -912,25 +937,30 @@ not known until the attach.</p>
 <p>So the seat registers a record for itself, and where it registers it is the
 question:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> <strong>is not modified</strong>. It stays as the image built it: root-owned,
-group <code class="docutils literal notranslate"><span class="pre">root</span></code>, and mode 664 — <code class="docutils literal notranslate"><span class="pre">chmod</span> <span class="pre">g=u</span></code> makes it group-writable deliberately,
-in the OpenShift convention. Only a seat in group 0 can use that, and a seat in
-group 0 is no longer the target’s group, which is a credential <code class="docutils literal notranslate"><span class="pre">ptrace</span></code>
-compares: pinning
-<code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code> buys the transport and loses the debugger (measured, issue
-#98). That route survives as <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--seat-gid-root</span></code> for images that need it
-and is not the default.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> <strong>is not modified by a seat that mirrors its target</strong>. It stays
+as the image built it: root-owned, group <code class="docutils literal notranslate"><span class="pre">root</span></code>, and mode 664 — <code class="docutils literal notranslate"><span class="pre">chmod</span> <span class="pre">g=u</span></code>
+makes it group-writable deliberately, in the OpenShift convention. Only a seat
+in group 0 can use that, and pinning <code class="docutils literal notranslate"><span class="pre">runAsGroup:</span> <span class="pre">0</span></code> to get there is no longer
+offered at all: the gid is a credential <code class="docutils literal notranslate"><span class="pre">ptrace</span></code> compares, so it buys the
+transport and loses the debugger (measured, issue #98; the flag that did it
+retired in #103). The mode remains for the one seat whose group genuinely <em>is</em>
+0 — a target that really runs there — and for a <code class="docutils literal notranslate"><span class="pre">dev</span></code> sidecar’s projection.
+The image also pre-seeds this file with a static record for every free uid
+below 500, which is the range the database below refuses; those seats resolve
+with nothing writable anywhere.</p></li>
 <li><p>Instead the image installs <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code>, points the <code class="docutils literal notranslate"><span class="pre">passwd</span></code> line of
 <code class="docutils literal notranslate"><span class="pre">/etc/nsswitch.conf</span></code> at it, and ships <code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> <strong>empty and
 mode 0666</strong>. The agent appends one line — <code class="docutils literal notranslate"><span class="pre">podbench:x:&lt;uid&gt;:&lt;gid&gt;:…</span></code> — and NSS
 resolves the uid with no capability, no gid and no change to the workload’s
 manifest. Not for every seat: this NSS source has floors compiled in (uid and
 gid 500, gid 100 exempted) and ignores a record below them, for <code class="docutils literal notranslate"><span class="pre">getpwnam</span></code> as
-well as <code class="docutils literal notranslate"><span class="pre">getpwuid</span></code>. A seat under a floor takes <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> instead, and the
-commonest one can write it — a target that sets <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no
-<code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code> leaves the seat pinning no group, so it runs with the image’s gid
-0. <code class="docutils literal notranslate"><span class="pre">agent.extrausers_serves</span></code> decides which file, and the mode never enters
-into it.</p></li>
+well as <code class="docutils literal notranslate"><span class="pre">getpwuid</span></code>. A seat under a floor takes <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> instead, where the
+static records above already answer for it. The shape that used to dominate
+that fallback has gone: a target setting <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code> left
+the seat pinning no group and running with the image’s gid 0, and podbench now
+measures the target’s real gid from <code class="docutils literal notranslate"><span class="pre">/proc</span></code> and pins it (#103).
+<code class="docutils literal notranslate"><span class="pre">agent.extrausers_serves</span></code> decides which file, and the mode never enters into
+it.</p></li>
 </ul>
 <p>Why a world-writable file is not a privilege boundary here:</p>
 <ul class="simple">
@@ -993,10 +1023,11 @@ executed — a <code class="docutils literal notranslate"><span class="pre">loca
 filter branch itself is no longer unproven: it fired at DLS on 2026-08-18,
 under a <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> profile that denies ptrace, and named the right
 mechanism.</p></li>
-<li><p><strong>AppArmor uniformity is an assumption.</strong> Every container observed shared one
-profile, and ptrace worked because that profile permits ptrace between peers
-within it. A custom profile on the target breaks that, and the diagnostic text
-for that case has never been seen in the field.</p></li>
+<li><p><strong>A differing LSM label has never been seen in the field.</strong> Every pair
+measured matched — <code class="docutils literal notranslate"><span class="pre">cri-containerd.apparmor.d</span> <span class="pre">(enforce)</span></code> on the spike nodes,
+<code class="docutils literal notranslate"><span class="pre">system_u:system_r:spc_t:s0</span></code> on both sides at DLS on 2026-08-19 — so the
+comparison has only ever answered “same”. The mismatch arm, and the audit-log
+advice it prints, are untested against a real refusal.</p></li>
 <li><p><strong>Targets in user namespaces</strong>, and targets with unusual UID mappings, were
 never tested.</p></li>
 <li><p><strong>Behaviour through konnectivity or an API gateway</strong> is unknown; every

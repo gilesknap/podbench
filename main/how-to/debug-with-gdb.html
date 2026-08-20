@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -652,9 +652,10 @@ debugging, just not of the already-running process.</p>
 <h2>3. Find the process<a class="headerlink" href="#find-the-process" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-gdb-victim
 root@victim:~# podbench pids
-PID  UID  TARGET  CONTAINER      COMM    CMDLINE
-1    0    yes     87d20e23a1b4   victim  /app/victim
-38   0    no      7206c89bf0e1   sleep   sleep infinity
+container victim: the processes in its PID namespace
+PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
+1    0    yes     S   3    ok      87d20e23a1b4   victim  /app/victim
+38   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> is not <code class="docutils literal notranslate"><span class="pre">ps</span></code>. Under a shared PID namespace every process in the
@@ -664,6 +665,15 @@ off the target’s container runtime ID, which the launcher injected as
 PID 1” breaks under <code class="docutils literal notranslate"><span class="pre">shareProcessNamespace:</span> <span class="pre">true</span></code> (PID 1 is <code class="docutils literal notranslate"><span class="pre">/pause</span></code>), and
 matching mount namespaces breaks there too.</p>
 <p>If the <code class="docutils literal notranslate"><span class="pre">TARGET</span></code> column is a guess rather than a fact, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> says so.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ST</span></code>, <code class="docutils literal notranslate"><span class="pre">THR</span></code> and <code class="docutils literal notranslate"><span class="pre">PTRACE</span></code> are the columns to read when you disagree with the pid
+<code class="docutils literal notranslate"><span class="pre">dbg</span></code> or <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> chose, because they are what it chose on. <code class="docutils literal notranslate"><span class="pre">ST</span></code> is the
+kernel’s process state: a <code class="docutils literal notranslate"><span class="pre">Z</span></code> there is a zombie, which no seat can attach to
+however good its credentials — it is the entry <code class="docutils literal notranslate"><span class="pre">--pid</span></code> should never be pointed
+at. <code class="docutils literal notranslate"><span class="pre">PTRACE</span></code> says whether <em>this</em> seat may read that process at all; a <code class="docutils literal notranslate"><span class="pre">DENIED</span></code>
+beside a live process is usually a uid the seat does not share (see
+<a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> for the rung that fixes it). <code class="docutils literal notranslate"><span class="pre">THR</span></code> is the
+thread count, which is what separates a workload from the short-lived helper it
+forks.</p>
 </section>
 <section id="attach-gdb">
 <h2>4. Attach gdb<a class="headerlink" href="#attach-gdb" title="Link to this heading">#</a></h2>
@@ -677,6 +687,7 @@ handed an <code class="docutils literal notranslate"><span class="pre">EPERM</sp
 <p>What it feeds gdb, in this order — see it without starting gdb using
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--dry-run</span> <span class="pre">1</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">set</span> <span class="n">pagination</span> <span class="n">off</span>
+<span class="n">handle</span> <span class="n">SIGURG</span> <span class="n">nostop</span> <span class="n">noprint</span> <span class="k">pass</span>
 <span class="nb">set</span> <span class="n">sysroot</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
 <span class="n">directory</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
 <span class="n">add</span><span class="o">-</span><span class="n">auto</span><span class="o">-</span><span class="n">load</span><span class="o">-</span><span class="n">safe</span><span class="o">-</span><span class="n">path</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span>
@@ -693,20 +704,26 @@ handed an <code class="docutils literal notranslate"><span class="pre">EPERM</sp
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">handle</span> <span class="pre">SIGURG</span> <span class="pre">nostop</span> <span class="pre">noprint</span> <span class="pre">pass</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<td><p>This pins gdb’s own default rather than repairing anything: the image’s own gdb 13.1, with no startup commands and no attach, already reports <code class="docutils literal notranslate"><span class="pre">SIGURG</span> <span class="pre">No</span> <span class="pre">No</span> <span class="pre">Yes</span></code> — as it does for SIGCHLD and SIGWINCH, so those three words are gdb’s class for a routine signal rather than a decision about this one. It is there so a gdb configured otherwise cannot cost you the session — Go preempts goroutines by sending SIGURG at up to a few hundred a second, and a gdb that stops and announces each one does not make an attached Go session slow, it makes it unusable, with nothing in the wall of <code class="docutils literal notranslate"><span class="pre">Program</span> <span class="pre">received</span> <span class="pre">signal</span> <span class="pre">SIGURG</span></code> saying why. <code class="docutils literal notranslate"><span class="pre">pass</span></code>, not <code class="docutils literal notranslate"><span class="pre">ignore</span></code>: the signal is still delivered, because swallowing it changes the runtime’s scheduling. Issued for every target, since <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> attaches to whatever pid it is handed</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">sysroot</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
 <td><p>gdb resolves the <em>target’s</em> loader and shared libraries, not the debug image’s. gdb 13’s default sysroot is <code class="docutils literal notranslate"><span class="pre">target:</span></code>, which needs <code class="docutils literal notranslate"><span class="pre">CAP_SYS_ADMIN</span></code> and fails loudly without it</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">directory</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code></p></td>
 <td><p>sysroot does <strong>not</strong> cover source lookup. This is what turns <code class="docutils literal notranslate"><span class="pre">victim.c:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code> into real source text</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">add-auto-load-safe-path</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code></p></td>
 <td><p>setting a sysroot makes gdb decline to auto-load the target’s <code class="docutils literal notranslate"><span class="pre">libthread_db.so.1</span></code> — no <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">threads</span></code>, no per-thread backtraces. Narrow, never <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">auto-load</span> <span class="pre">safe-path</span> <span class="pre">/</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">debuginfod</span> <span class="pre">enabled</span> <span class="pre">on</span></code></p></td>
-<td><p>symbols for stripped binaries and system libraries. Symbols only — see below</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">debuginfod</span> <span class="pre">enabled</span> <span class="pre">on</span></code></p></td>
+<td><p>symbols for stripped binaries and system libraries. Symbols only — see below. A library’s are fetched <em>after</em> the attach, with the target stopped, so the image bounds each fetch at <code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_TIMEOUT=2</span></code> and <code class="docutils literal notranslate"><span class="pre">--no-debuginfod</span></code> turns the whole thing off for one run</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root$(readlink</span> <span class="pre">/proc/&lt;pid&gt;/exe)</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">/proc/&lt;pid&gt;/root$(readlink</span> <span class="pre">/proc/&lt;pid&gt;/exe)</span></code> <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">attach</span></code></p></td>
 <td><p>this is what recovers the <em>user</em> frames. A trailing <code class="docutils literal notranslate"> <span class="pre">(deleted)</span></code> is stripped</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">source</span> <span class="pre">/opt/podbench/gdb/rust_printers.py</span></code></p></td>
+<td><p><strong>Rust targets only.</strong> A Rust binary asks for <code class="docutils literal notranslate"><span class="pre">gdb_load_rust_pretty_printers.py</span></code>, which ships with a rustup toolchain that a production container does not have; without it <code class="docutils literal notranslate"><span class="pre">Vec</span></code>, <code class="docutils literal notranslate"><span class="pre">String</span></code> and <code class="docutils literal notranslate"><span class="pre">Option</span></code> print as the <code class="docutils literal notranslate"><span class="pre">RawVecInner</span></code>/<code class="docutils literal notranslate"><span class="pre">Unique</span></code>/<code class="docutils literal notranslate"><span class="pre">NonNull</span></code> nest they are made of. Sourced only where the binary was identified as Rust, because <code class="docutils literal notranslate"><span class="pre">source</span></code> of a missing path is an error on every other attach</p></td>
 </tr>
 </tbody>
 </table>
@@ -732,8 +749,36 @@ path, and if it does, copies the target’s binary to <code class="docutils lite
 and points <code class="docutils literal notranslate"><span class="pre">file</span></code> there. It says so in one line, and <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> prints the
 command it will actually run. Nothing else in the sequence changes — shared
 libraries are resolved by a different path in gdb and stay sysrooted.
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">&lt;pid&gt;</span> <span class="pre">--print-exec-file</span></code> prints just that path, which is what the
-image’s <code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code> wrapper feeds to a third-party <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span> <span class="pre">&lt;n&gt;</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">&lt;pid&gt;</span> <span class="pre">--print-exec-file</span></code> prints just that path. The image’s
+<code class="docutils literal notranslate"><span class="pre">gdb-podbench</span></code> wrapper asks for more than the path — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">&lt;pid&gt;</span> <span class="pre">--print-startup-commands</span></code> prints every line above except the <code class="docutils literal notranslate"><span class="pre">attach</span></code>, and the
+wrapper passes each as <code class="docutils literal notranslate"><span class="pre">-iex</span></code> before a third-party <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">--pid</span> <span class="pre">&lt;n&gt;</span></code> attaches, so
+<code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span></code>, cpptools and debugpy all get the sysroot, the staged exec file, the
+auto-load path and the SIGURG handling that <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> gets.</p>
+</section>
+<section id="the-staged-copy-is-gdb-s-fix-and-lldb-has-no-equivalent">
+<h3>The staged copy is gdb’s fix, and lldb has no equivalent<a class="headerlink" href="#the-staged-copy-is-gdb-s-fix-and-lldb-has-no-equivalent" title="Link to this heading">#</a></h3>
+<p>lldb has the same bug and cannot be given the same cure, which was measured
+rather than assumed. gdb canonicalises <em>the path you hand it</em>, so a path nothing
+shadows is enough. lldb <strong>ignores</strong> the path you hand it: once it has attached
+it re-resolves the executable from the process and overrides the target with the
+name as resolved in the seat’s own mount namespace —</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">warning</span><span class="p">:</span> <span class="n">Executable</span> <span class="n">binary</span> <span class="n">changed</span> <span class="kn">from</span><span class="w"> </span><span class="s2">&quot;/tmp/podbench-exe/1/victim&quot;</span> <span class="n">to</span> <span class="s2">&quot;/app/victim&quot;</span><span class="o">.</span>
+<span class="n">Executable</span> <span class="n">binary</span> <span class="nb">set</span> <span class="n">to</span> <span class="s2">&quot;/app/victim&quot;</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>— so the staged copy is loaded and then dropped. <code class="docutils literal notranslate"><span class="pre">settings</span> <span class="pre">set</span> <span class="pre">target.exec-search-paths</span></code> does not help either; moving the seat’s own file aside
+does, which is the same mechanism as gdb’s under a remedy nobody has in a pod.
+It is at least <em>loud</em>, unlike gdb’s second failure mode, but the warning lands
+in the debug console and the session carries the wrong symbols regardless.</p>
+<p>So <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> <strong>emits no lldb entry at all</strong> where this seat has a file at
+the target’s exe path, and says which file refused it. The gdb entry beside it
+is unaffected — that one gets the staged copy — and so is <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>.</p>
+<p>Measured 2026-08-19 with a <strong>standalone lldb 21.1.8</strong> on a test bed, against a
+real mount namespace built with podman - <strong>not inside a podbench seat</strong>. <strong>CodeLLDB’s own bundled lldb, running in a remote extension
+host, has not been observed doing this</strong>; the refusal assumes it behaves as the
+lldb it ships. Untried, and the shape that would actually be correct:
+<code class="docutils literal notranslate"><span class="pre">platform</span> <span class="pre">select</span> <span class="pre">remote-linux</span></code> against an lldb-server started inside the
+target’s namespace, which never resolves anything in the seat’s.</p>
 </section>
 </section>
 <section id="breakpoint-source-step">
@@ -829,10 +874,14 @@ that container.</p>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">emitting</span> <span class="n">gdb</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">,</span> <span class="n">observe</span> <span class="n">mode</span>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span><span class="p">:</span> <span class="n">emitting</span> <span class="n">lldb</span><span class="p">:</span> <span class="n">native</span> <span class="n">target</span><span class="p">;</span> <span class="n">CodeLLDB</span> <span class="n">brings</span> <span class="n">its</span> <span class="n">own</span> <span class="n">lldb</span> <span class="n">to</span> <span class="n">the</span> <span class="n">seat</span>
 <span class="n">debug</span><span class="o">-</span><span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">/</span><span class="n">root</span><span class="o">/.</span><span class="n">vscode</span><span class="o">/</span><span class="n">launch</span><span class="o">.</span><span class="n">json</span>
-  <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim (gdb)&quot;</span>
-  <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim (lldb)&quot;</span>
+  <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim [pid 1 victim] (gdb)&quot;</span>
+  <span class="n">Run</span> <span class="ow">and</span> <span class="n">Debug</span> <span class="o">-&gt;</span> <span class="s2">&quot;podbench: attach to victim [pid 1 victim] (lldb)&quot;</span>
 </pre></div>
 </div>
+<p>The pid and the kernel’s name for the process are in every entry name because
+up to five candidates are offered at once, and an entrypoint script’s children
+are routinely three processes all called <code class="docutils literal notranslate"><span class="pre">python</span></code>. Anything the ranking left
+out is named in a <code class="docutils literal notranslate"><span class="pre">debug-config:</span></code> line, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> lists the rest.</p>
 <p>It fills in the pid, the sysroot-prefixed <code class="docutils literal notranslate"><span class="pre">program</span></code>, the setup ordering, the
 architecture, <code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> and the mode’s path mappings from what it can
 already see, which is the whole point: every one of those fails <em>silently</em> when
@@ -910,9 +959,16 @@ in any seat with:</p>
 <span class="n">printf</span> <span class="o">--</span> <span class="s2">&quot;-enable-pretty-printing</span><span class="se">\n</span><span class="s2">-gdb-exit</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">|</span> <span class="n">gdb</span> <span class="o">--</span><span class="n">interpreter</span><span class="o">=</span><span class="n">mi</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">cwd</span></code> must be set. On a developer’s machine <code class="docutils literal notranslate"><span class="pre">${workspaceFolder}</span></code> always exists
-so nobody sets it; in a seat it can resolve to nothing, and the result is that
-same unformattable crash.</p>
+<p><code class="docutils literal notranslate"><span class="pre">cwd</span></code> must be set, <strong>and must be a directory this seat can enter</strong>. On a
+developer’s machine <code class="docutils literal notranslate"><span class="pre">${workspaceFolder}</span></code> always exists so nobody sets it; in a
+seat it can resolve to nothing, and the result is that same unformattable crash.
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> fills it in from the seat’s own <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>: <code class="docutils literal notranslate"><span class="pre">/root</span></code> above, because
+that example is a root seat, but <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-home</span></code> on a seat pinned to the
+target’s uid — <code class="docutils literal notranslate"><span class="pre">/root</span></code> is mode 0700 there and belongs to an account the image
+has no record of, so naming it emitted a cwd the debugger could not chdir into.
+Where the seat has no <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> at all it is <code class="docutils literal notranslate"><span class="pre">/tmp</span></code>, which is 1777 in every image.
+Measured inside a seat with <code class="docutils literal notranslate"><span class="pre">test</span> <span class="pre">-d</span></code> and <code class="docutils literal notranslate"><span class="pre">test</span> <span class="pre">-x</span></code>; no VS Code client has
+driven the adapter.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p><code class="docutils literal notranslate"><span class="pre">targetArchitecture</span></code> is worth setting on arm64 — without it cpptools logs
@@ -959,6 +1015,12 @@ analogue of gdb’s <code class="docutils literal notranslate"><span class="pre"
 must be sysroot-prefixed explicitly and the library search paths set by hand.
 The <code class="docutils literal notranslate"><span class="pre">/rustc/&lt;commit-hash&gt;</span></code> key is what <code class="docutils literal notranslate"><span class="pre">rustc</span></code> bakes into standard-library debug
 info; <code class="docutils literal notranslate"><span class="pre">rustup</span> <span class="pre">component</span> <span class="pre">add</span> <span class="pre">rust-src</span></code> provides the right-hand side.</p>
+<p>That <code class="docutils literal notranslate"><span class="pre">program</span></code> holds only while <strong>this container has no file of its own at
+<code class="docutils literal notranslate"><span class="pre">/app/myapp</span></code></strong>. Where it does, lldb discards the path after attaching and reads
+the seat’s copy — “The staged copy is gdb’s fix, and lldb has no equivalent”,
+under section 4 above, has the measurement and the warning it prints.
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> withdraws the entry in that case rather than writing one, so a
+template copied by hand is the only way to get it back, and it will be wrong.</p>
 </section>
 </section>
 <section id="the-wrong-sysroot-failure-verbatim">
@@ -1132,6 +1194,7 @@ was never tried. Nor was a target in a user namespace.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#find-the-process">3. Find the process</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attach-gdb">4. Attach gdb</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#when-that-file-line-names-tmp-instead">When that <code class="docutils literal notranslate"><span class="pre">file</span></code> line names <code class="docutils literal notranslate"><span class="pre">/tmp</span></code> instead</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-staged-copy-is-gdb-s-fix-and-lldb-has-no-equivalent">The staged copy is gdb’s fix, and lldb has no equivalent</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakpoint-source-step">5. Breakpoint, source, step</a></li>

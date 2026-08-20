@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.3.0b2.dev15+g01d9ac8f8 documentation</title>
+    <title>Glossary &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3ce5b15f"></script>
+    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -569,12 +569,15 @@ it. <strong>Full</strong> is <code class="docutils literal notranslate"><span cl
 target’s own uid with all capabilities dropped. <strong>Seat</strong> is whatever the namespace
 will admit. There is no rung between full and degraded, because a capability added
 to a non-root container is a silent no-op.</p>
-<p>A rung is what was <em>asked for</em>, and the seat’s rung is read back off the container
-the cluster admitted — which is not the same as what the seat can do. A mutating
-webhook that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root seat indistinguishable from
-the degraded rung while it attaches perfectly well, so the rung names no verdict.
-What a seat can do is measured by <a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a>, and <code class="docutils literal notranslate"><span class="pre">status</span></code> reports that
-measurement — or <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>, never the rung — beside each seat it lists.</p>
+<p><code class="docutils literal notranslate"><span class="pre">attach</span></code> reports the rung it <em>measured</em>, from the seat’s own <code class="docutils literal notranslate"><span class="pre">/proc/self/status</span></code>:
+the uid the kernel gave the container and its <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>. The rung it asked for is
+on the ladder lines, and the two can differ in both directions — a mutating
+webhook that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root seat whose spec is
+indistinguishable from the degraded rung, and a stored spec carrying thirteen
+capabilities can belong to a container with none effective.</p>
+<p>A rung is still not a verdict. What a seat can <em>do</em> is measured by
+<a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a>, and <code class="docutils literal notranslate"><span class="pre">status</span></code> reports that measurement — or <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>,
+never the rung — beside each seat it lists.</p>
 </dd>
 <dt id="term-seat">seat<a class="headerlink" href="#term-seat" title="Link to this term">#</a></dt><dd><p>A podbench container you can work in: an editor, a shell, git and a debugger, inside
 the cluster. An <code class="docutils literal notranslate"><span class="pre">attach</span></code> seat is an <a class="reference internal" href="#term-ephemeral-container"><span class="xref std std-term">ephemeral container</span></a> in the live pod; a
@@ -588,10 +591,11 @@ already; otherwise a live-pod seat writes its own record into
 <code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code>, which the image ships world-writable so that a seat
 running as the target’s uid <em>and gid</em> can, needing no flag and no cooperation from
 the pod. A <code class="docutils literal notranslate"><span class="pre">dev</span></code> sidecar is given a projected <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> file instead and writes
-nothing. <code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code> is the older route, over the group-writable
-<code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, and is still the only one for a seat that database will not serve —
-it ignores records below uid or gid 500 — at the cost of the <a class="reference internal" href="#term-ptrace"><span class="xref std std-term">ptrace</span></a>
-credential match against a target whose gid is not 0.</p>
+nothing. A seat that database will not serve — it ignores records below uid or
+gid 500 — falls back to <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code>, which the image pre-seeds with a static
+record for every free uid under 500 so that no write is needed. Pinning the
+seat to group 0 to make that file writable is not offered: the gid is half of
+the <a class="reference internal" href="#term-ptrace"><span class="xref std std-term">ptrace</span></a> credential match.</p>
 </dd>
 <dt id="term-sidecar">sidecar<a class="headerlink" href="#term-sidecar" title="Link to this term">#</a></dt><dd><p>An ordinary container added beside the application in a <a class="reference internal" href="#term-dev-pod"><span class="xref std std-term">dev pod</span></a>. Unlike an
 <a class="reference internal" href="#term-ephemeral-container"><span class="xref std std-term">ephemeral container</span></a> it may declare <code class="docutils literal notranslate"><span class="pre">resources</span></code>, mount volumes with
@@ -791,9 +795,12 @@ the capability reaches the <a class="reference internal" href="#term-bounding-se
 <a class="reference internal" href="#term-CapEff"><span class="xref std std-term">CapEff</span></a> zero. Podbench refuses to author that combination rather than ship a
 seat that looks privileged and behaves unprivileged.</p>
 </dd>
-<dt id="term-AppArmor">AppArmor<a class="headerlink" href="#term-AppArmor" title="Link to this term">#</a></dt><dd><p>A Linux security module that confines processes by profile. One of the four
-<a class="reference internal" href="#term-blocker"><span class="xref std std-term">blocker</span></a>s: a profile can deny ptrace between two domains, returning the same
-<a class="reference internal" href="#term-EPERM"><span class="xref std std-term">EPERM</span></a> as everything else.</p>
+<dt id="term-AppArmor">AppArmor<a class="headerlink" href="#term-AppArmor" title="Link to this term">#</a></dt><dd><p>A Linux security module that confines processes by profile — one of the two
+podbench names, beside SELinux, as the LSM <a class="reference internal" href="#term-blocker"><span class="xref std std-term">blocker</span></a>. ptrace is denied
+between two <em>different</em> labels, returning the same <a class="reference internal" href="#term-EPERM"><span class="xref std std-term">EPERM</span></a> as everything
+else, so the report compares the seat’s with the target’s rather than judging
+either alone. Which module owns the label is read from <code class="docutils literal notranslate"><span class="pre">/sys</span></code>:
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/attr/current</span></code> is a slot they share.</p>
 </dd>
 <dt id="term-bounding-set">bounding set<a class="headerlink" href="#term-bounding-set" title="Link to this term">#</a></dt><dd><p>The ceiling on the capabilities a process can ever hold. A capability here but not
 in <a class="reference internal" href="#term-CapEff"><span class="xref std std-term">CapEff</span></a> has no effect at all — see <a class="reference internal" href="#term-ambient-set"><span class="xref std std-term">ambient set</span></a>.</p>
@@ -846,9 +853,11 @@ the <a class="reference internal" href="#term-kubelet"><span class="xref std std
 <dt id="term-ptrace">ptrace<a class="headerlink" href="#term-ptrace" title="Link to this term">#</a></dt><dd><p>The system call debuggers use to attach to and inspect a running process. Whether it
 is permitted is the single question the <a class="reference internal" href="#term-capability-ladder"><span class="xref std std-term">capability ladder</span></a> and
 <a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a> exist to answer. Without <a class="reference internal" href="#term-CAP_SYS_PTRACE"><span class="xref std std-term">CAP_SYS_PTRACE</span></a> the kernel compares
-credentials, and it compares the <strong>gid</strong> as well as the uid — a mismatch denies in
-both directions, measured — which is why a seat runs as the target’s group and why
-<code class="docutils literal notranslate"><span class="pre">--seat-gid-root</span></code>, which replaces it with group 0, costs the debugger.</p>
+credentials, and <code class="docutils literal notranslate"><span class="pre">__ptrace_may_access()</span></code> compares six ids and not three — <code class="docutils literal notranslate"><span class="pre">gid</span></code>,
+<code class="docutils literal notranslate"><span class="pre">egid</span></code> and <code class="docutils literal notranslate"><span class="pre">sgid</span></code> are peers of <code class="docutils literal notranslate"><span class="pre">uid</span></code>, <code class="docutils literal notranslate"><span class="pre">euid</span></code> and <code class="docutils literal notranslate"><span class="pre">suid</span></code>, and one differing pair
+denies in both directions, measured. That is why a seat runs as the target’s
+group, why the report prints <code class="docutils literal notranslate"><span class="pre">uid:gid</span></code> for both sides, and why podbench lands a
+corrected seat when the measurement disagrees with what it authored.</p>
 </dd>
 <dt id="term-reaping">reaping<a class="headerlink" href="#term-reaping" title="Link to this term">#</a></dt><dd><p>Collecting the exit status of terminated child processes so they do not accumulate
 as zombies. <a class="reference internal" href="#term-PID-1"><span class="xref std std-term">PID 1</span></a> inherits every orphan in the namespace, so the

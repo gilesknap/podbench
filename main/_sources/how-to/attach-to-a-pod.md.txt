@@ -15,11 +15,12 @@ the first PyPI release, as
 :::{warning}
 On a live pod podbench shares the workload's memory and ephemeral-storage limits
 and **cannot reserve its own** — an ephemeral container may not declare
-`resources` at all. A VS Code session is a 1.1–1.3 GB working set, so attaching
-to a tightly limited pod can get the workload OOM-killed or the whole pod
-evicted, and an OOM inside an ephemeral container is unrecoverable. Anything
-heavier than looking belongs in a dev pod
-([Iterate on Python](iterate-on-python.md)).
+`resources` at all. What that costs is measured, and the seat is not the
+expensive half: ten live seats on the Diamond p47 beamline (2026-08-19) were
+**13–23 MiB** each. A **vscode-server** is, at **1215 MiB** live with one
+extension, and that is what gets a workload OOM-killed or a pod evicted — an OOM
+inside an ephemeral container being unrecoverable. Anything heavier than looking
+belongs in a dev pod ([Iterate on Python](iterate-on-python.md)).
 :::
 
 :::{warning}
@@ -63,6 +64,19 @@ and "you have twenty seconds" are different facts and you need to know which
 one you are in. For an unlimited pause on a probed workload use
 [`podbench dev`](iterate-on-python.md), which strips all three probes by
 construction; [Debug with gdb](debug-with-gdb.md) has the measurements.
+
+**Symbol fetches are spent out of that same budget.** gdb fetches the
+executable's debuginfo when it opens the file, but a shared library's only
+*after* the attach — which is with the workload stopped — and waits
+`DEBUGINFOD_TIMEOUT` for each one. gdb's own default for that is 90 seconds,
+which is longer than most of the deadlines above, so the seat does three
+things: the image sets `DEBUGINFOD_TIMEOUT=2`; the agent opens a connection to
+the symbol server once at start-up and drops `DEBUGINFOD_URLS` from ssh
+sessions when nothing answers, saying so in the container's start-up log; and
+`podbench dbg --no-debuginfod` (or `podbench debug-config --no-debuginfod`)
+turns it off for one run, which is the flag to reach for when the server is
+reachable but slow. Symbols are worth having — see
+[Debug with gdb](debug-with-gdb.md) — so it stays on by default, bounded.
 :::
 
 ## Attach, and re-attach
@@ -120,9 +134,21 @@ to match:
 $ podbench attach web --target api
 ```
 
-Without `--target` it picks the pod's first container. On a multi-container pod,
-name it — the target choice determines the sysroot, the UID of the degraded
-rung, and what `podbench pids` calls a target process.
+Without `--target` it picks the pod's first container, which is what `kubectl
+exec` does. It does not do so silently — the report's `target` row names the
+container it entered, and every other container the pod has, with the
+invocation that reaches each:
+
+```
+target      p47-epics-gateways-ca-gateway; this pod also has
+            p47-epics-gateways-pva-gateway.
+            reach it with `--target p47-epics-gateways-pva-gateway`
+```
+
+`podbench pids` heads its listing the same way, so a three-container pod does
+not read as a one-container pod from inside the seat either. The target choice
+determines the sysroot, the UID of the degraded rung, and what `podbench pids`
+calls a target process.
 
 If the pod spec does not state a `runAsUser` for the target (so the UID comes
 from the image), tell podbench with `--target-uid 1000`. The degraded rung must
@@ -136,7 +162,7 @@ Nothing to do — that is the normal path. podbench catches the refusal and fall
 to the next rung automatically, and still exits `0`:
 
 ```
-rung        degraded - a pinned UID, all capabilities dropped
+rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
   full      refused  Pod Security Admission: must not include "SYS_PTRACE" in
                      securityContext.capabilities.add
@@ -171,43 +197,58 @@ admission runs *before* validating admission, so by the time anything could
 refuse the request there is no capability left in it to object to. The API
 server returns success.
 
-podbench drops a rung when something refuses it. Nothing refused this, so the
-walk stops on the full rung and you get a **root seat with no capability** —
-which is strictly worse than the degraded rung, because root that cannot ptrace
-cannot read `/proc/<pid>/root`, `maps` or `environ` either:
+podbench drops a rung when something refuses it, and nothing refuses this. Left
+alone the walk would stop on the full rung and hand you a **root seat with no
+capability** — strictly worse than the degraded rung, because root that cannot
+ptrace cannot read `/proc/<pid>/root`, `maps` or `environ` either.
+
+So every rung is rehearsed first. Before a container name is committed to it,
+podbench submits the rung with `?dryRun=All`: the API server runs the whole
+admission chain, returns the container as it *would* have stored it, and stores
+nothing. A stripped capability is visible there, and the rung is withdrawn
+instead of spent:
 
 ```
-rung        full - root plus CAP_SYS_PTRACE
+rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
-  full      landed   running since 2026-08-18T09:01:33Z
-measured
-  verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
-  blocker     uid-mismatch
+  full      refused  admission would take it and remove SYS_PTRACE from it,
+                     landing a root seat with no capability: that reads three of
+                     the six probe paths where the rung below, at the target's
+                     own uid, reads all six (report 3.11). A dry run read that
+                     back before a name was spent; `--max-rung degraded` says it
+                     up front
+  degraded  landed   running since 2026-08-18T09:01:33Z
 ```
 
-`capreport` measures the truth and says so — `CAP_SYS_PTRACE (eff) no
-[bounding: no]` at `uid 0` — but the rung line above it is the rung that was
-*asked for*. To confirm it is a mutation rather than anything about your image,
-read the landed spec back with `kubectl get pod <pod> -o jsonpath` over
-`.spec.ephemeralContainers[*].securityContext`. podbench submits exactly
-`{"add":["SYS_PTRACE"]}`; anything else in `add` — a list of `CHOWN`,
-`DAC_OVERRIDE`, `SETUID` and friends — is the cluster's house default, put there
-by a policy that replaced the field rather than refusing it.
+A rewrite that costs the rung nothing is reported rather than acted on, as one
+`WARNING` line naming what admission changed — a DLS policy adds thirteen
+capabilities to a container that asked for none, which is the cluster's house
+default and harms nothing. The line cannot tell you *which* controller did it,
+and neither can anything else you can run as a namespaced user: the API server
+attributes a mutation to the field manager of the request that triggered it —
+podbench's own — rather than to the webhook or policy that made it, and
+`mutatingwebhookconfigurations` is cluster-scoped. Ask whoever administers the
+cluster. The rung line is unaffected either way: it is read
+from the seat's own `/proc/self/status` after the seat is up, so it says what
+the container *is* rather than what was asked for or what was stored. Those
+thirteen capabilities do not appear in it, because capabilities beside a
+non-zero `runAsUser` land in `CapBnd` and never reach `CapEff`.
 
-The way past it is `--max-rung`, which caps the walk instead of waiting for a
-refusal that will never come:
+You can still state the cap up front, which spends no dry run either:
 
 ```
 $ podbench attach bl47p-mo-ioc-01-0 --max-rung degraded
 ```
 
-The full rung is then never submitted, the seat lands at the target's own UID,
-and the ptrace credentials match. Two things worth knowing:
+The full rung is then never submitted at all, the seat lands at the target's own
+UID, and the ptrace credentials match. Two things worth knowing:
 
-* It is a **ceiling, not a choice**. The rungs below it are still tried, so a
+* It is a **starting rung**, not a choice. The rungs below it are still tried, so a
   target podbench cannot author a degraded rung for — one running as root, or
-  one whose UID is not in the pod spec — still falls through to the seat rung.
-  Where the UID is missing, pass `--target-uid` as well; the ladder line says so.
+  one whose UID neither the pod spec nor the node's container status reports —
+  still falls through to the seat rung. Where the UID is genuinely missing, pass
+  `--target-uid` as well; the ladder line says which of the two it was, and does
+  not offer the flag against a target the node already reports as root.
 * A running seat the ceiling would not have landed is **not** reconnected to.
   An ephemeral container's `securityContext` is fixed for the pod's lifetime, so
   there is no reconnecting into a different one — podbench lands a new container
@@ -228,7 +269,7 @@ supports
       the three paths this line names take PTRACE_MODE_READ, which the
       mechanism that refused attach gates too - see the blocker below
   [x] debug launched processes (podbench dbg --launch ./prog)
-measured
+measured    --no-probe skips this block
   verdict     launch-only: `podbench dbg --launch` works; no read-only inspection
 ```
 
@@ -241,6 +282,73 @@ descendant needs no capability and no Yama exemption. So go straight to
 `cmdline`, `status` and `fd` staying readable is not a partial win: they need no
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.
+
+## What the probe itself does to the workload
+
+Nothing, and the report says so on the line it is measured on:
+
+```
+measured    --no-probe skips this block
+  ...
+  pause       none - PTRACE_SEIZE does not stop the tracee
+```
+
+The question `capreport` has to answer is whether the kernel would let gdb
+attach, and `PTRACE_SEIZE` answers it through the same
+`PTRACE_MODE_ATTACH_REALCREDS` check that `PTRACE_ATTACH` takes — but without
+stopping the tracee. So there is no stop to reap, no detach to race, and no
+window in which a failed detach leaves the workload frozen. Measured against a
+live Diamond `blueapi` PID 1 with 195 threads, from a seat holding no
+capabilities: `State: S (sleeping)` before the seize, during it, and after.
+
+`PTRACE_ATTACH` is still there, as the fallback on a kernel older than 3.4 —
+that one *does* stop the workload while the probe reaps the stop and detaches,
+and the same line then reads `brief - PTRACE_ATTACH stopped it until the probe
+detached`. It is also what the *scratch* attach on the probe's own forked child
+uses, where the tracee exists to be stopped and is killed a line later.
+
+`--no-probe` skips the exec entirely, on `attach` and on `status` alike. Reach
+for it when the pod must not be touched at all rather than when a pause would
+be expensive: since the seize there is no pause to avoid.
+
+## How much room this pod actually has
+
+Every attach reads it, and prints it as a row of the `measured` block:
+
+```
+measured    --no-probe skips this block
+  ...
+  memory      170Mi free of 256Mi (86Mi in use)
+```
+
+The ceiling is the sum of the pod's container memory limits — a seat is charged
+against it and contributes nothing to it — and what the pod is using comes from
+`kubectl top pod`, so it needs a metrics-server and `get` on
+`pods.metrics.k8s.io`. Neither is required: without them the row reads
+
+```
+  memory      limit 256Mi; in use not measured (no metrics API here)
+```
+
+which says **unmeasured** and not *fine*. A pod where some container declares no
+memory limit gets `no pod memory limit, so no ceiling for the seat to share`,
+because the kubelet leaves that pod's cgroup unbounded.
+
+**podbench warns about this only when the margin is genuinely thin** — under
+64 MiB free, which is three of the largest seat measured. The number that
+decides is the *headroom*, not the limit: p47's three smallest limits are 100Mi
+socat containers, and they sit in the pod with the most room per byte used
+(300 MiB limit, 15 MiB in use). Across fifteen pods there, headroom ran from
+170 MiB to 3858 MiB, with up to three seats in one pod at once and no OOM in any
+of them. That is one beamline at one moment, so the threshold stays — a 100Mi
+pod really using 80 is a real case — but it does not fire on a pod that is fine.
+
+`--open` is checked against the other number. vscode-server measured 1215 MiB
+live with a single extension, which does not fit in most of those pods, so
+opening an editor into a pod with less headroom than that says so. Connecting
+VS Code by hand afterwards gets no warning, because there is no moment at which
+podbench learns you did — see
+[VS Code over Remote-SSH](vscode-remote-ssh.md).
 
 ## Making memory and CPU headroom first
 
@@ -332,8 +440,9 @@ unrelated rollout to take it away.
 Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.
 
-It also needs `pods/resize` `patch`, which the chart grants separately from the
-rest.
+It also needs `get` and `patch` on `pods/resize`, which the chart grants
+separately from the rest. Both verbs: kubectl reads the subresource back before
+it sends the write, so `patch` alone fails on the GET.
 
 ## Opening VS Code on the seat
 
@@ -381,7 +490,10 @@ Useful flags:
   *requires* a reachable registry. Use it when you are iterating on a tag that
   moves, such as `main` or a branch image: a node that already has a copy will
   otherwise serve it, and a seat older than the launcher that started it has no
-  symptom at all. `attach` names the tag in its report when this applies.
+  symptom at all. `attach` measures it rather than guessing — the `version` row
+  of the report is what the seat itself answered — but a running seat is
+  reconnected to rather than replaced, so re-checking the registry takes
+  `--pull always --new`.
 * `--ssh-user` — the login name. `root` on the full rung; `podbench` on a
   degraded one, which is the name in the record the seat registered for its own
   uid — unless that uid already has an account in the image, where it is whatever
@@ -416,7 +528,11 @@ $ podbench status web -n demo  # every seat in one pod
 $ podbench list -n demo        # every pod in the namespace carrying one
 ```
 
-Each seat is listed with the rung it was admitted on and, under it, a `verdict`.
+Each seat is listed with the rung it was admitted on and, under it, a `target`
+and a `verdict`. The `target` is the container that seat's namespaces are those
+of: two seats on one pod may have entered different containers, and an
+ephemeral container's `targetContainerName` is fixed for its lifetime, so this
+is read back from the spec rather than assumed.
 The verdict is measured: `status` runs `capreport` in every *running* seat, on
 the node, exactly as `attach` did. It is not derived from the rung, which says
 only what was asked for — a mutating webhook that strips `capabilities.add`
@@ -448,6 +564,7 @@ for whatever it has written.
 | container status `CreateContainerConfigError`, `container's runAsUser breaks non-root policy` | the kubelet refused a root container *after* the API server accepted it | podbench pre-empts this by reading `runAsNonRoot` and skips the full rung; if you forced it, do not |
 | traffic stopped reaching the pod while you sat at a breakpoint, and came back on its own | the readiness budget expired: the pod went not-ready, so its EndpointSlice kept the address but flipped `conditions.ready` to false and kube-proxy stopped routing to it. Quiet, not silent — `Unhealthy` events are emitted while it lasts, but no restart survives it | nothing to fix — it self-heals. Stay inside the budget `attach` printed, or use a dev pod |
 | the workload restarted mid-session and the seat went with it | the liveness budget expired; the seat shares the target's namespaces | `attach --new` for a fresh seat (the old name is burnt), and debug in a dev pod if you need to stop for longer |
+| every rung refused with `The fields spec.securityContext.runAsUser is set to an invalid value. Allowed runAsUser values are: "36096\|37887"` | the cluster allow-lists the uid a pod may run as — standard where pods do host mounts — and no rung of the ladder may invent one | re-run with `--target-uid 36096`, one of the uids the refusal names. The ladder line names them and the flag |
 | attach lands but `blocker: yama-scope` | Yama's `ptrace_scope >= 1` on **that node** forbids attaching to non-descendants | `podbench dbg --launch`, or have the target call `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` |
 | every library reports `missing debugging information` | `ca-certificates` absent, so `libdebuginfod` fails the TLS handshake silently | use the published image; it is mandatory there for exactly this reason |
 | attach works on one pod, is denied on the next | Yama differs **per node**, by kernel flavour, not by architecture | nothing to fix. The report prints the node name and Yama state for this reason |

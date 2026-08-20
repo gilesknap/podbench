@@ -160,9 +160,10 @@ Then ssh in with the alias it printed.
 ```
 $ ssh podbench-podbench-gdb-victim
 root@victim:~# podbench pids
-PID  UID  TARGET  CONTAINER      COMM    CMDLINE
-1    0    yes     87d20e23a1b4   victim  /app/victim
-38   0    no      7206c89bf0e1   sleep   sleep infinity
+container victim: the processes in its PID namespace
+PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
+1    0    yes     S   3    ok      87d20e23a1b4   victim  /app/victim
+38   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
 ```
 
 `podbench pids` is not `ps`. Under a shared PID namespace every process in the
@@ -173,6 +174,16 @@ PID 1" breaks under `shareProcessNamespace: true` (PID 1 is `/pause`), and
 matching mount namespaces breaks there too.
 
 If the `TARGET` column is a guess rather than a fact, `podbench pids` says so.
+
+`ST`, `THR` and `PTRACE` are the columns to read when you disagree with the pid
+`dbg` or `debug-config` chose, because they are what it chose on. `ST` is the
+kernel's process state: a `Z` there is a zombie, which no seat can attach to
+however good its credentials — it is the entry `--pid` should never be pointed
+at. `PTRACE` says whether *this* seat may read that process at all; a `DENIED`
+beside a live process is usually a uid the seat does not share (see
+[Attach to a pod](attach-to-a-pod.md) for the rung that fixes it). `THR` is the
+thread count, which is what separates a workload from the short-lived helper it
+forks.
 
 ## 4. Attach gdb
 
@@ -190,6 +201,7 @@ What it feeds gdb, in this order — see it without starting gdb using
 
 ```
 set pagination off
+handle SIGURG nostop noprint pass
 set sysroot /proc/1/root
 directory /proc/1/root
 add-auto-load-safe-path /proc/1/root
@@ -202,11 +214,13 @@ Every line earns its place:
 
 | Command | Why |
 |---|---|
+| `handle SIGURG nostop noprint pass` **before** `attach` | This pins gdb's own default rather than repairing anything: the image's own gdb 13.1, with no startup commands and no attach, already reports `SIGURG No No Yes` — as it does for SIGCHLD and SIGWINCH, so those three words are gdb's class for a routine signal rather than a decision about this one. It is there so a gdb configured otherwise cannot cost you the session — Go preempts goroutines by sending SIGURG at up to a few hundred a second, and a gdb that stops and announces each one does not make an attached Go session slow, it makes it unusable, with nothing in the wall of `Program received signal SIGURG` saying why. `pass`, not `ignore`: the signal is still delivered, because swallowing it changes the runtime's scheduling. Issued for every target, since `podbench dbg` attaches to whatever pid it is handed |
 | `set sysroot /proc/<pid>/root` **before** `attach` | gdb resolves the *target's* loader and shared libraries, not the debug image's. gdb 13's default sysroot is `target:`, which needs `CAP_SYS_ADMIN` and fails loudly without it |
 | `directory /proc/<pid>/root` | sysroot does **not** cover source lookup. This is what turns `victim.c: No such file or directory` into real source text |
 | `add-auto-load-safe-path /proc/<pid>/root` | setting a sysroot makes gdb decline to auto-load the target's `libthread_db.so.1` — no `info threads`, no per-thread backtraces. Narrow, never `set auto-load safe-path /` |
-| `set debuginfod enabled on` | symbols for stripped binaries and system libraries. Symbols only — see below |
+| `set debuginfod enabled on` | symbols for stripped binaries and system libraries. Symbols only — see below. A library's are fetched *after* the attach, with the target stopped, so the image bounds each fetch at `DEBUGINFOD_TIMEOUT=2` and `--no-debuginfod` turns the whole thing off for one run |
 | `file /proc/<pid>/root$(readlink /proc/<pid>/exe)` **before** `attach` | this is what recovers the *user* frames. A trailing ` (deleted)` is stripped |
+| `source /opt/podbench/gdb/rust_printers.py` | **Rust targets only.** A Rust binary asks for `gdb_load_rust_pretty_printers.py`, which ships with a rustup toolchain that a production container does not have; without it `Vec`, `String` and `Option` print as the `RawVecInner`/`Unique`/`NonNull` nest they are made of. Sourced only where the binary was identified as Rust, because `source` of a missing path is an error on every other attach |
 
 ### When that `file` line names `/tmp` instead
 
@@ -232,8 +246,42 @@ path, and if it does, copies the target's binary to `/tmp/podbench-exe/<pid>/`
 and points `file` there. It says so in one line, and `--dry-run` prints the
 command it will actually run. Nothing else in the sequence changes — shared
 libraries are resolved by a different path in gdb and stay sysrooted.
-`podbench dbg <pid> --print-exec-file` prints just that path, which is what the
-image's `gdb-podbench` wrapper feeds to a third-party `gdb --pid <n>`.
+`podbench dbg <pid> --print-exec-file` prints just that path. The image's
+`gdb-podbench` wrapper asks for more than the path — `podbench dbg <pid>
+--print-startup-commands` prints every line above except the `attach`, and the
+wrapper passes each as `-iex` before a third-party `gdb --pid <n>` attaches, so
+`gdb -p`, cpptools and debugpy all get the sysroot, the staged exec file, the
+auto-load path and the SIGURG handling that `podbench dbg` gets.
+
+### The staged copy is gdb's fix, and lldb has no equivalent
+
+lldb has the same bug and cannot be given the same cure, which was measured
+rather than assumed. gdb canonicalises *the path you hand it*, so a path nothing
+shadows is enough. lldb **ignores** the path you hand it: once it has attached
+it re-resolves the executable from the process and overrides the target with the
+name as resolved in the seat's own mount namespace —
+
+```
+warning: Executable binary changed from "/tmp/podbench-exe/1/victim" to "/app/victim".
+Executable binary set to "/app/victim".
+```
+
+— so the staged copy is loaded and then dropped. `settings set
+target.exec-search-paths` does not help either; moving the seat's own file aside
+does, which is the same mechanism as gdb's under a remedy nobody has in a pod.
+It is at least *loud*, unlike gdb's second failure mode, but the warning lands
+in the debug console and the session carries the wrong symbols regardless.
+
+So `debug-config` **emits no lldb entry at all** where this seat has a file at
+the target's exe path, and says which file refused it. The gdb entry beside it
+is unaffected — that one gets the staged copy — and so is `podbench dbg`.
+
+Measured 2026-08-19 with a **standalone lldb 21.1.8** on a test bed, against a
+real mount namespace built with podman - **not inside a podbench seat**. **CodeLLDB's own bundled lldb, running in a remote extension
+host, has not been observed doing this**; the refusal assumes it behaves as the
+lldb it ships. Untried, and the shape that would actually be correct:
+`platform select remote-linux` against an lldb-server started inside the
+target's namespace, which never resolves anything in the seat's.
 
 ## 5. Breakpoint, source, step
 
@@ -339,9 +387,14 @@ debug-config: native target, observe mode, x86_64
 debug-config: emitting gdb: native target, observe mode
 debug-config: emitting lldb: native target; CodeLLDB brings its own lldb to the seat
 debug-config written to /root/.vscode/launch.json
-  Run and Debug -> "podbench: attach to victim (gdb)"
-  Run and Debug -> "podbench: attach to victim (lldb)"
+  Run and Debug -> "podbench: attach to victim [pid 1 victim] (gdb)"
+  Run and Debug -> "podbench: attach to victim [pid 1 victim] (lldb)"
 ```
+
+The pid and the kernel's name for the process are in every entry name because
+up to five candidates are offered at once, and an entrypoint script's children
+are routinely three processes all called `python`. Anything the ranking left
+out is named in a `debug-config:` line, and `podbench pids` lists the rest.
 
 It fills in the pid, the sysroot-prefixed `program`, the setup ordering, the
 architecture, `miDebuggerPath` and the mode's path mappings from what it can
@@ -431,9 +484,16 @@ mkdir -p /tmp/gone && cd /tmp/gone && rmdir /tmp/gone
 printf -- "-enable-pretty-printing\n-gdb-exit\n" | gdb --interpreter=mi
 ```
 
-`cwd` must be set. On a developer's machine `${workspaceFolder}` always exists
-so nobody sets it; in a seat it can resolve to nothing, and the result is that
-same unformattable crash.
+`cwd` must be set, **and must be a directory this seat can enter**. On a
+developer's machine `${workspaceFolder}` always exists so nobody sets it; in a
+seat it can resolve to nothing, and the result is that same unformattable crash.
+`debug-config` fills it in from the seat's own `$HOME`: `/root` above, because
+that example is a root seat, but `/tmp/podbench-home` on a seat pinned to the
+target's uid — `/root` is mode 0700 there and belongs to an account the image
+has no record of, so naming it emitted a cwd the debugger could not chdir into.
+Where the seat has no `$HOME` at all it is `/tmp`, which is 1777 in every image.
+Measured inside a seat with `test -d` and `test -x`; no VS Code client has
+driven the adapter.
 
 :::{note}
 `targetArchitecture` is worth setting on arm64 — without it cpptools logs
@@ -482,6 +542,13 @@ analogue of gdb's `set sysroot` for `/proc/<pid>/root`, so the executable path
 must be sysroot-prefixed explicitly and the library search paths set by hand.
 The `/rustc/<commit-hash>` key is what `rustc` bakes into standard-library debug
 info; `rustup component add rust-src` provides the right-hand side.
+
+That `program` holds only while **this container has no file of its own at
+`/app/myapp`**. Where it does, lldb discards the path after attaching and reads
+the seat's copy — "The staged copy is gdb's fix, and lldb has no equivalent",
+under section 4 above, has the measurement and the warning it prints.
+`debug-config` withdraws the entry in that case rather than writing one, so a
+template copied by hand is the only way to get it back, and it will be wrong.
 
 ## The wrong-sysroot failure, verbatim
 
