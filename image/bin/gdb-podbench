@@ -83,10 +83,11 @@
 # saying so: `add-auto-load-safe-path` was never in it, so a sysrooted gdb
 # declined to auto-load libthread_db and every caller in the seat — cpptools,
 # debugpy's attach-to-pid, `gdb -p` — silently lost thread debugging; and
-# `handle SIGURG nostop noprint pass` arrived later still, which pins gdb's own
-# default - a stock gdb 17.1 already answers `SIGURG No No Yes` - so that a
-# differently configured gdb cannot turn an attached Go target into a wall of
-# `Program received signal SIGURG` (finding 17.6). `podbench dbg <pid> --print-startup-commands` prints exactly the lines
+# `handle SIGURG nostop noprint pass` arrived later still, which pins a default
+# rather than repairing a flood - the development container's gdb 17.1 already
+# answers `SIGURG No No Yes`, and this image's Debian gdb 13 has not been read -
+# so that no differently configured gdb can turn an attached Go target into a
+# wall of `Program received signal SIGURG` (finding 17.6). `podbench dbg <pid> --print-startup-commands` prints exactly the lines
 # `podbench dbg` would run before its own `attach`, so there is now one author
 # and nothing left in sh to fall behind.
 #

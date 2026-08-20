@@ -199,9 +199,11 @@ def test_attach_sequence_is_pinned_in_order() -> None:
 def test_sigurg_is_handled_before_the_process_resumes() -> None:
     """The ordering, which is what this line's value depends on.
 
-    `nostop noprint pass` is already gdb's default - a stock gdb 17.1 reports
-    `SIGURG No No Yes` with no startup commands at all - so this pins it rather
-    than repairing a flood. Pinning it is only worth anything before the attach:
+    `nostop noprint pass` is already the default of the gdb this was measured
+    on - the development container's 17.1, which reports `SIGURG No No Yes` with
+    no startup commands at all, and not the image's Debian gdb 13, which nobody
+    has read - so this pins a default rather than repairing a flood. Pinning it
+    is only worth anything before the attach:
     on a gdb configured otherwise the flood starts the moment the inferior
     resumes, and Go preempts goroutines hundreds of times a second.
     """
