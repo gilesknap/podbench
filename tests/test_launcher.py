@@ -2543,6 +2543,13 @@ def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
     assert full.admitted
     assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
     assert any("no rung below to prefer" in text for text in session.warnings)
+    # And it does not cite the number report 3.11 measured in the case this
+    # line never covers. §3.11 put a root seat against a *non-root* target, a
+    # uid mismatch; here the walk found no non-root uid to pin, so the uids
+    # agree and the reads are unaffected. On argus (hgv27681) `capreport`
+    # measured 6/6 while this warning claimed three, four lines under a
+    # `supports` block that had already said all six were readable.
+    assert not any("three of the six" in text for text in session.warnings)
 
 
 def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:

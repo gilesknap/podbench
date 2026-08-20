@@ -1101,9 +1101,12 @@ def capabilities_removed(
     """Capabilities the request added that admission would not store.
 
     The full rung's entire content is ``SYS_PTRACE``, so a policy that strips it
-    leaves a root container with no capability — which reads three of the six
-    probe paths, where the degraded rung at the target's own uid reads all six
-    (report 3.11). Landing that is strictly worse than not landing it, and the
+    leaves a root container with no capability. Against a **non-root** target
+    that reads three of the six probe paths where the degraded rung at the
+    target's own uid reads all six (report 3.11), so landing it is strictly
+    worse than not landing it; against a root target the uids agree and there is
+    no rung below to fall to anyway, which is
+    :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`'s case. Either way the
     only signal is this difference: the update itself succeeds.
 
     >>> capabilities_removed(

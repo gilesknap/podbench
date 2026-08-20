@@ -1894,12 +1894,13 @@ def _walk_ladder(
 
 
 CAPABILITY_STRIPPED_WARNING = (
-    "admission removed {stripped} from this seat, and it was taken anyway "
-    "because there is no rung below to prefer: the target runs as root, which "
-    "`runAsNonRoot: true` cannot express, so a seat at the target's own uid is "
-    "not available (report 3.11 compares the two; here there is only one). The "
-    "seat is root without the capability, which reads three of the six probe "
-    "paths - `podbench capreport` names which."
+    "admission removed {stripped} from this seat and it was taken anyway, "
+    "because there is no rung below to prefer: every lower rung pins the seat "
+    "to the target's own non-root uid, and the `ladder` line above says why "
+    "this target offers none. What {stripped} would have added is the exemption "
+    "from Yama and from the PTRACE_MODE_ATTACH check; where the target is root "
+    "too the uids match, and the read-only paths are unaffected. The `supports` "
+    "block above is the measurement."
 )
 """One line for a strip the walk cannot improve on.
 
@@ -1908,6 +1909,16 @@ below reads more (report 3.11). Against a root target there is no rung below:
 every lower one needs a non-zero uid to pin. Refusing here would end the walk
 with nothing admitted, which is worse than a seat that says what it lost —
 measured on the ``dls-ioc`` e2e fixture, whose target is root.
+
+It used to cite §3.11's "three of the six probe paths", which is the wrong half
+of that table. §3.11 measured a root seat against a **non-root** target — a uid
+mismatch, so ``__ptrace_may_access`` denied three of them — and this line only
+ever prints where the ladder found no non-root uid to pin, which is the case
+where the uids agree. On argus (hgv27681, 2026-08-20), where no pod sets
+``runAsUser`` and every target is root, ``podbench capreport`` measured 6/6 and
+the ``supports`` block four lines above this warning said so: the warning
+contradicted the report it was printed in, which is the fastest way to teach a
+reader to skip both.
 """
 
 ADMISSION_MUTATION_WARNING = (
