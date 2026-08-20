@@ -245,8 +245,10 @@ UID, and the ptrace credentials match. Two things worth knowing:
 
 * It is a **starting rung**, not a choice. The rungs below it are still tried, so a
   target podbench cannot author a degraded rung for — one running as root, or
-  one whose UID is not in the pod spec — still falls through to the seat rung.
-  Where the UID is missing, pass `--target-uid` as well; the ladder line says so.
+  one whose UID neither the pod spec nor the node's container status reports —
+  still falls through to the seat rung. Where the UID is genuinely missing, pass
+  `--target-uid` as well; the ladder line says which of the two it was, and does
+  not offer the flag against a target the node already reports as root.
 * A running seat the ceiling would not have landed is **not** reconnected to.
   An ephemeral container's `securityContext` is fixed for the pod's lifetime, so
   there is no reconnecting into a different one — podbench lands a new container

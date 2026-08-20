@@ -64,6 +64,7 @@ __all__ = [
     "PULL_POLICIES",
     "ephemeral_container_spec",
     "moves",
+    "reported_target_uid",
     "requested_seat_spec",
     "runs_as_non_root",
     "ephemeral_container",
@@ -935,6 +936,48 @@ def target_uid_gid(
         return None
 
     return pick("runAsUser"), pick("runAsGroup")
+
+
+def reported_target_uid(pod_json: Mapping[str, Any], container: str) -> int | None:
+    """The uid the *node* says the named container's process is running as.
+
+    ``status.containerStatuses[].user.linux.uid`` is what the kubelet resolved
+    after the image's own ``USER`` was applied, so it answers the question
+    :func:`target_uid_gid` cannot: a manifest that states no ``runAsUser`` is
+    not a target whose uid is unknown, it is a target whose uid is in the image.
+    Measured on argus (hgv27681, 2026-08-20), where no pod in the namespace
+    states one and every container is really root — and where the ladder was
+    therefore advising ``--target-uid`` on all eight of them, four lines above a
+    capability report reading the same uid as 0.
+
+    ``None`` where the field is absent, which is a *cluster* answer and not a
+    container one: it arrived with ``SupplementalGroupsPolicy`` (beta and on by
+    default in Kubernetes 1.33), so an older API server reports it for nothing.
+
+    It is read for the ladder's *advice* rather than for its rungs. Authoring
+    the degraded rung from it would pin a uid off the node's word alone, and the
+    rung's own refusal (report 4.5) is that a guessed uid costs the sysroot,
+    maps, environ and exe reads the rung exists for.
+
+    >>> user = {"linux": {"uid": 37887, "gid": 37887}}
+    >>> pod = {"status": {"containerStatuses": [{"name": "app", "user": user}]}}
+    >>> reported_target_uid(pod, "app")
+    37887
+    >>> reported_target_uid(pod, "other") is None
+    True
+    >>> reported_target_uid({"status": {"containerStatuses": [
+    ...     {"name": "app"}]}}, "app") is None
+    True
+    """
+    statuses = as_dict(pod_json.get("status")).get("containerStatuses")
+    if not isinstance(statuses, list):
+        return None
+    for entry in cast(list[Any], statuses):
+        status = as_dict(entry)
+        if status.get("name") != container:
+            continue
+        return _as_uid(as_dict(as_dict(status.get("user")).get("linux")).get("uid"))
+    return None
 
 
 def target_seccomp_profile(

@@ -113,6 +113,7 @@ from .spec import (
     ephemeral_container,
     ephemeral_container_spec,
     moves,
+    reported_target_uid,
     requested_seat_spec,
     runs_as_non_root,
     shares_pid_namespace_across_uids,
@@ -1089,7 +1090,11 @@ def plan_ladder(
     says nothing: the effective uid then comes from the image and only the
     running process knows it. Guessing is refused — defaulting the fallback to
     root would cost the sysroot, maps, environ and exe reads that are the whole
-    value of the degraded rung (report 4.5).
+    value of the degraded rung (report 4.5). The *reason* the rung was skipped
+    is a different question from the uid it would have been authored with, and
+    it consults the node as well (:func:`_unpinned_target`): a manifest stating
+    nothing over a root image is not a target waiting for ``--target-uid``, it
+    is a root target, and the flag cannot reach a rung that does not exist.
 
     The **order** is the target's to imply, and only the ceiling overrides it.
     Where the target's uid is known and not root, the degraded rung at that uid
@@ -1134,11 +1139,7 @@ def plan_ladder(
     if max_rung is not None and LADDER.index(max_rung) > 1:
         degraded = f"--max-rung {max_rung.value} was given, so it was not attempted"
     elif uid is None:
-        degraded = (
-            "the target's uid is not in the pod spec, so this rung cannot be "
-            "authored without guessing; re-run with --target-uid once the "
-            "capability report below has read it from /proc"
-        )
+        degraded = _unpinned_target(reported_target_uid(pod_json, container))
     elif uid == 0:
         degraded = "the target runs as root, which runAsNonRoot: true cannot express"
 
@@ -1150,6 +1151,50 @@ def plan_ladder(
             cross_uid=shares_pid_namespace_across_uids(pod_json, container, uid),
             max_rung=max_rung,
         )
+    )
+
+
+def _unpinned_target(reported: int | None) -> str:
+    """Why the degraded rung is out where the manifest pins no uid — and whether
+    ``--target-uid`` would change that.
+
+    A spec that omits ``runAsUser`` is not a target whose uid is unknown: the
+    image's own ``USER`` decides it, and the node publishes the result in
+    ``status.containerStatuses[].user.linux.uid``. Offering the flag without
+    reading that was wrong wherever the answer is 0 — on argus (hgv27681,
+    2026-08-20) no pod in the namespace states a uid and every container is
+    root, so this line advised ``--target-uid`` on all eight of them while the
+    capability report four lines below read the target's uid as 0, and the
+    sentence's own second half says uid 0 admits no lower rung. Confirmed by
+    running it: ``--target-uid 0 --new`` prints the refusal and spends a
+    container name.
+
+    >>> "--target-uid" in _unpinned_target(0)
+    False
+    >>> "runAsNonRoot: true cannot express" in _unpinned_target(0)
+    True
+    >>> "--target-uid 37887" in _unpinned_target(37887)
+    True
+    >>> "neither the pod spec nor the node" in _unpinned_target(None)
+    True
+    """
+    if reported == 0:
+        return (
+            "the target runs as root, which runAsNonRoot: true cannot express - "
+            "the pod spec states no uid and the node reports the container "
+            "running as 0"
+        )
+    if reported is not None:
+        return (
+            f"the pod spec pins no uid, so this rung cannot be authored without "
+            f"guessing; the node reports the target running as uid {reported}, "
+            f"and `--target-uid {reported}` starts the walk at this rung"
+        )
+    return (
+        "the target's uid is in neither the pod spec nor the node's container "
+        "status (which reports one from Kubernetes 1.33), so this rung cannot "
+        "be authored without guessing; re-run with --target-uid once the "
+        "capability report below has read it from /proc"
     )
 
 

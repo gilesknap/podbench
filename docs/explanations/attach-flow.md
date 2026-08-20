@@ -174,10 +174,12 @@ read before a seat exists.
 └─────────────────────────────────┬────────────────────────────────┘
                                   │
       pre-skipped:
-        the target's uid is not in the pod spec — re-run with
-        --target-uid once the report below has read it from /proc
-        (guessing root would cost this rung its entire value)
-        or the target runs as uid 0, which runAsNonRoot cannot express
+        the target's uid is in neither the pod spec nor the node's
+        container status — re-run with --target-uid once the report
+        below has read it from /proc (guessing root would cost this
+        rung its entire value)
+        or the target runs as uid 0, by either of those two readings,
+        which runAsNonRoot cannot express
                                   │
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐

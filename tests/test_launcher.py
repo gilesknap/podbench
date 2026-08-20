@@ -182,6 +182,7 @@ def pod_document(
     probes: Mapping[str, Any] | None = None,
     host_network: bool = False,
     siblings: Sequence[str] = (),
+    reported_uid: int | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -220,6 +221,14 @@ def pod_document(
                     "name": container,
                     "containerID": f"containerd://{TARGET_CID}",
                     "ready": ready,
+                    # What the kubelet resolved after the image's own USER, and
+                    # absent on a cluster older than 1.33 - which is why the
+                    # fixture omits the key rather than reporting a null uid.
+                    **(
+                        {"user": {"linux": {"uid": reported_uid}}}
+                        if reported_uid is not None
+                        else {}
+                    ),
                 }
             ],
             "ephemeralContainerStatuses": [dict(s) for s in ephemeral_statuses],
@@ -931,6 +940,46 @@ def test_an_unknown_target_uid_skips_the_degraded_rung_rather_than_guessing() ->
     assert degraded is not None
     assert "--target-uid" in degraded
     assert plan[Rung.SEAT] is None
+
+
+def test_a_root_target_the_spec_does_not_pin_is_not_offered_the_flag() -> None:
+    """argus (hgv27681, 2026-08-20): no pod in the namespace states runAsUser.
+
+    The spec saying nothing is not the same as the uid being unknown - the
+    image's USER decides it and the node publishes the answer. On all eight pods
+    there the answer was 0, and this line was advising `--target-uid` four lines
+    above a capability report that had read the target's uid as 0, for a rung
+    the same sentence says uid 0 cannot express. Running it confirmed it:
+    `--target-uid 0 --new` prints the refusal and spends a container name.
+    """
+    plan = dict(plan_ladder(pod_document(reported_uid=0), "app"))
+
+    degraded = plan[Rung.DEGRADED]
+    assert degraded is not None
+    assert "--target-uid" not in degraded
+    assert "runAsNonRoot: true cannot express" in degraded
+
+
+def test_a_non_root_target_the_spec_does_not_pin_is_offered_the_uid() -> None:
+    """And where the flag *can* change the outcome it carries the number, so the
+    re-run is a paste rather than a hunt through /proc."""
+    plan = dict(plan_ladder(pod_document(reported_uid=37887), "app"))
+
+    degraded = plan[Rung.DEGRADED]
+    assert degraded is not None
+    assert "--target-uid 37887" in degraded
+
+
+def test_a_uid_no_source_reports_still_asks_for_the_flag() -> None:
+    """The genuinely unknown case, which is a cluster older than 1.33 as often
+    as it is anything about the pod. The advice stands there - the capability
+    report reads the uid from /proc, and the flag is how it gets used."""
+    plan = dict(plan_ladder(pod_document(), "app"))
+
+    degraded = plan[Rung.DEGRADED]
+    assert degraded is not None
+    assert "neither the pod spec nor the node" in degraded
+    assert "--target-uid" in degraded
 
 
 def test_target_uid_override_re_enables_the_degraded_rung() -> None:
