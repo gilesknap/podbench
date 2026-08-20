@@ -3612,9 +3612,9 @@ def try_resize(
             _container_resources(document, container), refusal
         )
         return (
-            f"in-place resize ({asked}) was refused, so podbench is sharing the "
-            f"pod's existing limits: {refusal}"
-            + (f" {explanation}" if explanation else "")
+            f"in-place resize ({asked}) was refused, so podbench is sharing "
+            "the pod's existing limits"
+            + (f" - {explanation}" if explanation else ".")
             # Said once, here, so nobody goes hunting for RBAC they do not need:
             # the refusal is usually the end of it. A seat costs 13-23 MiB, and
             # the tightest pod on the beamline this was measured against had
@@ -3623,6 +3623,12 @@ def try_resize(
             "(DLS p47, 2026-08-19), so sharing the existing limits is usually "
             "the end of it - unless this session runs vscode-server, which "
             "measured 1215 MiB with one extension."
+            # The cluster's own words go last, and nothing follows them. Relayed
+            # text is not ours to reflow and may or may not end in a stop, so any
+            # sentence after it collides: a real one read `...namespace
+            # "hgv27681" A seat itself measured...`, where the seam is invisible
+            # and the reader takes our sentence for more of the API server's.
+             + f" The API server said: {refusal}"
         )
     return "\n".join(
         [

@@ -4577,6 +4577,49 @@ def test_a_refused_resize_says_once_that_it_probably_did_not_matter() -> None:
     assert "vscode-server" in note, "the one cost that is still worth acting on"
 
 
+def test_the_clusters_own_words_end_the_refusal_and_are_not_run_into() -> None:
+    """`...namespace "hgv27681" A seat itself measured...` - one seam, invisible.
+
+    Relayed stderr is not ours to reflow and may or may not end in a stop, so
+    anything podbench appends after it reads as more of the API server's
+    message. Nothing follows it now, and what introduces it is ours.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        patch_error='pods "app" is forbidden in namespace "hgv27681"',
+    )
+
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+
+    assert note.endswith(
+        'The API server said: pods "app" is forbidden in namespace "hgv27681"'
+    )
+    # The seat's own cost still precedes it: the reader is told the refusal
+    # probably did not matter before being handed the cluster's wording.
+    assert note.index("13-23 MiB") < note.index("The API server said:")
+
+
+def test_a_claim_explanation_joins_our_sentence_and_not_the_clusters() -> None:
+    """The other seam the refusal used to sit between.
+
+    `explain_claim_refusal` opens in lower case because it continues a sentence;
+    continuing the *cluster's* is what made it unreadable, so it now continues
+    podbench's own.
+    """
+    document = pod_document(uid=1000)
+    document["spec"]["containers"][0]["resources"] = {
+        "claims": [{"name": "bl01c-ea-flip-02"}]
+    }
+    cluster = FakeCluster(
+        document, patch_error="only cpu and memory resources are mutable"
+    )
+
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+
+    assert "existing limits - the target container holds a resource claim" in note
+    assert note.index("bl01c-ea-flip-02") < note.index("The API server said:")
+
+
 def test_an_attach_that_changed_no_limits_never_offers_the_flag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
