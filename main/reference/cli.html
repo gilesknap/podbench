@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
+    <script src="../_static/documentation_options.js?v=20767d06"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -495,13 +495,13 @@ is PID 1 and answers to the same <code class="docutils literal notranslate"><spa
 means the capability logic that decides what a session can do is the same code
 in both places, rather than a launcher’s guess and a helper’s separate guess.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench --help
-
- Usage: podbench [OPTIONS] COMMAND [ARGS]...
-
- A development seat inside a Kubernetes pod.
-
- Run `podbench VERB --help` for a verb&#39;s own options.
-
+                                                                                                    
+ Usage: podbench [OPTIONS] COMMAND [ARGS]...                                                        
+                                                                                                    
+ A development seat inside a Kubernetes pod.                                                        
+                                                                                                    
+ Run `podbench VERB --help` for a verb&#39;s own options.                                               
+                                                                                                    
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --version  -v        show the launcher&#39;s version and exit                                        │
 │ --help               Show this message and exit.                                                 │
@@ -509,6 +509,7 @@ in both places, rather than a launcher’s guess and a helper’s separate guess
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
 │ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
+│ vscode         land a seat sized and provisioned for an editor, and open it                      │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
@@ -535,7 +536,7 @@ in both places, rather than a launcher’s guess and a helper’s separate guess
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Your machine</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">doctor</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">doctor</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">vscode</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Inside the debug container</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code></p></td>
@@ -902,18 +903,6 @@ what that seat can actually do.</p>
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
-│ --open                                       open the seat&#39;s home in VS Code over Remote-SSH     │
-│                                              once it lands, with the /proc and /sys excludes,    │
-│                                              this target&#39;s launch.json and only the extensions   │
-│                                              its debugger needs. Needs `code` on PATH            │
-│ --provision                                  with --open, make the target debuggable: install    │
-│                                              debugpy when it cannot import one, then start the   │
-│                                              server so F5 has something to connect to -          │
-│                                              otherwise a stock Python workload gets no           │
-│                                              launch.json at all. Mutates the workload: ~15 MB of │
-│                                              shared ephemeral storage, needs egress from the     │
-│                                              pod, ptraces the app for a few seconds, and no      │
-│                                              restart survives it                                 │
 │ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
@@ -928,7 +917,7 @@ what that seat can actually do.</p>
 </pre></div>
 </div>
 <p>Notes:</p>
-<ul>
+<ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">pod</span></code> accepts <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, a bare <code class="docutils literal notranslate"><span class="pre">NAME</span></code>, a substring of one, or nothing at
 all — see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--image</span></code> has no fixed default to print: the launcher asks for the image
@@ -960,7 +949,7 @@ carry is refused with that explanation rather than submitted. That immutability
 is the whole reason Hotfix mode asks for the chart’s cooperation at deploy time;
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
 seeding initContainer that put it there.</p>
-<ul class="simple">
+<ul>
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">MOUNTPATH</span></code> is optional and usually should be. Where the application
@@ -986,7 +975,7 @@ reconnect warns and does nothing. Use <code class="docutils literal notranslate"
 a volume named <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code>, <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts it read-write at
 <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> and makes it the seat’s <code class="docutils literal notranslate"><span class="pre">$HOME</span></code>, which keeps vscode-server and
 everything else the seat writes off the workload’s ephemeral-storage budget.</p>
-<ul class="simple">
+<ul>
 <li><p>It is a convention because the volume cannot be there by accident: an
 ephemeral container may only mount volumes the pod already declares and
 <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable, so anything called <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> was put in
@@ -1006,7 +995,7 @@ mount, which an ephemeral container may not have: the API server answers
 at all. Mounting the volume whole is not an alternative either; a directory
 mount replaces the path, and over <code class="docutils literal notranslate"><span class="pre">/etc</span></code> it would take <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code> with it
 — the very lookup the identity exists to satisfy.</p>
-<ul class="simple">
+<ul>
 <li><p><strong>On a live pod the seat writes its own record, and needs no volume and no
 flag to.</strong> The image installs <code class="docutils literal notranslate"><span class="pre">libnss-extrausers</span></code>, points <code class="docutils literal notranslate"><span class="pre">nsswitch.conf</span></code>’s
 <code class="docutils literal notranslate"><span class="pre">passwd</span></code> line at it and ships <code class="docutils literal notranslate"><span class="pre">/var/lib/extrausers/passwd</span></code> world-writable, so
@@ -1044,7 +1033,7 @@ operation — live attach, and <code class="docutils literal notranslate"><span 
 with it. That is the <em>usual</em> shape, because a manifest usually states
 <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code> and the real group comes from the workload
 image’s own user (p47-blueapi-0: <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">1000</span></code>, real gid 1000).</p>
-<ul class="simple">
+<ul>
 <li><p>Nothing laptop-side can read that gid. <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/status</span></code> can, it is
 world-readable, and a seat at the wrong ids can still read it — so podbench
 measures it <em>after</em> landing and, where it disagrees with what was authored,
@@ -1060,20 +1049,178 @@ keeps the first seat and leaves the mismatch reported as the
 <code class="docutils literal notranslate"><span class="pre">gid-mismatch</span></code> blocker.</p></li>
 </ul>
 </li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">--open</span></code></strong> takes the seat from “landed” to “bound breakpoint” in one
-command. It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH, and the local VS Code needs the
-<strong>Remote - SSH</strong> extension; both are checked at the point of use and named in
-the failure rather than reported as a traceback. <code class="docutils literal notranslate"><span class="pre">code</span></code> is looked for
-<em>before</em> the seat is landed, because an ephemeral container’s name is
-permanent and a run that was always going to end at “no <code class="docutils literal notranslate"><span class="pre">code</span></code>” must not burn
-one.</p>
-<p>It has to be the <strong>desktop</strong> <code class="docutils literal notranslate"><span class="pre">code</span></code>. Inside a Remote-SSH window, a
-devcontainer or a Codespace, the <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH is VS Code’s <em>remote</em>
-CLI, which forwards to the window that terminal already belongs to:
-<code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> would install into that machine rather than into the
-seat, leaving breakpoints that never bind. podbench refuses that one by name
-before landing anything — run it from a terminal on the machine your VS Code
-itself runs on, or drop <code class="docutils literal notranslate"><span class="pre">--open</span></code> and use <strong>Remote-SSH: Connect to Host</strong>.</p>
+<li><p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for any seat that lands, including a degraded one; <code class="docutils literal notranslate"><span class="pre">2</span></code> for a
+real error.</p></li>
+</ul>
+</section>
+<section id="vscode">
+<h3><code class="docutils literal notranslate"><span class="pre">vscode</span></code><a class="headerlink" href="#vscode" title="Link to this heading">#</a></h3>
+<p>Land a seat, size the pod for an editor, make the target debuggable, and open
+VS Code on it over Remote-SSH. Everything <code class="docutils literal notranslate"><span class="pre">attach</span></code> does, plus the three things a
+VS Code session needs that a bare seat does not — which is why it is a verb and
+not a flag: <code class="docutils literal notranslate"><span class="pre">attach</span></code> adds a container to the pod and touches the workload not at
+all, and two of these steps change it.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
+ Usage: podbench vscode [OPTIONS] [POD]                                                             
+                                                                                                    
+ land a seat sized and provisioned for an editor, and open it                                       
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
+│                   on a single pod lists the namespace and asks                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --target                    NAME             workload container name                             │
+│ --image                     REF              debug image (default: $PODBENCH_IMAGE, else the     │
+│                                              image built from this launcher&#39;s version)           │
+│ --target-uid                UID              the target&#39;s uid, when its pod spec does not say    │
+│ --target-gid                GID              the target&#39;s gid, when its pod spec does not say.   │
+│                                              The seat must share it: __ptrace_may_access         │
+│                                              compares the group ids as peers of the user ids, so │
+│                                              a seat at the target&#39;s uid in another group can log │
+│                                              in and cannot trace. Rarely needed - podbench       │
+│                                              measures the target&#39;s real gid from /proc and lands │
+│                                              a corrected seat itself - but it costs one          │
+│                                              container name instead of two, and it is not        │
+│                                              overridden by the measurement                       │
+│ --max-rung                  RUNG             highest rung of the capability ladder to try: full, │
+│                                              degraded or seat. It is where the walk starts, and  │
+│                                              the ladder still falls through the rungs below.     │
+│                                              Without it a target whose uid is known and not root │
+│                                              has its own rung tried first. Use `full` to insist  │
+│                                              on the capability rung - a node with Yama           │
+│                                              ptrace_scope &gt;= 1 exempts nothing else - or         │
+│                                              `degraded` where a mutating admission policy strips │
+│                                              SYS_PTRACE instead of refusing it. A running seat   │
+│                                              above the ceiling is not reused                     │
+│ --mount                     CLAIM:MOUNTPATH  mount a volume the pod already declares into the    │
+│                                              seat, named by claim or by volume name. MOUNTPATH   │
+│                                              defaults to the application container&#39;s own, which  │
+│                                              Hotfix mode requires it to equal. Repeatable        │
+│ --new                                        add a container even if one is running (its name is │
+│                                              permanent)                                          │
+│ --no-correct-ids                             keep the first seat even when it landed in the      │
+│                                              wrong group. Without this, a seat whose measured    │
+│                                              uid:gid disagrees with the target&#39;s is replaced     │
+│                                              once by a corrected one, which spends a second      │
+│                                              container name for the pod&#39;s lifetime - an          │
+│                                              ephemeral container&#39;s securityContext cannot be     │
+│                                              changed in place. Use --target-gid to get it right  │
+│                                              on the first name                                   │
+│ --no-seat-identity                           do not mount the pod&#39;s podbench-home volume, which  │
+│                                              is otherwise mounted by convention when the pod     │
+│                                              declares it and keeps everything the seat writes    │
+│                                              off the workload&#39;s ephemeral-storage budget. The    │
+│                                              podbench-identity volume is never mounted by        │
+│                                              attach: it needs a subPath per file, which an       │
+│                                              ephemeral container may not have - a live-pod seat  │
+│                                              registers its own NSS record instead, and needs no  │
+│                                              volume for it                                       │
+│ --no-probe                                   skip capreport; the report then says nothing was    │
+│                                              measured                                            │
+│ --pull                      POLICY           imagePullPolicy for the seat: IfNotPresent          │
+│                                              (default), Always or Never. Use Always when         │
+│                                              iterating on a tag that moves - `main`, or a branch │
+│                                              image - since a node that already has a copy will   │
+│                                              otherwise serve it. It cannot be the default:       │
+│                                              Always is the one policy that needs a registry, so  │
+│                                              it breaks an image side-loaded with `kind load` or  │
+│                                              `ctr import`                                        │
+│                                              [default: IfNotPresent]                             │
+│ --resize                    MEMORY           raise the target&#39;s memory in place first, as LIMIT  │
+│                                              or REQUEST:LIMIT, e.g. 6Gi or 1Gi:6Gi. The request  │
+│                                              is raised too where a LimitRange bounds             │
+│                                              limit/request                                       │
+│ --resize-cpu                CPU              raise the target&#39;s cpu in place first, as LIMIT or  │
+│                                              REQUEST:LIMIT, e.g. 4 or 500m:4                     │
+│ --no-resize                                  do not raise the target&#39;s memory for the editor.    │
+│                                              Without it, a pod with less headroom than           │
+│                                              vscode-server was measured to need has the target&#39;s │
+│                                              memory limit raised to cover it - the one mutation  │
+│                                              this verb makes that `--resize MEMORY` would        │
+│                                              otherwise have to be typed with a number. A pod     │
+│                                              that already has the room is left alone either way  │
+│ --no-provision                               author whatever fits the target as it stands.       │
+│                                              Without it, a Python workload that cannot import    │
+│                                              debugpy has it installed and its server started,    │
+│                                              because that target gets no launch.json at all      │
+│                                              otherwise. Mutates the workload: ~15 MB of shared   │
+│                                              ephemeral storage, needs egress from the pod,       │
+│                                              ptraces the app for a few seconds, and no restart   │
+│                                              survives it                                         │
+│ --identity                  KEY              ssh key to authorise in the seat and name in the    │
+│                                              generated stanza                                    │
+│                                              [default: ~/.ssh/id_ed25519]                        │
+│ --ssh-user                  NAME             login name to put in the stanza                     │
+│ --host-alias                NAME             ssh Host name for the seat                          │
+│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
+│                                              refused with the candidates instead. Already        │
+│                                              implied when stdin is not a tty                     │
+│ --namespace         -n      NAMESPACE        namespace (default: the kubeconfig context&#39;s own)   │
+│ --context                   NAME             kubeconfig context                                  │
+│ --kubectl                   BIN              kubectl binary to use [default: kubectl]            │
+│ --config-dir                DIR              where the generated ssh config and known_hosts live │
+│                                              (default ~/.podbench)                               │
+│ --help                                       Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">POD</span></code> and every option <code class="docutils literal notranslate"><span class="pre">attach</span></code> takes mean the same thing here; only the four
+below are its own.</p>
+<section id="sizing-the-pod">
+<h4>Sizing the pod<a class="headerlink" href="#sizing-the-pod" title="Link to this heading">#</a></h4>
+<p>vscode-server measured <strong>1215 MiB</strong> live with a single extension, which does not
+fit in most of the pods it is aimed at. The headroom that decides is read on
+every attach already, so the verb uses it rather than asking for it back: where
+the free memory is under that figure, the <em>target’s</em> memory limit is raised by
+the shortfall, rounded up to the next whole GiB, before the seat lands.</p>
+<p>The target’s limit, because it is the only one a seat can move — an ephemeral
+container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code> at all (report 3.9), so it lives in the
+pod’s cgroup and the pod’s ceiling is the sum of its containers’ limits. Raising
+the target by the shortfall therefore raises that ceiling by the same amount.</p>
+<p>It says both the reading and the number it chose, and the raise carries every
+caveat <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> carries — chiefly that the raised limit lives on the
+pod and not on its controller, so the next rollout silently reverts it.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">MEMORY</span></code> chooses the number yourself, and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> is
+untouched by any of this: no measurement says what vscode-server and a
+language server want, so nothing guesses.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> declines the raise. Declining is not declining to be told — the
+headroom is read again after the seat lands and the OOM warning is printed
+against it either way, which is also what a pod whose resize was <em>refused</em>
+sees. A container holding a <code class="docutils literal notranslate"><span class="pre">resources.claims</span></code> entry refuses every resize
+until Kubernetes 1.36.</p></li>
+<li><p>A pod with no memory limit anywhere leaves its cgroup unbounded, so there is
+no ceiling to raise and nothing is patched. A pod with no metrics API cannot
+be measured, and that is the one unmeasured case podbench warns about: the
+verb undertook to size the pod, and quietly not doing it would leave you
+believing it had.</p></li>
+</ul>
+<p>Memory is the half that can be fixed in place. <strong>Disk is not.</strong> <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>
+reaches 1.1–1.3 GB, and in Observe mode that lands on the <em>workload’s</em>
+ephemeral-storage budget, whose overrun evicts the whole pod rather than
+OOM-killing one container. The only mitigation is a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume, and
+<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable — it has to have been deployed. The verb says so
+when the pod has no such volume, and says so again when the pod <em>has</em> one and
+the seat landed on the root rung, where sshd takes <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> from the passwd
+record and the image’s own record for uid 0 already says <code class="docutils literal notranslate"><span class="pre">/root</span></code>
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/42">#42</a>).</p>
+</section>
+<section id="opening-the-editor">
+<h4>Opening the editor<a class="headerlink" href="#opening-the-editor" title="Link to this heading">#</a></h4>
+<p>This is the half that takes a seat from “landed” to “bound breakpoint”. It needs
+<code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH, and the local VS Code needs the <strong>Remote - SSH</strong> extension;
+both are checked at the point of use and named in the failure rather than
+reported as a traceback. <code class="docutils literal notranslate"><span class="pre">code</span></code> is looked for <em>before</em> the seat is landed,
+because an ephemeral container’s name is permanent and a run that was always
+going to end at “no <code class="docutils literal notranslate"><span class="pre">code</span></code>” must not burn one.</p>
+<p>It has to be the <strong>desktop</strong> <code class="docutils literal notranslate"><span class="pre">code</span></code>. Inside a Remote-SSH window, a devcontainer
+or a Codespace, the <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH is VS Code’s <em>remote</em> CLI, which
+forwards to the window that terminal already belongs to: <code class="docutils literal notranslate"><span class="pre">--install-extension</span></code>
+would install into that machine rather than into the seat, leaving breakpoints
+that never bind. podbench refuses that one by name before landing anything — run
+it from a terminal on the machine your VS Code itself runs on, or run <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> and use <strong>Remote-SSH: Connect to Host</strong>.</p>
 <p>In order it:</p>
 <ul class="simple">
 <li><p>writes <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/settings.json</span></code> with every exclude <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code>
@@ -1085,9 +1232,9 @@ and this is the one copy that survives <em>Kill/Uninstall VS Code Server on
 Host</em>. Inside a home, <code class="docutils literal notranslate"><span class="pre">**/.vscode-server/**</span></code> is the entry that earns its
 place first, and <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code> the only one that stops cpptools’
 tag parser walking on its own account;</p></li>
-<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> in the seat and merges the result into
-<code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/launch.json</span></code>, matching on configuration name, so a second
-<code class="docutils literal notranslate"><span class="pre">--open</span></code> updates its own entries rather than appending copies;</p></li>
+<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> in the seat and merges the result
+into <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/launch.json</span></code>, matching on configuration name, so a
+second run updates its own entries rather than appending copies;</p></li>
 <li><p>installs <strong>only</strong> the extensions the emitted configurations name, with
 <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span> <span class="pre">--install-extension</span></code> — which is the
 “Install in SSH: <code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code>” button as a flag. A locally installed extension
@@ -1097,7 +1244,7 @@ also recommended in <code class="docutils literal notranslate"><span class="pre"
 install only unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, so a window that
 was <strong>already</strong> connected keeps the extension host it started and never
 loads it — the adapter stays unregistered and its <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> entry
-cannot run. A first <code class="docutils literal notranslate"><span class="pre">--open</span></code> is unaffected, since the install finishes
+cannot run. A first run is unaffected, since the install finishes
 before the window opens; a later run needs the reload only where it put a
 <em>new</em> extension in the seat, and the <em>Developer: Reload Window</em> reminder is
 printed whenever an install <strong>succeeded</strong>, because <code class="docutils literal notranslate"><span class="pre">code</span></code> exits 0 for
@@ -1109,33 +1256,36 @@ unpacked nothing;</p></li>
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, which is a symlink into another container’s rootfs, and
 the walk has no bottom.</p></li>
 </ul>
-<p>It cannot be combined with <code class="docutils literal notranslate"><span class="pre">--print-config</span></code>, which writes no stanza:
-<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span></code> resolves the alias through ssh, and ssh
-reads the config dir. A target no debugger fits is not a failure — the
-excludes, the folder and the terminals are the rest of the seat.</p>
+<p>There is no <code class="docutils literal notranslate"><span class="pre">--print-config</span></code> here, and that is the reason: it writes no stanza,
+while <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span></code> resolves the alias through ssh, which
+reads the config dir. Use <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--print-config</span></code> for a stanza to paste. A
+target no debugger fits is not a failure — the excludes, the folder and the
+terminals are the rest of the seat.</p>
 <p><code class="docutils literal notranslate"><span class="pre">debug-config</span></code>’s own stderr is relayed line by line rather than summarised.
 It is the only thing in the run that can see the target, so its narration is
 the diagnosis — it names every mechanism that said no, and on success it also
 carries the injection command, which the emitted debugpy configuration needs
 and cannot state: the entry is written once the <em>prerequisites</em> are met, and
 nothing is listening until that command is run.</p>
-</li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">--provision</span></code></strong> passes through to that <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> run and means <em>make
-this target debuggable</em>. It is the answer to the commonest empty-handed case:
-a Python target whose image has no debugpy. The injection bootstrap runs
-inside the target’s interpreter, so debugpy has to be importable <em>there</em>;
-without it no configuration can be emitted and <code class="docutils literal notranslate"><span class="pre">--open</span></code> writes no
+</section>
+<section id="provisioning">
+<h4>Provisioning<a class="headerlink" href="#provisioning" title="Link to this heading">#</a></h4>
+<p>Provisioning means <em>make this target debuggable</em>, and it is what the verb does
+unless <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> says otherwise. It is the answer to the commonest
+empty-handed case: a Python target whose image has no debugpy. The injection
+bootstrap runs inside the target’s interpreter, so debugpy has to be importable
+<em>there</em>; without it no configuration can be emitted and the verb writes no
 <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> at all.</p>
 <p>It does both halves. The seat installs debugpy into the target with <code class="docutils literal notranslate"><span class="pre">uv</span></code>,
 resolved for the <em>target’s</em> Python version rather than the seat’s, and then
 starts the debugpy server inside the app — so the emitted configuration has
 something to connect to and F5 works when the command finishes. The two are
-one flag because issue #45 ordered these mutations and put <em>installing</em> above
+one step because issue #45 ordered these mutations and put <em>installing</em> above
 <em>injecting</em>: a run already allowed the larger one has been allowed the
 smaller, and asking twice left the configuration emitted, the port closed and
 the first F5 at <code class="docutils literal notranslate"><span class="pre">ECONNREFUSED</span></code>.</p>
-<p>It is opt-in and stays so. It writes ~15 MB into the workload’s writable
-layer, on an ephemeral-storage budget the seat shares with the workload and
+<p>It is a mutation and is reported as one. It writes ~15 MB into the workload’s
+writable layer, on an ephemeral-storage budget the seat shares with the workload and
 <strong>cannot reserve</strong> — an ephemeral container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code>
 (report 3.9); it needs egress from the pod, since uv resolves and downloads
 from an index; starting the server ptraces the app, so it stops answering
@@ -1146,16 +1296,19 @@ survives a restart, being a live process in the container that died, while the
 <strong>install</strong> survives one where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into
 the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is pod-scoped and outlives a container — and not at
 the default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>, which is the container’s own writable
-layer. Either way the next step is <code class="docutils literal notranslate"><span class="pre">--provision</span></code> again, since without the
+layer. Either way the next step is another <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code>, since without the
 server nothing is listening. Installing debugpy into the app image, or baking
 <code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app, is the durable answer.</p>
 <p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> still only prints the injection command. That is
 <code class="docutils literal notranslate"><span class="pre">injection_command</span></code>’s rule unchanged — authoring a <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> may not
 ptrace the workload on its own — and <code class="docutils literal notranslate"><span class="pre">--provision</span></code> is what revokes it.</p>
-<p>Without <code class="docutils literal notranslate"><span class="pre">--open</span></code> it is <strong>refused</strong>, not ignored: there is no <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>
-run for it to change, and a flag that reads as a promise to mutate the
-workload must not quietly decline to keep it. Where the target’s rootfs is
-read-only the write fails with <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> — the mount flag lives in the target’s
+<p>It happens only where the seat says it is the blocker. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> names
+<code class="docutils literal notranslate"><span class="pre">--provision</span></code> in its own refusal when debugpy is what is missing and for no
+other flavour — there is no <code class="docutils literal notranslate"><span class="pre">--provision</span></code> for a missing delve — so the retry is
+keyed on the seat’s own words rather than on this side guessing the target’s
+language a second time. A target that already has a debugger is not touched,
+and <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> gets the offer instead of the act. Where the target’s
+rootfs is read-only the write fails with <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> — the mount flag lives in the target’s
 mount namespace — and the seat’s own <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision-dest</span></code>
 is what points it at a writable volume instead.</p>
 <p>Each extension unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, which in Observe
@@ -1167,10 +1320,7 @@ and <code class="docutils literal notranslate"><span class="pre">ms-python.pytho
 <code class="docutils literal notranslate"><span class="pre">ms-python.vscode-pylance</span></code> (117 MiB) and <code class="docutils literal notranslate"><span class="pre">ms-python.vscode-python-envs</span></code>. The
 excludes are written for what actually arrives, which is why
 <code class="docutils literal notranslate"><span class="pre">python.analysis.exclude</span></code> is among them.</p>
-</li>
-<li><p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for any seat that lands, including a degraded one; <code class="docutils literal notranslate"><span class="pre">2</span></code> for a
-real error.</p></li>
-</ul>
+</section>
 </section>
 <section id="ssh-config">
 <h3><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code><a class="headerlink" href="#ssh-config" title="Link to this heading">#</a></h3>
@@ -2173,6 +2323,12 @@ session inherits the image’s value regardless, where <code class="docutils lit
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cluster-side-verbs">Cluster-side verbs</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#doctor"><code class="docutils literal notranslate"><span class="pre">doctor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#attach"><code class="docutils literal notranslate"><span class="pre">attach</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vscode"><code class="docutils literal notranslate"><span class="pre">vscode</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-pod">Sizing the pod</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#opening-the-editor">Opening the editor</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#provisioning">Provisioning</a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-config"><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#status"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list"><code class="docutils literal notranslate"><span class="pre">list</span></code></a></li>

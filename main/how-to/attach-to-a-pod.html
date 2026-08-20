@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
+    <script src="../_static/documentation_options.js?v=20767d06"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -789,12 +789,12 @@ socat containers, and they sit in the pod with the most room per byte used
 170 MiB to 3858 MiB, with up to three seats in one pod at once and no OOM in any
 of them. That is one beamline at one moment, so the threshold stays — a 100Mi
 pod really using 80 is a real case — but it does not fire on a pod that is fine.</p>
-<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> is checked against the other number. vscode-server measured 1215 MiB
-live with a single extension, which does not fit in most of those pods, so
-opening an editor into a pod with less headroom than that says so. Connecting
-VS Code by hand afterwards gets no warning, because there is no moment at which
-podbench learns you did — see
-<a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code over Remote-SSH</span></a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is checked against the other number. vscode-server measured
+1215 MiB live with a single extension, which does not fit in most of those pods
+— so that verb raises the target’s limit to cover the shortfall before the seat
+lands, and warns where the raise did not take. Connecting VS Code by hand after
+a plain <code class="docutils literal notranslate"><span class="pre">attach</span></code> gets neither, because there is no moment at which podbench
+learns you did — see <a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code over Remote-SSH</span></a>.</p>
 </section>
 <section id="making-memory-and-cpu-headroom-first">
 <h2>Making memory and CPU headroom first<a class="headerlink" href="#making-memory-and-cpu-headroom-first" title="Link to this heading">#</a></h2>
@@ -878,18 +878,19 @@ it sends the write, so <code class="docutils literal notranslate"><span class="p
 </section>
 <section id="opening-vs-code-on-the-seat">
 <h2>Opening VS Code on the seat<a class="headerlink" href="#opening-vs-code-on-the-seat" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench attach web -n demo --open
+<p>That is a different verb:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench vscode web -n demo
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> finishes the job the stanza starts: it configures the folder, installs
-the extension this target’s debugger needs <strong>in the remote window</strong>, and opens
-the seat’s home — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume.
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is this whole page plus the three things an editor needs and a
+bare seat does not — it sizes the pod’s memory for vscode-server, installs
+debugpy into the target where the target says that is the blocker, and then
+configures the folder, installs the extensions <strong>in the remote window</strong> and
+opens the seat’s home: <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume.
 Never <code class="docutils literal notranslate"><span class="pre">/</span></code>, which is the one folder that can end the seat.</p>
-<p>It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH and the <strong>Remote - SSH</strong> extension in the local VS
-Code. <code class="docutils literal notranslate"><span class="pre">code</span></code> is looked for before the pod is touched, so a laptop without it
-costs you a message and not a burnt container name. <code class="docutils literal notranslate"><span class="pre">--open</span></code> and
-<code class="docutils literal notranslate"><span class="pre">--print-config</span></code> are mutually exclusive: the second writes no stanza, and
-<code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span></code> resolves the alias through ssh.</p>
+<p>Two of those steps change the workload, which is why they are not on <code class="docutils literal notranslate"><span class="pre">attach</span></code>:
+adding a container to the pod is the whole of what this verb does, and that is
+the promise the <a class="reference internal" href="../explanations/ways-in.html"><span class="std std-doc">mode table</span></a> makes for it.</p>
 <p><a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a> has what it writes and why, and the
 warning that no GUI client has driven this yet.</p>
 </section>

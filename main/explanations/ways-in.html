@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ways in &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
+    <title>Ways in &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
+    <script src="../_static/documentation_options.js?v=20767d06"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -564,6 +564,13 @@ available to you before taste does.</p>
 </tbody>
 </table>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is not a fourth mode. It is <code class="docutils literal notranslate"><span class="pre">attach</span></code> — the same seat, the same
+ladder, the same pod — dressed for an editor: it sizes the pod’s memory for
+vscode-server, installs debugpy into the target where the target says that is the
+blocker, and opens VS Code on the seat. Those two mutations are why it is a verb of
+its own rather than a flag: the <strong>Touches the workload</strong> row above is a promise
+<code class="docutils literal notranslate"><span class="pre">attach</span></code> keeps, and choosing a verb named for the editor is how you ask to spend it.
+See <a class="reference internal" href="../how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code over Remote-SSH</span></a>.</p>
 <p>The last row goes to a page per mode: every check it makes, in order, and the <code class="docutils literal notranslate"><span class="pre">kubectl</span></code>
 commands each step becomes. Anything in them you have not met before — PSA, Yama,
 <code class="docutils literal notranslate"><span class="pre">subPath</span></code>, the ambient set — is in the <a class="reference internal" href="../reference/glossary.html"><span class="std std-doc">Glossary</span></a>.</p>

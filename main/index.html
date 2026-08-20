@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>podbench &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
+    <title>podbench &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="_static/documentation_options.js?v=9a8bf976"></script>
+    <script src="_static/documentation_options.js?v=20767d06"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
@@ -547,7 +547,8 @@ the spec it asked for:</p>
 </pre></div>
 </div>
 <p>Connect that alias with <strong>Remote-SSH: Connect to Host…</strong>, or let
-<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--open</span></code> do it for you.</p>
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> do the whole thing — seat, pod sizing, debugpy and window — in
+one command.</p>
 <p>The other two modes are a table row away. For the inner loop, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>
 authors the dev pod and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code> relaunches the app inside it: measured
 end to end, <strong>1.18 s</strong> per edit → relaunch → verified-through-the-Service
@@ -574,9 +575,11 @@ than assumed. Ten live seats on a Diamond beamline (2026-08-19) cost
 to a pod, no OOM anywhere — so <code class="docutils literal notranslate"><span class="pre">attach</span></code> reads <em>this</em> pod’s headroom, prints it
 on the report’s <code class="docutils literal notranslate"><span class="pre">memory</span></code> row, and warns only when it is genuinely thin. A
 <strong>vscode-server</strong> is the case that still bites: 1215 MiB live with a single
-extension, which does not fit in most of those pods, so <code class="docutils literal notranslate"><span class="pre">--open</span></code> is checked
-against the same number. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span> <span class="pre">MEMORY</span></code> raises the target’s limit in
-place, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> gives the seat limits of its own. One beamline at one
+extension, which does not fit in most of those pods, so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is
+checked against the same number — and raises the target’s limit in place to
+cover the shortfall, since it is about to spend it. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span> <span class="pre">MEMORY</span></code>
+is the same lever by hand, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> gives the seat limits of its
+own. One beamline at one
 moment: that falsifies “always warn”, it does not prove no cluster is tight.</p></li>
 <li><p><strong>Being refused <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> is normal, not an error.</strong> It is outside both the
 baseline and the restricted Pod Security Standards, so podbench walks a ladder

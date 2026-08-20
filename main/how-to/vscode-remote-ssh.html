@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b2.dev43+g89051f5e0 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=9a8bf976"></script>
+    <script src="../_static/documentation_options.js?v=20767d06"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -588,11 +588,12 @@ claim is about image pulls.</p>
 <ul class="simple">
 <li><p><strong>Iterate mode</strong> (<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>) — the sidecar has its own memory and
 ephemeral-storage requests and a workspace volume. Ask for what you need.</p></li>
-<li><p><strong>Observe mode</strong> (<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code>) — every byte competes with the live
-workload’s limits. Exceeding memory OOM-kills something in the pod cgroup;
-exceeding ephemeral storage evicts the whole pod. Use <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span> <span class="pre">6Gi</span></code> to
-raise the target’s memory limit in place first, and read the caveats on
-<a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> before you rely on it.</p></li>
+<li><p><strong>Observe mode</strong> (<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code>) — every byte competes
+with the live workload’s limits. Exceeding memory OOM-kills something in the
+pod cgroup; exceeding ephemeral storage evicts the whole pod. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> raises the target’s memory limit in place for you when the headroom is
+short; read the caveats on <a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> before you
+rely on it. Ephemeral storage cannot be raised in place at all — that one
+needs a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume in the chart.</p></li>
 </ul>
 </section>
 <section id="client-setup">
@@ -623,82 +624,104 @@ stanza to the same place, and both print the alias on the last line:</p>
 <li><p><strong>Remote-SSH: Connect to Host…</strong>, pick the alias, and wait out the first
 connect while the server downloads.</p></li>
 </ol>
-<section id="or-let-attach-do-steps-3-and-4">
-<h3>Or let <code class="docutils literal notranslate"><span class="pre">attach</span></code> do steps 3 and 4<a class="headerlink" href="#or-let-attach-do-steps-3-and-4" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--open</span></code> lands the seat and then drives the client for you:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="nb">open</span>
+<section id="or-let-podbench-vscode-do-all-four">
+<h3>Or let <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> do all four<a class="headerlink" href="#or-let-podbench-vscode-do-all-four" title="Link to this heading">#</a></h3>
+<p>One verb lands the seat, sizes the pod, makes the target debuggable and opens
+the window:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">vscode</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span>
 </pre></div>
 </div>
-<p>It proves the alias first — one <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span> <span class="pre">true</span></code>, before anything is written
-or downloaded — and if that does not reach the seat, it prints ssh’s own words
-and stops rather than opening a window that will fail. This is the one thing
-VS Code cannot be asked: <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span></code> returns as soon as a window has the
-argv, so the connection happens in the GUI afterwards, and a <code class="docutils literal notranslate"><span class="pre">--install-extension</span></code>
-that never connected still exits 0. The successful probe also leaves a
-<code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> behind, so the window’s own connect is the fast one.</p>
-<p>It writes <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> and
+<p>That is the whole command for the common case. It is a separate verb rather
+than a flag on <code class="docutils literal notranslate"><span class="pre">attach</span></code> because two of those steps <em>change the workload</em>, and
+<code class="docutils literal notranslate"><span class="pre">attach</span></code>’s contract is that it does not: choosing this verb is asking for an
+editor and for everything an editor costs.</p>
+<p><strong>It proves the alias first</strong> — one <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">&lt;alias&gt;</span> <span class="pre">true</span></code>, before anything is
+written or downloaded — and if that does not reach the seat, it prints ssh’s own
+words and stops rather than opening a window that will fail. This is the one
+thing VS Code cannot be asked: <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span></code> returns as soon as a window has
+the argv, so the connection happens in the GUI afterwards, and a
+<code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> that never connected still exits 0. The successful probe
+also leaves a <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> behind, so the window’s own connect is the fast
+one.</p>
+<p><strong>It writes</strong> <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> and
 <code class="docutils literal notranslate"><span class="pre">.vscode/extensions.json</span></code> into the folder it is about to open, installs only the
 extensions this target’s debugger needs <strong>in the remote window</strong>, and opens the
 seat’s home. Those are the two steps most easily got wrong by hand, and both
 fail quietly: the wrong folder can end the seat, and a locally installed
 extension runs the debug adapter on your laptop. See
 <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">the CLI reference</span></a> for the order and the refusals.</p>
+<p><strong>It sizes the pod.</strong> vscode-server measured 1215 MiB live with one extension,
+and the headroom that decides is read on every attach anyway — so where this pod
+has less, the target’s memory limit is raised by the shortfall before the seat
+lands, rounded up to the next whole GiB, and the number and the reading are both
+printed. <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">MEMORY</span></code> chooses the number yourself; <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> declines
+the raise and keeps the warning. Read <a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> on
+what an in-place resize costs — chiefly that it lives on the pod and not on its
+controller, so the next rollout takes it away.</p>
+<p><strong>It provisions the target when the target says it needs it</strong> — see the next
+section.</p>
 <p>It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH — VS Code’s Command Palette has <em>Shell Command:
 Install ‘code’ command in PATH</em> — and the local <strong>Remote - SSH</strong> extension,
-without which <code class="docutils literal notranslate"><span class="pre">--remote</span></code> cannot resolve anything. <code class="docutils literal notranslate"><span class="pre">--open</span></code> is on <code class="docutils literal notranslate"><span class="pre">attach</span></code> only,
-and drives <code class="docutils literal notranslate"><span class="pre">code</span></code> only; <code class="docutils literal notranslate"><span class="pre">cursor</span></code>, <code class="docutils literal notranslate"><span class="pre">codium</span></code> and <code class="docutils literal notranslate"><span class="pre">windsurf</span></code> take the same flags
-but have not been tried, and a flatpak VS Code cannot put <code class="docutils literal notranslate"><span class="pre">code</span></code> on the host
-PATH at all.</p>
+without which <code class="docutils literal notranslate"><span class="pre">--remote</span></code> cannot resolve anything. It drives <code class="docutils literal notranslate"><span class="pre">code</span></code> only;
+<code class="docutils literal notranslate"><span class="pre">cursor</span></code>, <code class="docutils literal notranslate"><span class="pre">codium</span></code> and <code class="docutils literal notranslate"><span class="pre">windsurf</span></code> take the same flags but have not been tried,
+and a flatpak VS Code cannot put <code class="docutils literal notranslate"><span class="pre">code</span></code> on the host PATH at all.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> is still there and unchanged, for a seat with no editor in it.</p>
 </section>
-<section id="a-stock-python-workload-gets-no-launch-json-without-provision">
-<h3>A stock Python workload gets no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> without <code class="docutils literal notranslate"><span class="pre">--provision</span></code><a class="headerlink" href="#a-stock-python-workload-gets-no-launch-json-without-provision" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> does not compute the debug configuration itself: it asks the seat, and
-<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> is the only thing that can see the target. On a Python app whose
-image has no debugpy that ask <em>refuses</em>, because the injection bootstrap runs in
-the target’s own interpreter and therefore needs debugpy importable <strong>there</strong>.
-You get the excludes, the folder and the alias, and no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> at all.</p>
-<p><code class="docutils literal notranslate"><span class="pre">--provision</span></code> is the way through:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="nb">open</span> <span class="o">--</span><span class="n">provision</span>
+<section id="a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it">
+<h3>A stock Python workload needs debugpy, and this is where it gets it<a class="headerlink" href="#a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> does not compute the debug configuration itself: it asks the
+seat, and <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> is the only thing that can see the target. On a Python
+app whose image has no debugpy that ask <em>refuses</em>, because the injection
+bootstrap runs in the target’s own interpreter and therefore needs debugpy
+importable <strong>there</strong>.</p>
+<p>The seat says so in its own words, and names <code class="docutils literal notranslate"><span class="pre">--provision</span></code> in the refusal — and
+it names it for debugpy and for no other flavour, since there is no
+<code class="docutils literal notranslate"><span class="pre">--provision</span></code> for a missing delve. So the answer is already in hand when the
+refusal arrives, and the verb acts on it: it installs debugpy into the target
+with <code class="docutils literal notranslate"><span class="pre">uv</span></code>, starts the debugpy server inside the app, and authors the
+configuration against it. F5 works when the command finishes.</p>
+<p>This used to be a round trip: podbench printed “re-run with <code class="docutils literal notranslate"><span class="pre">--provision</span></code>”,
+asking you to retype a fact it had just measured.</p>
+<p>It is still a mutation and it is still refusable. It writes ~15 MB into the
+workload’s writable layer, on an ephemeral-storage budget the seat <em>shares with
+the workload and cannot reserve</em>; it needs egress from the pod, since uv
+downloads from an index; starting the server ptraces the app, which stops
+answering probes for the few seconds that takes (~3 s measured — compare it
+against the deadlines the report prints); and a restart of the target container
+ends the debugging.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">vscode</span> <span class="n">pod</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span> <span class="o">-</span><span class="n">n</span> <span class="n">demo</span> <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">provision</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">--provision</span></code> means <em>make this target debuggable</em>, and it is both halves of
-that: the seat installs debugpy into the target with <code class="docutils literal notranslate"><span class="pre">uv</span></code>, then starts the
-debugpy server inside the app so the configuration it writes has something to
-connect to. F5 works when it finishes.</p>
-<p>It is opt-in and stays that way. It writes ~15 MB into the workload’s writable
-layer, on an ephemeral-storage budget the seat <em>shares with the workload and
-cannot reserve</em>; it needs egress from the pod, since uv downloads from an index;
-starting the server ptraces the app, which stops answering probes for the few
-seconds that takes (~3 s measured — compare it against the deadlines <code class="docutils literal notranslate"><span class="pre">attach</span></code>
-prints); and a restart of the target container ends the debugging. Without
-<code class="docutils literal notranslate"><span class="pre">--open</span></code> it is refused rather than ignored — there is no configuration run for
-it to change.</p>
+<p>declines it, and you get the offer printed where the act would have been: the
+excludes, the folder and the alias, and no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>.</p>
+<p>A target that already has a debugger is never provisioned. The consent the verb
+carries is spent only where the seat said debugpy is the blocker.</p>
 <p>The two halves do not expire together. The <strong>server</strong> never survives a restart:
 it is a live process inside the one that died. The <strong>install</strong> survives one only
 where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code>
 is pod-scoped and outlives a container. At the default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>
 it does not: that is the container’s own writable layer, which a restart
-rebuilds from the image. Either way you are re-running <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, since
-without the server there is nothing to connect to.</p>
-<p>Baking <code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app image is the durable answer, and the only
-one that survives a restart. <code class="docutils literal notranslate"><span class="pre">--provision</span></code> is for the pod that is already
+rebuilds from the image. Either way you are running <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> again,
+since without the server there is nothing to connect to.</p>
+<p>Baking <code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app is the durable answer, and the only one
+that survives a restart. Provisioning is for the pod that is already
 misbehaving.</p>
-<p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, with no <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, still only prints the
-injection command rather than running it: that really is authoring a
+<p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> in the seat, with no <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, still only prints
+the injection command rather than running it: that really is authoring a
 <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> and nothing more, and ptracing the workload is not something it
-may do on its own. <code class="docutils literal notranslate"><span class="pre">--open</span></code> relays the seat’s own output either way, so the
+may do on its own. The verb relays the seat’s own output either way, so the
 command is printed with the rest, along with every mechanism that said no.</p>
 </section>
-<section id="re-running-open-on-a-window-that-is-already-connected-reload-it">
-<h3>Re-running <code class="docutils literal notranslate"><span class="pre">--open</span></code> on a window that is already connected? Reload it<a class="headerlink" href="#re-running-open-on-a-window-that-is-already-connected-reload-it" title="Link to this heading">#</a></h3>
+<section id="re-running-it-on-a-window-that-is-already-connected-reload-it">
+<h3>Re-running it on a window that is already connected? Reload it<a class="headerlink" href="#re-running-it-on-a-window-that-is-already-connected-reload-it" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>. A window that
 is <em>already</em> connected started its extension host before that, and does not pick
 it up: the extension is installed, the debug adapter is not registered, and its
 <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> entry cannot run. Nothing on the remote side says so — the
 debugger is simply not there.</p>
-<p>The first <code class="docutils literal notranslate"><span class="pre">--open</span></code> is unaffected, because the install finishes before the window
+<p>The first run is unaffected, because the install finishes before the window
 opens. A later run needs <strong>Command Palette → Developer: Reload Window</strong> only if
-it actually put a <em>new</em> extension in the seat — but <code class="docutils literal notranslate"><span class="pre">--open</span></code> cannot tell that
+it actually put a <em>new</em> extension in the seat — but podbench cannot tell that
 from “already installed” (<code class="docutils literal notranslate"><span class="pre">code</span></code> exits 0 for both), and cannot tell an open
 window from a fresh one either, so it prints the reminder whenever an install
 succeeded. On the runs where nothing changed, reloading costs a few seconds and
@@ -710,9 +733,9 @@ into that machine instead of into the seat. podbench refuses that <code class="d
 rather than driving it.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p><code class="docutils literal notranslate"><span class="pre">--open</span></code> has not been driven against a real VS Code GUI client. The flags it
-uses were verified by hand on 2026-08-16; the sequence podbench runs them in has
-unit tests and no live proof.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> has not been driven against a real VS Code GUI client. The
+flags it uses were verified by hand on 2026-08-16; the sequence podbench runs
+them in has unit tests and no live proof.</p>
 </div>
 <p>Do <strong>not</strong> reach an Iterate-mode dev pod with <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code>. It works, but
 it lands a <em>second</em>, ephemeral container inside the dev pod and ignores the
@@ -937,11 +960,11 @@ that kills a seat is the first one.</p>
 <p><code class="docutils literal notranslate"><span class="pre">files.exclude</span></code> is deliberately <strong>not</strong> set: that would hide <code class="docutils literal notranslate"><span class="pre">/proc</span></code> from the
 explorer, and reading the workload’s files through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is what
 Observe mode is for.</p>
-<p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--open</span></code> writes all of those a second time, into the
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> writes all of those a second time, into the
 <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code> of the folder it opens. It opens a <em>single</em> folder, so
 that file is VS Code’s <strong>workspace</strong> settings, where window- and resource-scoped
 keys are both honoured — including <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code>, which is the only one
-that stops cpptools’ tag parser, and cpptools is what <code class="docutils literal notranslate"><span class="pre">--open</span></code> installs for a
+that stops cpptools’ tag parser, and cpptools is what it installs for a
 C/C++ target. The folder copy matters because it is the one podbench fully
 controls: <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> belongs to the client, and <strong>Kill/Uninstall VS Code
 Server on Host</strong> takes the machine file with it. Inside a home the entry that
@@ -1064,9 +1087,9 @@ behaviour when the pod is deleted mid-session.</p>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#size-the-pod-first">Size the pod first</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#client-setup">Client setup</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#or-let-attach-do-steps-3-and-4">Or let <code class="docutils literal notranslate"><span class="pre">attach</span></code> do steps 3 and 4</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-stock-python-workload-gets-no-launch-json-without-provision">A stock Python workload gets no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> without <code class="docutils literal notranslate"><span class="pre">--provision</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#re-running-open-on-a-window-that-is-already-connected-reload-it">Re-running <code class="docutils literal notranslate"><span class="pre">--open</span></code> on a window that is already connected? Reload it</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#or-let-podbench-vscode-do-all-four">Or let <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> do all four</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it">A stock Python workload needs debugpy, and this is where it gets it</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#re-running-it-on-a-window-that-is-already-connected-reload-it">Re-running it on a window that is already connected? Reload it</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-generated-stanza-and-why-each-line-is-there">The generated stanza, and why each line is there</a></li>

@@ -343,12 +343,12 @@ socat containers, and they sit in the pod with the most room per byte used
 of them. That is one beamline at one moment, so the threshold stays — a 100Mi
 pod really using 80 is a real case — but it does not fire on a pod that is fine.
 
-`--open` is checked against the other number. vscode-server measured 1215 MiB
-live with a single extension, which does not fit in most of those pods, so
-opening an editor into a pod with less headroom than that says so. Connecting
-VS Code by hand afterwards gets no warning, because there is no moment at which
-podbench learns you did — see
-[VS Code over Remote-SSH](vscode-remote-ssh.md).
+`podbench vscode` is checked against the other number. vscode-server measured
+1215 MiB live with a single extension, which does not fit in most of those pods
+— so that verb raises the target's limit to cover the shortfall before the seat
+lands, and warns where the raise did not take. Connecting VS Code by hand after
+a plain `attach` gets neither, because there is no moment at which podbench
+learns you did — see [VS Code over Remote-SSH](vscode-remote-ssh.md).
 
 ## Making memory and CPU headroom first
 
@@ -446,20 +446,22 @@ it sends the write, so `patch` alone fails on the GET.
 
 ## Opening VS Code on the seat
 
+That is a different verb:
+
 ```
-$ podbench attach web -n demo --open
+$ podbench vscode web -n demo
 ```
 
-`--open` finishes the job the stanza starts: it configures the folder, installs
-the extension this target's debugger needs **in the remote window**, and opens
-the seat's home — `/root`, or `/home/podbench` on a `podbench-home` volume.
+`podbench vscode` is this whole page plus the three things an editor needs and a
+bare seat does not — it sizes the pod's memory for vscode-server, installs
+debugpy into the target where the target says that is the blocker, and then
+configures the folder, installs the extensions **in the remote window** and
+opens the seat's home: `/root`, or `/home/podbench` on a `podbench-home` volume.
 Never `/`, which is the one folder that can end the seat.
 
-It needs `code` on your PATH and the **Remote - SSH** extension in the local VS
-Code. `code` is looked for before the pod is touched, so a laptop without it
-costs you a message and not a burnt container name. `--open` and
-`--print-config` are mutually exclusive: the second writes no stanza, and
-`code --remote` resolves the alias through ssh.
+Two of those steps change the workload, which is why they are not on `attach`:
+adding a container to the pod is the whole of what this verb does, and that is
+the promise the [mode table](../explanations/ways-in.md) makes for it.
 
 [VS Code Remote-SSH](vscode-remote-ssh.md) has what it writes and why, and the
 warning that no GUI client has driven this yet.
