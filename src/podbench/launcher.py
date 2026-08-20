@@ -217,7 +217,7 @@ __all__ = [
     "ssh_include_line",
     "ssh_stanza",
     "target_container_name",
-    "target_fact",
+    "target_row",
     "try_resize",
     "write_known_hosts",
     "write_ssh_config",
@@ -2650,8 +2650,8 @@ def seat_version_fact(seat_version: str | None) -> str:
     return f"{seat_version} in the seat, {__version__} in this launcher"
 
 
-def target_fact(workload: str, siblings: Sequence[str] = ()) -> str:
-    """The ``target`` row's value: which container was entered, and which not.
+def target_row(workload: str, siblings: Sequence[str] = ()) -> list[str]:
+    """The ``target`` row: which container was entered, and which not.
 
     A single-container pod says only the name, because there was nothing else to
     have chosen and a sentence about the default would be a line of report per
@@ -2661,17 +2661,36 @@ def target_fact(workload: str, siblings: Sequence[str] = ()) -> str:
     from ``kubectl get pod -o json`` that podbench picked one of three
     (finding 15).
 
-    >>> print(target_fact("api"))
-    api
-    >>> print(target_fact("gateway-ca", ["gateway-pva"]))
-    gateway-ca; this pod also has gateway-pva - reach it with `--target gateway-pva`
+    The offer is a line of its own and is **never wrapped**, which is why this
+    authors finished lines instead of one value for ``paragraph`` to flow. On
+    ``p47-epics-gateways-0`` at 80 columns the flow left ``--target`` at the end
+    of one line and ``p47-epics-gateways-pva-gateway`` at the start of the next;
+    at 100 it broke ``panda8080`` off the same way. A flag parted from its
+    argument cannot be pasted, which is the only thing printing it was for.
+    :func:`podbench.gdbcmd.listing_heading` prints the same sentence above
+    ``pids`` and has never had the defect, because it emits its lines finished.
+
+    >>> for line in target_row("api"):
+    ...     print(line)
+    target      api
+    >>> for line in target_row("gateway-ca", ["gateway-pva"]):
+    ...     print(line)
+    target      gateway-ca; this pod also has gateway-pva
+                reach it with `--target gateway-pva`
     """
+    indent = " " * 12
     if not siblings:
-        return workload
-    names = and_list(siblings)
+        return [f"target      {workload}"]
     flags = " or ".join(f"`--target {name}`" for name in siblings)
     reach = "reach it with" if len(siblings) == 1 else "reach one with"
-    return f"{workload}; this pod also has {names} - {reach} {flags}"
+    return [
+        *paragraph(
+            f"{workload}; this pod also has {and_list(siblings)}",
+            first="target      ",
+            indent=indent,
+        ),
+        f"{indent}{reach} {flags}",
+    ]
 
 
 def format_session(session: Session) -> str:
@@ -2679,14 +2698,9 @@ def format_session(session: Session) -> str:
     lines = [
         f"seat        {session.seat}"
         + ("  (reconnected)" if session.reused else "  (new)"),
-        # Through `paragraph` rather than as a bare row: with a sibling to name
-        # this value is a sentence, and the report's own rule is that a wrapped
-        # value stays under its label.
-        *paragraph(
-            target_fact(session.workload, session.siblings),
-            first="target      ",
-            indent=" " * 12,
-        ),
+        # Authored as finished lines: the prose half wraps under its label, and
+        # the flag half must not - see `target_row`.
+        *target_row(session.workload, session.siblings),
         # Above the rung, not in `measured` below it: `--no-probe` skips that
         # block entirely, and which build is answering is exactly the thing a
         # user needs when a fix appears not to have worked.

@@ -62,7 +62,7 @@ from podbench.launcher import (
     seats,
     ssh_config_path,
     target_container_name,
-    target_fact,
+    target_row,
     try_resize,
     wait_for_seats,
 )
@@ -676,10 +676,35 @@ def test_a_three_container_pod_names_every_one_it_did_not_enter() -> None:
     pod = pod_document(container="panda80", siblings=["panda8080", "pmac1025"])
 
     assert other_containers(pod, "panda80") == ("panda8080", "pmac1025")
-    assert target_fact("panda80", other_containers(pod, "panda80")) == (
-        "panda80; this pod also has panda8080 and pmac1025 - reach one with "
-        "`--target panda8080` or `--target pmac1025`"
-    )
+    assert target_row("panda80", other_containers(pod, "panda80")) == [
+        "target      panda80; this pod also has panda8080 and pmac1025",
+        "            reach one with `--target panda8080` or `--target pmac1025`",
+    ]
+
+
+@pytest.mark.parametrize("columns", ["60", "80", "100", "120"])
+def test_the_target_flag_is_never_parted_from_its_argument(
+    columns: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The C15 defect, at the four widths the field round was read at.
+
+    On `p47-epics-gateways-0` at 80 columns the row put ``--target`` on one line
+    and `p47-epics-gateways-pva-gateway` on the next; at 100 it broke
+    `p47-proxy`'s `panda8080` off the same way. Either way the offer stops being
+    pasteable, which is the only reason it is printed.
+    """
+    monkeypatch.setenv("COLUMNS", columns)
+    for workload, siblings in (
+        ("p47-epics-gateways-ca-gateway", ("p47-epics-gateways-pva-gateway",)),
+        ("panda80", ("panda8080", "pmac1025")),
+    ):
+        lines = target_row(workload, siblings)
+        offer = lines[-1]
+        for name in siblings:
+            assert f"`--target {name}`" in offer
+        # And the prose above it still wraps to this terminal, so the row is
+        # not simply one long line that happens to keep the flag together.
+        assert all(len(line) <= max(int(columns) - 8, 48) for line in lines[:-1])
 
 
 def test_a_single_container_pod_gains_no_line_at_all() -> None:
@@ -705,10 +730,13 @@ def test_the_report_names_the_sibling_and_the_flag_that_reaches_it() -> None:
     assert session.siblings == ("pva-gateway",)
     # Flattened: the row wraps, and the fact is the sentence rather than any
     # one line of it.
-    assert (
-        "target ca-gateway; this pod also has pva-gateway - reach it with "
-        "`--target pva-gateway`"
-    ) in " ".join(format_session(session).split())
+    # Flattened for the prose half only: the sentence naming the sibling wraps
+    # and the fact is the sentence, not any one line of it.
+    text = format_session(session)
+    assert "target ca-gateway; this pod also has pva-gateway" in " ".join(text.split())
+    # The offer is asserted as a *line*, because the thing under test is that
+    # nothing broke it.
+    assert "            reach it with `--target pva-gateway`" in text.splitlines()
 
 
 def test_the_seat_carries_the_container_it_entered_and_the_pods_others() -> None:
