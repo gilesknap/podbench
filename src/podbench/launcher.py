@@ -113,6 +113,7 @@ from .spec import (
     ephemeral_container,
     ephemeral_container_spec,
     moves,
+    requested_seat_spec,
     runs_as_non_root,
     shares_pid_namespace_across_uids,
     target_seccomp_profile,
@@ -1503,6 +1504,16 @@ def attach(
                 "volumeMounts are fixed when it is created and cannot be added "
                 "to, so --mount only takes effect on a seat landed with --new"
             )
+        # The same admission facts a first attach reports. They were produced
+        # only inside the walk, and a reconnect is the common case - somebody
+        # who attaches on Monday and reconnects all week was never told the
+        # seat had lost a capability. No second dry run: what landed is better
+        # evidence than what would land, and it is already in `pod_json`.
+        landed = ephemeral_container(pod_json, existing.name)
+        if landed is not None:
+            warnings.extend(
+                _admission_warnings(requested_seat_spec(landed), landed, scalars=False)
+            )
     else:
         session = _walk_ladder(
             kubectl,
@@ -1896,11 +1907,11 @@ def _walk_ladder(
 CAPABILITY_STRIPPED_WARNING = (
     "admission removed {stripped} from this seat and it was taken anyway, "
     "because there is no rung below to prefer: every lower rung pins the seat "
-    "to the target's own non-root uid, and the `ladder` line above says why "
-    "this target offers none. What {stripped} would have added is the exemption "
-    "from Yama and from the PTRACE_MODE_ATTACH check; where the target is root "
-    "too the uids match, and the read-only paths are unaffected. The `supports` "
-    "block above is the measurement."
+    "to the target's own non-root uid, and this target offers none. What "
+    "{stripped} would have added is the exemption from Yama and from the "
+    "PTRACE_MODE_ATTACH check; where the target is root too the uids match, and "
+    "the read-only paths are unaffected. The `supports` block above is the "
+    "measurement."
 )
 """One line for a strip the walk cannot improve on.
 
@@ -1909,6 +1920,11 @@ below reads more (report 3.11). Against a root target there is no rung below:
 every lower one needs a non-zero uid to pin. Refusing here would end the walk
 with nothing admitted, which is worse than a seat that says what it lost —
 measured on the ``dls-ioc`` e2e fixture, whose target is root.
+
+It no longer points at the ``ladder`` block for why the target offers no lower
+rung, because a reconnect prints this warning too and its ladder block is one
+line saying it reconnected. The claim is the same on both paths; only the walk
+has somewhere to send the reader for the working.
 
 It used to cite §3.11's "three of the six probe paths", which is the wrong half
 of that table. §3.11 measured a root seat against a **non-root** target — a uid
@@ -2017,29 +2033,52 @@ def _dry_run_rung(
             ),
             (),
         )
+    # No rung below to prefer, so the stripped seat is the best there is rather
+    # than the worst: against a root target `runAsNonRoot: true` cannot express
+    # uid 0, so every lower rung is already ruled out, and refusing here would
+    # end the walk with nothing admitted at all.
+    return None, _admission_warnings(spec, admitted)
+
+
+def _admission_warnings(
+    requested: Mapping[str, Any],
+    admitted: Mapping[str, Any],
+    *,
+    scalars: bool = True,
+) -> tuple[str, ...]:
+    """What admission did to a seat that was taken anyway, in at most two lines.
+
+    Both, where admission did both. A policy that strips a capability usually
+    rewrites the rest of the securityContext in the same pass - on both DLS
+    clusters every attach is stripped *and* handed the thirteen capabilities of
+    the cluster's own baseline - and reporting only the strip left
+    :data:`ADMISSION_MUTATION_WARNING` unreachable on every attach that had
+    anything to say. The strip keeps its own line rather than being folded into
+    the rewrite list, because a warning is one line and these are two facts with
+    two different costs.
+
+    ``requested`` is the spec podbench submitted on the walk, and
+    :func:`~podbench.spec.requested_seat_spec`'s reconstruction of it on a
+    reconnect, where the request is gone and the seat that landed is not. That
+    reconstruction covers the capability sets only, so ``scalars=False`` goes
+    with it: a securityContext field it never claims to know must not be read
+    as one admission rewrote.
+    """
     warnings: list[str] = []
+    stripped = capabilities_removed(requested, admitted)
     if stripped:
-        # No rung below to prefer, so the stripped seat is the best there is
-        # rather than the worst: against a root target `runAsNonRoot: true`
-        # cannot express uid 0, so every lower rung is already ruled out.
-        # Refusing here would end the walk with nothing admitted at all.
         warnings.append(
             CAPABILITY_STRIPPED_WARNING.format(stripped=", ".join(stripped))
         )
-
-    # Both, where admission did both. A policy that strips a capability
-    # usually rewrites the rest of the securityContext in the same pass - on
-    # both DLS clusters every attach is stripped *and* handed thirteen
-    # capabilities it never asked for - and returning after the strip meant the
-    # rewrite was never once printed. The strip keeps its own line rather than
-    # being folded into the rewrite list, because a warning is one line and
-    # these are two facts with two remedies.
     rewrites = admission_rewrites(
-        spec, admitted, include_removed_capabilities=not stripped
+        requested,
+        admitted,
+        include_removed_capabilities=not stripped,
+        include_scalars=scalars,
     )
     if rewrites:
         warnings.append(ADMISSION_MUTATION_WARNING.format(rewrites="; ".join(rewrites)))
-    return None, tuple(warnings)
+    return tuple(warnings)
 
 
 def _refusal_detail(error: KubectlError, *, dry_run: bool = False) -> str:

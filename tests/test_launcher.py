@@ -1144,6 +1144,72 @@ def test_attach_reconnects_to_a_running_container() -> None:
     assert cluster.added == [], "reconnecting must not append a container"
 
 
+def test_a_reconnect_reports_the_capability_admission_took() -> None:
+    """Reconnecting is the common case, and it said nothing about the strip.
+
+    Both admission warnings were produced inside the ladder walk, which only the
+    *first* attach runs. Somebody who attaches on Monday and reconnects all week
+    was never told the seat had lost SYS_PTRACE - and the evidence was in the
+    pod document the reconnect had already fetched: a seat at uid 0 with an
+    empty capabilities.add is a full rung admission stripped, since no rung
+    below full ever writes runAsUser: 0.
+    """
+    cluster = stripped_root_seat()
+    session = attach(talking_to(cluster), "target")
+
+    assert session.reused
+    assert cluster.added == [], "a reconnect must not rehearse a new container"
+    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
+
+
+def test_a_reconnect_reports_the_capabilities_admission_added() -> None:
+    """The other half of the same pass: thirteen capabilities beside a
+    `drop: [ALL]` that asked for none of them (DLS, 2026-08-19). podbench adds
+    nothing but SYS_PTRACE and only on the full rung, so anything else in a
+    landed seat's capabilities.add came from a policy."""
+    seat = {
+        "name": "podbench-1",
+        "securityContext": {
+            "runAsUser": 1000,
+            "capabilities": {"drop": ["ALL"], "add": ["CHOWN", "SETGID"]},
+        },
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[seat],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target")
+
+    rewrite = [
+        warning for warning in session.warnings if "admission rewrote" in warning
+    ]
+    assert len(rewrite) == 1
+    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+
+
+def test_a_reconnect_to_an_unmutated_seat_says_nothing_about_admission() -> None:
+    """The scalars are not reconstructed, so nothing is inferred from their
+    absence: a seat landed by a podbench that stated fewer fields than this one
+    must not have the difference reported as a policy's work."""
+    seat = {
+        "name": "podbench-1",
+        "securityContext": {"runAsUser": 0, "capabilities": {"add": ["SYS_PTRACE"]}},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=0,
+            ephemeral=[seat],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert not any("admission" in warning for warning in session.warnings)
+
+
 def test_force_new_appends_the_next_name() -> None:
     existing = {
         "name": "podbench-1",

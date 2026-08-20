@@ -64,6 +64,7 @@ __all__ = [
     "PULL_POLICIES",
     "ephemeral_container_spec",
     "moves",
+    "requested_seat_spec",
     "runs_as_non_root",
     "ephemeral_container",
     "seat_identity_volume_mounts",
@@ -1125,6 +1126,7 @@ def admission_rewrites(
     admitted: Mapping[str, Any],
     *,
     include_removed_capabilities: bool = True,
+    include_scalars: bool = True,
 ) -> tuple[str, ...]:
     """How admission would rewrite this container's securityContext.
 
@@ -1141,6 +1143,12 @@ def admission_rewrites(
     warning of its own — :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`
     is printed for the same event, and the two are emitted together on a
     cluster that strips and rewrites in one pass, which is both of DLS's.
+
+    ``include_scalars=False`` compares only the capability sets. It is for
+    :func:`requested_seat_spec`, whose reconstruction knows what podbench asked
+    for in ``capabilities`` and nothing about the rest: comparing the scalars
+    against a request that never stated any would report every one of them as a
+    rewrite.
 
     >>> admission_rewrites(
     ...     {"securityContext": {"capabilities": {"drop": ["ALL"]}}},
@@ -1178,7 +1186,7 @@ def admission_rewrites(
     if undropped:
         phrases.append(f"removed {', '.join(undropped)} from capabilities.drop")
 
-    for field in _REWRITTEN_FIELDS:
+    for field in _REWRITTEN_FIELDS if include_scalars else ():
         before, after = asked.get(field), stored.get(field)
         if before == after and (field in asked) == (field in stored):
             continue
@@ -1191,6 +1199,45 @@ def admission_rewrites(
                 f"changed {field} from {_rendered(before)} to {_rendered(after)}"
             )
     return tuple(phrases)
+
+
+def requested_seat_spec(stored: Mapping[str, Any]) -> dict[str, Any]:
+    """What podbench is known to have asked for, read back off the seat stored.
+
+    A reconnect has the landed spec and no memory of the request, so the two
+    admission facts a first attach reports — a stripped capability and a
+    rewritten securityContext — have nothing to diff against. The *capability*
+    half is recoverable anyway, and it is the half both DLS clusters mutate:
+    podbench asks for ``SYS_PTRACE`` on the full rung and for nothing at all on
+    every rung below, and the full rung is the only one that writes
+    ``runAsUser: 0`` — the degraded rung refuses a root target outright, and the
+    seat rung drops uid 0 rather than pin it beside ``runAsNonRoot: true``
+    (report 3.18). So a root seat with an empty ``capabilities.add`` was
+    stripped, and any capability in that list at all was added by somebody else.
+
+    Deliberately **only** the capability set. Reconstructing the scalars would
+    mean assuming which fields the podbench that landed the seat authored, and a
+    version that stated fewer of them would have the difference reported as
+    admission's work — an invented fact, where a missing one merely costs the
+    reader a line. What lands the reader nothing here is the walk's own dry run,
+    which diffs the real request and reports the scalars too.
+
+    >>> requested_seat_spec({"securityContext": {"runAsUser": 0}})
+    {'securityContext': {'capabilities': {'add': ['SYS_PTRACE']}}}
+    >>> requested_seat_spec({"securityContext": {"runAsUser": 1000}})
+    {'securityContext': {'capabilities': {}}}
+    """
+    security = as_dict(stored.get("securityContext"))
+    uid = _as_uid(security.get("runAsUser"))
+    add = ["SYS_PTRACE"] if uid == 0 else []
+    return {"securityContext": {"capabilities": {"add": add} if add else {}}}
+
+
+def _as_uid(value: Any) -> int | None:
+    """An id from a spec, or ``None`` for anything that is not one."""
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
 
 
 def admission_wedges_the_kubelet(
