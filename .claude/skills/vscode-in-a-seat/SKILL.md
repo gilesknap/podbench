@@ -27,7 +27,9 @@ lifetime.
   `~/.vscode-server/data/Machine/settings.json`, which the *client* creates on
   first connect — so the image cannot simply pre-place it at build time.
 - vscode-server alone is ~700-800 MB RSS, 1.1-1.3 GB with extensions. A pod with
-  a 256Mi limit has no chance; `--resize` first.
+  a 256Mi limit has no chance. `podbench vscode` sizes the pod itself, raising
+  the target's limit to cover the shortfall before the seat lands; `attach
+  --resize` is the same lever by hand.
 - Diagnose after the fact with
   `kubectl get pod -o jsonpath='{.status.ephemeralContainerStatuses[*].state}'` —
   `exitCode 137, reason OOMKilled`. `podbench status` says
@@ -73,7 +75,7 @@ podbench prints "`<ext>` is installed in SSH: `<alias>`" on the strength of it �
 which is exactly what a DLS run reported on 2026-08-16 while every connection was
 being refused.
 
-So `--open` proves the alias itself first: one `ssh <alias> true` before anything
+So `podbench vscode` proves the alias itself first: one `ssh <alias> true` before anything
 is written, installed or launched, and a refusal carries ssh's stderr *whole* —
 the mechanism is on the first line (`…/sshd_config: No such file or directory`)
 and ssh's own summary, on the last, names a port that does not exist. Do not
@@ -98,7 +100,7 @@ one of **two** causes of that message; see the next section before assuming it.
 
 `code --install-extension --remote` cannot report this: it exits 0 for
 "installed", for "already installed" and for "never reached the remote". So
-`--open` asks the seat instead — `ssh <alias> ls -1 ~/.vscode-server/extensions`,
+`podbench vscode` asks the seat instead — `ssh <alias> ls -1 ~/.vscode-server/extensions`,
 matched by id prefix, since the directory carries a version and a platform
 triple. Over ssh and not `kubectl exec`, because the home that matters is the
 one NSS gives the *login* user. A failed listing is reported as unverified, never

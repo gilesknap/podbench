@@ -84,7 +84,8 @@ then:  ssh podbench-demo-web-7d9f8c5b4-x2k9p
 ```
 
 Connect that alias with **Remote-SSH: Connect to Host…**, or let
-`attach --open` do it for you.
+`podbench vscode` do the whole thing — seat, pod sizing, debugpy and window — in
+one command.
 
 The other two modes are a table row away. For the inner loop, `podbench dev`
 authors the dev pod and `podbench run` relaunches the app inside it: measured
@@ -111,9 +112,11 @@ Not fine print — each of these has bitten a spike on a real cluster.
   to a pod, no OOM anywhere — so `attach` reads *this* pod's headroom, prints it
   on the report's `memory` row, and warns only when it is genuinely thin. A
   **vscode-server** is the case that still bites: 1215 MiB live with a single
-  extension, which does not fit in most of those pods, so `--open` is checked
-  against the same number. `attach --resize MEMORY` raises the target's limit in
-  place, and `podbench dev` gives the seat limits of its own. One beamline at one
+  extension, which does not fit in most of those pods, so `podbench vscode` is
+  checked against the same number — and raises the target's limit in place to
+  cover the shortfall, since it is about to spend it. `attach --resize MEMORY`
+  is the same lever by hand, and `podbench dev` gives the seat limits of its
+  own. One beamline at one
   moment: that falsifies "always warn", it does not prove no cluster is tight.
 * **Being refused `SYS_PTRACE` is normal, not an error.** It is outside both the
   baseline and the restricted Pod Security Standards, so podbench walks a ladder

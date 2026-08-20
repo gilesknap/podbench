@@ -15,6 +15,14 @@ available to you before taste does.
 | **Inner loop** | no | **yes**, ~1 s | yes, one rollout per edit |
 | **What it actually does** | [step by step](attach-flow.md) | [step by step](dev-flow.md) | [step by step](hotfix-flow.md) |
 
+`podbench vscode` is not a fourth mode. It is `attach` — the same seat, the same
+ladder, the same pod — dressed for an editor: it sizes the pod's memory for
+vscode-server, installs debugpy into the target where the target says that is the
+blocker, and opens VS Code on the seat. Those two mutations are why it is a verb of
+its own rather than a flag: the **Touches the workload** row above is a promise
+`attach` keeps, and choosing a verb named for the editor is how you ask to spend it.
+See [VS Code over Remote-SSH](../how-to/vscode-remote-ssh.md).
+
 The last row goes to a page per mode: every check it makes, in order, and the `kubectl`
 commands each step becomes. Anything in them you have not met before — PSA, Yama,
 `subPath`, the ambient set — is in the [Glossary](../reference/glossary.md).
