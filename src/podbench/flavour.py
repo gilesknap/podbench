@@ -60,7 +60,7 @@ import enum
 import os
 import re
 import shutil
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1222,17 +1222,35 @@ def _target_debugpy(
 # -- what applies ----------------------------------------------------------
 
 
-def assess(target: Target, mode: Mode, seat: Seat) -> list[Assessment]:
+def assess(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    wanted: Collection[Flavour] | None = None,
+) -> list[Assessment]:
     """One verdict per flavour, in the order they are worth trying.
 
     Every flavour is judged, including the ones that plainly do not apply, so
     that ``--flavour delve`` against a Python process gets a sentence rather
     than an empty file.
+
+    ``wanted`` is which flavours the run will actually emit — ``None`` for all
+    of them. It changes no verdict; it is what lets a refusal say whether the
+    alternative it names is in the file beside it, since a ``--flavour`` that
+    names one flavour is the case where it is not.
     """
+    gdb = _assess_gdb(target, mode, seat)
     return [
-        _assess_gdb(target, mode, seat),
+        gdb,
         _assess_lldb(target, mode, seat),
-        _assess_delve(target, mode, seat),
+        _assess_delve(
+            target,
+            mode,
+            seat,
+            gdb_entry=gdb.available and (wanted is None or Flavour.GDB in wanted),
+            gdb_available=gdb.available,
+        ),
         _assess_debugpy(target, mode, seat),
     ]
 
@@ -1518,7 +1536,14 @@ goroutines, but it is the same code.
 """
 
 
-def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
+def _assess_delve(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    gdb_entry: bool = True,
+    gdb_available: bool = True,
+) -> Assessment:
     if target.language is not Language.GO:
         return Assessment(
             Flavour.DELVE,
@@ -1534,12 +1559,44 @@ def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
             "no dlv on PATH in this seat, and the Go extension runs dlv on the "
             "remote rather than shipping one. The podbench image ships no "
             "delve at all, so this is a missing tool and not a missing PATH "
-            "entry (issue #115); the gdb entry beside this one is the fallback",
+            f"entry (issue #115); "
+            f"{_go_fallback(emitted=gdb_entry, available=gdb_available)}",
             remedy=_IMAGE_REMEDY,
         )
     return _no_program(Flavour.DELVE, target) or Assessment(
         Flavour.DELVE, True, f"Go target, {mode.value} mode"
     )
+
+
+def _go_fallback(*, emitted: bool, available: bool) -> str:
+    """Where a Go target goes once delve is refused, in terms of what was emitted.
+
+    "the gdb entry beside this one" was said unconditionally, and
+    ``--flavour delve`` emits nothing else — so the one run that is *only* ever
+    this sentence pointed at an entry that is not in the file, and the reader
+    goes looking for a launch.json bug. Nor is the gdb line above it always
+    there to explain itself: a refusal is printed for the flavours the run was
+    asked for, which is this one alone.
+
+    >>> _go_fallback(emitted=True, available=True)
+    'the gdb entry beside this one is the fallback'
+    >>> _go_fallback(emitted=False, available=True)  # doctest: +NORMALIZE_WHITESPACE
+    'gdb is the fallback: `--flavour gdb` emits that entry,
+     `podbench dbg` attaches with it'
+    >>> _go_fallback(emitted=False, available=False)
+    'gdb is the fallback for a Go target, and this seat refuses that too'
+    """
+    if emitted:
+        return "the gdb entry beside this one is the fallback"
+    if available:
+        return (
+            "gdb is the fallback: `--flavour gdb` emits that entry, "
+            "`podbench dbg` attaches with it"
+        )
+    # No route offered at all, rather than one into a second wall: `--flavour
+    # gdb` against a seat that has just refused gdb changes nothing, and
+    # `podbench dbg` runs the same missing binary.
+    return "gdb is the fallback for a Go target, and this seat refuses that too"
 
 
 _IMAGE_REMEDY = (

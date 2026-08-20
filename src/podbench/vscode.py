@@ -2004,7 +2004,7 @@ def _for_target(
             # where a server conventionally is.
             probe_at = injected_on
             seat = measure()
-    assessments = assess(target, mode, seat)
+    assessments = assess(target, mode, seat, wanted=wanted)
 
     _warn(
         f"pid {pid} ({target.name}): {target.language.value} target, "

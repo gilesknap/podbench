@@ -431,6 +431,45 @@ def test_delve_without_dlv_names_the_image_and_the_issue(tmp_path: Path) -> None
     assert "#115" in result.reason
 
 
+def test_the_delve_refusal_only_points_at_a_gdb_entry_that_exists(
+    tmp_path: Path,
+) -> None:
+    """`--flavour delve` emits nothing else, so there is no entry beside it.
+
+    The sentence said "the gdb entry beside this one is the fallback"
+    unconditionally, and the one run whose whole output is this sentence - a Go
+    target, delve asked for by name, stdout empty - is the run where that entry
+    was never emitted. A reader who goes looking for it is looking for a
+    launch.json bug that is not there.
+    """
+    target = inspect_target(PID, proc=make_proc(tmp_path, sections=[".gopclntab"]))
+    seat = full_seat(debuggers=inventory(which=which_of("gdb")))
+
+    alone = verdict(
+        assess(target, Mode.OBSERVE, seat, wanted={Flavour.DELVE}), Flavour.DELVE
+    )
+    assert "beside this one" not in alone.reason
+    assert "--flavour gdb" in alone.reason
+
+    beside = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DELVE)
+    assert "the gdb entry beside this one is the fallback" in beside.reason
+
+
+def test_the_delve_refusal_promises_no_gdb_entry_this_seat_refuses(
+    tmp_path: Path,
+) -> None:
+    """And the same sentence where nothing at all can be emitted: a seat with
+    neither dlv nor gdb has no fallback to name, and `--flavour gdb` would be
+    the second wall rather than the way past the first."""
+    target = inspect_target(PID, proc=make_proc(tmp_path, sections=[".gopclntab"]))
+    seat = full_seat(debuggers=inventory(which=which_of()))
+
+    result = verdict(assess(target, Mode.OBSERVE, seat), Flavour.DELVE)
+    assert "beside this one" not in result.reason
+    assert "--flavour gdb" not in result.reason
+    assert "this seat refuses that too" in result.reason
+
+
 def test_a_jvm_is_refused_and_jdwp_is_named(tmp_path: Path) -> None:
     """A named frame inside HotSpot looks like progress and is not.
 
