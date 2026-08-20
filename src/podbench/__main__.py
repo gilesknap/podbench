@@ -121,6 +121,14 @@ ENTRY_POINTS: dict[str, Verb] = {
         "add or reconnect a podbench container and print the report",
         LAPTOP,
     ),
+    # `_launcher`, not `_vscode`: the handler named for that module serves the
+    # *in-pod* `debug-config`, and this verb is the laptop half that drives it.
+    "vscode": Verb(
+        _launcher,
+        True,
+        "land a seat sized and provisioned for an editor, and open it",
+        LAPTOP,
+    ),
     "ssh-config": Verb(
         _launcher, True, "regenerate the ssh stanza for an existing session", LAPTOP
     ),

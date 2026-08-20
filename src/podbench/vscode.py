@@ -57,7 +57,7 @@ is what installs it, because the file lives in a directory the client creates.
 :data:`SEAT_FOLDER_SETTINGS` is the same guard in the folder's own file, which
 is the one copy that survives *Kill/Uninstall VS Code Server on Host* — and the
 only one podbench can put in place from the laptop, which is what
-``attach --open`` does.
+``podbench vscode`` does.
 """
 
 from __future__ import annotations
@@ -278,16 +278,16 @@ Machine scope reaches every folder and is the right home for all of these, but
 the machine file lives under ``~/.vscode-server``, a directory the client owns
 and *Kill/Uninstall VS Code Server on Host* deletes wholesale. A folder's own
 ``.vscode/settings.json`` is the copy that survives that, and the only one
-``attach --open`` can write before a client exists.
+``podbench vscode`` can write before a client exists.
 
-Every key, not a resource-scoped subset. ``--open`` opens a *single* folder, so
+Every key, not a resource-scoped subset. ``vscode`` opens a *single* folder, so
 that file is VS Code's **workspace** settings, which honour window- and
 resource-scoped settings alike; only machine and application scope are dropped
 there, and none of these is either. The asymmetry settles what is left over:
 a key VS Code ignores costs nothing, while an omitted one costs the seat — and
 ``C_Cpp.files.exclude`` is the omission that would bite, since cpptools' tag
 parser walks on its own account (so the search and watcher excludes do not stop
-it) and cpptools is exactly what ``--open`` installs for a C/C++ target.
+it) and cpptools is exactly what ``vscode`` installs for a C/C++ target.
 
 Two copies of an exclude list would be two things to keep true, and the one that
 drifted would go on looking correct right up to the walk that ends the seat.

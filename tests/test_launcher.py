@@ -354,6 +354,11 @@ class FakeCluster:
         ]
         self.seat_files: dict[str, str] = {}
         self.unwritable: set[str] = set()
+        # Whether `debug-config` refuses for want of debugpy in the *target*.
+        # Off by default, because the interesting default is a target that
+        # already has a debugger: a fake that always needed provisioning would
+        # make "provisioned nothing" untestable.
+        self.unprovisioned = False
 
     # -- Runner protocol ---------------------------------------------------
 
@@ -438,10 +443,41 @@ class FakeCluster:
         if rest[:1] == ["patch"]:
             if self.patch_error is not None:
                 return _fail(self.patch_error)
+            # Applied, not merely acknowledged. A resize that the fake accepted
+            # and did not store leaves the pod as tight as it was, so anything
+            # reading the headroom *after* one - which is where `vscode` learns
+            # whether the raise took - would be measuring the fake instead of
+            # the code. #107's refusal is `patch_error`, and it is the only way
+            # a resize should fail to land.
+            self._apply_resize(json.loads(rest[rest.index("-p") + 1]))
             return _ok("pod/target patched")
         raise AssertionError(f"unexpected kubectl call: {list(argv)}")
 
     # -- pod document ------------------------------------------------------
+
+    def _apply_resize(self, body: Mapping[str, Any]) -> None:
+        """Store a strategic-merge resize the way the API server would.
+
+        Addressed by container *name*, which is why `try_resize` sends a
+        strategic-merge patch rather than the JSON patch podbench prefers
+        everywhere else: a JSON patch would need the container's index, and an
+        index is positional.
+        """
+        wanted = {
+            cast(str, entry["name"]): entry
+            for entry in cast("list[dict[str, Any]]", dict(body)["spec"]["containers"])
+        }
+        for container in cast(
+            "list[dict[str, Any]]", cast(dict[str, Any], self.pod["spec"])["containers"]
+        ):
+            patch = wanted.get(cast(str, container["name"]))
+            if patch is None:
+                continue
+            resources = cast("dict[str, Any]", container.setdefault("resources", {}))
+            for field, values in cast("dict[str, Any]", patch["resources"]).items():
+                cast("dict[str, Any]", resources.setdefault(field, {})).update(
+                    cast("dict[str, Any]", values)
+                )
 
     def _named(self, name: str) -> dict[str, Any] | None:
         for pod in (self.pod, *self.others):
@@ -567,6 +603,18 @@ class FakeCluster:
         # image has no per-subcommand aliases on PATH, so a launcher that sent
         # one would exec nothing in a real seat and must miss here too.
         if command[:2] == ["podbench", "debug-config"]:
+            # A Python target whose image has no debugpy. The refusal names
+            # `--provision` and nothing else does: `debug-config` offers it
+            # where debugpy is the blocker and never for a missing delve, which
+            # is what lets the laptop side answer it without guessing the
+            # target's language a second time.
+            if self.unprovisioned and "--provision" not in command:
+                return _fail(
+                    "the target cannot import debugpy, and the injection "
+                    "bootstrap runs in its interpreter: --provision installs "
+                    "one there first.",
+                    returncode=1,
+                )
             return _ok(
                 json.dumps({"version": "0.2.0", "configurations": self.configurations})
             )
@@ -3022,12 +3070,26 @@ def test_ssh_config_without_a_session_says_so(
     assert "attach" in capsys.readouterr().err
 
 
-# -- --open -----------------------------------------------------------------
+# -- the vscode verb ---------------------------------------------------------
 
 
 def attach_argv(tmp_path: Path, *extra: str) -> list[str]:
+    return _argv("attach", tmp_path, *extra)
+
+
+def vscode_argv(tmp_path: Path, *extra: str) -> list[str]:
+    """``podbench vscode``, which is ``attach`` plus what an editor costs.
+
+    Spelled through the same helper because the two verbs take the same options
+    for the same seat: a test that drifts between them would be measuring the
+    argv rather than the behaviour.
+    """
+    return _argv("vscode", tmp_path, *extra)
+
+
+def _argv(verb: str, tmp_path: Path, *extra: str) -> list[str]:
     return [
-        "attach",
+        verb,
         "pod/target",
         "-n",
         "demo",
@@ -3049,7 +3111,7 @@ def test_open_configures_the_seats_home_and_opens_that(
     code = main(
         # `/root` is the full rung's home, and that rung is now asked for
         # rather than assumed: the target's uid implies the one below it.
-        attach_argv(tmp_path, "--open", "--max-rung", "full"),
+        vscode_argv(tmp_path, "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3093,7 +3155,7 @@ def test_open_refuses_a_seat_ssh_cannot_reach_and_says_why(
     )
 
     code = main(
-        attach_argv(tmp_path, "--open"),
+        vscode_argv(tmp_path),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3116,19 +3178,24 @@ def test_open_without_the_vs_code_cli_never_burns_a_container_name(
     """An ephemeral container's name is permanent, so a run that was always
     going to end at "no `code`" must not spend one on the way."""
     cluster = FakeCluster(pod_document(uid=1000))
-    code = main(attach_argv(tmp_path, "--open"), runner=cluster, which=lambda _: None)
+    code = main(vscode_argv(tmp_path), runner=cluster, which=lambda _: None)
 
     assert code == 2
     assert cluster.added == []
     assert "Shell Command" in capsys.readouterr().err
 
 
-def test_open_refuses_print_config_rather_than_opening_a_host_ssh_cannot_find(
+def test_vscode_has_no_print_config_to_open_a_host_ssh_cannot_find(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """`--print-config` writes no stanza and `code --remote ssh-remote+<alias>`
+    resolves the alias through ssh, so the pair could only ever land a seat and
+    then fail on a host that exists nowhere. It used to be a refusal the verb
+    raised; now it is a flag the verb does not have, which is the same answer
+    given by the parser instead of after a round trip."""
     cluster = FakeCluster(pod_document(uid=1000))
     code = main(
-        attach_argv(tmp_path, "--open", "--print-config"),
+        vscode_argv(tmp_path, "--print-config"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3153,7 +3220,7 @@ def test_open_does_not_ask_for_the_verb_it_has_just_run(
     cluster = FakeCluster(pod_document(uid=1000))
     assert (
         main(
-            attach_argv(tmp_path, "--open"),
+            vscode_argv(tmp_path),
             runner=cluster,
             which=lambda name: f"/usr/bin/{name}",
         )
@@ -3175,12 +3242,13 @@ def test_without_open_the_seat_is_still_told_how_to_get_a_launch_json(
     assert "run `podbench debug-config` in the seat" in capsys.readouterr().out
 
 
-def test_provision_without_open_is_refused_before_a_seat_is_spent(
+def test_attach_carries_no_flag_that_mutates_the_workload(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The flag reads as a promise to mutate the workload. Honouring it needs
-    the debug-config run only `--open` makes, so a run that quietly did nothing
-    would leave the user believing the target now has debugpy in it."""
+    """`attach` adds a container to the pod and touches the workload not at all,
+    which is the promise the mode table makes for it. Provisioning writes ~15 MB
+    into the target and ptraces it, so it lives on the verb whose name asks for
+    an editor and everything an editor costs."""
     cluster = FakeCluster(pod_document(uid=1000))
     code = main(
         attach_argv(tmp_path, "--provision"),
@@ -3189,33 +3257,40 @@ def test_provision_without_open_is_refused_before_a_seat_is_spent(
     )
 
     assert code == 2
-    # Refused before the attach, because an ephemeral container's name is
-    # permanent and this run was never going to reach the editor.
+    # Refused by the parser, before the attach: an ephemeral container's name is
+    # permanent, and this run was never going to reach a config author.
     assert cluster.added == []
-    assert "--provision only has an effect with --open" in capsys.readouterr().err
+    assert "--provision" in capsys.readouterr().err
 
 
-def test_provision_reaches_the_seats_own_debug_config(tmp_path: Path) -> None:
-    """The remedy shipped on the in-pod verb and had no way in from a laptop."""
+def test_vscode_provisions_a_target_that_says_it_needs_it(tmp_path: Path) -> None:
+    """The seat is the only thing that can see the target, and it names the flag
+    in its own refusal. So the answer is already in hand when the refusal
+    arrives, and the round trip it used to cost was podbench asking the user to
+    retype a fact it had just measured."""
     cluster = FakeCluster(pod_document(uid=1000))
+    cluster.unprovisioned = True
     code = main(
-        attach_argv(tmp_path, "--open", "--provision"),
+        vscode_argv(tmp_path),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
     assert code == 0
 
     asked = [call for call in cluster.calls if "debug-config" in call]
-    assert asked and all("--provision" in call for call in asked)
+    assert len(asked) == 2, "the refusal is answered once, not looped on"
+    assert "--provision" not in asked[0]
+    assert "--provision" in asked[1]
 
 
-def test_open_alone_provisions_nothing(tmp_path: Path) -> None:
-    """Issue #45: ~15 MB into the workload's writable layer is the larger of the
-    two mutations a config author has to be asked for."""
+def test_vscode_provisions_nothing_a_target_did_not_ask_for(tmp_path: Path) -> None:
+    """A target that already has a debugger is not a target to install one into.
+    `--provision` was never "always"; the consent the verb carries is spent only
+    where the seat said it is the blocker."""
     cluster = FakeCluster(pod_document(uid=1000))
     assert (
         main(
-            attach_argv(tmp_path, "--open"),
+            vscode_argv(tmp_path),
             runner=cluster,
             which=lambda name: f"/usr/bin/{name}",
         )
@@ -3223,6 +3298,27 @@ def test_open_alone_provisions_nothing(tmp_path: Path) -> None:
     )
 
     assert not any("--provision" in call for call in cluster.calls)
+
+
+def test_no_provision_leaves_the_target_exactly_as_it_is(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #45's decision, kept as an opt-out: ~15 MB into the workload's
+    writable layer is a mutation, and a user who declines it gets the offer they
+    used to get instead of the act."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    cluster.unprovisioned = True
+    assert (
+        main(
+            vscode_argv(tmp_path, "--no-provision"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+
+    assert not any("--provision" in call for call in cluster.calls)
+    assert "--provision" in " ".join(capsys.readouterr().out.split())
 
 
 def test_open_follows_the_home_volume_rather_than_assuming_root(
@@ -3233,7 +3329,7 @@ def test_open_follows_the_home_volume_rather_than_assuming_root(
     so the two cannot disagree about where the seat lives."""
     cluster = FakeCluster(identity_pod())
     code = main(
-        attach_argv(tmp_path, "--open"),
+        vscode_argv(tmp_path),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3262,7 +3358,7 @@ def test_open_on_a_seat_with_no_stanza_says_so_rather_than_opening_nothing(
         pod_document(uid=1000), psa_denies_ptrace=True, login_user=None
     )
     code = main(
-        attach_argv(tmp_path, "--open"),
+        vscode_argv(tmp_path),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3284,7 +3380,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
     cluster = FakeCluster(pod_document(uid=1000))
     cluster.unwritable.add("/root/.vscode/settings.json")
     code = main(
-        attach_argv(tmp_path, "--open", "--max-rung", "full"),
+        vscode_argv(tmp_path, "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3302,7 +3398,7 @@ def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(
     readiness half is the one with no trace afterwards."""
     cluster = FakeCluster(pod_document(uid=1000, probes=PROBES))
     code = main(
-        attach_argv(tmp_path, "--open"),
+        vscode_argv(tmp_path),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -3324,7 +3420,7 @@ def test_an_unprobed_target_gets_no_reminder_it_cannot_act_on(
     cluster = FakeCluster(pod_document(uid=1000))
     assert (
         main(
-            attach_argv(tmp_path, "--open"),
+            vscode_argv(tmp_path),
             runner=cluster,
             which=lambda name: f"/usr/bin/{name}",
         )
@@ -4873,31 +4969,174 @@ def test_the_metrics_api_is_not_asked_about_a_pod_with_no_ceiling() -> None:
     assert not [call for call in cluster.calls if "top" in call]
 
 
-def test_opening_an_editor_is_measured_against_vscode_and_not_against_the_seat(
+def test_vscode_sizes_the_pod_from_the_headroom_it_already_reads(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The one memory cost that survived the measurement, on the flag that spends it.
+    """The number was always computable and podbench used to ask for it back.
 
-    1024Mi of headroom carries a 13-23 MiB seat with room to spare and says
-    nothing about it; vscode-server measured 1215 MiB live with a single
-    extension (2026-08-16), which is the case that still OOMs a pod. So the
-    warning is keyed on `--open` rather than on the attach.
+    1Gi of headroom carries a 13-23 MiB seat with room to spare; vscode-server
+    measured 1215 MiB live with a single extension (2026-08-16), so this pod is
+    1215Mi - 1Gi short. `editor_limit` raises the *target's* limit by that
+    shortfall - the only limit a seat can move, since an ephemeral container may
+    not declare `resources` at all - and rounds up to the next whole GiB.
     """
     cluster = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
     code = main(
-        attach_argv(tmp_path, "--open"),
+        vscode_argv(tmp_path),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
     assert code == 0
     out = " ".join(capsys.readouterr().out.split())
-    assert "memory 1Gi free of 4Gi (3Gi in use)" in out
-    assert "vscode-server here and it measured 1215Mi" in out
+    assert "1Gi free is under the 1215Mi vscode-server measured" in out
+    assert "app's memory limit was raised to 5Gi" in out
+    # Read back after the raise, which is the whole point of reading it there:
+    # the editor now fits, so the OOM warning has nothing to say.
+    assert "memory 2Gi free of 5Gi (3Gi in use)" in out
+    assert "vscode-server lands here" not in out
 
-    # …and the same pod, attached without the editor, spends no warning on it.
+    # …and the same pod, attached without the editor, is neither warned nor
+    # resized: nothing in `attach` decides to spend this pod's memory.
     plain = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
     assert main(attach_argv(tmp_path, "--no-prompt"), runner=plain) == 0
     assert "vscode-server" not in capsys.readouterr().out
+    assert not [call for call in plain.calls if "patch" in call]
+
+
+def test_no_resize_declines_the_raise_and_keeps_the_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Declining the mutation is not declining to be told about it. The hazard
+    is exactly as it was, so the line that names it comes back - which is also
+    what a pod whose resize was *refused* (#107) sees."""
+    cluster = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
+    code = main(
+        vscode_argv(tmp_path, "--no-resize"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert not [call for call in cluster.calls if "patch" in call]
+    assert "memory 1Gi free of 4Gi (3Gi in use)" in out
+    assert "vscode-server lands here and it measured 1215Mi" in out
+
+
+def test_a_pod_with_room_is_left_alone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Sizing is a shortfall, not a policy: a pod that already carries the
+    editor gets no patch and no line about one."""
+    cluster = FakeCluster(limited_pod("8Gi"), top="target   1m   1Gi\n")
+    assert (
+        main(
+            vscode_argv(tmp_path), runner=cluster, which=lambda name: f"/usr/bin/{name}"
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert not [call for call in cluster.calls if "patch" in call]
+    assert "sized for the editor" not in out
+    assert "vscode-server lands here" not in out
+
+
+def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one unmeasured case that earns a line. Everywhere else podbench
+    states an unreadable headroom on the report's row and leaves it, because a
+    caution there would fire on every cluster with no metrics-server - but this
+    verb undertook to size the pod, and quietly not doing it leaves the user
+    believing it did."""
+    # `top` of None is the ordinary cluster with no metrics-server.
+    cluster = FakeCluster(limited_pod("256Mi"))
+    assert (
+        main(
+            vscode_argv(tmp_path), runner=cluster, which=lambda name: f"/usr/bin/{name}"
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert not [call for call in cluster.calls if "patch" in call]
+    assert "not measured (no metrics API here), so nothing sized it" in out
+
+
+def test_vscode_names_the_storage_cost_no_flag_of_its_can_pay(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Memory can be raised in place and disk cannot: `spec.volumes` is
+    immutable, so a pod that was not deployed with `podbench-home` cannot be
+    given one now. It is worth a line anyway - the overrun evicts the *pod*,
+    application included, and nothing else in the run mentions it."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            vscode_argv(tmp_path), runner=cluster, which=lambda name: f"/usr/bin/{name}"
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert "declares no 'podbench-home' volume" in out
+    assert "evicts the whole pod" in out
+
+
+def test_a_pod_deployed_with_the_home_volume_is_not_warned_about_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The case the volume was deployed for. Warning here would be a caution
+    about something working."""
+    cluster = FakeCluster(identity_pod())
+    assert (
+        main(
+            vscode_argv(tmp_path), runner=cluster, which=lambda name: f"/usr/bin/{name}"
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert "declares no 'podbench-home' volume" not in out
+    assert "a root seat does not use it" not in out
+
+
+def test_a_root_seat_orphans_the_home_volume_and_is_told_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#42: the volume is mounted and unused. sshd takes a session's $HOME from
+    the passwd record, and for uid 0 the image's own record already says /root -
+    so every layer is individually correct and the join is what fails. The pod
+    looks prepared, which is exactly why silence would be wrong."""
+    # The home volume without the non-root pin, so the full rung actually
+    # lands: `identity_pod` carries `runAsNonRoot`, which refuses it.
+    cluster = FakeCluster(pod_document(uid=1000, volumes=[HOME_VOLUME]))
+    assert (
+        main(
+            vscode_argv(tmp_path, "--max-rung", "full"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert "a root seat does not use it" in out
+    assert "'/root'" in out
+
+
+def test_an_unbounded_pod_has_no_ceiling_to_raise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A container declaring no memory limit leaves the pod cgroup unbounded,
+    so there is no ceiling for the seat to share and nothing worth patching.
+    The report's memory row says so already."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert (
+        main(
+            vscode_argv(tmp_path), runner=cluster, which=lambda name: f"/usr/bin/{name}"
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert not [call for call in cluster.calls if "patch" in call]
+    assert "sized for the editor" not in out
+    assert "no pod memory limit" in out
 
 
 def test_current_namespace_falls_back_to_default() -> None:

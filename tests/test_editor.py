@@ -1,9 +1,9 @@
-"""Tests for ``attach --open``.
+"""Tests for the editor half of ``podbench vscode``.
 
 Nothing here starts an editor or touches a cluster. :class:`FakeSeat` is both
 the ``kubectl`` and the ``code`` on the far end of the injected runner: it keeps
 a dictionary of files so a write is visible to the next read, which is what lets
-the merge behaviour be asserted the way a second ``--open`` would meet it.
+the merge behaviour be asserted the way a second run would meet it.
 
 Two orderings are asserted rather than implied, because both fail *silently*
 when broken: the excludes must be on disk before the window that starts the
@@ -20,7 +20,13 @@ from typing import Any
 
 import pytest
 
-from podbench.editor import PROVISION_FLAG, EditorError, open_seat, resolve_editor
+from podbench.editor import (
+    PROVISION_FLAG,
+    EditorError,
+    Provision,
+    open_seat,
+    resolve_editor,
+)
 from podbench.kubectl import CommandResult, Kubectl
 from podbench.model import ContainerRef, PodRef
 
@@ -205,7 +211,10 @@ def _read_path(script: str) -> str:
 
 
 def run_open(
-    seat: FakeSeat, *, folder: str = HOME, provision: bool = False
+    seat: FakeSeat,
+    *,
+    folder: str = HOME,
+    provision: Provision = Provision.NEVER,
 ) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
     goes rather than returning a list at the end, because the install is a
@@ -432,13 +441,59 @@ def test_a_seat_that_never_ran_the_verb_still_says_what_happened() -> None:
 # -- provisioning ------------------------------------------------------------
 
 
-def test_the_provision_flag_is_offered_where_the_seat_named_it() -> None:
-    """The remedy existed on the in-pod verb and was unreachable from here, so
-    the refusal has to name the flag that reaches it."""
+def test_the_offer_names_the_flag_that_was_declined() -> None:
+    """Reached only by somebody who said `--no-provision`: everywhere else the
+    seat's refusal is answered rather than reported. So the remedy is the flag
+    to drop, not a flag to add."""
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     notes = run_open(seat)
 
-    assert any("--open --provision" in note for note in notes)
+    assert any("without `--no-provision`" in note for note in notes)
+
+
+def test_a_refusal_naming_the_flag_is_answered_rather_than_reported() -> None:
+    """The seat has just said debugpy is the blocker and the verb's name is the
+    consent, so the fact is already in hand. Asking the user to retype it was
+    the round trip this removes."""
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL, provision_rc=0)
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert seat.provisioned
+    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
+    assert document["configurations"] == [DEBUGPY_CONFIG]
+    # The refusal is relayed and *then* answered: debug-config is the only thing
+    # that can see the target, so its account of why debugpy is the blocker is
+    # the diagnosis. A run that hid it would be asserting the need for the
+    # install rather than showing it.
+    relayed = notes.index("no launch.json: nothing above could be turned into one")
+    answered = next(i for i, note in enumerate(notes) if "provisioning it now" in note)
+    ran = next(i for i, note in enumerate(notes) if note.startswith("--provision"))
+    assert relayed < answered < ran
+    assert not any("without `--no-provision`" in note for note in notes)
+
+
+def test_a_target_that_needs_nothing_is_provisioned_anyway_by_nobody() -> None:
+    """`IF_NEEDED` is not `ALWAYS`. A seat that authored a configuration asked
+    for no install, and spending one on it would mutate a workload for nothing."""
+    seat = FakeSeat()
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert not seat.provisioned
+    assert not any(note.startswith("--provision") for note in notes)
+
+
+def test_a_refusal_for_any_other_reason_is_not_retried() -> None:
+    """There is no --provision for a missing delve. The retry is keyed on the
+    seat naming the flag, which it does for debugpy and for nothing else, so a
+    target podbench cannot help is not ptraced on the way to finding out."""
+    seat = FakeSeat(
+        debug_config_rc=2,
+        debug_config_stderr="debug-config: no gdb in this image, and no lldb\n",
+    )
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert not seat.provisioned
+    assert not any("--provision" in note for note in notes)
 
 
 def test_no_provision_offer_for_a_flavour_it_cannot_help() -> None:
@@ -455,7 +510,7 @@ def test_no_provision_offer_for_a_flavour_it_cannot_help() -> None:
 
 def test_provision_asks_the_seat_and_gets_a_launch_json() -> None:
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL, provision_rc=0)
-    run_open(seat, provision=True)
+    run_open(seat, provision=Provision.ALWAYS)
 
     assert seat.provisioned
     document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
@@ -481,7 +536,7 @@ def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
         folder=HOME,
         report=lambda note: timeline.append((note, _seat_calls(seat))),
         editor="code",
-        provision=True,
+        provision=Provision.ALWAYS,
         runner=seat,
     )
     notice, announced = next(
