@@ -62,17 +62,27 @@ _PODBENCH_STUB = """#!/bin/sh
 # Stand in for `podbench dbg <pid> --print-startup-commands`: record the argv so
 # a test can assert it was not called at all, then answer with whatever the test
 # put in ANSWER (an empty file standing for "nothing to say").
+#
+# `--version` is the wrapper's viability probe and answers nothing, so that the
+# recorded argv stays the sequence of *questions* the wrapper asked.
 printf '%s\\n' "$*" >> "ARGV"
+[ "$1" = --version ] && exit 0
 cat "ANSWER"
 """
 
 
-def _wrapper(tmp_path: Path, *, commands: Sequence[str] = ()) -> Path:
+def _wrapper(
+    tmp_path: Path, *, commands: Sequence[str] = (), podbench_missing: bool = False
+) -> Path:
     """A runnable copy of the wrapper whose gdb and podbench are both stubs.
 
     ``commands`` is what the stub podbench answers with; empty is the seat
-    whose podbench is missing, older, or could not read ``/proc/<pid>/exe``,
-    which has to leave the wrapper doing what it did before it asked.
+    whose podbench is older or could not read ``/proc/<pid>/exe``, which has to
+    leave the wrapper doing what it did before it asked.
+
+    ``podbench_missing`` rewrites the call to a path that does not exist, which
+    is the seat whose podbench cannot be run at all — the same fallback, but
+    reached through the shell rather than through podbench.
     """
     stub = tmp_path / "stub-gdb"
     stub.write_text(_STUB)
@@ -87,6 +97,8 @@ def _wrapper(tmp_path: Path, *, commands: Sequence[str] = ()) -> Path:
         )
     )
     podbench.chmod(0o755)
+    if podbench_missing:
+        podbench = tmp_path / "no-such-podbench"
 
     source = WRAPPER.read_text()
     for real, replacement in ((REAL_GDB, stub), (REAL_PODBENCH, podbench)):
@@ -292,11 +304,72 @@ def test_podbench_is_not_asked_when_there_is_no_pid(tmp_path: Path) -> None:
 
 
 def test_the_sequence_is_asked_for_by_pid(tmp_path: Path) -> None:
-    """The wrapper knows the pid and nothing else; podbench works out the rest."""
+    """The wrapper knows the pid and nothing else; podbench works out the rest.
+
+    Two questions, in this order: can podbench run, and then the real one. The
+    probe is what keeps the shell's own ``not found`` off the user's terminal
+    on the path this fallback exists for.
+    """
     _run(_wrapper(tmp_path, commands=SEQUENCE), "--pid", str(LIVE_PID))
 
-    argv = (tmp_path / "podbench-argv").read_text().split()
-    assert argv == ["dbg", str(LIVE_PID), "--print-startup-commands"]
+    asked = (tmp_path / "podbench-argv").read_text().splitlines()
+    assert asked == ["--version", f"dbg {LIVE_PID} --print-startup-commands"]
+
+
+def test_a_podbench_that_cannot_run_falls_back_without_a_word(
+    tmp_path: Path,
+) -> None:
+    """The fallback's own path must not narrate itself in shell.
+
+    A seat whose podbench is missing - or whose venv is broken, which is the
+    same message one script down - printed
+    ``gdb-podbench: 123: /usr/local/bin/podbench: not found`` and then attached
+    perfectly well. The reader is handed a raw shell error naming a line number
+    in a wrapper they did not know they were running, immediately before a
+    session with nothing wrong with it.
+    """
+    script = _wrapper(tmp_path, podbench_missing=True)
+
+    result = subprocess.run(
+        [str(script), "--pid", str(LIVE_PID)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stderr == ""
+    assert Invocation.parse(result.stdout).args == [
+        "-iex",
+        f"set sysroot /proc/{LIVE_PID}/root",
+        "--pid",
+        str(LIVE_PID),
+    ]
+
+
+def test_a_podbench_that_does_run_keeps_its_stderr(tmp_path: Path) -> None:
+    """Silencing the probe must not silence the answer.
+
+    podbench's warnings on this path are how a reader learns that
+    ``/proc/<pid>/exe`` could not be read, and which file gdb was pointed at
+    instead - the one notice issue #90 turns on. A ``2>/dev/null`` over the
+    real call would have taken it.
+    """
+    script = _wrapper(tmp_path, commands=SEQUENCE)
+    noisy = tmp_path / "stub-podbench"
+    noisy.write_text(
+        noisy.read_text().replace(
+            "cat ", 'printf "warning: gdb will read a copy\\n" >&2\ncat ', 1
+        )
+    )
+
+    result = subprocess.run(
+        [str(script), "--pid", str(LIVE_PID)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "warning: gdb will read a copy" in result.stderr
 
 
 @pytest.mark.parametrize("pid", ["notanumber", "999999999"])

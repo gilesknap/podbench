@@ -125,8 +125,23 @@ esac
 # the case being detected.
 /bin/pwd >/dev/null 2>&1 || cd /root 2>/dev/null || cd / || exit 1
 if [ -n "$pid" ]; then
-	commands=$(/usr/local/bin/podbench dbg "$pid" --print-startup-commands) ||
-		commands=
+	# Whether podbench can run at all is asked first, and asked quietly. Missing
+	# it is a case this fallback is *for*, but the shell announces it on our own
+	# stderr — `gdb-podbench: 123: /usr/local/bin/podbench: not found`, a raw
+	# shell error immediately before a session that then works fine. `--version`
+	# rather than `[ -x ]` because /usr/local/bin/podbench is itself a two-line
+	# shim over /app/.venv/bin/podbench: a seat whose venv is broken passes the
+	# file test and leaks the same message one script down. It is the probe the
+	# image build already runs for the same question.
+	#
+	# The real call keeps its stderr, and must: podbench's warnings there are
+	# how a reader learns that /proc/<pid>/exe could not be read, and which file
+	# gdb was pointed at instead (issue #90).
+	commands=
+	if /usr/local/bin/podbench --version >/dev/null 2>&1; then
+		commands=$(/usr/local/bin/podbench dbg "$pid" --print-startup-commands) ||
+			commands=
+	fi
 	if [ -n "$commands" ]; then
 		# Every line becomes `-iex`, never `-ex`: --pid attaches during
 		# *startup*, so an -ex command runs after the attach and is too late —
