@@ -2,10 +2,11 @@
 
 The image cannot be built here, so what is checkable is the contract between
 these scripts and the Python that names them. Since #47 that contract rests on
-one file: ``/usr/local/bin/podbench`` is the *only* way an ssh session reaches
-any in-pod verb, because sshd is built ``UsePAM no`` (report 4.1) and hands a
-non-interactive command the compiled-in ``PATH`` — which has ``/usr/local/bin``
-and not the venv. Before #47 seven files each hard-coded the venv path
+one file: an ssh session inherits none of the image's ``ENV PATH``, so it
+reaches an in-pod verb through the ``PATH`` the agent's generated ``SetEnv``
+line carries, or — when that line was never written or was refused — through
+``/usr/local/bin/podbench``, ``/usr/local/bin`` being on sshd's compiled-in
+``PATH`` whatever happens. Before #47 seven files each hard-coded the venv path
 independently; now a typo in this one takes every verb with it, and the failure
 is ``exec: "podbench": executable file not found`` at the far end of a
 transport, not a build error.
@@ -47,12 +48,12 @@ def test_the_image_ships_the_two_structural_files_and_nothing_else() -> None:
 
 
 def test_the_shim_names_the_venv_by_absolute_path() -> None:
-    """``ssh host 'podbench pids'`` sources nothing, so ``PATH`` cannot help.
+    """A bare ``podbench`` inside the shim would make the shim pointless.
 
-    The image's ``ENV PATH`` puts the venv first, which means a bare
-    ``podbench`` inside the shim would work under ``docker run`` and under
-    ``kubectl exec`` and fail only over ssh — the one transport this file
-    exists for.
+    The image's ``ENV PATH`` puts the venv first, so it would work under
+    ``docker run`` and under ``kubectl exec``, and over ssh for as long as the
+    agent's ``SetEnv`` line carried ``PATH`` — failing precisely in the case
+    this file exists for, a session left with sshd's compiled-in ``PATH``.
     """
     source = (BIN / "podbench").read_text()
 

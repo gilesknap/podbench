@@ -237,9 +237,9 @@ Host podbench-demo-web-7d9f8c5b4-x2k9p-1
     ServerAliveInterval 15
     ServerAliveCountMax 3
     ControlMaster auto
-    ControlPath /tmp/podbench-cm/%C
+    ControlPath /tmp/podbench-cm/%C-2cbae7bf1f9161c8
     ControlPersist 10m
-    HostKeyAlias podbench-3f2c1a90-7b6d-4e21-9a55-0c1e2f3a4b5c
+    HostKeyAlias podbench-3f2c1a90-7b6d-4e21-9a55-0c1e2f3a4b5c-podbench-1
     UserKnownHostsFile ~/.podbench/known_hosts
     StrictHostKeyChecking yes
 ```
@@ -258,9 +258,9 @@ lines are load-bearing in ways that fail *silently*:
 | `sshd -i -e` | `-e` is not about log tidiness. **Closing or replacing fd 2 in a `kubectl exec`'d process tears down the whole CRI exec stream**, truncating stdio with `rc=0`. Without `-e`, ssh dies at key exchange with `ssh_dispatch_run_fatal: … Broken pipe` — a network-looking error with a non-network cause. `2>&1` breaks it the same way |
 | `-o LogLevel=ERROR` | keeps sshd's stderr byte-free without closing it, which is what satisfies both constraints at once. Anything chattier lands on the ssh client's stderr, which Remote-SSH parses |
 | no `-t`, ever | from a script kubectl silently degrades to non-tty and appears to work; with a **real** TTY forced onto the ProxyCommand the ssh client hangs indefinitely |
-| `ControlPath /tmp/podbench-cm/%C` | `sun_path` is 108 bytes. A control socket next to a kubeconfig or in a workspace directory hits `ControlPath too long`. The multiplexed connection is also a ~6× speedup: 0.345 s cold, 0.058 s over the master |
+| `ControlPath /tmp/podbench-cm/%C-<digest>` | `sun_path` is 108 bytes. A control socket next to a kubeconfig or in a workspace directory hits `ControlPath too long`. The multiplexed connection is also a ~6× speedup: 0.345 s cold, 0.058 s over the master. The digest is the seat's, and it is what keeps the multiplexing honest: `%C` hashes the *resolved* `HostName`, which every seat in a pod shares, so on its own it would let a second alias ride the first seat's connection — **skipping the host-key check**, since a multiplexed session never repeats it |
 | `ServerAliveInterval`/`CountMax` | a *stalled* transport — what an apiserver or konnectivity hiccup looks like — hangs ssh **forever** without them, and fails in 19 s with them. A hard kill or pod deletion is detected instantly either way |
-| `HostKeyAlias` + `UserKnownHostsFile` | podbench manages its own `known_hosts`, keyed on the pod UID, rather than teaching you `StrictHostKeyChecking no`. A re-created pod is a *new host*, not a MITM warning |
+| `HostKeyAlias` + `UserKnownHostsFile` | podbench manages its own `known_hosts`, keyed on the pod UID **and the seat**, rather than teaching you `StrictHostKeyChecking no`. Every seat mints its own host key, so one alias over two of them would arrive as a host-key mismatch; a re-created pod is a *new host*, not a MITM warning |
 
 Transport budget, for reference: ~10–11 MB RSS per live session, 26 MB/s
 pod→client, 13 MB/s client→pod, 0 failures in 30 connect/disconnect cycles.

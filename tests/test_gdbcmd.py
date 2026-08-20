@@ -22,18 +22,29 @@ import pytest
 from podbench import execfile, gdbcmd
 from podbench.gdbcmd import (
     EXIT_USAGE,
+    MAX_OFFERED_PIDS,
+    RUST_PRETTY_PRINTERS,
     attach_commands,
     command_file_text,
     format_process_table,
     gdb_argv,
     launch_commands,
+    listing_heading,
     main,
     read_exe,
     resolve_target_pid,
+    resolve_target_pids,
+    startup_commands,
     strip_deleted,
 )
-from podbench.model import Blocker, Verdict
+from podbench.model import (
+    POD_CONTAINERS_ENV,
+    TARGET_NAME_ENV,
+    Blocker,
+    Verdict,
+)
 from podbench.probe import AttachOutcome, SkippedAttacher
+from proc_samples import CID, sample, write_tree
 
 TARGET_CID = "87d20e2380a1c0ffee0b1e5deadbeef00d15ea5e0000111122223333444455556"
 OTHER_CID = "7206c89b11111111222222223333333344444444555555556666666677777777"
@@ -175,6 +186,7 @@ def make_proc(tmp_path: Path, *, capeff: str = CAP_WITHOUT_PTRACE) -> Path:
 def test_attach_sequence_is_pinned_in_order() -> None:
     assert attach_commands(TARGET_PID, exe="/app/victim") == [
         "set pagination off",
+        "handle SIGURG nostop noprint pass",
         f"set sysroot /proc/{TARGET_PID}/root",
         f"directory /proc/{TARGET_PID}/root",
         f"add-auto-load-safe-path /proc/{TARGET_PID}/root",
@@ -182,6 +194,43 @@ def test_attach_sequence_is_pinned_in_order() -> None:
         f"file /proc/{TARGET_PID}/root/app/victim",
         f"attach {TARGET_PID}",
     ]
+
+
+def test_sigurg_is_handled_before_the_process_resumes() -> None:
+    """The ordering, which is what this line's value depends on.
+
+    `nostop noprint pass` is already the default of the gdb a seat has - the
+    image's Debian 13.1, which reports `SIGURG No No Yes` with no startup
+    commands at all, and the same three words for SIGCHLD and SIGWINCH - so this
+    pins a default rather than repairing a flood. Pinning it is only worth
+    anything before the attach:
+    on a gdb configured otherwise the flood starts the moment the inferior
+    resumes, and Go preempts goroutines hundreds of times a second.
+    """
+    commands = attach_commands(TARGET_PID, exe="/app/victim")
+    assert commands.index("handle SIGURG nostop noprint pass") < commands.index(
+        f"attach {TARGET_PID}"
+    )
+    # `pass`, not `ignore`: the signal is still delivered, because swallowing it
+    # changes the Go runtime's scheduling.
+    assert "handle SIGURG nostop noprint pass" in launch_commands("./victim")
+
+
+def test_the_rust_printers_are_sourced_only_for_a_rust_target() -> None:
+    """No rustup toolchain exists in the pod, so nothing else loads them.
+
+    Conditional rather than always: `source` of a path that is not there is an
+    error in the debug console on every unrelated attach.
+    """
+    plain = attach_commands(TARGET_PID, exe="/app/victim")
+    rust = attach_commands(TARGET_PID, exe="/app/victim", rust=True)
+    assert not any(command.startswith("source ") for command in plain)
+    assert f"source {RUST_PRETTY_PRINTERS}" in rust
+    # Before `file`, so the printers are registered by the time gdb renders
+    # anything out of the inferior.
+    assert rust.index(f"source {RUST_PRETTY_PRINTERS}") < rust.index(
+        f"attach {TARGET_PID}"
+    )
 
 
 def test_sysroot_and_file_precede_attach() -> None:
@@ -283,6 +332,43 @@ def test_resolve_target_pid_refuses_to_guess(
     pid, notes = resolve_target_pid(None, None, proc=proc)
     assert pid is None
     assert any("PODBENCH_TARGET_CID" in note for note in notes)
+    assert any("pause process, not the target" in note for note in notes)
+
+
+def test_the_refusal_describes_the_namespace_this_seat_is_really_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 17.2: the old sentence was false on 15 of 15 pods surveyed.
+
+    A pod that does not set ``shareProcessNamespace`` puts the seat in the
+    *target container's* namespace through ``targetContainerName``, and PID 1
+    there is the workload — so "PID 1 is the pod's pause process" sent every
+    reader on that beamline away from the right answer. ``/proc/1/comm`` is
+    what settles it, because a seat has no pod spec to read.
+    """
+    monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
+    proc = make_proc(tmp_path)
+    # The same tree with the pause process replaced by the target's own
+    # entrypoint, which is what PID 1 is without the flag.
+    (proc / "1" / "comm").write_text("victim\n")
+
+    _, notes = resolve_target_pid(None, None, proc=proc)
+
+    assert any("does not share its process namespace" in note for note in notes)
+    assert not any("pause" in note for note in notes)
+
+
+def test_an_unreadable_pid_one_is_hedged_rather_than_guessed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither sentence may be spent on a namespace nothing measured."""
+    monkeypatch.delenv("PODBENCH_TARGET_CID", raising=False)
+    proc = make_proc(tmp_path)
+    (proc / "1" / "comm").unlink()
+
+    _, notes = resolve_target_pid(None, None, proc=proc)
+
+    assert any("not reliably the target" in note for note in notes)
 
 
 def test_resolve_target_pid_reports_an_unmatched_container(tmp_path: Path) -> None:
@@ -295,13 +381,114 @@ def test_resolve_target_pid_reports_an_unmatched_container(tmp_path: Path) -> No
 # --- pids -------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def no_inherited_seat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scrub the two variables the listing's heading is built from.
+
+    They are set in a real seat, and this suite is sometimes run in one. Every
+    test that wants a heading sets them itself; the rest see what a seat landed
+    by a launcher older than them prints, which is no heading at all.
+    """
+    monkeypatch.delenv(TARGET_NAME_ENV, raising=False)
+    monkeypatch.delenv(POD_CONTAINERS_ENV, raising=False)
+
+
+def test_the_listing_says_whose_processes_it_is_showing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "The pod's processes" over one container's namespace is finding 15.
+
+    The sibling is named with the whole invocation that reaches it, and neither
+    line claims anything about what is *not* below: under
+    ``shareProcessNamespace: true`` the other container's processes are here too,
+    and this seat cannot tell from in here.
+    """
+    monkeypatch.setenv(TARGET_NAME_ENV, "ca-gateway")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "ca-gateway,pva-gateway")
+    proc = make_proc(tmp_path)
+
+    assert main(["pids", "--container-id", TARGET_CID], proc=proc) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "container ca-gateway: the processes in its PID namespace"
+    assert lines[1] == (
+        "this pod also has pva-gateway - re-attach with `--target pva-gateway` "
+        "for a seat in that one"
+    )
+    assert lines[2].split()[0] == "PID"
+
+
+def test_a_one_container_pod_is_headed_but_offered_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(TARGET_NAME_ENV, "app")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "app")
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "container app: the processes in its PID namespace"
+    assert lines[1].split()[0] == "PID"
+
+
+def test_a_seat_that_was_never_told_heads_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Absence is "an older launcher landed me", never "one container".
+
+    Guessing the pod's shape from a missing variable is the claim this heading
+    exists to stop, so the listing goes back to what it printed before.
+    """
+    assert listing_heading(None, ["ca-gateway", "pva-gateway"]) == []
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    assert capsys.readouterr().out.splitlines()[0].split()[0] == "PID"
+
+
+def test_the_json_form_is_not_headed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A heading is prose for a reader, and `--json` has neither."""
+    monkeypatch.setenv(TARGET_NAME_ENV, "ca-gateway")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "ca-gateway,pva-gateway")
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID, "--json"], proc=proc)
+    json.loads(capsys.readouterr().out)
+
+
+def test_three_containers_offer_the_flag_for_each(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``p47-proxy``, where the seat holds a third of the pod's processes."""
+    monkeypatch.setenv(TARGET_NAME_ENV, "panda80")
+    monkeypatch.setenv(POD_CONTAINERS_ENV, "panda80,panda8080,pmac1025")
+    proc = make_proc(tmp_path)
+
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    assert capsys.readouterr().out.splitlines()[1] == (
+        "this pod also has panda8080 and pmac1025 - re-attach with "
+        "`--target panda8080` or `--target pmac1025` for a seat in one of those"
+    )
+
+
 def test_pids_table_marks_only_the_target(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     proc = make_proc(tmp_path)
     assert main(["pids", "--container-id", TARGET_CID], proc=proc) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["PID", "UID", "TARGET", "CONTAINER", "COMM", "CMDLINE"]
+    assert lines[0].split() == [
+        "PID",
+        "UID",
+        "TARGET",
+        "ST",
+        "THR",
+        "PTRACE",
+        "CONTAINER",
+        "COMM",
+        "CMDLINE",
+    ]
     marked = [line for line in lines[1:] if line.split()[2] == "yes"]
     assert [line.split()[0] for line in marked] == [str(TARGET_PID)]
     assert "/app/victim --loop" in "\n".join(lines)
@@ -365,8 +552,8 @@ def test_empty_table_still_has_a_header(
     proc = tmp_path / "proc"
     proc.mkdir()
     main(["pids", "--container-id", TARGET_CID], proc=proc)
-    assert (
-        capsys.readouterr().out.strip() == "PID  UID  TARGET  CONTAINER  COMM  CMDLINE"
+    assert capsys.readouterr().out.strip() == (
+        "PID  UID  TARGET  ST  THR  PTRACE  CONTAINER  COMM  CMDLINE"
     )
 
 
@@ -546,6 +733,85 @@ def test_an_unshadowed_target_still_gets_the_sysroot_path(
 
     assert captured.out == f"/proc/{TARGET_PID}/root/app/victim\n"
     assert captured.err == ""
+
+
+def test_startup_commands_are_the_attach_sequence_without_the_attach() -> None:
+    """One author for both, so the wrapper cannot fall behind (finding 17.6).
+
+    ``gdb-podbench`` supplies its own ``--pid``, and used to carry two of these
+    lines hand-copied into ``sh`` — missing ``add-auto-load-safe-path``, which
+    costs every thread-aware command, and later ``handle SIGURG``, which pins
+    the default a Go session's readability rests on. Neither absence reports
+    anything.
+    """
+    attach = attach_commands(TARGET_PID, exe="/app/victim")
+
+    assert startup_commands(TARGET_PID, exe="/app/victim") == attach[:-1]
+    assert attach[-1] == f"attach {TARGET_PID}"
+
+
+def test_startup_commands_can_leave_debuginfod_alone() -> None:
+    """``None`` is not ``False``: it emits no ``set debuginfod`` line at all.
+
+    Symbols are fetched with the workload *stopped*, so enabling it is a pause
+    ``podbench dbg`` chooses to spend on its own behalf. The wrapper stands
+    behind cpptools and debugpy, which have agreed to no such thing.
+    """
+    left_alone = startup_commands(TARGET_PID, exe="/app/victim", debuginfod=None)
+
+    assert not any(command.startswith("set debuginfod") for command in left_alone)
+    assert "set debuginfod enabled off" in startup_commands(
+        TARGET_PID, exe="/app/victim", debuginfod=False
+    )
+
+
+def test_dbg_prints_the_startup_sequence_for_the_gdb_wrapper(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--print-startup-commands`` is the wrapper's whole answer, one per line.
+
+    The wrapper turns each into an ``-iex``; ``attach`` is absent because the
+    caller passed ``--pid`` and gdb attaches during startup.
+    """
+    proc = make_proc(tmp_path)
+    runner = RecordingRunner()
+
+    code = main(
+        ["dbg", str(TARGET_PID), "--print-startup-commands"], proc=proc, runner=runner
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert runner.calls == [], "printing commands must not start a debugger"
+    assert out.splitlines() == [
+        "set pagination off",
+        "handle SIGURG nostop noprint pass",
+        f"set sysroot /proc/{TARGET_PID}/root",
+        f"directory /proc/{TARGET_PID}/root",
+        f"add-auto-load-safe-path /proc/{TARGET_PID}/root",
+        f"file /proc/{TARGET_PID}/root/app/victim",
+    ]
+
+
+def test_the_startup_sequence_survives_an_unreadable_exe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A degraded rung cannot read ``/proc/<pid>/exe``, and still needs the rest.
+
+    ``--print-exec-file`` has nothing to say here and exits non-zero. This flag
+    does: the sysroot alone is still the difference between this container's
+    libraries and the target's, and dropping the whole sequence over the one
+    line that cannot be built would be the worse trade (report 3.3).
+    """
+    proc = make_proc(tmp_path)
+    (proc / str(TARGET_PID) / "exe").unlink()
+
+    code = main(["dbg", str(TARGET_PID), "--print-startup-commands"], proc=proc)
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert f"set sysroot /proc/{TARGET_PID}/root" in captured.out.splitlines()
+    assert not any(line.startswith("file ") for line in captured.out.splitlines())
 
 
 def test_dbg_names_the_blocker_and_offers_launch(
@@ -750,3 +1016,71 @@ def test_main_requires_a_subcommand() -> None:
     # A usage error, not a success: `podbench` alone must not look like a
     # command that ran.
     assert main([]) == 2
+
+
+# -- what is offered, and what is only ranked --------------------------------
+
+
+def test_the_offering_is_capped_and_says_what_it_left_out(tmp_path: Path) -> None:
+    """opis: 98 offerable processes, one dropdown.
+
+    Every offered pid becomes a full set of launch.json entries, so an
+    unbounded offering is a dropdown that is scrolled rather than read. The cap
+    is not silent: what it left out is named, counted, and pointed at the pid
+    argument that reaches it.
+    """
+    proc = write_tree(tmp_path / "proc", sample("opis"))
+    pids, notes = resolve_target_pids(None, CID, proc=proc)
+    assert len(pids) == MAX_OFFERED_PIDS
+    assert pids[0] == 1
+    dropped = next(note for note in notes if "not offered" in note)
+    assert "of 98 candidates" in dropped
+    assert "33 (nginx)" in dropped
+    assert "and 89 more" in dropped
+    assert "podbench pids" in dropped
+
+
+def test_a_zombie_is_never_offered_though_a_shell_still_is(tmp_path: Path) -> None:
+    """The asymmetry between the two fallbacks, in one pod.
+
+    blueapi's zombie is ranked last and then dropped: an entry for it is an
+    entry that can only fail, whatever seat selects it. A shell is dropped only
+    because something better ran — on a container that is nothing but a shell it
+    is still offered.
+    """
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    pids, _ = resolve_target_pids(None, CID, proc=proc)
+    assert pids == [1, 233, 10, 232]
+
+
+def test_the_pids_table_marks_the_disqualified(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "Run `podbench pids` to choose another" has to show what to choose on.
+
+    The listing is in raw pid order, so the columns are all the reader has:
+    a `Z` under ST is a process no seat can attach to, and a DENIED under
+    PTRACE is one this seat in particular cannot.
+    """
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    assert main(["pids", "--container-id", CID, "--targets"], proc=proc) == 0
+    rows = {
+        line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()
+    }
+    assert rows["1"][3:6] == ["S", "195", "ok"]
+    assert rows["518"][3:6] == ["Z", "1", "DENIED"]
+
+
+def test_pids_json_carries_the_new_measurements(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Additive keys: an older seat omits them, and a consumer must not read a
+    missing key as a measured `false`."""
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    main(["pids", "--container-id", CID, "--targets", "--json"], proc=proc)
+    payload = json.loads(capsys.readouterr().out)
+    zombie = next(p for p in payload["processes"] if p["pid"] == 518)
+    assert zombie["state"] == "Z"
+    assert zombie["threads"] == 1
+    assert zombie["ptrace_readable"] is False
+    assert zombie["ppid"] == 233

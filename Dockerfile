@@ -176,27 +176,34 @@ RUN mkdir -p /run/sshd /etc/podbench
 # It is not unconditional: this NSS source has floors compiled into it (MINUID
 # 500, MINGID 500, with gid 100 exempted - s_config.h, 0.6-4.1) and silently
 # ignores any record below them, for getpwnam as well as getpwuid. A seat under
-# a floor takes /etc/passwd instead, and can write it: the commonest of them is a
-# target that sets runAsUser and no runAsGroup, so the seat pins no group and
-# runs with this image's gid 0, and --seat-gid-root asks for gid 0 outright.
-# agent.extrausers_serves is where that is decided and argued.
+# a floor takes /etc/passwd instead - and a seat under a floor generally cannot
+# write /etc/passwd either, because the uids below 500 are exactly the ones whose
+# gids are below 500 too (grafana 472:472, nginx-unprivileged 101:101). It had no
+# route at all. So this image pre-seeds a record for every free uid under 500
+# below, and that whole range needs no write.
+# agent.extrausers_serves is where the routing is decided and argued.
 #
 # The alternative it replaces as the default is why this exists at all. The
 # convention for containers running as an arbitrary uid is OpenShift's -
 # /etc/passwd group-writable by GID 0, appended to by the entrypoint - and it
-# buys nothing unless the seat carries gid 0, which is what
-# `podbench attach --seat-gid-root` asks for. Against a target whose gid is not
-# 0 (36070 at Diamond) that flag pins runAsGroup: 0 and so destroys the
-# credential match ptrace needs, taking the debugger with it: the documented way
-# out of "no ssh" cost the thing the seat is for (issue #102, measured on a k3s
-# bed).
+# buys nothing unless the seat carries gid 0. `--seat-gid-root` used to pin that
+# outright and retired in #103: against a target whose gid is not 0 (36070 at
+# Diamond) it destroyed the credential match ptrace needs and took the debugger
+# with it, so the documented way out of "no ssh" cost the thing the seat is for
+# (issue #102, measured on a k3s bed).
 #
-# `chmod g=u` therefore stays. This change *adds* a route: /etc/passwd is still
-# the file a `podbench dev` sidecar projects its identity over, and still the
-# one `--seat-gid-root` writes when extrausers is absent or not consulted.
-# gid 0 grants no privilege on its own - it is a group, not root - and
-# /etc/group gets the same treatment so an image change that starts needing a
-# group record is not a second fix.
+# `chmod g=u` therefore stays, and the reason is now a narrower one than it was.
+# The seat that used to need it - runAsUser with no runAsGroup, so gid 0 by
+# default - no longer arrives: podbench measures the target's real gid from
+# /proc and pins it (#103). What is left is a target whose group genuinely *is*
+# 0 at a uid of 500 or more, which the static records below do not reach and
+# extrausers refuses; 0644 would leave it with no route. /etc/passwd is also
+# still the file a `podbench dev` sidecar projects its identity over. gid 0
+# grants no privilege on its own - it is a group, not root - and /etc/group gets
+# the same treatment so an image change that starts needing a group record is
+# not a second fix. World-write is a different question and the answer is no:
+# 0666 here would be the seat's own uid writing a file a root sshd resolves
+# from, which is #98's shape.
 #
 # Mode 0666 on the record file is not an escalation, and the reason is different
 # on each rung, so both are stated. On `degraded` and `seat` sshd runs as the
@@ -223,12 +230,58 @@ RUN sed -i 's/^passwd:.*/passwd:         files extrausers/' /etc/nsswitch.conf \
     && touch /var/lib/extrausers/passwd \
     && chmod 0666 /var/lib/extrausers/passwd
 
+# Static records for the sub-500 uids, which is precisely the range
+# libnss-extrausers refuses (MINUID 500). A seat there could reach neither
+# database: the extrausers append is ignored, and /etc/passwd is group-writable
+# by gid 0 which a seat mirroring a 472:472 target does not have. Baked in, the
+# lookup succeeds with nothing writable anywhere and ensure_passwd_entry returns
+# having touched no file - which is the only identity mechanism in this image
+# that costs no writable surface at all.
+#
+# Bounded because the range is: 499 lines, a few of them already taken by the
+# distribution's own system accounts, which `getent` skips rather than shadows -
+# a duplicate uid would make getpwuid answer with whichever came first and hand
+# somebody `daemon`'s home. The uids above 500 get no such treatment because
+# there is no end to them; that is what extrausers is for.
+#
+# The gid field is 65534 (`nogroup`), not a guess at the target's. It is not the
+# process's group - the kernel gave the seat that from runAsGroup, and it is the
+# target's - and a non-root sshd never setgid()s out of a passwd record, so this
+# field is read by nothing that matters here. Claiming a group the seat does not
+# have would be the only alternative.
+#
+# The home is sshcfg.FALLBACK_HOME_PREFIX + uid, which is where default_home()
+# already sends a seat with no record, so nothing moves for the seats this
+# changes. The one cost is a seat that *also* mounts the pod's podbench-home
+# volume: sshd takes an interactive session's HOME from the passwd record, so
+# that session starts in /tmp rather than on the volume. A record baked at build
+# time cannot know a mount decided at attach time, and the alternative for these
+# uids is the status quo ante - no login at all.
+RUN set -eu; \
+    for uid in $(seq 1 499); do \
+        if ! getent passwd "$uid" >/dev/null; then \
+            printf 'podbench-%s:x:%s:65534:podbench seat:/tmp/podbench-%s:/bin/bash\n' \
+                "$uid" "$uid" "$uid"; \
+        fi; \
+    done >> /etc/passwd
+
 # Symbols, but never sources, on Debian targets: S3 got a fully symbolised
 # glibc + coreutils backtrace for 4.7 MB of client cache, and every source fetch
 # 404'd (report 3.2). Debian already falls back to this same URL via
 # /etc/debuginfod/elfutils.urls when the variable is unset (verified), so this
 # only makes the setting visible and gives the launcher one place to override.
 ENV DEBUGINFOD_URLS=https://debuginfod.debian.net
+
+# And a bound on it, because gdb's default is 90 seconds *per shared library*
+# and it spends them after the attach, with the workload stopped - against
+# readiness deadlines podbench computes in tens of seconds. Two seconds is the
+# value agent.DEBUGINFOD_TIMEOUT_SECONDS supplies to a session that arrives
+# without one; this ENV is what bounds the routes no sshd config reaches, the
+# kubectl exec shell and the gdb cpptools starts through gdb-podbench. The seat
+# also probes the server once at start-up and drops the URL above from ssh
+# sessions when nothing answers (agent.check_debuginfod), so this timeout is the
+# bound on a server that is reachable and slow, not on one that is absent.
+ENV DEBUGINFOD_TIMEOUT=2
 
 # The static uv binary, not the install script: no curl at build time and a
 # digest renovate can bump. uvx is skipped (~35 MiB for what `uv tool run` does).
@@ -264,12 +317,25 @@ ENV PATH=/app/.venv/bin:$PATH
 RUN uv pip install --python /app/.venv/bin/python \
     --target /opt/podbench/debugpy debugpy==1.8.21
 
+# Rust's pretty-printers, which no toolchain in this pod ships. A Rust binary
+# names `gdb_load_rust_pretty_printers.py` in .debug_gdb_scripts and that file
+# lives in a rustup toolchain, so in a production container the reference
+# resolves to nothing and `Vec`, `String` and `Option` print as the
+# RawVecInner/Unique/NonNull nest they are made of. 6 KiB against the ~700 MB
+# cap. Sourced only for a target podbench identified as Rust
+# (`podbench.gdbcmd.RUST_PRETTY_PRINTERS`), so it costs an unrelated attach
+# nothing.
+COPY image/gdb/ /opt/podbench/gdb/
+
 # Two files, both structural, and deliberately not the brief's per-subcommand
 # helpers - see image/README.md, deviation 6, for why those went away.
 #
-#   podbench      the venv at /app/.venv/bin is on no default PATH and sshd is
-#                 built UsePAM no, so `ssh <seat> podbench pids` gets sshd's
-#                 compiled-in PATH. This is the file that makes it resolve.
+#   podbench      the venv at /app/.venv/bin is on no default PATH, and
+#                 /usr/local/bin is on sshd's compiled-in one whatever happens.
+#                 The agent's sshd_config now carries the container's PATH into
+#                 a session with SetEnv, so this is no longer the only route -
+#                 it is the route that does not depend on that config having
+#                 been written, which is the point of it.
 #   gdb-podbench  installed as `gdb` below, for third-party callers.
 COPY --chmod=0755 image/bin/ /usr/local/bin/
 
@@ -282,10 +348,12 @@ COPY --chmod=0755 image/bin/ /usr/local/bin/
 # are unaffected: they set the sysroot themselves and never pass --pid.
 RUN ln -s gdb-podbench /usr/local/bin/gdb
 
-# sshd is built with UsePAM no in report 4.1's config, so login shells get
-# sshd's compiled-in default PATH and never see the ENV above. This fixes
-# interactive sessions; `ssh host <cmd>` sources nothing at all, which is why
-# /usr/local/bin/podbench calls the venv by absolute path.
+# For interactive login shells, and still needed after SetEnv: Debian's
+# /etc/profile assigns PATH outright rather than appending, so a login shell
+# overwrites whatever the session was handed and the ENV above is lost again.
+# This fragment is sourced afterwards and puts the venv back. Non-interactive
+# `ssh host <cmd>` sources none of it and is covered by SetEnv (agent.py,
+# SESSION_ENV_NAMES) plus /usr/local/bin/podbench naming the venv in full.
 RUN printf '%s\n' 'PATH="/app/.venv/bin:$PATH"' 'export PATH' \
     > /etc/profile.d/podbench.sh
 

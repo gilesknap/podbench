@@ -28,7 +28,11 @@ Two fields here exist only because of measured failures rather than taste:
   See ``image/bin/gdb-podbench``.
 * ``cwd`` is set explicitly. On a developer's machine ``${workspaceFolder}``
   always exists so nobody sets it; in a seat it can resolve to nothing, and the
-  result is that same unformattable crash.
+  result is that same unformattable crash. It is
+  :func:`podbench.proc.seat_cwd` — the seat's own ``$HOME``, measured here
+  because this verb runs in the seat — and not a constant: ``/root`` is the
+  home of a *root* seat only, and naming it on a uid-pinned rung emitted a
+  directory that seat cannot enter.
 
 The ordering inside ``setupCommands`` is not this module's invention: it is
 :func:`podbench.gdbcmd.attach_commands` with the two lines cpptools issues
@@ -36,10 +40,11 @@ itself removed, so the sequence report 3.3 made load-bearing cannot drift
 between the CLI path and the DAP path.
 
 And ``pathMappings`` is **mode-dependent**, which is the one field here that
-fails without any error at all — breakpoints simply never bind. In Observe mode
-the target is another container, so the editor sees the source through
-``/proc/<pid>/root`` and the debuggee reports its own path: a mapping is
-required. In a ``dev`` pod editor and interpreter are the same container and
+fails without any error at all. In Observe mode the target is another
+container, so the editor sees the source through ``/proc/<pid>/root`` while the
+debuggee reports its own path: a mapping is required, and it maps the *mount
+namespace* — ``/proc/<pid>/root`` to ``/`` — rather than a root guessed from
+``argv``. In a ``dev`` pod editor and interpreter are the same container and
 the same inodes, so the mapping must be **empty**. Both spellings are emitted
 from the detected mode rather than from a flag, because a user cannot be
 expected to know which side of that line they are on.
@@ -61,11 +66,12 @@ import copy
 import json
 import platform
 import shutil
+import socket
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 
@@ -74,10 +80,12 @@ from .elf import debugpy_helper_name, debugpy_helper_published
 from .execfile import gdb_exec_file
 from .flavour import (
     DEBUGPY_PORT,
+    NATIVE_LANGUAGES,
     Assessment,
     Flavour,
     Language,
     Mode,
+    PtraceEvidence,
     Seat,
     Target,
     Which,
@@ -86,6 +94,7 @@ from .flavour import (
     detect_mode,
     injection_command,
     inspect_target,
+    ptrace_evidence,
     survey_seat,
 )
 from .gdbcmd import (
@@ -96,9 +105,15 @@ from .gdbcmd import (
     sysroot_path,
 )
 from .kubectl import Runner, run_subprocess
-from .model import as_dict
+from .model import as_dict, describe_pause
 from .probe import Attacher, default_attacher
-from .proc import DEFAULT_PROC
+from .proc import (
+    DEFAULT_PROC,
+    env_host_network,
+    env_target_container_id,
+    seat_cwd,
+    strip_container_scheme,
+)
 from .provision import (
     PROVISION_DEST,
     inject_debugpy,
@@ -106,6 +121,11 @@ from .provision import (
     provision_paste,
     target_destination,
 )
+
+if TYPE_CHECKING:
+    # Type-only: the runtime import lives inside `_listening_debugpy`, where its
+    # docstring explains which of the three module cycles here gives way.
+    from .dev import PortOwner
 
 __all__ = [
     "ADAPTER_CPPDBG",
@@ -115,15 +135,16 @@ __all__ = [
     "EXTENSIONS",
     "GDB_WRAPPER",
     "MACHINE_SETTINGS_PATH",
-    "SEAT_CWD",
     "SEAT_FOLDER_SETTINGS",
     "SEAT_MACHINE_SETTINGS",
+    "ListeningServer",
     "configurations_for",
     "cppdbg_configuration",
     "cppdbg_launch_configuration",
     "debugpy_attach_configuration",
     "debugpy_launch_configuration",
     "delve_configuration",
+    "ephemeral_port",
     "extensions_for",
     "extensions_json_text",
     "launch_json_text",
@@ -146,13 +167,6 @@ __all__ = [
 GDB_WRAPPER = "/usr/local/bin/gdb-podbench"
 """The image's cwd-safe gdb. Never ``/usr/bin/gdb`` — see the module docstring."""
 
-SEAT_CWD = "/root"
-"""Where the debug adapter should start gdb.
-
-Any directory that exists would do; the seat's home is the one the image
-guarantees. The value matters far less than the field being present at all.
-"""
-
 ADAPTER_CPPDBG = "cppdbg"
 ADAPTER_LLDB = "lldb"
 ADAPTER_DEBUGPY = "debugpy"
@@ -163,7 +177,15 @@ flavour is named after the debugger, the ``type`` after the extension."""
 DEBUGPY_HOST = "127.0.0.1"
 """Right in both modes, and worth stating because it looks wrong in Observe
 mode: the seat and the app are separate containers but share the pod's network
-namespace, so no port-forward and no tunnel is involved."""
+namespace, so no port-forward and no tunnel is involved.
+
+Under ``hostNetwork: true`` that namespace is the **node's**, and this address
+stops meaning "inside this pod". Loopback is still the right bind — nothing off
+the node can reach it — but every other hostNetwork pod and every node daemon
+shares it, in both directions: a port found here may be a stranger's, and a
+server started here is reachable by all of them. See
+:data:`~podbench.model.HOST_NETWORK_ENV` and issue #87.
+"""
 
 _VERSION = "0.2.0"
 """The ``launch.json`` schema version, which VS Code has never bumped."""
@@ -297,8 +319,7 @@ def extensions_for(configurations: Sequence[Mapping[str, Any]]) -> list[str]:
     *workload's* ephemeral-storage budget — an ephemeral container may not
     declare ``resources`` (report 3.9) — and ``ms-vscode.cpptools`` alone is
     330 MiB against a server that already measured 1215 MiB live. Installing a
-    language the target does not use spends the workload's disk on nothing
-    (issue #42).
+    language the target does not use spends the workload's disk on nothing.
 
     What this cannot promise is "and nothing else". ``ms-python.python`` is an
     extension *pack*: s2 §7 ran the install and got ``vscode-python-envs``,
@@ -490,6 +511,7 @@ def setup_commands(
     *,
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
+    rust: bool = False,
 ) -> list[str]:
     """The gdb settings cpptools must apply *before* it attaches.
 
@@ -501,6 +523,7 @@ def setup_commands(
     >>> for command in setup_commands(597):
     ...     print(command)
     set pagination off
+    handle SIGURG nostop noprint pass
     set sysroot /proc/597/root
     directory /proc/597/root
     add-auto-load-safe-path /proc/597/root
@@ -509,14 +532,21 @@ def setup_commands(
     return [
         command
         for command in attach_commands(
-            pid, exe=None, source_dirs=source_dirs, debuginfod=debuginfod
+            pid,
+            exe=None,
+            source_dirs=source_dirs,
+            debuginfod=debuginfod,
+            rust=rust,
         )
         if not command.startswith(("file ", "attach "))
     ]
 
 
 def launch_setup_commands(
-    *, source_dirs: Sequence[str] = (), debuginfod: bool = True
+    *,
+    source_dirs: Sequence[str] = (),
+    debuginfod: bool = True,
+    rust: bool = False,
 ) -> list[str]:
     """The same, for a program gdb starts itself.
 
@@ -529,27 +559,33 @@ def launch_setup_commands(
     >>> for command in launch_setup_commands():
     ...     print(command)
     set pagination off
+    handle SIGURG nostop noprint pass
     set debuginfod enabled on
     """
     return [
         command
         for command in launch_commands(
-            "unused", source_dirs=source_dirs, debuginfod=debuginfod
+            "unused", source_dirs=source_dirs, debuginfod=debuginfod, rust=rust
         )
         if not command.startswith(("file ", "set args ", "run"))
     ]
 
 
 def _name(action: str, target: str, flavour: Flavour) -> str:
-    """Every configuration is named for its flavour.
+    """Every configuration is named for its flavour, and for its process.
 
     ``launch.json`` holds a list and VS Code's dropdown shows the names, so the
     flavour has to be *in* the name — two configurations called "podbench:
     attach to app" are a coin toss, and picking the wrong one produces a
     debugger that attaches and then shows nothing useful.
 
-    >>> _name("attach to", "demo_service.py", Flavour.DEBUGPY)
-    'podbench: attach to demo_service.py (debugpy)'
+    ``target`` is :attr:`podbench.flavour.Target.label` at every call site here
+    for the same reason one step further out: the ranking now offers up to five
+    candidates, and ordering them is worthless if the dropdown reads "attach to
+    python" three times.
+
+    >>> _name("attach to", "demo_service.py [pid 12 python]", Flavour.DEBUGPY)
+    'podbench: attach to demo_service.py [pid 12 python] (debugpy)'
     """
     return f"podbench: {action} {target} ({flavour.value})"
 
@@ -564,6 +600,7 @@ def cppdbg_configuration(
     source_map: Mapping[str, str] | None = None,
     debuginfod: bool = True,
     machine: str | None = None,
+    rust: bool = False,
 ) -> dict[str, Any]:
     """One ``cppdbg`` attach configuration for a process in this pod.
 
@@ -599,13 +636,13 @@ def cppdbg_configuration(
         # today but is not what the schema documents.
         "processId": str(pid),
         "program": exec_file or f"{sysroot_path(pid)}{program}",
-        "cwd": SEAT_CWD,
+        "cwd": seat_cwd(),
         "MIMode": "gdb",
         "miDebuggerPath": GDB_WRAPPER,
         "setupCommands": [
             {"text": command}
             for command in setup_commands(
-                pid, source_dirs=source_dirs, debuginfod=debuginfod
+                pid, source_dirs=source_dirs, debuginfod=debuginfod, rust=rust
             )
         ],
     }
@@ -625,6 +662,7 @@ def cppdbg_launch_configuration(
     source_dirs: Sequence[str] = (),
     debuginfod: bool = True,
     machine: str | None = None,
+    rust: bool = False,
 ) -> dict[str, Any]:
     """The ``dev``-mode shape: gdb starts the program rather than attaching.
 
@@ -646,13 +684,13 @@ def cppdbg_launch_configuration(
         "request": "launch",
         "program": program,
         "args": [],
-        "cwd": cwd or SEAT_CWD,
+        "cwd": cwd or seat_cwd(),
         "MIMode": "gdb",
         "miDebuggerPath": GDB_WRAPPER,
         "setupCommands": [
             {"text": command}
             for command in launch_setup_commands(
-                source_dirs=source_dirs, debuginfod=debuginfod
+                source_dirs=source_dirs, debuginfod=debuginfod, rust=rust
             )
         ],
     }
@@ -679,6 +717,21 @@ def lldb_configuration(
     >>> config = lldb_configuration(597, "/app/victim")
     >>> config["type"], config["pid"]
     ('lldb', 597)
+
+    A fourth difference is the missing ``exec_file`` parameter, and it is not an
+    oversight. cppdbg takes one because a staged copy is how gdb is kept off the
+    seat's own binary at the target's path (issue #90); lldb was measured to
+    *override* whatever ``program`` says once it has attached, re-resolving the
+    executable from the process in this seat's mount namespace, so there is no
+    path this function could be given that would survive. The collision is
+    refused instead of worked around — ``flavour._assess_lldb`` withdraws the
+    flavour where :func:`podbench.execfile.shadowing_file` finds one, and this
+    function is reached only for the targets nothing here shadows, where the
+    sysroot-prefixed ``program`` is right and lldb keeps it.
+
+    Measured 2026-08-19 with standalone lldb 21.1.8 on the k3s bed, against a
+    mount namespace built with podman - not in a podbench seat, and not with
+    CodeLLDB's own bundled lldb in a remote extension host.
     """
     root = sysroot_path(pid)
     configuration: dict[str, Any] = {
@@ -728,26 +781,45 @@ def delve_configuration(
     return configuration
 
 
-def python_path_mappings(
-    pid: int, source_root: str | None, mode: Mode
-) -> list[dict[str, str]]:
+def python_path_mappings(pid: int, mode: Mode) -> list[dict[str, str]]:
     """The mapping debugpy needs, which is decided by the mode and nothing else.
 
-    Getting this wrong does not error — breakpoints simply never bind — so it
-    is derived from the detected mode rather than left to a flag.
+    Getting this wrong does not error, and there are two ways to be wrong: a
+    mapping that binds nothing means breakpoints simply never bind, and a
+    mapping that binds to the *wrong real file* means the editor shows
+    confident, plausible, wrong source. So it is derived from the detected mode
+    rather than left to a flag.
 
-    >>> python_path_mappings(1, "/src", Mode.OBSERVE)
-    [{'localRoot': '/proc/1/root/src', 'remoteRoot': '/src'}]
-    >>> python_path_mappings(1, "/src", Mode.DEV)
+    In Observe mode the answer is the mount namespace itself, which is true for
+    a script, a console script and an editable install alike — no root is
+    guessed, so none can be guessed wrongly.
+
+    >>> python_path_mappings(1, Mode.OBSERVE)
+    [{'localRoot': '/proc/1/root', 'remoteRoot': '/'}]
+    >>> python_path_mappings(1, Mode.DEV)
     []
+
+    ``/`` on the right is not the anti-pattern :func:`_parse_source_map`
+    refuses: that one is gdb re-applying its own ``substitute-path`` on every
+    display, which is a gdb behaviour and not a property of a root mapping.
     """
-    if mode is Mode.DEV or not source_root:
+    if mode is Mode.DEV:
         # Dev mode: editor and interpreter are the same container and the same
         # inodes, so any mapping at all is a spurious one.
         return []
-    return [
-        {"localRoot": f"{sysroot_path(pid)}{source_root}", "remoteRoot": source_root}
-    ]
+    # The namespace, never a narrower root — the same discipline gdbcmd states
+    # for the exec file ("String concatenation, never a path join: the exe link
+    # is absolute, and joining would discard the sysroot and silently read our
+    # own binary"), and the same failure. A root taken from `argv` is
+    # `/app/.venv/bin` for a console script, and podbench's own image installs
+    # under `/app/.venv` too, so that path exists on both sides with different
+    # contents: the wrong mapping *resolves* instead of failing, and the editor
+    # opens the seat's copy of the workload's frame (issue #112).
+    #
+    # One entry, and deliberately no narrower ones beside it: a second, more
+    # specific pair reintroduces exactly that collision for the paths it covers,
+    # and covers nothing this one does not.
+    return [{"localRoot": sysroot_path(pid), "remoteRoot": "/"}]
 
 
 def debugpy_attach_configuration(
@@ -755,7 +827,6 @@ def debugpy_attach_configuration(
     *,
     name: str,
     port: int = DEBUGPY_PORT,
-    source_root: str | None = None,
     mode: Mode = Mode.OBSERVE,
 ) -> dict[str, Any]:
     """Connect to a debugpy server running inside the target's interpreter.
@@ -767,11 +838,11 @@ def debugpy_attach_configuration(
     ``justMyCode`` is false because the interesting frames in a pod are usually
     somebody else's — a framework's request handler, an ORM's session teardown.
 
-    >>> config = debugpy_attach_configuration(1, name="x", source_root="/src")
+    >>> config = debugpy_attach_configuration(1, name="x")
     >>> config["connect"]
     {'host': '127.0.0.1', 'port': 5678}
     >>> config["pathMappings"]
-    [{'localRoot': '/proc/1/root/src', 'remoteRoot': '/src'}]
+    [{'localRoot': '/proc/1/root', 'remoteRoot': '/'}]
     """
     return {
         "name": name,
@@ -779,7 +850,7 @@ def debugpy_attach_configuration(
         "request": "attach",
         "connect": {"host": DEBUGPY_HOST, "port": port},
         "justMyCode": False,
-        "pathMappings": python_path_mappings(pid, source_root, mode),
+        "pathMappings": python_path_mappings(pid, mode),
     }
 
 
@@ -828,59 +899,86 @@ def configurations_for(
     here would be the same exclusive guess this module exists to avoid.
     """
     program = target.program or ""
+    # Every name is built from `Target.label`, never from the program alone: N
+    # candidates each get a full set of entries, and `merge_launch_configs`
+    # matches by name, so two candidates sharing a basename do not merely read
+    # alike in the dropdown - the second silently replaces the first.
+    # Sourcing the Rust printers is the one thing here that turns on the
+    # target's language rather than on the mode, and it is asked once so both
+    # shapes agree.
+    rust = target.language is Language.RUST
     if flavour is Flavour.GDB:
         if mode is Mode.DEV:
             return [
                 cppdbg_launch_configuration(
                     program,
+                    name=_name("launch", target.label, Flavour.GDB),
                     cwd=target.cwd,
                     source_dirs=source_dirs,
                     debuginfod=debuginfod,
                     machine=target.machine,
+                    rust=rust,
                 )
             ]
         return [
             cppdbg_configuration(
                 target.pid,
                 program,
+                name=_name("attach to", target.label, Flavour.GDB),
                 exec_file=exec_file,
                 source_dirs=source_dirs,
                 source_map=source_map,
                 debuginfod=debuginfod,
                 machine=target.machine,
+                rust=rust,
             )
         ]
     if flavour is Flavour.LLDB:
-        return [lldb_configuration(target.pid, program, source_map=source_map)]
+        return [
+            lldb_configuration(
+                target.pid,
+                program,
+                name=_name("attach to", target.label, Flavour.LLDB),
+                source_map=source_map,
+            )
+        ]
     if flavour is Flavour.DELVE:
-        return [delve_configuration(target.pid, program, source_map=source_map)]
+        return [
+            delve_configuration(
+                target.pid,
+                program,
+                name=_name("attach to", target.label, Flavour.DELVE),
+                source_map=source_map,
+            )
+        ]
     return _debugpy_configurations(target, mode, seat, port=port)
 
 
 def _debugpy_configurations(
     target: Target, mode: Mode, seat: Seat, *, port: int
 ) -> list[dict[str, Any]]:
-    source_root = target.source_root
     connect = debugpy_attach_configuration(
         target.pid,
-        name=_name("connect to", target.name, Flavour.DEBUGPY),
+        name=_name("connect to", target.label, Flavour.DEBUGPY),
         port=port,
-        source_root=source_root,
         mode=mode,
     )
     if mode is not Mode.DEV:
         return [
             debugpy_attach_configuration(
                 target.pid,
-                name=_name("attach to", target.name, Flavour.DEBUGPY),
+                name=_name("attach to", target.label, Flavour.DEBUGPY),
                 port=port,
-                source_root=source_root,
                 mode=mode,
             )
         ]
     if target.script:
         return [
-            debugpy_launch_configuration(target.script, cwd=target.cwd),
+            debugpy_launch_configuration(
+                target.script,
+                name=_name("launch", target.label, Flavour.DEBUGPY),
+                cwd=target.cwd,
+            ),
             connect,
         ]
     # `python -m pkg` names a module rather than a file, so there is nothing to
@@ -954,7 +1052,22 @@ def _warn(message: str) -> None:
 
 
 def _parse_source_map(entries: Sequence[str]) -> tuple[dict[str, str], list[str]]:
-    """``FROM=TO`` pairs, and a complaint for anything that is not one."""
+    """``FROM=TO`` pairs, and a complaint for anything that is not one.
+
+    Refusing ``/`` here is not in tension with
+    :func:`python_path_mappings` emitting ``remoteRoot: "/"``, however alike the
+    two read. They are different debuggers doing different things.
+    ``remoteRoot`` is a DAP path translation the adapter applies *once*, to turn
+    a path the debuggee reported into one the editor can open. This becomes
+    gdb's ``substitute-path``, which gdb re-applies every time it computes
+    ``fullname`` — and the exec file is already loaded through the sysroot, so
+    substituting ``/`` again prefixes a path that carries the prefix already.
+
+    Left unremarked, the apparent contradiction invites reconciling one to the
+    other, and either direction reintroduces a defect: dropping this refusal
+    doubles the prefix, and narrowing ``remoteRoot`` puts back the guessed root
+    that made a wrong mapping *resolve* instead of fail (issue #112).
+    """
     mapping: dict[str, str] = {}
     problems: list[str] = []
     for entry in entries:
@@ -1032,15 +1145,98 @@ def program_load_error(
     return " / ".join(line.strip() for line in output.splitlines() if line.strip())
 
 
-def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
-    """Whether something is already serving ``port`` in this pod.
+PortChooser = Callable[[], int]
+"""How a free port is obtained. Injected so the unit suite never binds one."""
 
-    Reuses ``dev``'s ``ss`` parsing rather than growing a second one: the pod's
-    network namespace is shared, so a listener anywhere in it is reachable from
-    the seat at ``127.0.0.1`` — which is exactly what makes the "the app called
-    ``debugpy.listen()`` itself" path work with no capability and on any
-    architecture. An ``ss`` that cannot run answers ``None``, since a guess here
-    would emit a configuration that connects to nothing.
+
+def ephemeral_port(host: str = DEBUGPY_HOST) -> int:
+    """Ask the kernel for a port nothing on this network namespace holds.
+
+    Bind zero and read back what was assigned: it is the only way to choose a
+    port without racing whoever else is choosing one. The fixed 5678 raced
+    twice over. Within a pod two seats on two pids collide on it silently — the
+    second ``debugpy --listen`` dies and the emitted configuration connects to
+    the first. Under ``hostNetwork: true`` the namespace is the *node's*, so the
+    collision is with **another pod** on the same node, which is issue #87 seen
+    from the writing end rather than the reading end.
+
+    The socket is closed before the port is handed on, so this is a hint and not
+    a reservation — but the window is microseconds against 5678's permanence,
+    and :func:`_listening_debugpy` re-reads the port afterwards and attributes
+    whatever it finds. Nothing is left behind to trip the next bind either: a
+    listener that never accepted a connection has no ``TIME_WAIT`` to leave
+    (report 3.16).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return cast("tuple[str, int]", sock.getsockname())[1]
+
+
+@dataclass(frozen=True)
+class ListeningServer:
+    """A listener found on the debugpy port, and who was proved to hold it."""
+
+    port: int
+    owner: PortOwner | None = None
+    """``None`` when nothing could be attributed: either ``ss`` reported no
+    owning pid, or the pid it reported is gone or a zombie."""
+
+    @property
+    def attributed(self) -> bool:
+        """Whether the socket was traced to a container in this pod.
+
+        The two facts that establish it are the pid resolving in *our* pid
+        namespace at all — a process in another pod is invisible there, so ``ss``
+        cannot name it and this is already ``False`` — and
+        ``/proc/<pid>/root`` answering, which is what tells one container from
+        another. Anything short of both is ``unknown``, and unknown must never
+        be reported as "in this pod" (issue #87).
+        """
+        owner = self.owner
+        return owner is not None and (
+            owner.is_target or owner.same_container is not None
+        )
+
+    def describe(self) -> str:
+        """Who holds the port, for the sentence that offers it."""
+        return (
+            self.owner.describe()
+            if self.owner is not None
+            else "a process this seat cannot see"
+        )
+
+
+def _listening_debugpy(
+    port: int,
+    *,
+    runner: Runner | None,
+    proc: Path,
+    target_cid: str | None,
+) -> ListeningServer | None:
+    """What is serving ``port``, and which container it belongs to.
+
+    Reuses ``dev``'s ``ss`` parsing rather than growing a second one — and now
+    its *attribution* as well, which is the half that was missing. The premise
+    this function used to rest on ("the pod's network namespace is shared, so a
+    listener anywhere in it is reachable from the seat at 127.0.0.1") is true of
+    an ordinary pod and false under ``hostNetwork: true``, where that namespace
+    is the node's: the sweep found 5678 held by a podbench seat in a **different
+    pod on the same node**, announced it as this pod's own server and emitted a
+    configuration pointing at it (issue #87).
+
+    So a port is not evidence. ``ss -lntpe`` already reports the owning pid and
+    the socket inode; the fix is to stop discarding them. The pid is resolved in
+    this seat's own ``/proc``, which is the pod's pid namespace, so a process in
+    another pod cannot be named there at all — an unattributable listener is
+    exactly the shape #87 takes, and it is returned as ``unknown`` rather than
+    as a server.
+
+    ``read_process`` first, because a pid can also be a zombie holding nothing:
+    a dead server that still answers ``kill -0`` is how a bootstrap once handed
+    a client a dead port (report 3.19).
+
+    An ``ss`` that cannot run answers ``None``, since a guess here would emit a
+    configuration that connects to nothing.
 
     Imported here rather than at module scope because the three modules that
     hold VS Code, dev-pod and seat-preparation knowledge genuinely each need a
@@ -1050,7 +1246,13 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
     narrowest of the three edges, a single call in a single function, so it is
     the one that gives way.
     """
-    from .dev import LISTENERS_COMMAND, listeners_on, parse_ss
+    from .dev import (
+        LISTENERS_COMMAND,
+        identify_owner,
+        listeners_on,
+        parse_ss,
+        read_process,
+    )
 
     run = runner if runner is not None else run_subprocess
     try:
@@ -1062,7 +1264,18 @@ def _listening_debugpy(port: int, *, runner: Runner | None) -> int | None:
         return None
     if result.returncode != 0:
         return None
-    return port if listeners_on(parse_ss(result.stdout), port) else None
+    entries = listeners_on(parse_ss(result.stdout), port)
+    if not entries:
+        return None
+    for entry in entries:
+        for pid in entry.pids:
+            snapshot = read_process(pid, proc=proc)
+            if snapshot is None or not snapshot.alive:
+                continue
+            owner = identify_owner(pid, proc=proc, target_cid=target_cid)
+            if owner.is_target or owner.same_container is not None:
+                return ListeningServer(port, owner=owner)
+    return ListeningServer(port)
 
 
 def measured_attach(
@@ -1072,6 +1285,7 @@ def measured_attach(
     *,
     proc: Path,
     attacher: Attacher | None,
+    probe: bool = True,
 ) -> bool | None:
     """Whether this seat can really ptrace ``target``, or ``None`` for unasked.
 
@@ -1082,18 +1296,23 @@ def measured_attach(
     Diamond seat the injection that ``capreport`` had measured working, from the
     same seat, against the same pid, in the same minute (issue #89).
 
-    So it is asked, with the ``PTRACE_ATTACH``/``PTRACE_DETACH`` pair
-    ``capreport`` uses. That attach SIGSTOPs the workload for the instant it
-    takes, which is a real cost to put on a verb that otherwise only authors a
-    file, so it is spent in exactly the case that would otherwise be refused
-    wrongly: a Python target, in attach mode, with nothing already listening,
-    in a seat whose capability bit is clear. Every other call returns ``None``,
-    stops nothing, and leaves :func:`assess` reading the bit as before.
+    So it is asked, with the probe ``capreport`` uses — a ``PTRACE_SEIZE``,
+    which answers the same permission question without stopping the workload.
+    It stays narrowed to the case that would otherwise be decided without one (a
+    Python target, in attach mode, with nothing already listening, in a seat
+    whose capability bit is clear) because a measurement that costs nothing is
+    still an answer nobody asked for anywhere else. Narrow, not redundant: the
+    free credential check `flavour.ptrace_evidence` falls back to is a reason
+    not to *refuse* that seat, and only an attach is a reason to say it works.
+
+    ``probe=False`` is ``--print-config``: printing what *would* be written must
+    not touch the workload, however cheap touching it has become.
 
     A synthetic ``/proc`` is never probed. Its pids name unrelated processes on
     whatever machine is running, so an attach there would measure something
     else entirely — and the unit tests that inject one must keep answering from
-    the capability mask they wrote into it.
+    what they wrote into the tree: the capability mask, and whether they gave
+    the target a ``root`` that resolves.
     """
     if proc != DEFAULT_PROC:
         return None
@@ -1102,8 +1321,25 @@ def measured_attach(
         # container, and a non-Python target has no injection to drive.
         return None
     if seat.listening_port is not None or seat.cap_sys_ptrace:
-        # Nothing would be refused, so nothing is worth stopping the workload
-        # for.
+        # Nothing would be refused, so there is nothing worth measuring.
+        return None
+    if not probe:
+        # Said only here, where the answer would otherwise have differed: every
+        # return above is `None` whether or not a probe was allowed, so warning
+        # earlier would be a paragraph about nothing on most runs.
+        #
+        # It names the credential check rather than CapEff because that is what
+        # decides the injection on this path (`flavour.ptrace_evidence`), and a
+        # warning that named the bit would send the reader after the mechanism
+        # that is not deciding - which is #89 in miniature.
+        _warn(
+            f"--print-config touches nothing, so ptrace to pid {target.pid} was "
+            "not measured; the debugpy injection is judged on whether this seat "
+            f"may read /proc/{target.pid}/root, which the kernel gates on the "
+            "same credentials an attach takes. Re-run `podbench debug-config` "
+            f"without --print-config, or `podbench capreport {target.pid}`, to "
+            "measure the attach itself"
+        )
         return None
     outcome = (default_attacher() if attacher is None else attacher).attach(target.pid)
     # Notes travel with the outcome because they are about what the attach *did*
@@ -1114,11 +1350,47 @@ def measured_attach(
     if outcome.ok:
         _warn(
             f"measured ptrace to pid {target.pid} rather than reading CapEff: "
-            "PTRACE_ATTACH succeeded, so the injection is offered on the "
-            "measurement and not refused on the capability bit. The attach "
-            "stopped the workload for the instant it took"
+            f"{outcome.method or 'the ptrace probe'} succeeded, so the injection "
+            "is offered on the measurement and not refused on the capability "
+            f"bit. Pause to the workload: {describe_pause(outcome.method, True)}"
         )
     return outcome.measured_ok
+
+
+def _exposure_warning(port: int, host_network: bool | None) -> str | None:
+    """Who else can reach a debugpy server started on ``port``, or ``None``.
+
+    A debugpy server authenticates nobody: anything that can open the socket can
+    load a module into the target and run it. Inside a pod's own network
+    namespace that is the same blast radius the seat already has, so it is not
+    worth a line. Under ``hostNetwork: true`` the same loopback bind is on the
+    **node's** loopback, shared with every other hostNetwork pod and every node
+    daemon — a different blast radius entirely, and the reader has to be told
+    before the server exists rather than after (issue #87).
+
+    Allowed, not refused: the sweep's own targets are hostNetwork IOCs, and a
+    verb that refused them would refuse the pods podbench exists for.
+    """
+    if host_network is True:
+        return (
+            f"this pod runs with hostNetwork: true, so {DEBUGPY_HOST}:{port} is "
+            "the *node's* loopback and not this pod's: the debugpy server "
+            "authenticates nobody, so every other hostNetwork pod and every "
+            "node daemon on this node can connect to it and run code inside "
+            "the target. Nothing off the node can reach it. Stop the server "
+            "when you are done - killing the seat does not - and pass `--port` "
+            "if you need to pin which port it is on"
+        )
+    if host_network is None:
+        return (
+            f"this seat cannot tell whether {DEBUGPY_HOST}:{port} is this pod's "
+            "loopback or the node's - it was landed before podbench recorded "
+            "hostNetwork - so treat the debugpy server as unauthenticated and "
+            "node-visible until you have checked `kubectl get pod -o "
+            "jsonpath='{.spec.hostNetwork}'`. Re-run `podbench attach` for a "
+            "seat that knows, and pass `--port` to pin which port it is on"
+        )
+    return None
 
 
 def _inject(
@@ -1127,6 +1399,7 @@ def _inject(
     seat: Seat,
     *,
     port: int,
+    host_network: bool | None,
     runner: Runner | None,
 ) -> bool:
     """Start the debugpy server inside the target, under ``--provision``.
@@ -1166,6 +1439,9 @@ def _inject(
             + (verdict.reason if verdict else "debugpy was not assessed")
         )
         return False
+    exposure = _exposure_warning(port, host_network)
+    if exposure is not None:
+        _warn(f"--provision: {exposure}")
     command = injection_command(target, seat, port)
     _warn(
         f"--provision: starting the server inside the app. This ptraces the "
@@ -1177,6 +1453,28 @@ def _inject(
     for message in injected.messages:
         _warn(f"--provision: {message}")
     return injected.ok
+
+
+def _no_ptrace_clause(target: Target, evidence: PtraceEvidence) -> str:
+    """Why the injection cannot be driven from here, in the reader's terms.
+
+    One clause per mechanism, because the reader's next move differs: a measured
+    refusal has four candidate mechanisms and `capreport` names which, while a
+    credential denial is the seat's own uid against the target's and no
+    capability will move it.
+
+    >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
+    >>> _no_ptrace_clause(target, PtraceEvidence.DENIED)
+    'this seat may not read /proc/7/root, which takes the credentials an attach takes'
+    """
+    if evidence is PtraceEvidence.REFUSED:
+        return "ptrace to the target was refused when this seat measured it"
+    if evidence is PtraceEvidence.DENIED:
+        return (
+            f"this seat may not read /proc/{target.pid}/root, which takes the "
+            "credentials an attach takes"
+        )
+    return "this seat cannot ptrace the target"
 
 
 def _provision(
@@ -1218,8 +1516,9 @@ def _provision(
     if seat.listening_port is not None:
         _warn(
             "--provision: a debugpy server is already listening on "
-            f"{DEBUGPY_HOST}:{seat.listening_port}, and the emitted "
-            "configuration connects to it without any of this"
+            f"{DEBUGPY_HOST}:{seat.listening_port}, held by "
+            f"{seat.listening_owner or 'a process this seat could not name'}, "
+            "and the emitted configuration connects to it without any of this"
         )
         return False
     machine = target.machine or seat.machine
@@ -1275,21 +1574,28 @@ def _provision(
             "pass --provision-python X.Y (`python -V` in the target names it)"
         )
         return False
-    # Asked of the same predicate `assess` uses, not of the bit: this sentence
+    # Asked of the same evidence `assess` uses, not of the bit: this sentence
     # and the refusal it prepares the reader for are two spellings of one fact,
     # and a seat that measured an attach reads "the injection cannot be driven
     # from here" immediately before the injection is driven from here (#89).
+    # Said at all only where the injection is really withdrawn: an unmeasured
+    # seat that passes the credential check is offered it, and the caveat it is
+    # owed - that nothing attached - is `assess`'s to print beside the emission.
     if not can_ptrace_target(seat):
         # Said, not refused - unlike the arm64 gate above. The tree lands in the
         # *target's* rootfs, which outlives this seat, so provisioning now and
         # relaunching on the `full` rung still works; what would be wrong is
         # letting the install land and then reading "CAP_SYS_PTRACE is not in
         # this seat's effective set" two lines later with nothing joining them.
+        # The clause names the mechanism that said no, because the remedy
+        # differs: a measured refusal is one of four mechanisms and a credential
+        # denial is the seat's uid.
         _warn(
-            "--provision: this seat cannot ptrace the target, so the injection "
-            "cannot be driven from here whatever gets installed - the copy goes "
-            "into the target's own rootfs and outlives this seat, so a relaunch "
-            "on the `full` rung picks it up rather than repeating the install"
+            f"--provision: {_no_ptrace_clause(target, ptrace_evidence(seat))}, so the "
+            "injection cannot be driven from here whatever gets installed - the "
+            "copy goes into the target's own rootfs and outlives this seat, so "
+            "a relaunch on the `full` rung with `podbench attach --max-rung "
+            "full` picks it up rather than repeating the install"
         )
     # Announced before it runs: uv's output is captured for the failure message,
     # so a resolve against an index with no route is several silent seconds
@@ -1377,7 +1683,7 @@ def _run(
     flavours: Sequence[Flavour],
     lldb: bool,
     mode: Mode | None,
-    port: int,
+    port: int | None,
     print_config: bool,
     output: str | None,
     provision: bool,
@@ -1388,6 +1694,7 @@ def _run(
     attacher: Attacher | None,
     which: Which,
     debugpy_root: str | None,
+    choose_port: PortChooser,
 ) -> int:
     source_map, problems = _parse_source_map(source_map_entries)
     for problem in problems:
@@ -1401,6 +1708,16 @@ def _run(
     if not pids:
         return EXIT_USAGE
     explicit_pid = pid is not None
+
+    # Resolved once, here, for the same reason `resolve_target_pids` reads it:
+    # the id is what turns "not this container" into "the app", and without it
+    # a listener in the target reads as an anonymous neighbour (report 3.15).
+    target_cid = (
+        strip_container_scheme(container_id) or None
+        if container_id
+        else env_target_container_id()
+    )
+    host_network = env_host_network()
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
     explicit = bool(requested)
@@ -1440,7 +1757,14 @@ def _run(
                 attacher=attacher,
                 which=which,
                 debugpy_root=debugpy_root,
+                choose_port=choose_port,
+                target_cid=target_cid,
+                host_network=host_network,
                 hint=primary,
+                # A verb that prints rather than writes touches nothing, and the
+                # probe is per candidate: N candidates were N real attaches on
+                # the workload for a run that changes no file.
+                probe=not print_config,
             )
         )
 
@@ -1465,7 +1789,7 @@ def _for_target(
     wanted: set[Flavour],
     explicit: bool,
     verbose: bool,
-    port: int,
+    port: int | None,
     source_dirs: Sequence[str],
     source_map: Mapping[str, str],
     debuginfod: bool,
@@ -1477,9 +1801,22 @@ def _for_target(
     attacher: Attacher | None,
     which: Which,
     debugpy_root: str | None,
+    choose_port: PortChooser,
+    target_cid: str | None,
+    host_network: bool | None,
     hint: bool,
+    probe: bool = True,
 ) -> list[dict[str, Any]]:
-    """Everything one candidate pid contributes to ``launch.json``."""
+    """Everything one candidate pid contributes to ``launch.json``.
+
+    ``port`` is ``None`` unless the user named one, and the two questions it
+    used to answer are separated here because their answers differ. *Where to
+    look* for a server that is already running is :data:`DEBUGPY_PORT`, the
+    conventional port an app that ran ``-m debugpy`` at start-up will be on.
+    *Where a server started from this run should listen* is a port the kernel
+    picks (:func:`ephemeral_port`), so that two seats on one node - which under
+    ``hostNetwork`` share a network namespace - cannot land on the same one.
+    """
     target = inspect_target(pid, proc=proc, program=program)
     for note in target.notes:
         _warn(note)
@@ -1511,7 +1848,7 @@ def _for_target(
     if target.program:
         if mode is Mode.DEV:
             gdb_program = target.program
-        elif target.language in (Language.NATIVE, Language.UNKNOWN):
+        elif target.language in NATIVE_LANGUAGES:
             gdb_program, exec_file_notes = gdb_exec_file(pid, target.program, proc=proc)
             for note in exec_file_notes:
                 _warn(note)
@@ -1520,23 +1857,88 @@ def _for_target(
 
     # Asked at most once, and reused when the seat is re-measured after an
     # install: whether this seat may ptrace the target is not a question
-    # installing a wheel can change, and each attach stops the workload for the
-    # instant it takes.
+    # installing a wheel can change. The latch is per candidate pid, so this is
+    # also the only thing between a five-candidate pod and five probes.
     attach_ok: bool | None = None
     attach_asked = False
 
+    # Where to look for a server that is already running. It moves exactly once,
+    # to the port an injection was actually made on: an ephemeral port is not
+    # 5678, so re-probing 5678 after --provision would find the run's own new
+    # server missing and report "nothing is listening" about a port it had just
+    # opened.
+    probe_at = DEBUGPY_PORT if port is None else port
+    chosen: int | None = None
+    said_unattributed = False
+
+    def serving_port() -> int:
+        """The port a server started by *this* run would listen on."""
+        nonlocal chosen
+        if port is not None:
+            # Named by the user, so it is theirs: `--port` is the way to pin one,
+            # and a verb that overrode it would leave no way to.
+            return port
+        if mode is Mode.DEV or target.language is not Language.PYTHON:
+            # Dev mode connects to whatever `podbench run` started, which is on
+            # the conventional port; a non-Python target has no server at all.
+            return DEBUGPY_PORT
+        if chosen is None:
+            try:
+                chosen = choose_port()
+            except OSError as error:
+                # Not fatal: a seat that cannot bind loopback still authors a
+                # correct configuration, it just cannot promise the port is free.
+                _warn(
+                    f"could not ask the kernel for a free port ({error}), so "
+                    f"the conventional {DEBUGPY_PORT} is used - pass `--port` "
+                    "to pin one this seat is known to be able to bind"
+                )
+                chosen = DEBUGPY_PORT
+        return chosen
+
     def measure() -> Seat:
-        nonlocal attach_ok, attach_asked
+        nonlocal attach_ok, attach_asked, said_unattributed
         # The listener is re-probed on every measurement rather than read once:
         # --provision can *start* one part way through this function, and a
         # port sampled before that would emit a configuration whose "already
         # listening" answer is stale in the one run that changed it.
-        listening = (
-            _listening_debugpy(port, runner=runner)
+        found = (
+            _listening_debugpy(
+                probe_at, runner=runner, proc=proc, target_cid=target_cid
+            )
             if target.language is Language.PYTHON
             else None
         )
-        # Native and unknown targets only, and still, though the debugpy pid
+        if found is not None and not found.attributed and not said_unattributed:
+            said_unattributed = True
+            # The whole of issue #87 in one line. `ss` names an owner for every
+            # process in this pod's pid namespace, so a listener it cannot name
+            # is one this seat has no business claiming - under hostNetwork it
+            # belongs to another pod or a node daemon, and the old code emitted
+            # a configuration pointing straight at it.
+            _warn(
+                f"port {found.port} is held by {found.describe()}: this seat "
+                "cannot attribute the socket to any container in this pod"
+                + (
+                    ", and hostNetwork: true means the listener may be in "
+                    "another pod or a node daemon sharing the node's network "
+                    "namespace"
+                    if host_network is True
+                    else ", and whether this pod uses hostNetwork is unknown "
+                    "to this seat"
+                    if host_network is None
+                    else ""
+                )
+                + ". Treating it as unknown rather than as this pod's server, "
+                "so nothing here connects to it - pass `--port` to look at a "
+                "different one"
+            )
+        listening = found.port if found is not None and found.attributed else None
+        listening_owner = (
+            found.describe() if found is not None and found.attributed else None
+        )
+        # The languages that reach gdb only (NATIVE_LANGUAGES, which is where
+        # Rust joins), and still, though the debugpy pid
         # injection now withdraws on the same answer — it drives gdb to `call
         # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
         # says about a python-build-standalone interpreter is issue #90's open
@@ -1545,7 +1947,7 @@ def _for_target(
         # start-up per candidate. #90 is where the Python case joins.
         load_error = (
             program_load_error(target.pid, gdb_program, runner=runner)
-            if gdb_program and target.language in (Language.NATIVE, Language.UNKNOWN)
+            if gdb_program and target.language in NATIVE_LANGUAGES
             else None
         )
         surveyed = survey_seat(
@@ -1554,13 +1956,19 @@ def _for_target(
             which=which,
             debugpy_root=debugpy_root,
             listening_port=listening,
+            listening_owner=listening_owner,
             provision_dest=provision_dest,
             program_load_error=load_error,
         )
         if not attach_asked:
             attach_asked = True
             attach_ok = measured_attach(
-                target, target_mode, surveyed, proc=proc, attacher=attacher
+                target,
+                target_mode,
+                surveyed,
+                proc=proc,
+                attacher=attacher,
+                probe=probe,
             )
         return replace(surveyed, target_attach_ok=attach_ok)
 
@@ -1583,13 +1991,31 @@ def _for_target(
         # Not chained onto the install: a target that could already import
         # debugpy takes the "nothing is installed" path above and still has
         # nothing listening, which is the case this whole flag exists to end.
-        if _inject(target, mode, seat, port=port, runner=runner):
+        injected_on = serving_port()
+        if _inject(
+            target,
+            mode,
+            seat,
+            port=injected_on,
+            host_network=host_network,
+            runner=runner,
+        ):
+            # The re-measure has to look where the server was actually put, not
+            # where a server conventionally is.
+            probe_at = injected_on
             seat = measure()
-    assessments = assess(target, mode, seat)
+    assessments = assess(target, mode, seat, wanted=wanted)
 
     _warn(
         f"pid {pid} ({target.name}): {target.language.value} target, "
         f"{mode.value} mode" + (f", {target.machine}" if target.machine else "")
+    )
+    # An attributed server's own port beats any port this run would have chosen:
+    # the configuration has to connect to the process that exists, and where the
+    # app started its own `debugpy --listen` that is neither 5678-by-default nor
+    # the ephemeral one nothing was ever bound to.
+    emit_port = (
+        seat.listening_port if seat.listening_port is not None else serving_port()
     )
     configurations = _emit(
         assessments,
@@ -1598,7 +2024,7 @@ def _for_target(
         target,
         mode,
         seat,
-        port=port,
+        port=emit_port,
         source_dirs=source_dirs,
         source_map=source_map,
         debuginfod=debuginfod,
@@ -1616,8 +2042,24 @@ def _for_target(
             f"pid {pid} ({target.name}): nothing emitted"
             + (f" — {refused.reason}" if refused else "")
         )
-    if hint and configurations:
-        _hint(target, mode, seat, assessments, wanted, port=port)
+    # `hint` alone, never `and configurations`. `hint` means "this is the best
+    # candidate"; whether the hint is *owed* is a question about the seat, and
+    # _hint's own guards - Python, not dev mode, nothing already listening - are
+    # the ones that answer it. Coupling it to a non-empty emission withheld the
+    # actionable half of a failure on exactly the run that failed, and it only
+    # happens not to fire today because _emit and _hint gate on the same
+    # `wanted`/`available` pair. The next flavour that assesses available and
+    # contributes nothing makes it fire.
+    if hint:
+        _hint(
+            target,
+            mode,
+            seat,
+            assessments,
+            wanted,
+            port=emit_port,
+            host_network=host_network,
+        )
     return configurations
 
 
@@ -1656,6 +2098,7 @@ def _hint(
     wanted: set[Flavour],
     *,
     port: int,
+    host_network: bool | None,
 ) -> None:
     """Say what still has to happen before the debugpy entry can connect.
 
@@ -1671,6 +2114,11 @@ def _hint(
     )
     if debugpy is None or not debugpy.available or seat.listening_port is not None:
         return
+    # Before the command, not after it: this is the paste that creates the
+    # exposure, and a caveat printed under a command has already been skipped.
+    exposure = _exposure_warning(port, host_network)
+    if exposure is not None:
+        _warn(exposure)
     print(
         f"debug-config: nothing is listening on {DEBUGPY_HOST}:{port} yet. "
         "Start the server inside the app with:\n"
@@ -1687,16 +2135,20 @@ def main(
     attacher: Attacher | None = None,
     which: Which = shutil.which,
     debugpy_root: str | None = None,
+    port_chooser: PortChooser = ephemeral_port,
 ) -> int:
     """``podbench debug-config`` — author ``launch.json`` for this seat.
 
-    ``proc``, ``runner``, ``attacher``, ``which`` and ``debugpy_root`` are test
-    seams; the CLI passes none of them. ``which`` in particular: whether this
-    image ships gdb decides whether a gdb configuration is emitted at all, and a
-    unit test must not answer that question from the machine it happens to run
-    on. ``attacher`` is the ptrace backend :func:`measured_attach` uses, and a
-    test that wants an answer out of it has to inject one *and* a real ``proc``:
-    against a synthetic tree nothing is attached at all.
+    ``proc``, ``runner``, ``attacher``, ``which``, ``debugpy_root`` and
+    ``port_chooser`` are test seams; the CLI passes none of them. ``which`` in
+    particular: whether this image ships gdb decides whether a gdb
+    configuration is emitted at all, and a unit test must not answer that
+    question from the machine it happens to run on. ``attacher`` is the ptrace
+    backend :func:`measured_attach` uses, and a test that wants an answer out of
+    it has to inject one *and* a real ``proc``: against a synthetic tree nothing
+    is attached at all. ``port_chooser`` is the last of them because its default
+    really binds a socket, and a test asserting on the emitted port has to know
+    which number to expect.
     """
     app = new_app()
 
@@ -1737,14 +2189,17 @@ def main(
             ),
         ] = None,
         port: Annotated[
-            int,
+            int | None,
             typer.Option(
                 "--port",
                 metavar="PORT",
-                help="the debugpy port to connect to (shared network namespace, "
-                "so always 127.0.0.1)",
+                help="pin the debugpy port. The default looks for an existing "
+                f"server on {DEBUGPY_PORT} and lets the kernel choose a free "
+                "port for one --provision starts, so two seats on a node "
+                "cannot collide. Always on 127.0.0.1: the seat shares the "
+                "target's network namespace",
             ),
-        ] = DEBUGPY_PORT,
+        ] = None,
         program: Annotated[
             str | None,
             typer.Option(
@@ -1777,7 +2232,10 @@ def main(
             bool,
             typer.Option(
                 "--no-debuginfod",
-                help="do not enable debuginfod (it needs ca-certificates and network)",
+                help="do not enable debuginfod (it needs ca-certificates and "
+                "network). Library symbols are fetched after the attach, with "
+                "the target stopped, so this is the flag to reach for when the "
+                "pause is what costs",
             ),
         ] = False,
         lldb: Annotated[
@@ -1822,7 +2280,8 @@ def main(
             bool,
             typer.Option(
                 "--print-config",
-                help="print the configuration instead of writing it",
+                help="print the configuration instead of writing it, and "
+                "measure nothing: this run touches no workload",
             ),
         ] = False,
         output: Annotated[
@@ -1856,6 +2315,7 @@ def main(
                 attacher=attacher,
                 which=which,
                 debugpy_root=debugpy_root,
+                choose_port=port_chooser,
             )
         )
 

@@ -214,7 +214,18 @@ FEATURES: tuple[RbacFeature, ...] = (
     RbacFeature(
         "resize",
         "resize",
-        (Grant("patch", "pods/resize"),),
+        (
+            # `get` as well as `patch`, for the same reason
+            # `pods/ephemeralcontainers` above needs both: kubectl issues a GET
+            # on the subresource before it sends the write. Measured on argus
+            # (hgv27681, 2026-08-20) with `kubectl --v=8` against a service
+            # account holding `pods/resize: [patch]` and no `get` - the GET is
+            # Forbidden and the PATCH is never sent, while `doctor` said the
+            # tier was fine. `kubectl auth can-i get pods/resize` answers yes on
+            # that same cluster, so the grant list is what has to be right here.
+            Grant("get", "pods/resize"),
+            Grant("patch", "pods/resize"),
+        ),
     ),
     RbacFeature(
         "hotfix",
@@ -656,7 +667,7 @@ def check_ssh_agent(
     ssh matches the identity to a key the agent holds, asks the agent to sign,
     the agent refuses, and what reaches the user is ``Permission denied
     (publickey,keyboard-interactive)`` — which sends them to the seat's passwd
-    record, the authorised key or ``--seat-gid-root``, none of which are in play.
+    record or the authorised key, neither of which is in play.
     Membership is inferred rather than a signature demanded, so this is a
     ``WARN``: it names what would be asked, not what it would answer.
 

@@ -190,7 +190,13 @@ Getting it wrong does not error — breakpoints simply never bind.
 
 - **Observe mode (attach):** the target is a *different container*. The editor
   sees source through `/proc/<pid>/root`, the debuggee reports its own path, so
-  a mapping is required — e.g. `/proc/1/root/src` -> `/src`.
+  a mapping is required — and it is the **mount namespace**, `/proc/<pid>/root`
+  -> `/`, never a root guessed from `argv`. A guessed root is `/app/.venv/bin`
+  for a console script, which holds no source, and the seat's own image
+  installs under `/app/.venv` as well: same path, different file, so the wrong
+  mapping *resolves* and the editor opens this container's copy of the
+  workload's frame with no error at all (issue #112). Same collision as the
+  `/python/cpython-*` one below, arriving through debugpy instead of BFD.
 - **Dev mode:** editor and interpreter are the same container and the same
   inodes, so mappings should be **empty**. A spurious one is another silent
   wrong answer.

@@ -78,25 +78,58 @@ fails in seconds. A hard kill or pod deletion is detected instantly either way.
 
 ## sshd does not leak its own environment
 
-The launcher injects `PODBENCH_TARGET_CID` into the container spec and it reaches the
-container — but **not** an ssh session, and a non-interactive
-`ssh host 'podbench pids'` sources no profile either. Without forwarding, the in-pod
-verbs fall back to *guessing* which processes belong to the target.
+Nothing the image or the launcher put in the container's environment reaches an ssh
+session by itself: sshd passes none of its own environment to the commands it runs, and a
+non-interactive `ssh host '<cmd>'` sources no profile either. One mechanism, three
+symptoms that read as unrelated bugs:
 
-`SetEnv` in the sshd config is the only route that survives. And:
+| Lost | How it shows up |
+|---|---|
+| `PODBENCH_TARGET_CID` | the in-pod verbs fall back to *guessing* which processes belong to the target |
+| `PATH` | `--provision` died with `sh: 1: python: not found` — the seat's interpreter is on no default `PATH`. The injection recipe now names it in full (`flavour.SEAT_PYTHON`), because a line printed to be pasted must not depend on a directive sshd may refuse |
+| `DEBUGINFOD_URLS` | `set debuginfod enabled on` is inert **over the transport podbench itself generates**, while working under `kubectl exec`, which does inherit the image's environment |
+
+`SetEnv` in the sshd config is the only route that survives — and podbench generates that
+config, so it owns the fix. `agent.SESSION_ENV_PREFIX` carries every `PODBENCH_*`
+variable; `agent.SESSION_ENV_NAMES` carries the image's `PATH`, `DEBUGINFOD_URLS` and
+`DEBUGINFOD_TIMEOUT` by exact name. An allow-list rather than the whole environment: the
+sshd config is world-readable and the seat's environment is where the keys live. A name
+listed but unset is simply absent, which is what lets a variable be carried before
+anything sets it.
+
+`DEBUGINFOD_URLS` is the one the agent may decide *not* to carry: `agent.check_debuginfod`
+connects to that server once at start-up and drops the variable when nothing answers,
+because gdb's client has nothing to query without it and would otherwise wait
+`DEBUGINFOD_TIMEOUT` per shared library **after** the attach, with the workload stopped.
+The reason goes into the start-up log; a `kubectl exec` session still inherits the image's
+value, where `podbench dbg --no-debuginfod` is the same decision per run.
 
 > **One `SetEnv` directive carrying every pair, never one per variable.** sshd resolves
 > each keyword **first-match-wins**, so a second `SetEnv` line is silently ignored. This
 > shipped once: only `PODBENCH_NODE_NAME` arrived and `PODBENCH_TARGET_CID` did not.
 
-Values containing whitespace are dropped — a space ends the pair early.
+sshd reads `SetEnv` as whitespace-separated `NAME=value` pairs, so a value containing
+whitespace ends the pair early and a name containing a space or an `=` silently becomes a
+different directive. `sshcfg.unsafe_set_env` screens both — but **does not swallow them**:
+`ensure_sshd_config` writes the config with everything that did survive and *then* raises,
+so `ensure_all` records the reason in the container's start-up log. A `PATH` with a space
+in a directory name is not hypothetical, and dropping it without a word is the bug the
+widened set exists to fix.
 
-## Nothing is on `PATH` in an ssh session
+## `PATH` in an ssh session is there only because podbench put it there
 
-`ssh host '<cmd>'` runs a non-interactive shell that sources nothing and does not inherit
-the image's `ENV PATH`. `/usr/local/bin/podbench` — the one wrapper in `image/bin/`, and
-what makes `ssh host 'podbench pids'` resolve at all — names `/app/.venv/bin/podbench` by
-absolute path for exactly this reason. If you add a file there, do the same.
+`ssh host '<cmd>'` runs a non-interactive shell that sources nothing and inherits none of
+the image's `ENV PATH`. What it gets is the `SetEnv` line above, or sshd's compiled-in
+default if that line is missing. Two things therefore stay in the image:
+
+- **`/usr/local/bin/podbench`** — the one wrapper in `image/bin/` — names
+  `/app/.venv/bin/podbench` by absolute path. `/usr/local/bin` is on sshd's compiled-in
+  `PATH` whatever else happens, so the verb still resolves in a seat whose `SetEnv` line
+  was never written or was refused. If you add a file there, do the same.
+- **`/etc/profile.d/podbench.sh`** — `SetEnv` does not settle an *interactive login*
+  shell. Debian's `/etc/profile` assigns `PATH` outright rather than appending, so it
+  overwrites what the session was handed; the fragment is sourced afterwards and puts the
+  venv back.
 
 ## sshd needs an NSS identity
 

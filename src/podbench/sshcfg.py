@@ -16,6 +16,7 @@ the ProxyCommand are generated together and never hand-written.
 from __future__ import annotations
 
 import enum
+import hashlib
 import os
 import re
 import shlex
@@ -36,6 +37,7 @@ __all__ = [
     "FALLBACK_HOME_PREFIX",
     "PRIVSEP_DIR",
     "QUIET_LOG_LEVELS",
+    "SEAT_DIGEST_CHARS",
     "SEAT_USER",
     "SERVER_ALIVE_COUNT_MAX",
     "SERVER_ALIVE_INTERVAL",
@@ -53,7 +55,9 @@ __all__ = [
     "known_hosts_entry",
     "proxy_command",
     "proxy_command_string",
+    "seat_control_path",
     "sshd_config",
+    "unsafe_set_env",
 ]
 
 DEFAULT_SSHD = "/usr/sbin/sshd"
@@ -94,7 +98,32 @@ CONTROL_PATH_HASH_CHARS = 40
 before ssh does."""
 
 CONTROL_DIR = "/tmp/podbench-cm"
+
 CONTROL_PATH = f"{CONTROL_DIR}/%C"
+"""The *base* of a seat's ControlMaster socket path, never used on its own.
+
+``%C`` is a hash of ``%l%h%p%r`` — local host, **resolved HostName**, port and
+remote user — and not of the ``Host`` alias as typed. Every podbench stanza
+sets ``HostName`` to the pod's name and ``User`` to the seat's login, so two
+seats in one pod at one rung expand ``%C`` identically however differently
+their aliases are spelt, and ssh multiplexes the second alias into the first
+seat's container. That is worse than reaching the wrong container:
+**multiplexing skips the host-key check entirely**, so a seat whose key was
+never verified serves the session (report R9, finding 10).
+
+:func:`seat_control_path` appends the seat's own identity, which is what makes
+the socket per seat. ``%C`` stays in front of it because the remaining
+collisions it does rule out — two clients, two local hosts — are real and
+cannot be reconstructed here."""
+
+SEAT_DIGEST_CHARS = 16
+"""Width of the seat digest :func:`seat_control_path` appends.
+
+Fixed width so the socket path's length is knowable before ssh sees it: 17
+bytes of :data:`CONTROL_DIR` and its slash, 40 for ``%C``, one for the
+separator and these 16 come to 74, inside :data:`SUN_PATH_MAX` for any pod
+name. Truncating a digest to 16 hex characters is a collision risk only where
+something chooses the input, and the input here is a pod UID."""
 
 QUIET_LOG_LEVELS = frozenset({"QUIET", "FATAL", "ERROR"})
 """sshd log levels that emit no bytes on a healthy connection. Anything chattier
@@ -304,6 +333,30 @@ def known_hosts_entry(binding: HostKeyBinding) -> str:
     return f"{binding.alias} {fields[0]} {fields[1]}\n"
 
 
+def unsafe_set_env(set_env: Mapping[str, str]) -> tuple[str, ...]:
+    """The names in ``set_env`` an sshd ``SetEnv`` line cannot carry, sorted.
+
+    Both refusals are silent misreadings rather than errors, which is why they
+    are screened here instead of being left to sshd: see :data:`_SETENV_SAFE`
+    and :data:`_SETENV_UNSAFE_VALUE`. A ``PATH`` with a space in a directory
+    name is the realistic instance, and dropping it without a word is the very
+    bug ``SetEnv`` exists here to fix, so the caller gets the names back and is
+    expected to say so.
+
+    >>> unsafe_set_env({"PATH": "/opt/my tools/bin", "PODBENCH_NODE_NAME": "n1"})
+    ('PATH',)
+    >>> unsafe_set_env({"A=B": "y", "BAD NAME": "x", "OK": "fine"})
+    ('A=B', 'BAD NAME')
+    """
+    return tuple(
+        sorted(
+            name
+            for name, value in set_env.items()
+            if not _SETENV_SAFE.fullmatch(name) or _SETENV_UNSAFE_VALUE.search(value)
+        )
+    )
+
+
 def sshd_config(layout: SshdLayout, set_env: Mapping[str, str] | None = None) -> str:
     """The server config the ProxyCommand's sshd is pointed at.
 
@@ -312,14 +365,21 @@ def sshd_config(layout: SshdLayout, set_env: Mapping[str, str] | None = None) ->
     configuration a reviewable artifact. There is no ``PidFile`` directive —
     ``sshd -i`` never writes one.
 
-    ``set_env`` is how the launcher's container environment reaches a session.
-    sshd deliberately does not leak its own environment to the commands it runs,
-    so the ``PODBENCH_TARGET_CID`` the launcher carefully injected into the
-    container spec is invisible to ``podbench pids`` and ``podbench capreport``
-    over ssh, and both silently fall back to guessing which processes belong to
-    the target. Naming the variables in the config is the only route that
-    survives a non-interactive ``ssh host 'podbench pids'``, which sources no
-    profile at all.
+    ``set_env`` is how the container's environment reaches a session. sshd
+    deliberately does not leak its own environment to the commands it runs, and
+    a non-interactive ``ssh host '<cmd>'`` sources no profile either, so every
+    variable the image or the launcher set is gone by the time the command runs.
+    Naming them here is the only route that survives, and three separate
+    symptoms are the same missing mechanism: ``PODBENCH_TARGET_CID`` gone, so
+    ``podbench pids`` and ``podbench capreport`` silently fall back to guessing
+    which processes belong to the target; ``PATH`` gone, so the image's
+    interpreter is not there to be found; ``DEBUGINFOD_URLS`` gone, so gdb's
+    ``set debuginfod enabled on`` is inert over the transport podbench itself
+    generates.
+
+    Names or values sshd's parser cannot carry are left out — see
+    :func:`unsafe_set_env`, which the caller is expected to consult so that a
+    variable it meant to carry is not lost twice over.
     """
     lines = [
         "# Generated by podbench. Regenerated at container start; do not edit.",
@@ -328,10 +388,11 @@ def sshd_config(layout: SshdLayout, set_env: Mapping[str, str] | None = None) ->
     # One directive carrying every pair, never one per variable: sshd resolves
     # each keyword first-match-wins, so a second SetEnv line is silently
     # ignored and only the alphabetically-first variable would arrive.
+    refused = set(unsafe_set_env(set_env or {}))
     pairs = [
         f"{name}={value}"
         for name, value in sorted((set_env or {}).items())
-        if _SETENV_SAFE.fullmatch(name) and not _SETENV_UNSAFE_VALUE.search(value)
+        if name not in refused
     ]
     if pairs:
         lines.append("SetEnv " + " ".join(pairs))
@@ -425,12 +486,39 @@ def proxy_command_string(
     )
 
 
+def seat_control_path(alias: str) -> str:
+    """The ControlMaster socket for the seat ``alias`` names.
+
+    ``alias`` is the seat's :func:`host_key_alias` — deliberately the *same*
+    string that pins the host key, rather than a second identity assembled from
+    namespace, pod and container. Two identities can silently disagree, and the
+    two questions are one question: if this socket may be reused for that alias,
+    the key already checked for that alias is the key still on the other end.
+
+    It also settles the case a namespace/pod/container digest gets wrong. A pod
+    deleted and recreated under the same name — which is how a seat is reset,
+    and what a GitOps controller does unprompted — hashes identically while
+    minting brand-new host keys, so the stale master would be reused straight
+    across the reset. The alias is keyed on the pod **UID**, which is unique for
+    all time, so the recreated pod simply gets a different socket.
+
+    >>> path = seat_control_path("podbench-2f1c-podbench-2")
+    >>> path.startswith("/tmp/podbench-cm/%C-"), len(path)
+    (True, 36)
+    >>> path == seat_control_path("podbench-2f1c-podbench-1")
+    False
+    """
+    digest = hashlib.sha256(alias.encode()).hexdigest()[:SEAT_DIGEST_CHARS]
+    return f"{CONTROL_PATH}-{digest}"
+
+
 def expanded_control_path_length(path: str) -> int:
     """Length of ``path`` once ssh has expanded ``%C``.
 
     Only ``%C`` is expanded — it is the only token podbench's own default uses.
-    A caller substituting ``%h``/``%r``/``%p`` is on its own, because their
-    widths are not knowable here.
+    The seat digest :func:`seat_control_path` appends is literal, so it is
+    already counted. A caller substituting ``%h``/``%r``/``%p`` is on its own,
+    because their widths are not knowable here.
     """
     return len(path.replace("%C", "C" * CONTROL_PATH_HASH_CHARS))
 
@@ -474,7 +562,7 @@ def client_config(
     layout: SshdLayout,
     user: str = "root",
     kubectl: KubectlInvocation | None = None,
-    control_path: str = CONTROL_PATH,
+    control_path: str | None = None,
     log_level: str = "ERROR",
 ) -> str:
     """An ``Include``-able stanza for the user's ssh config.
@@ -482,11 +570,19 @@ def client_config(
     Written as an include rather than an edit of ``~/.ssh/config`` so podbench
     can regenerate it wholesale on every attach without ever owning a file the
     user also edits.
+
+    ``control_path`` defaults to :func:`seat_control_path` of ``host_key``'s
+    alias, and is derived here rather than passed in so that the socket and the
+    pinned host key cannot name different seats. A bare ``%C`` is not enough:
+    it hashes the *resolved* ``HostName``, which the two lines below set to the
+    pod's name, so two seats in one pod share a master and the second alias
+    connects — unverified — into the first seat's container (:data:`CONTROL_PATH`).
     """
-    if not control_path_ok(control_path):
+    path = seat_control_path(host_key.alias) if control_path is None else control_path
+    if not control_path_ok(path):
         raise ValueError(
-            f"ControlPath {control_path!r} expands to "
-            f"{expanded_control_path_length(control_path)} bytes, over the "
+            f"ControlPath {path!r} expands to "
+            f"{expanded_control_path_length(path)} bytes, over the "
             f"{SUN_PATH_MAX}-byte AF_UNIX limit; keep it under {CONTROL_DIR}"
         )
     proxy = proxy_command_string(
@@ -504,7 +600,7 @@ def client_config(
         f"    ServerAliveInterval {SERVER_ALIVE_INTERVAL}",
         f"    ServerAliveCountMax {SERVER_ALIVE_COUNT_MAX}",
         "    ControlMaster auto",
-        f"    ControlPath {control_path}",
+        f"    ControlPath {path}",
         f"    ControlPersist {CONTROL_PERSIST}",
         f"    HostKeyAlias {host_key.alias}",
         f"    UserKnownHostsFile {host_key.known_hosts}",

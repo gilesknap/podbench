@@ -22,7 +22,9 @@ from pathlib import Path
 from podbench.kubectl import CommandResult
 from podbench.provision import (
     CAVEATS,
+    INJECTION_TIMEOUT_SECONDS,
     blocker_sentence,
+    inject_debugpy,
     provision_debugpy,
     writable_blocker,
 )
@@ -167,3 +169,70 @@ def test_an_unwritable_destination_is_reported_not_raised(tmp_path: Path) -> Non
     blocker = writable_blocker(collision / "podbench-debugpy")
     assert blocker is not None
     assert str(collision / "podbench-debugpy") in blocker
+
+
+# -- the injection's own pause ----------------------------------------------
+
+INJECTION = "PYTHONPATH=/proc/597/root/dbg \\\n  /app/.venv/bin/python -m debugpy"
+
+
+class FakeShell:
+    """The shell the injection runs in, with a returncode chosen by the test."""
+
+    def __init__(self, returncode: int = 0, stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+        self.argv: list[str] = []
+
+    def __call__(
+        self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        self.argv = list(argv)
+        return CommandResult(tuple(argv), self.returncode, "", self.stderr)
+
+
+def test_the_injection_is_bounded_and_the_command_is_still_verbatim() -> None:
+    """Issue #76: the attach stops the app and ran to whatever end gdb reached.
+
+    The bound is ``timeout``'s rather than ``subprocess``'s because the driver
+    forks gdb: killing our own ``sh`` would leave that gdb holding the workload.
+    What the bound may not do is edit the command, which is the one string that
+    has to stay character for character what the seat printed.
+    """
+    shell = FakeShell()
+    injected = inject_debugpy(INJECTION, runner=shell, port=5678, clock=lambda: 0.0)
+
+    assert injected.ok
+    assert shell.argv[0] == "timeout"
+    assert str(INJECTION_TIMEOUT_SECONDS) in shell.argv
+    assert shell.argv[-3:] == ["sh", "-c", INJECTION]
+
+
+def test_a_timed_out_injection_names_the_bound_that_stopped_it() -> None:
+    """The defect was a duration podbench measured and did not control.
+
+    124 is ``timeout``'s own code and cannot come from the driver, so the
+    message may say what happened rather than relaying the last line of a gdb
+    that was killed mid-sentence.
+    """
+    shell = FakeShell(returncode=124)
+    injected = inject_debugpy(INJECTION, runner=shell, port=5678, clock=lambda: 0.0)
+
+    assert not injected.ok
+    assert f"within {INJECTION_TIMEOUT_SECONDS}s" in injected.messages[0]
+    assert "resumes" in injected.messages[1]
+
+
+def test_a_missing_timeout_binary_is_reported_rather_than_raised() -> None:
+    """``debug-config`` authors a file and may not traceback at somebody. The
+    workload was never touched here, and the message has to say so."""
+
+    def missing(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    injected = inject_debugpy(INJECTION, runner=missing, port=5678, clock=lambda: 0.0)
+
+    assert not injected.ok
+    assert "not stopped" in injected.messages[0]

@@ -20,6 +20,8 @@ import pytest
 from podbench.resize import (
     CPU,
     MEMORY,
+    SEAT_HEADROOM,
+    Headroom,
     ResizeError,
     Want,
     explain_claim_refusal,
@@ -29,6 +31,7 @@ from podbench.resize import (
     parse_quantity,
     parse_want,
     plan_resize,
+    pod_memory_limit,
 )
 
 GI = 2**30
@@ -309,3 +312,101 @@ def test_a_claim_does_not_stop_a_patch_being_planned() -> None:
     )
 
     assert submitted(plan)["limits"]["memory"] == "6Gi"
+
+
+# -- headroom ---------------------------------------------------------------
+
+
+def pod_with(*containers: str | None, sidecars: tuple[str | None, ...] = ()) -> Any:
+    """A pod whose containers carry these memory limits, ``None`` for none."""
+
+    def entry(limit: str | None, **extra: str) -> dict[str, Any]:
+        spec: dict[str, Any] = dict(extra)
+        if limit is not None:
+            spec["resources"] = {"limits": {"memory": limit}}
+        return spec
+
+    return {
+        "spec": {
+            "containers": [entry(limit) for limit in containers],
+            "initContainers": [
+                entry(limit, restartPolicy="Always") for limit in sidecars
+            ],
+        }
+    }
+
+
+def test_the_pods_ceiling_is_the_sum_of_the_containers_that_declare_one() -> None:
+    """`p47-proxy`, the pod with the beamline's three smallest limits.
+
+    300Mi in total against 15Mi in use, which is why the plan's "compare against
+    this container's limit" was the wrong test: on the limit alone this pod is
+    the tightest on the beamline, and on headroom it is one of the roomiest.
+    """
+    assert pod_memory_limit(pod_with("100Mi", "100Mi", "100Mi")) == 300 * MI
+
+
+def test_a_sidecar_counts_towards_the_ceiling_and_an_init_container_does_not() -> None:
+    """A `restartPolicy: Always` init container runs for the pod's whole life.
+
+    An ordinary one has exited by the time a seat can land, so its limit is not
+    part of the ceiling the seat shares.
+    """
+    assert pod_memory_limit(pod_with("256Mi", sidecars=("64Mi",))) == 320 * MI
+    pod = pod_with("256Mi")
+    pod["spec"]["initContainers"] = [{"resources": {"limits": {"memory": "512Mi"}}}]
+    assert pod_memory_limit(pod) == 256 * MI
+
+
+def test_one_container_without_a_limit_leaves_the_pod_cgroup_unbounded() -> None:
+    """And the sum of the rest is not a ceiling, so it is not reported as one.
+
+    Reporting it would invent a number smaller than the truth, which is the
+    direction that produces a warning nobody needs.
+    """
+    assert pod_memory_limit(pod_with("100Mi", None)) is None
+    assert pod_memory_limit(pod_with("256Mi", sidecars=(None,))) is None
+    assert pod_memory_limit(pod_with()) is None
+    assert pod_memory_limit(pod_with("wat")) is None
+
+
+def test_every_pod_measured_on_the_beamline_is_below_the_threshold() -> None:
+    """The calibration itself, as a regression test.
+
+    Fifteen pods on DLS p47, 2026-08-19, total limit against measured usage.
+    Not one of them earns a warning - including the tightest, which had 170MiB
+    free and was already carrying a seat - and that is the whole finding: the
+    report was calibrated to a fear the data does not support. The 100/80 pod at
+    the end is the case the threshold is kept for, and it has no example on the
+    beamline.
+    """
+    beamline = [
+        (1280, 599),
+        (256, 35),
+        (256, 42),
+        (256, 86),
+        (256, 54),
+        (256, 40),
+        (4000, 623),
+        (1024, 35),
+        (3000, 83),
+        (500, 60),
+        (1024, 32),
+        (4000, 142),
+        (1024, 229),
+        (300, 15),
+        (1536, 257),
+    ]
+    thin = [
+        (limit, used)
+        for limit, used in beamline
+        if Headroom(Fraction(limit * MI), Fraction(used * MI)).below(SEAT_HEADROOM)
+    ]
+    assert thin == []
+    assert Headroom(Fraction(100 * MI), Fraction(80 * MI)).below(SEAT_HEADROOM)
+
+
+def test_a_pod_over_its_own_ceiling_has_nothing_left_rather_than_a_debt() -> None:
+    over = Headroom(Fraction(100 * MI), Fraction(140 * MI))
+    assert over.free == 0
+    assert over.summary == "0 free of 100Mi (140Mi in use)"

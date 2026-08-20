@@ -17,30 +17,42 @@ from typing import Any, cast
 from . import __version__
 
 __all__ = [
+    "DEAD_STATES",
     "DEFAULT_IMAGE",
     "FLOATING_TAG",
     "IMAGE_REPOSITORY",
     "NOT_PROBED",
     "PTRACE_READ_PATHS",
     "WORLD_READ_PATHS",
+    "ATTACH_PROBE",
+    "SEIZE_PROBE",
     "SEAT_GROUP_KEY",
     "SEAT_HOME_PATH",
     "SEAT_HOME_VOLUME",
     "SEAT_IDENTITY_VOLUME",
     "SEAT_PASSWD_KEY",
     "IMAGE_ENV",
+    "HOST_NETWORK_ENV",
+    "POD_CONTAINERS_ENV",
     "TARGET_CID_ENV",
+    "TARGET_NAME_ENV",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
+    "Lsm",
     "PodRef",
     "ProcInfo",
     "Rung",
     "Verdict",
+    "and_list",
     "as_dict",
+    "describe_credentials",
     "describe_gated_fallback",
+    "describe_lsm_remedy",
+    "describe_pause",
     "describe_reads",
     "image_tag_for",
+    "measured_rung",
     "measured_verdict",
     "ptrace_reads_ok",
 ]
@@ -168,6 +180,49 @@ SEAT_HOME_PATH = "/home/podbench"
 """Where :data:`SEAT_HOME_VOLUME` is mounted, and the home the passwd record
 names. Both halves must agree: sshd puts the user in the home NSS gives it."""
 
+HOST_NETWORK_ENV = "PODBENCH_HOST_NETWORK"
+"""Env var carrying ``spec.hostNetwork`` into the debug container.
+
+The seat cannot read it for itself: pod JSON is laptop-side, and nothing inside
+a container distinguishes "this pod has its own network namespace" from "this
+pod is using the node's". The difference is the whole of issue #87 — under
+``hostNetwork: true`` a listener on ``127.0.0.1`` belongs to the *node*, shared
+with every other hostNetwork pod and node daemon on it, so a port found there
+is not evidence of anything in this pod and a server started there is exposed to
+all of them.
+
+Absent means **unknown**, never false: a seat landed by an older launcher
+carries no such variable, and reading its absence as "no hostNetwork" would put
+back the very claim this exists to stop.
+"""
+
+TARGET_NAME_ENV = "PODBENCH_TARGET"
+"""Env var carrying the *name* of the container the seat was pointed at.
+
+The id in :data:`TARGET_CID_ENV` is what attribution matches on, and it is not
+a name anybody recognises: twelve hex digits identify the container to the
+runtime and to nothing else. ``podbench pids`` heads its listing with this
+instead, because "container X's processes" is the sentence that stops a
+one-container reading of a three-container pod (finding 15).
+
+The dev pod's sidecar has carried it since dev pods existed
+(:func:`podbench.spec.dev_pod_spec`); this is the same variable, spelled once.
+"""
+
+POD_CONTAINERS_ENV = "PODBENCH_POD_CONTAINERS"
+"""Env var carrying every container name in the pod, comma-separated.
+
+Comma-separated because sshd's ``SetEnv`` ends a value at the first space
+(:func:`podbench.sshcfg.unsafe_set_env`), and container names are DNS labels so
+no name can contain one.
+
+The seat cannot work this out for itself - it can see its own namespaces and
+nothing of the pod object - and without it ``pids`` can name the container it is
+showing but not the ones it is not, which is half of the answer a reader of a
+multi-container pod needs. Absent means **unknown**, never "this pod has one
+container": a seat landed by an older launcher carries no such variable.
+"""
+
 TARGET_CID_ENV = "PODBENCH_TARGET_CID"
 """Env var carrying the target's container id into the debug container.
 
@@ -191,6 +246,30 @@ So only these three may decide whether read-only inspection is available. A
 verdict taken from all six reads is taken mostly from constants — it was true
 on a Diamond pod that could read none of these (issue #51), which is the
 overclaim this split exists to make impossible.
+"""
+
+SEIZE_PROBE = "PTRACE_SEIZE"
+"""The primitive the live-attach probe issues, and the reason it costs no pause.
+
+``PTRACE_SEIZE`` goes through the same ``PTRACE_MODE_ATTACH_REALCREDS`` check as
+``PTRACE_ATTACH`` - so a seize that succeeds proves gdb's attach would too - but
+it leaves the tracee running rather than stopping it. Measured against live
+``p47-blueapi-0`` pid 1 (195 threads) from a capless seat on 2026-08-19: state
+``S`` before, ``S`` while seized, ``S`` after. In the kernel since 3.4.
+"""
+
+ATTACH_PROBE = "PTRACE_ATTACH"
+"""The stopping primitive: the scratch attach, and the fallback on a pre-3.4
+kernel that answers ``EIO`` to a seize. It SIGSTOPs the tracee until the probe
+reaps the stop and detaches, which is a pause the workload pays."""
+
+DEAD_STATES = frozenset({"Z", "X", "x"})
+"""``/proc/<pid>/status`` ``State:`` letters that mean there is nothing left.
+
+``Z`` is a zombie awaiting a reaper, ``X``/``x`` a task already gone. All three
+answer ``EPERM`` to ``PTRACE_ATTACH`` however good the tracer's credentials are
+— measured against ``p47-blueapi-0`` pid 518, where pid 1 attached from the same
+seat in the same second.
 """
 
 WORLD_READ_PATHS = ("cmdline", "status", "fd")
@@ -260,12 +339,12 @@ def describe_reads(proc_reads: Mapping[str, bool]) -> str:
     readable = [name for name in ordered if proc_reads[name]]
     denied = [name for name in ordered if not proc_reads[name]]
     if not readable:
-        return f"{_names(denied)} all denied"
+        return f"{and_list(denied)} all denied"
     if not denied:
-        return f"{_names(readable)} readable"
+        return f"{and_list(readable)} readable"
     gated = [name for name in readable if name in PTRACE_READ_PATHS]
     kept = "readable" if gated else "only"
-    return f"{_names(readable)} {kept}; {_names(denied)} denied"
+    return f"{and_list(readable)} {kept}; {and_list(denied)} denied"
 
 
 def describe_gated_fallback(proc_reads: Mapping[str, bool]) -> str:
@@ -294,13 +373,22 @@ def describe_gated_fallback(proc_reads: Mapping[str, bool]) -> str:
     tail = (
         "a sysroot on root still will"
         if "root" in kept
-        else f"{_names([f'`{name}`' for name in kept])} still opens"
+        else f"{and_list([f'`{name}`' for name in kept])} still opens"
     )
-    return f"so {_names([f'`{name}`' for name in lost])} will not open, but {tail}"
+    return f"so {and_list([f'`{name}`' for name in lost])} will not open, but {tail}"
 
 
-def _names(names: Sequence[str]) -> str:
-    """``a, b and c`` — the report is read by people, not parsed."""
+def and_list(names: Sequence[str]) -> str:
+    """``a, b and c`` — the report is read by people, not parsed.
+
+    Public, and in this module, because both halves say it: the launcher names
+    the containers an attach did not enter, and ``pids`` names them again from
+    inside the seat (finding 15). Two spellings of the same list is the kind of
+    difference a reader takes for a difference in meaning.
+
+    >>> and_list(["ca", "pva"])
+    'ca and pva'
+    """
     # An empty list is no caller's case today, but `names[-1]` on the way to a
     # diagnostic is a crash in the one code path that must never crash.
     if len(names) < 2:
@@ -441,6 +529,58 @@ def measured_verdict(
     return Verdict.NONE
 
 
+class Lsm(enum.Enum):
+    """Which label-based Linux Security Module owns ``/proc/<pid>/attr/current``.
+
+    That attribute is one slot shared by every such LSM, so the string in it
+    does not say whose it is. podbench printed it under an "AppArmor" heading
+    and treated any non-``unconfined`` value as confinement, which on the RHEL9
+    nodes it is deployed to reported an SELinux context as an AppArmor profile
+    and made every seat read as confined (#104).
+    """
+
+    SELINUX = "selinux"
+    APPARMOR = "apparmor"
+    NONE = "none"
+    """No label-based LSM is active on this node - which is a real answer, and
+    the one the k3s test bed gives (``apparmor=0`` on its kernel command line,
+    no selinuxfs). A report that cannot say this ends up advising the reader to
+    go and check an LSM that is not there."""
+
+    @property
+    def title(self) -> str:
+        """The LSM's name as it is spelled in its own documentation.
+
+        >>> Lsm.SELINUX.title, Lsm.APPARMOR.title, Lsm.NONE.title
+        ('SELinux', 'AppArmor', 'LSM')
+        """
+        return {Lsm.SELINUX: "SELinux", Lsm.APPARMOR: "AppArmor", Lsm.NONE: "LSM"}[self]
+
+
+def describe_lsm_remedy(lsm: Lsm, node_name: str | None) -> str:
+    """Where to go and look for an LSM denial, or why there is nowhere to look.
+
+    An LSM refusal is logged on the **node**, never in the pod: the seat sees
+    the same bare ``EPERM`` as every other mechanism. So the only actionable
+    thing podbench can say is the command and the machine to run it on - and it
+    already knows the machine, because :attr:`CapabilityReport.node_name` is on
+    the report (``PODBENCH_NODE_NAME``).
+
+    >>> describe_lsm_remedy(Lsm.SELINUX, "cn01")
+    'SELinux denials are logged on node cn01: `ausearch -m avc -ts recent`'
+    >>> describe_lsm_remedy(Lsm.APPARMOR, None)
+    'AppArmor denials are logged on the node: `dmesg | grep -i apparmor`'
+    >>> describe_lsm_remedy(Lsm.NONE, "cn01")
+    'this node runs neither SELinux nor AppArmor'
+    """
+    where = f"node {node_name}" if node_name else "the node"
+    if lsm is Lsm.SELINUX:
+        return f"SELinux denials are logged on {where}: `ausearch -m avc -ts recent`"
+    if lsm is Lsm.APPARMOR:
+        return f"AppArmor denials are logged on {where}: `dmesg | grep -i apparmor`"
+    return "this node runs neither SELinux nor AppArmor"
+
+
 class Blocker(enum.Enum):
     """The mechanism that denied ptrace.
 
@@ -462,11 +602,32 @@ class Blocker(enum.Enum):
     SECCOMP = "seccomp"
     """A seccomp filter is rejecting the ``ptrace`` syscall itself."""
 
+    LSM_MISMATCH = "lsm-mismatch"
+    """The seat and the target carry *different* LSM labels.
+
+    A label on its own says nothing - under SELinux every container on the node
+    carries one, and containers in a pod normally share it. What denies ptrace
+    is a *difference*: differing MCS categories under SELinux, differing
+    profiles under AppArmor. So this is a comparison, never a verdict read off
+    one side (#104)."""
+
     APPARMOR = "apparmor"
-    """An AppArmor profile denies ptrace between these two domains."""
+    """Superseded by :attr:`LSM_MISMATCH`, and kept so that a seat older than
+    #104 still parses. Nothing emits it; the launcher may still read it."""
 
     UID_MISMATCH = "uid-mismatch"
     """The debug container runs as a different UID than the target."""
+
+    GID_MISMATCH = "gid-mismatch"
+    """The UIDs match and the GIDs do not.
+
+    A peer of :attr:`UID_MISMATCH` rather than a footnote to it, because
+    ``__ptrace_may_access()`` compares six ids and not three: ``gid``, ``egid``
+    and ``sgid`` are checked exactly as ``uid``, ``euid`` and ``sgid`` are, and
+    any one of the six differing denies every ptrace-gated operation. Without
+    this arm the commonest shape at Diamond — a seat at the target's uid and the
+    image's gid 0 — fell through to :attr:`UNKNOWN`, which sent the reader off
+    to check AppArmor and user namespaces (#103)."""
 
     ALREADY_TRACED = "already-traced"
     """Another process is already tracing the target. A tracee has exactly one
@@ -497,13 +658,30 @@ class Blocker(enum.Enum):
                 "target's rather than imposing one, so where it denies ptrace "
                 "it is the profile the pod runs under that has to change."
             ),
+            Blocker.LSM_MISMATCH: (
+                "the seat and the target carry different security labels, and "
+                "the LSM permits ptrace only within one. Both labels are on "
+                "the report above; the denial itself is logged on the node, "
+                "not in the pod."
+            ),
             Blocker.APPARMOR: (
-                "AppArmor denies ptrace between this container's profile and "
-                "the target's. Both must be in a profile that permits it."
+                "an image older than #104 named AppArmor here without knowing "
+                "which LSM was active. Read the two labels on the report; a "
+                "current image compares them and names the real one."
             ),
             Blocker.UID_MISMATCH: (
                 "this container's UID differs from the target's and it has no "
                 "CAP_SYS_PTRACE. Relaunch with runAsUser matching the target."
+            ),
+            Blocker.GID_MISMATCH: (
+                "this container's GID differs from the target's and it has no "
+                "CAP_SYS_PTRACE. The uid matching is not enough: "
+                "__ptrace_may_access() compares gid, egid and sgid as peers of "
+                "uid, euid and suid, and one differing pair denies the whole "
+                "check - live attach and the PTRACE_MODE_READ paths with it. "
+                "podbench lands a corrected seat itself unless "
+                "--no-correct-ids was given; `podbench attach <pod> --new "
+                "--target-gid <gid>` pins it by hand."
             ),
             Blocker.ALREADY_TRACED: (
                 "the target already has a tracer, and a process can have only "
@@ -525,6 +703,13 @@ class Rung(enum.Enum):
     The launcher tries these in order and falls to the next one when admission
     refuses the previous, so that a restricted namespace still gets a working
     seat instead of an error.
+
+    Each member says what a seat *is*, so it may only be applied to one that
+    was measured: :func:`measured_rung` reads the seat's own
+    ``/proc/self/status``. ``podbench.launcher.rung_of_spec`` names the rung a
+    container was *authored* at, which is a weaker claim about a different
+    thing — it reads a securityContext, and a securityContext is not a
+    container.
     """
 
     FULL = "full"
@@ -537,36 +722,112 @@ class Rung(enum.Enum):
     SEAT = "seat"
     """Whatever the cluster will admit. Editor, shell and git only."""
 
-    @property
-    def description(self) -> str:
-        """The *securityContext* this rung reads as, for a rung column.
 
-        Not what the seat turned out to be able to do, which these lines used
-        to end in — "(live attach)", "(read-only inspection)", "(editor only)".
-        Those are verdicts, and a rung cannot carry one: the spec that lands is
-        the spec admission left behind, so a mutating webhook that strips
-        ``capabilities.add`` leaves a root seat reading back as
-        :attr:`DEGRADED` while it ptraces the target perfectly well (issue #89,
-        measured at DLS 2026-08-16 — see ``launcher.seat_layout``). ``status``
-        printed the parenthetical in a verdict column and so called that seat
-        read-only, contradicting the probe it had just run.
+def measured_rung(
+    uid: int | None, *, sys_ptrace: bool, target_uid: int | None
+) -> Rung | None:
+    """Which rung a seat's own ``/proc/self/status`` puts it on, or ``None``.
 
-        The same stripped seat is why :attr:`DEGRADED` says "a pinned UID"
-        rather than "the target's UID". A reconnect derives the rung from the
-        spec (:func:`podbench.launcher.rung_of_spec`), which sees a pinned
-        ``runAsUser`` and no added capability — true of a seat authored at this
-        rung *and* of a full-rung seat with its capability taken away. Only the
-        first is at the target's uid; naming it here would tell the second's
-        user that their root seat is running as somebody it is not.
+    The rung podbench *asked* for is not evidence of anything (issue #94). The
+    spec that lands is the spec admission left behind, and even that is not the
+    container: the image's own ``USER`` never appears in it, and a capability
+    stored in ``securityContext`` reaches ``CapEff`` only at uid 0 (report
+    §3.10). Both directions were measured at DLS on 2026-08-19 — podbench asks
+    for ``capabilities: {drop: [ALL]}`` and admission stores thirteen added
+    capabilities, while the seat carrying them reports ``CapEff:
+    0000000000000000`` at uid 37887. So the label comes from the two numbers
+    the kernel will actually check.
 
-        A verdict is measured: :func:`measured_verdict`, or :data:`NOT_PROBED`
-        where nothing measured one.
-        """
-        return {
-            Rung.FULL: "root plus CAP_SYS_PTRACE",
-            Rung.DEGRADED: "a pinned UID, all capabilities dropped",
-            Rung.SEAT: "all capabilities dropped, no UID insisted on",
-        }[self]
+    The capability decides first, because it is the whole of the full rung and
+    it is exempt from the credential check:
+
+    >>> measured_rung(0, sys_ptrace=True, target_uid=1000).name
+    'FULL'
+
+    Below it, the rung is the uid *match*, not the pin: matching the target is
+    what buys the ``PTRACE_MODE_READ`` paths, and root without the capability
+    reads three of the six where the target's own uid reads all six (report
+    §3.11). So a stripped full rung — root, no capability — is named for what
+    it can do rather than for the securityContext it now resembles:
+
+    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000).name
+    'DEGRADED'
+    >>> measured_rung(0, sys_ptrace=False, target_uid=1000).name
+    'SEAT'
+    >>> measured_rung(65532, sys_ptrace=False, target_uid=1000).name
+    'SEAT'
+
+    ``None`` means the seat could not be read at all, which is not a rung and
+    must not be reported as one — the caller falls back to naming what was
+    asked for, and says so.
+
+    >>> measured_rung(None, sys_ptrace=False, target_uid=1000) is None
+    True
+    """
+    if uid is None:
+        return None
+    if sys_ptrace:
+        return Rung.FULL
+    if uid and uid == target_uid:
+        return Rung.DEGRADED
+    return Rung.SEAT
+
+
+def describe_pause(method: str | None, attach_ok: bool | None) -> str:
+    """What the live-attach probe cost the workload, in one line.
+
+    Said out loud on every report rather than only when it is bad news, because
+    the complaint the seize answers was never the stop itself: it was that a
+    pause happened *silently*, on pods where a pause is forbidden (finding 14).
+    A line that only appears when something went wrong cannot be checked before
+    the fact.
+
+    >>> describe_pause(SEIZE_PROBE, True)
+    'none - PTRACE_SEIZE does not stop the tracee'
+    >>> describe_pause(ATTACH_PROBE, True)
+    'brief - PTRACE_ATTACH stopped it until the probe detached'
+    >>> describe_pause(ATTACH_PROBE, False)
+    'none - the attach was refused, so nothing stopped'
+    >>> describe_pause(None, None)
+    'not measured'
+    >>> describe_pause("PTRACE_LATER", True)
+    'unknown - the seat probed with PTRACE_LATER'
+    """
+    if not method or attach_ok is None:
+        # An empty method is a probe that issued nothing, which is the same
+        # silence as a report from before this line existed.
+        return "not measured"
+    if method == SEIZE_PROBE:
+        return f"none - {SEIZE_PROBE} does not stop the tracee"
+    if not attach_ok:
+        # Nothing was traced, so nothing was stopped, whichever primitive asked.
+        return "none - the attach was refused, so nothing stopped"
+    if method == ATTACH_PROBE:
+        return f"brief - {ATTACH_PROBE} stopped it until the probe detached"
+    # A newer image probing with something this launcher has not been taught.
+    # Naming it and declining to characterise it beats claiming either answer:
+    # "none" would be an assurance nobody measured.
+    return f"unknown - the seat probed with {method}"
+
+
+def describe_credentials(uid: int | None, gid: int | None, effective_hex: str) -> str:
+    """The measurement a rung column cites, in one line.
+
+    Was a :class:`Rung`-to-prose lookup, which could only ever restate the
+    label. These are the numbers behind it, so a reader can see the rung is
+    reported rather than assumed - and the one shape that used to be
+    unsayable, root with nothing effective, says itself.
+
+    >>> describe_credentials(0, 0, "0000000000000000")
+    'uid 0, gid 0, CapEff 0000000000000000'
+    >>> describe_credentials(None, None, "unreadable")
+    'uid unknown, gid unknown, CapEff unreadable'
+    """
+    return (
+        f"uid {uid if uid is not None else 'unknown'}, "
+        f"gid {gid if gid is not None else 'unknown'}, "
+        f"CapEff {effective_hex}"
+    )
 
 
 @dataclass(frozen=True)
@@ -607,10 +868,13 @@ class ProcInfo:
     exe that are the whole point of that rung, and the launcher picks
     ``runAsUser`` from here (report 3.11).
 
-    ``ppid`` is read for one reason: an image whose entrypoint is a script has
-    the shell as its lowest pid, and the process worth debugging is somewhere
-    below it. Depth in the tree is what separates the two, and nothing else
-    measurable does — see :func:`podbench.proc.debug_candidates`.
+    ``ppid`` is read because an image whose entrypoint is a script has the shell
+    as its lowest pid, and the process worth debugging is somewhere below it.
+    Depth in the tree separates those two — but it is *not* the only measurable
+    signal, and ranking on it alone picked a zombie on blueapi, a DNS helper on
+    rabbitmq and an unattachable worker on opis. :attr:`state`, :attr:`threads`
+    and :attr:`ptrace_readable` are the other three, each a measured correction
+    to one of those pods; see :func:`podbench.proc.debug_candidates`.
     """
 
     pid: int
@@ -621,6 +885,50 @@ class ProcInfo:
     is_target: bool = False
     ppid: int | None = None
     """The parent, or ``None`` when ``/proc/<pid>/status`` could not be read."""
+
+    state: str | None = None
+    """The kernel's one-letter ``State:``, or ``None`` when status was unreadable.
+
+    Carried so that a *dead* process can be told from a live one. A zombie has
+    no ``mm_struct``, so ``/proc/<pid>/maps`` opens with no ptrace check at all
+    and the read matrix scores it as partly working — which is how blueapi's
+    unreaped ``multiprocessing`` child read as "3/6 ok" and was reported as an
+    LSM denial for months (issue #52). Nothing can attach to it.
+    """
+
+    threads: int | None = None
+    """``Threads:`` from status, or ``None`` when it was unreadable.
+
+    A comparator, never a threshold. It is what separates rabbitmq's
+    ``beam.smp`` (208) from the ``inet_gethost`` helper it forks (1), and
+    blueapi's real server (19 warming up, 195 warm) from its zombie (1) — the
+    two ends of that range are why no absolute number here would mean anything.
+    """
+
+    ptrace_readable: bool | None = None
+    """Whether this seat may take ``PTRACE_MODE_READ`` on the process.
+
+    ``None`` is "not measured", which must not be read as a denial. See
+    :func:`podbench.proc.ptrace_readable` for what is measured and why a
+    *denial* here is conclusive while a success is only encouraging.
+    """
+
+    @property
+    def alive(self) -> bool:
+        """Whether there is still a process here to attach to.
+
+        An unknown state counts as alive: ``None`` means ``status`` could not be
+        read, and refusing to debug a process because we could not read a file
+        is a worse answer than trying and being told no.
+
+        >>> ProcInfo(518, 1000, "python", "", state="Z").alive
+        False
+        >>> ProcInfo(1, 1000, "python", "python -m blueapi", state="S").alive
+        True
+        >>> ProcInfo(1, 1000, "python", "python -m blueapi").alive
+        True
+        """
+        return self.state not in DEAD_STATES
 
 
 @dataclass(frozen=True)
@@ -640,10 +948,43 @@ class CapabilityReport:
     yama_scope: int | None
     seccomp_mode: int
     no_new_privs: bool
-    apparmor_profile: str | None
+    lsm: Lsm
+    """Which LSM owns the labels below, read from sysfs rather than guessed at."""
+
+    lsm_label: str | None
+    """The seat's own label, verbatim. ``None`` is "no label", not "unconfined":
+    the attribute is absent, unreadable or empty, and on a node with no
+    label-based LSM reading it fails with ``EINVAL``."""
+
     self_uid: int
     target_uid: int | None
     target_pid: int | None
+    self_gid: int | None = None
+    """This container's real GID, ``None`` only from a seat too old to report it.
+
+    Measured beside :attr:`self_uid` because the credential check needs both:
+    ``__ptrace_may_access()`` compares the three group ids as well as the three
+    user ids, so a seat that mirrors the uid alone is denied exactly as one that
+    mirrors neither. ``None`` is "an older image did not say", which is not
+    "gid 0" and must not be reported as a mismatch."""
+
+    target_gid: int | None = None
+    """The target's real GID, ``None`` when unreadable or unasked.
+
+    Read from ``/proc/<pid>/status``, which is world-readable, so a seat landed
+    at the wrong ids still learns the truth on arrival - and that is the only
+    place the truth lives when the manifest sets ``runAsUser`` and no
+    ``runAsGroup`` and the image's own user supplies the group (measured on
+    p47-blueapi-0: manifest uid 1000, real gid 1000)."""
+
+    lsm_label_target: str | None = None
+    """The target's label, for the only comparison that has content.
+
+    Held beside :attr:`lsm_label` rather than folded into a verdict, because a
+    lone label is not evidence: on p47-blueapi-0 both sides read
+    ``system_u:system_r:spc_t:s0`` and ptrace was permitted, so "confined"
+    would have been a false accusation on a working seat (#104)."""
+
     node_name: str | None = None
     child_attach_ok: bool | None = None
     """Whether attaching to the probe's own forked child worked. Yama always
@@ -651,6 +992,15 @@ class CapabilityReport:
     decision about the target."""
 
     target_attach_ok: bool | None = None
+    attach_method: str | None = None
+    """Which ptrace primitive the live attach used, or ``None`` when there was
+    no live attach - and from an image older than the seize, which is why the
+    pause line reads "not measured" rather than "none" when it is missing.
+
+    Reported because the two primitives cost the workload different things:
+    :data:`SEIZE_PROBE` leaves it running, :data:`ATTACH_PROBE` stops it. See
+    :func:`describe_pause`."""
+
     proc_reads: dict[str, bool] = field(default_factory=dict[str, bool])
     notes: list[str] = field(default_factory=list[str])
 

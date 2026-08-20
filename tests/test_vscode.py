@@ -16,24 +16,27 @@ Nothing here touches a cluster: pids come from a synthetic ``/proc`` tree.
 from __future__ import annotations
 
 import json
+import re
+import socket
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from podbench import vscode
 from podbench.execfile import gdb_exec_file
 from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
-from podbench.gdbcmd import attach_commands
+from podbench.gdbcmd import EXIT_USAGE, RUST_PRETTY_PRINTERS, attach_commands
 from podbench.kubectl import CommandResult
+from podbench.model import SEIZE_PROBE
 from podbench.probe import AttachOutcome
-from podbench.proc import DEFAULT_PROC
+from podbench.proc import DEFAULT_PROC, seat_cwd
+from podbench.provision import INJECTION_TIMEOUT_SECONDS
 from podbench.vscode import (
     GDB_WRAPPER,
     MACHINE_SETTINGS_PATH,
-    SEAT_CWD,
     SEAT_FOLDER_SETTINGS,
     SEAT_MACHINE_SETTINGS,
     cppdbg_configuration,
@@ -41,6 +44,7 @@ from podbench.vscode import (
     debugpy_attach_configuration,
     debugpy_launch_configuration,
     delve_configuration,
+    ephemeral_port,
     extensions_for,
     launch_json_text,
     launch_setup_commands,
@@ -58,7 +62,12 @@ from podbench.vscode import (
 )
 from test_elf import EM_AARCH64
 from test_flavour import (
+    BEAM_CMDLINE,
+    JVM_CMDLINE,
     SITE_PACKAGES,
+    TARGET_CID,
+    make_proc,
+    proc_stat,
     python_proc,
     seat_debugpy,
     which_of,
@@ -140,6 +149,42 @@ def test_program_names_the_staged_copy_where_this_seat_shadows_the_target(
     )
 
 
+def test_no_lldb_entry_is_written_where_this_seat_shadows_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same collision, and the other debugger, which cannot be staged out of
+    it.
+
+    cppdbg keeps its entry because ``program`` can name a copy. CodeLLDB was
+    measured to override ``program`` after attaching, re-resolving the
+    executable from the process in *this* seat's namespace, so the entry would
+    debug the file above with a warning in the debug console as its only
+    notice. Nothing is emitted instead, and the refusal names the file.
+    """
+    proc = tmp_path / "proc"
+    (proc / str(PID)).mkdir(parents=True)
+    (proc / str(PID) / "exe").symlink_to(EXE)
+    for view, text in (
+        (proc / "self" / "root", "ours\n"),
+        (proc / str(PID) / "root", "theirs\n"),
+    ):
+        (view / "app").mkdir(parents=True)
+        (view / "app" / "victim").write_text(text)
+    monkeypatch.setattr(
+        vscode,
+        "gdb_exec_file",
+        partial(gdb_exec_file, staging=tmp_path / "staged"),
+    )
+
+    assert cli([str(PID), "--print-config"], proc) == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+
+    assert [entry["type"] for entry in document["configurations"]] == ["cppdbg"]
+    assert "lldb unavailable" in captured.err
+    assert EXE in captured.err
+
+
 def test_mi_debugger_is_the_wrapper_not_usr_bin_gdb() -> None:
     """`/usr/bin/gdb` segfaults under cpptools' inherited deleted cwd.
 
@@ -154,7 +199,61 @@ def test_mi_debugger_is_the_wrapper_not_usr_bin_gdb() -> None:
 
 def test_cwd_is_always_set() -> None:
     """``${workspaceFolder}`` can resolve to nothing in a seat, and gdb dies."""
-    assert cppdbg_configuration(PID, EXE)["cwd"] == SEAT_CWD
+    for configuration in (
+        cppdbg_configuration(PID, EXE),
+        cppdbg_launch_configuration(EXE),
+    ):
+        cwd = configuration["cwd"]
+        assert cwd and cwd.startswith("/"), configuration
+
+
+def test_cwd_is_the_seats_own_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Not a constant: ``/root`` is the home of a *root* seat only.
+
+    On every rung below full the seat runs at the target's uid, for which this
+    image has no account, so the launcher pins ``HOME`` under ``/tmp`` and
+    ``/root`` is a directory that seat cannot enter. cpptools starting gdb
+    there is finding 06.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cppdbg_configuration(PID, EXE)["cwd"] == str(tmp_path)
+    assert cppdbg_launch_configuration(EXE)["cwd"] == str(tmp_path)
+
+
+def test_an_explicit_cwd_still_wins_in_launch_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``dev`` mode has a real answer — the target's own cwd — and it is not
+    the seat's home."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cppdbg_launch_configuration(EXE, cwd="/workspace")["cwd"] == "/workspace"
+
+
+@pytest.mark.parametrize(
+    "home",
+    ["", "/nonexistent-podbench-home", "unenterable"],
+    ids=["unset", "missing", "unenterable"],
+)
+def test_a_home_the_seat_cannot_enter_loses_to_tmp(
+    home: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A cwd that cannot be entered is worse than no cwd.
+
+    ``/tmp`` is 1777 in every image, so it is enterable at whatever uid the
+    seat turned out to run as — which a ``podbench-home`` volume mounted with
+    no ``fsGroup`` need not be.
+    """
+    if home == "unenterable":
+        (tmp_path / "home").mkdir(mode=0o600)
+        home = str(tmp_path / "home")
+    monkeypatch.setenv("HOME", home)
+
+    assert seat_cwd() == "/tmp"
+    assert cppdbg_configuration(PID, EXE)["cwd"] == "/tmp"
 
 
 def test_setup_commands_keep_the_load_bearing_order() -> None:
@@ -169,6 +268,7 @@ def test_setup_commands_keep_the_load_bearing_order() -> None:
     ]
     assert commands == [
         "set pagination off",
+        "handle SIGURG nostop noprint pass",
         f"set sysroot /proc/{PID}/root",
         f"directory /proc/{PID}/root",
         f"add-auto-load-safe-path /proc/{PID}/root",
@@ -501,7 +601,7 @@ def test_merging_folder_settings_twice_changes_nothing() -> None:
 def test_each_flavour_names_only_its_own_extensions() -> None:
     """Never a bundle: in Observe mode an extension is unpacked into the seat's
     ~/.vscode-server, which is on the *workload's* ephemeral-storage budget, and
-    cpptools alone is 330 MiB (issue #42)."""
+    cpptools alone is 330 MiB."""
     assert extensions_for([{"type": "cppdbg"}]) == ["ms-vscode.cpptools"]
     assert extensions_for([{"type": "lldb"}]) == ["vadimcn.vscode-lldb"]
     assert extensions_for([{"type": "go"}]) == ["golang.go"]
@@ -554,14 +654,18 @@ def test_every_applicable_flavour_is_emitted_and_named(
     """``launch.json`` holds a list, so no exclusive guess has to be made.
 
     The flavour has to be *in* the name: VS Code's dropdown shows names, and two
-    entries called "podbench: attach to victim" are a coin toss.
+    entries called "podbench: attach to victim" are a coin toss. So does the
+    pid, for the same reason one level up — the ranking offers several
+    candidates and three of them are routinely called ``python``. This tree has
+    no ``comm`` file, which is the graceful case: the pid alone still separates
+    them.
     """
     assert cli([str(PID), "--print-config"], proc_tree) == 0
     document = json.loads(capsys.readouterr().out)
     names = [entry["name"] for entry in document["configurations"]]
     assert names == [
-        "podbench: attach to victim (gdb)",
-        "podbench: attach to victim (lldb)",
+        f"podbench: attach to victim [pid {PID}] (gdb)",
+        f"podbench: attach to victim [pid {PID}] (lldb)",
     ]
 
 
@@ -712,17 +816,23 @@ def test_a_seat_without_gdb_says_so_rather_than_emitting_cppdbg(
 # -- the mode-dependent shapes ----------------------------------------------
 
 
-def test_observe_mode_maps_the_source_through_the_sysroot() -> None:
-    """The editor sees the source through ``/proc/<pid>/root``; the app does not."""
-    assert python_path_mappings(1, "/src", Mode.OBSERVE) == [
-        {"localRoot": "/proc/1/root/src", "remoteRoot": "/src"}
+def test_observe_mode_maps_the_mount_namespace_and_nothing_narrower() -> None:
+    """The editor sees the target's filesystem through ``/proc/<pid>/root``.
+
+    One entry and no narrower one beside it: a root guessed from ``argv`` is
+    ``/app/.venv/bin`` for a console script, and podbench's own image installs
+    under ``/app/.venv``, so such a mapping resolves to *this* container's copy
+    of the file rather than failing (issue #112).
+    """
+    assert python_path_mappings(1, Mode.OBSERVE) == [
+        {"localRoot": "/proc/1/root", "remoteRoot": "/"}
     ]
 
 
 def test_dev_mode_has_no_mappings_at_all() -> None:
     """Editor and interpreter are the same inodes, and a spurious mapping is
     the same silent wrong answer as a missing one: breakpoints never bind."""
-    assert python_path_mappings(1, "/src", Mode.DEV) == []
+    assert python_path_mappings(1, Mode.DEV) == []
 
 
 def test_debugpy_connects_rather_than_listens() -> None:
@@ -731,7 +841,7 @@ def test_debugpy_connects_rather_than_listens() -> None:
     ``127.0.0.1`` is right even in Observe mode — separate containers, one
     network namespace — so no port-forward is involved.
     """
-    config = debugpy_attach_configuration(1, name="x", port=5678, source_root="/src")
+    config = debugpy_attach_configuration(1, name="x", port=5678)
     assert config["connect"] == {"host": "127.0.0.1", "port": 5678}
     assert "listen" not in config
 
@@ -749,6 +859,7 @@ def test_dev_launch_setup_is_derived_from_the_cli_sequence() -> None:
     """One definition of the launch ordering, not two that can diverge."""
     assert launch_setup_commands() == [
         "set pagination off",
+        "handle SIGURG nostop noprint pass",
         "set debuginfod enabled on",
     ]
 
@@ -889,34 +1000,135 @@ def test_no_gdb_to_ask_is_not_a_second_refusal() -> None:
     assert program_load_error(1, "/proc/1/root/bin/x", runner=missing) is None
 
 
+# -- languages with no real debugger, end to end ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exe", "cmdline", "named"),
+    [
+        ("/opt/java/bin/java", JVM_CMDLINE, "jdwp"),
+        ("/erts-15.2/bin/beam.smp", BEAM_CMDLINE, "remsh"),
+    ],
+)
+def test_a_runtime_with_no_debugger_gets_a_refusal_and_no_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    exe: str,
+    cmdline: str,
+    named: str,
+) -> None:
+    """Nothing is emitted, and the sentence names the tool that would work.
+
+    gdb attaches to both of these perfectly well and shows named C++ frames
+    inside somebody else's interpreter, which reads as progress. An empty
+    launch.json with a reason beats a full one that debugs the runtime.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=make_proc(tmp_path, exe=exe, cmdline=cmdline),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=gdb_saying(""),
+    )
+    captured = capsys.readouterr()
+    # Nothing on stdout: --print-config prints a file or it prints nothing, and
+    # an empty `configurations` list would be a file the reader could paste.
+    assert captured.out == ""
+    assert code == EXIT_USAGE
+    assert named in captured.err
+    # The language is named, so the reader knows which of the pod's processes
+    # this was said about.
+    assert "jvm target" in captured.err or "erlang target" in captured.err
+
+
+def test_a_rust_target_gets_cppdbg_with_the_printers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rust is served rather than refused, and needs one thing C does not.
+
+    Verified by fixture only: there is no Rust workload in p47-beamline, so
+    nothing here has been through a cluster.
+    """
+    code = main(
+        [str(PID), "--print-config"],
+        proc=make_proc(tmp_path, sections=[".rustc", ".text"]),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=gdb_saying(""),
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    cppdbg = next(
+        entry for entry in document["configurations"] if entry["type"] == "cppdbg"
+    )
+    commands = [entry["text"] for entry in cppdbg["setupCommands"]]
+    assert f"source {RUST_PRETTY_PRINTERS}" in commands
+
+
 # -- the Python path, end to end ---------------------------------------------
+
+
+SS_HEADER = "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+
+INJECT_PORT = 41597
+"""What the injected ``port_chooser`` returns. Deliberately not 5678: the whole
+point of asking the kernel is that the port is not the conventional one, and a
+fixture that answered 5678 would let a run that never asked pass."""
+
+
+def fixed_port() -> int:
+    """A ``port_chooser`` with no socket behind it. The real one binds."""
+    return INJECT_PORT
+
+
+def ss_line(port: int, *, pid: int | None = PID, inode: int = 90210) -> str:
+    """One ``ss -lntpe`` row, with the two fields the port filter used to drop.
+
+    ``pid=None`` is the shape issue #87 arrives in and the reason this fixture
+    was rebuilt: ``ss`` attributes a socket by scanning ``/proc``, so a listener
+    held by a process in *another pod* — which is every process on the node once
+    ``hostNetwork: true`` puts the seat in the node's network namespace and
+    leaves it in its own pid namespace — is reported with no ``users:`` field at
+    all. A fixture without one cannot tell that case from a healthy pod.
+    """
+    users = f' users:(("python",pid={pid},fd=13))' if pid is not None else ""
+    return (
+        f"LISTEN 0      4096   127.0.0.1:{port}      0.0.0.0:*"
+        f"{users} uid:1000 ino:{inode} sk:2 cgroup:/kubepods v6only:0\n"
+    )
+
+
+def ss_saying(*rows: str) -> Callable[..., CommandResult]:
+    """An ``ss`` that reports exactly ``rows``. Injected: the unit suite may not
+    shell out, and whether something is listening decides which debugpy shape
+    is emitted."""
+
+    def runner(
+        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    ) -> CommandResult:
+        return CommandResult(tuple(argv), 0, SS_HEADER + "".join(rows), "")
+
+    return runner
 
 
 def no_listeners(
     argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
 ) -> CommandResult:
-    """An ``ss`` that reports an empty pod. Injected: the unit suite may not
-    shell out, and whether something is listening decides which debugpy shape
-    is emitted."""
-    return CommandResult(tuple(argv), 0, "State Recv-Q Send-Q Local Peer\n", "")
+    """An ``ss`` that reports an empty pod."""
+    return ss_saying()(argv, stdin=stdin, capture=capture)
 
 
 def listening_on(port: int) -> Callable[..., CommandResult]:
-    """An ``ss`` that reports a debugpy server on ``port``, as one appears the
-    moment ``--provision`` finishes its injection."""
+    """An ``ss`` reporting a debugpy server the *target* holds, as one appears
+    the moment ``--provision`` finishes its injection."""
+    return ss_saying(ss_line(port))
 
-    def runner(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
-    ) -> CommandResult:
-        return CommandResult(
-            tuple(argv),
-            0,
-            "State Recv-Q Send-Q Local Peer\n"
-            f"LISTEN 0      0      127.0.0.1:{port} 0.0.0.0:*\n",
-            "",
-        )
 
-    return runner
+def stranger_on(port: int) -> Callable[..., CommandResult]:
+    """An ``ss`` reporting a listener nothing in this pid namespace owns.
+
+    Issue #87 exactly: on ``bl47p-ea-serv-01`` six hostNetwork pods share one
+    network namespace, and the 5678 a seat found there was another pod's.
+    """
+    return ss_saying(ss_line(port, pid=None))
 
 
 def test_a_python_target_emits_debugpy_with_the_observe_mapping(
@@ -926,7 +1138,7 @@ def test_a_python_target_emits_debugpy_with_the_observe_mapping(
 
     An amd64 Python service with debugpy on both sides: the configuration is a
     ``connect``, and its ``pathMappings`` carries the sysroot on the left and
-    the target's own path on the right.
+    the target's own root on the right.
     """
     proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
     code = main(
@@ -934,6 +1146,7 @@ def test_a_python_target_emits_debugpy_with_the_observe_mapping(
         proc=proc,
         which=which_of("gdb", "gdb-podbench"),
         runner=no_listeners,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert code == 0
@@ -941,7 +1154,7 @@ def test_a_python_target_emits_debugpy_with_the_observe_mapping(
     configurations = json.loads(captured.out)["configurations"]
     assert [entry["type"] for entry in configurations] == ["debugpy"]
     assert configurations[0]["pathMappings"] == [
-        {"localRoot": f"/proc/{PID}/root/src", "remoteRoot": "/src"}
+        {"localRoot": f"/proc/{PID}/root", "remoteRoot": "/"}
     ]
     # Nothing is listening yet, so the command that starts the server is printed
     # rather than run: it ptraces the workload and leaves a server inside it.
@@ -963,6 +1176,7 @@ def test_an_arm64_python_target_names_the_missing_helper(
         proc=proc,
         which=which_of("gdb", "gdb-podbench"),
         runner=no_listeners,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert code != 0
@@ -973,9 +1187,10 @@ def test_an_arm64_python_target_names_the_missing_helper(
 #
 # Issue #89: the pid injection is `gdb --pid`, so the question is ptrace, and
 # CAP_SYS_PTRACE is one of four ways to have it. What is pinned here is *when*
-# the seat is allowed to answer that question by really attaching — a
-# PTRACE_ATTACH stops the workload for the instant it takes, and this verb
-# otherwise only authors a file.
+# the seat is allowed to answer that question by really attaching. The probe is
+# a PTRACE_SEIZE now and stops nothing, so what these guards protect is no
+# longer the workload's uptime but the caller's consent: a verb that only
+# authors a file does not touch the workload behind their back.
 
 
 class RecordingAttacher:
@@ -1005,30 +1220,33 @@ def test_a_synthetic_proc_is_never_ptraced(
 
     A unit test injects a ``/proc`` whose pids name unrelated processes on the
     machine running the suite, so an attach there would measure something else
-    entirely and SIGSTOP somebody's editor. The capability mask written into the
-    tree stays the answer.
+    entirely and SIGSTOP somebody's editor. What the tree says about the seat's
+    capabilities and about the target's readability stays the answer, and the
+    run says which of the two it answered from.
     """
     attacher = RecordingAttacher(AttachOutcome(ok=True))
-    code = main(
+    main(
         [str(PID), "--print-config"],
         proc=python_proc(tmp_path, site_packages=SITE_PACKAGES, cap_sys_ptrace=False),
         which=which_of("gdb", "gdb-podbench"),
         runner=no_listeners,
+        port_chooser=fixed_port,
         attacher=attacher,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert attacher.attached == []
-    assert code != 0
-    assert (
-        "CAP_SYS_PTRACE is not in this seat's effective set" in capsys.readouterr().err
-    )
+    printed = capsys.readouterr().err
+    assert f"ptrace to pid {PID} was not measured" in printed
+    # The sentence the *probed* path prints. Nothing that skipped the probe may
+    # borrow it, whichever way the run then went.
+    assert "measured ptrace to pid" not in printed
 
 
 def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The #89 case: the one call worth stopping the workload for."""
-    attacher = RecordingAttacher(AttachOutcome(ok=True))
+    """The #89 case: the answer is measured, not read off CapEff."""
+    attacher = RecordingAttacher(AttachOutcome(ok=True, method=SEIZE_PROBE))
     measured = measured_attach(
         PYTHON_TARGET,
         Mode.OBSERVE,
@@ -1038,9 +1256,42 @@ def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
     )
     assert measured is True
     assert attacher.attached == [PID]
-    # Said out loud: the answer changed *because* something was done to the
-    # workload, and the reader has to be able to connect the two.
-    assert "stopped the workload" in capsys.readouterr().err
+    # Said out loud, and with the cost named: the answer changed because
+    # something was done to the workload, so the reader is told which primitive
+    # did it and what it cost — which here is nothing.
+    warned = capsys.readouterr().err
+    assert SEIZE_PROBE in warned
+    assert "Pause to the workload: none" in warned
+
+
+def test_printing_a_configuration_measures_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--print-config`` writes no file, so it touches no workload either.
+
+    The probe fires per candidate pid, so this was N real attaches on a pod
+    with N candidates, for a run that changes nothing. Free is not the same as
+    invited (finding 17.4), and the reader is told what was not measured.
+    """
+    attacher = RecordingAttacher(AttachOutcome(ok=True, method=SEIZE_PROBE))
+    measured = measured_attach(
+        PYTHON_TARGET,
+        Mode.OBSERVE,
+        Seat(machine="x86_64", cap_sys_ptrace=False),
+        proc=DEFAULT_PROC,
+        attacher=attacher,
+        probe=False,
+    )
+    assert measured is None
+    assert attacher.attached == []
+    warned = capsys.readouterr().err
+    assert "--print-config" in warned
+    # It names the mechanism that decides in the probe's absence. Saying
+    # "CapEff alone" there sent the reader after the bit that decides nothing
+    # on this path, which is #89's error in a warning rather than a refusal.
+    assert f"ptrace to pid {PID} was not measured" in warned
+    assert f"/proc/{PID}/root" in warned
+    assert "CapEff" not in warned
 
 
 def test_a_refused_attach_is_measured_as_a_refusal_not_as_silence() -> None:
@@ -1118,19 +1369,39 @@ class InstallingUv:
     def __init__(self, *, inject_rc: int = 0) -> None:
         self.argv: list[str] = []
         self.injected: str | None = None
+        self.bound: list[str] = []
         self.inject_rc = inject_rc
+
+    @property
+    def injected_port(self) -> int:
+        """The port the injection command was told to listen on."""
+        assert self.injected is not None
+        match = re.search(r"--listen 127\.0\.0\.1:(\d+)", self.injected)
+        assert match, self.injected
+        return int(match.group(1))
 
     def __call__(
         self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
     ) -> CommandResult:
-        if list(argv[:2]) == ["sh", "-c"]:
-            self.injected = argv[2]
+        if argv[0] == "timeout":
+            # The injection reaches the shell only through a bound: #76 was a
+            # pause that lasted as long as gdb felt like waiting, and a fake
+            # that answered a bare `sh -c` would let that come back unnoticed.
+            assert list(argv[-3:-1]) == ["sh", "-c"]
+            self.bound = list(argv[1:-3])
+            self.injected = argv[-1]
             if self.inject_rc != 0:
                 return CommandResult(tuple(argv), self.inject_rc, "", "ptrace: denied")
             return CommandResult(tuple(argv), 0, "", "")
         if argv[0] != "uv":
             if self.injected is not None and self.inject_rc == 0:
-                return listening_on(DEBUGPY_PORT)(argv, stdin=stdin, capture=capture)
+                # On the port the injection was *given*, not on 5678. The run
+                # asks the kernel for a free one, so a fixture that answered
+                # 5678 would report the run's own new server as missing and
+                # print the "nothing is listening" hint over the top of it.
+                return listening_on(self.injected_port)(
+                    argv, stdin=stdin, capture=capture
+                )
             return no_listeners(argv, stdin=stdin, capture=capture)
         self.argv = list(argv)
         write_debugpy(
@@ -1164,6 +1435,7 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
     assert code == 0
@@ -1185,6 +1457,11 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
     # target's version rather than this seat's.
     assert uv.injected is not None
     assert f"PYTHONPATH=/proc/{PID}/root/opt/podbench-debugpy" in uv.injected
+    # And it names the seat's interpreter in full: the seat has two, and the
+    # one this recipe means is the venv the image resolved debugpy against.
+    assert " /app/.venv/bin/python -m debugpy" in uv.injected
+    # The ptrace pause is bounded by podbench and not by gdb's patience (#76).
+    assert str(INJECTION_TIMEOUT_SECONDS) in uv.bound
     for caveat in ("egress", "restart", "ephemeral storage"):
         assert caveat in captured.err
 
@@ -1203,6 +1480,7 @@ def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
 
@@ -1234,6 +1512,7 @@ def test_a_target_that_already_has_debugpy_still_gets_a_server(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
 
@@ -1255,6 +1534,7 @@ def test_a_refused_injection_is_reported_and_not_claimed(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
 
@@ -1282,6 +1562,7 @@ def test_without_the_flag_nothing_is_injected_either(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
 
@@ -1306,6 +1587,7 @@ def test_without_the_flag_nothing_is_written_into_the_workload(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
     assert code != 0
@@ -1332,6 +1614,7 @@ def test_provision_probes_writability_before_it_runs_uv(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
     assert uv.argv == []
@@ -1354,6 +1637,7 @@ def test_provision_refuses_where_no_wheel_could_help(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert uv.argv == []
@@ -1377,6 +1661,7 @@ def test_provision_says_no_in_dev_mode_rather_than_installing_anyway(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
     assert uv.argv == []
@@ -1404,6 +1689,7 @@ def test_provision_installs_over_its_own_previous_copy(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
     assert code == 0
@@ -1426,6 +1712,7 @@ def test_the_targets_own_complete_copy_is_never_written_over(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert code == 0
@@ -1449,6 +1736,7 @@ def test_an_incomplete_target_copy_gets_a_complete_one_beside_it(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert code == 0
@@ -1468,6 +1756,7 @@ def test_provision_without_uv_says_what_uv_was_for(
         proc=proc,
         which=which_of("gdb", "gdb-podbench"),
         runner=no_listeners,
+        port_chooser=fixed_port,
         debugpy_root=root,
     )
     assert "no uv on PATH in this seat" in capsys.readouterr().err
@@ -1486,21 +1775,22 @@ def test_provision_refuses_to_guess_the_targets_version(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert uv.argv == []
     assert "--provision-python X.Y" in capsys.readouterr().err
 
 
-def test_provision_without_ptrace_says_so_and_still_installs(
+def test_provision_on_a_capless_but_readable_seat_installs_and_emits(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Not a refusal, unlike arm64: the copy outlives the seat.
+    """The DLS run of #89, as a unit test: the command, the seat and the exit.
 
-    It goes into the *target's* rootfs, so a relaunch on the ``full`` rung picks
-    it up rather than repeating the install — but the run ends in
-    "CAP_SYS_PTRACE is not in this seat's effective set", and the two have to be
-    joined up or the install reads as having been spent for nothing.
+    ``debug-config --provision --print-config`` from a seat whose policy engine
+    strips SYS_PTRACE, against a target it may read. Nothing is measured —
+    ``--print-config`` touches nothing — so the run must neither refuse the
+    injection for want of a capability nor claim an attach it never made.
     """
     proc = python_proc(tmp_path, cap_sys_ptrace=False)
     uv = InstallingUv()
@@ -1509,10 +1799,334 @@ def test_provision_without_ptrace_says_so_and_still_installs(
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+    captured = capsys.readouterr()
+    assert uv.argv[:3] == ["uv", "pip", "install"]
+    assert code == 0, captured.err
+    assert captured.out.strip()
+    # The two sentences tests/e2e/test_dls_ioc.py matches on, in the same run
+    # that installs. Both are about a capability that decides nothing here.
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" not in captured.err
+    assert "cannot be driven from here" not in captured.err
+    # And no attach was claimed either: the run probed nothing, so the sentence
+    # the probed path prints must be nowhere in it.
+    assert "measured ptrace to pid" not in captured.err
+
+
+def test_provision_into_an_unreadable_target_names_the_credentials(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not a refusal, unlike arm64: the copy outlives the seat.
+
+    A seat the kernel refuses ``PTRACE_MODE_READ`` on cannot drive the
+    injection — the attach takes strictly more than the read — and the note has
+    to name that rather than the capability, which is not what said no. The
+    install is still attempted and still spoken for: the tree lands in the
+    target's own rootfs, so a relaunch picks it up rather than repeating it.
+    """
+    proc = python_proc(tmp_path, cap_sys_ptrace=False, ptrace_readable=False)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
         debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
     )
     assert code != 0
     captured = capsys.readouterr()
     assert "outlives this seat" in captured.err
-    assert "CAP_SYS_PTRACE is not in this seat's effective set" in captured.err
-    assert uv.argv[:3] == ["uv", "pip", "install"]
+    assert f"may not read /proc/{PID}/root" in captured.err
+    assert "CAP_SYS_PTRACE is not in this seat's effective set" not in captured.err
+
+
+def test_a_denied_candidate_does_not_cost_the_others_their_configurations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Finding 01: one refused rootfs used to take the whole file with it.
+
+    ``pathlib`` raises rather than answering on a denied read — ``EACCES`` is
+    not among the errnos it ignores — and this verb writes ``launch.json``
+    last, so a raise anywhere in the walk left the run with a traceback and no
+    file at all. The Python candidate here is the one the seat may not read;
+    the IOC beside it is unaffected, and its entry has to survive.
+    """
+    proc = container_tree(tmp_path, IOC_TREE)
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"]
+    # Declined on the credentials, and not on an install that could not be run:
+    # `--provision` writes through the same `/proc/<pid>/root` the kernel just
+    # refused, so offering it here would be the denial told as a remedy.
+    assert "may not read /proc/8/root" in captured.err
+    assert "not importable by the target" not in captured.err
+
+
+def test_two_candidates_with_one_basename_get_two_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ordering the candidates is worthless if the dropdown cannot tell them apart.
+
+    `merge_launch_configs` matches by name, so identical names are worse than
+    confusing: re-running with a different winner silently replaces an entry the
+    user already had rather than adding one.
+    """
+    proc = container_tree(
+        tmp_path,
+        (
+            (1, "bash", "/usr/bin/bash", 0),
+            (8, "worker", "/app/bin/worker", 1),
+            (13, "worker", "/app/bin/worker", 1),
+        ),
+    )
+    assert cli(["--container-id", CID, "--print-config"], proc) == 0
+    document = json.loads(capsys.readouterr().out)
+    names = [entry["name"] for entry in document["configurations"]]
+    assert len(names) == len(set(names))
+    assert all("worker [pid " in name for name in names)
+    assert any("[pid 13 worker]" in name for name in names)
+
+
+# -- attributing a listening port, and choosing one to serve on --------------
+#
+# Issue #87. The old check filtered `ss` output on the port and nothing else,
+# on the premise that "the pod's network namespace is shared, so a listener
+# anywhere in it is reachable from the seat at 127.0.0.1". That is true of an
+# ordinary pod and false under `hostNetwork: true`, where the namespace is the
+# node's: the sweep found 5678 held by a podbench seat in a *different pod on
+# the same node*, called it "already listening in this pod" and emitted a
+# configuration pointing at the stranger.
+
+
+def debugpy_seat(tmp_path: Path) -> dict[str, Any]:
+    """A full-rung seat on a Python target that can already import debugpy."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    return {
+        "proc": proc,
+        "which": which_of("gdb", "gdb-podbench"),
+        "debugpy_root": seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+        "port_chooser": fixed_port,
+    }
+
+
+def test_a_listener_in_the_target_container_is_offered_as_the_targets_own(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The good case, and the one the beamline supplies: `p47-blueapi-0` is
+    deployed with `-m debugpy --listen 5678` in PID 1's own cmdline. That is a
+    real server worth connecting to, and it is distinguished from a stranger by
+    the same evidence — who holds the socket, not which port it is."""
+    code = main(
+        [str(PID), "--print-config", "--container-id", TARGET_CID],
+        runner=listening_on(DEBUGPY_PORT),
+        **debugpy_seat(tmp_path),
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    connect = json.loads(captured.out)["configurations"][0]["connect"]
+    assert connect == {"host": "127.0.0.1", "port": DEBUGPY_PORT}
+    assert f"already listening on 127.0.0.1:{DEBUGPY_PORT}" in captured.err
+    assert f"held by pid {PID}" in captured.err
+    assert "in the target container" in captured.err
+    # No injection is offered over the top of a server that is already there.
+    assert "nothing is listening" not in captured.err
+
+
+def test_a_listener_this_seat_cannot_attribute_is_not_this_pods_server(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #87 itself. `ss` attributes a socket by scanning `/proc`, which is
+    this pod's pid namespace, so a listener held by a process in another pod is
+    reported with no owning pid at all. Unknown is the answer, and unknown must
+    not be spelled "in this pod"."""
+    code = main(
+        [str(PID), "--print-config"],
+        runner=stranger_on(DEBUGPY_PORT),
+        **debugpy_seat(tmp_path),
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    # The whole of the defect: the emitted configuration used to point at the
+    # stranger's port. It points at the port this run would serve on instead.
+    assert json.loads(captured.out)["configurations"][0]["connect"]["port"] == (
+        INJECT_PORT
+    )
+    assert "already listening" not in captured.err
+    assert "cannot attribute the socket to any container in this pod" in captured.err
+    assert "--port" in captured.err
+
+
+def test_a_zombie_holding_the_port_is_not_a_server(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`kill -0` is not this check. Under `shareProcessNamespace` pid 1 reaps
+    nothing, so an orphaned child stays a zombie for the pod's lifetime — and
+    that is how a bootstrap once handed a client a dead port (report 3.19)."""
+    seat = debugpy_seat(tmp_path)
+    proc = cast(Path, seat["proc"])
+    (proc / str(PID) / "stat").write_text(proc_stat(PID, "python", state="Z"))
+
+    code = main([str(PID), "--print-config"], runner=listening_on(DEBUGPY_PORT), **seat)
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "already listening" not in captured.err
+    assert "cannot attribute the socket" in captured.err
+
+
+def test_a_listener_held_by_a_pid_outside_this_namespace_is_unknown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The pid `ss` reports can be stale, or in a namespace this seat cannot
+    read. Either way there is no `/proc` entry to attribute it with, and a port
+    number on its own establishes nothing."""
+    code = main(
+        [str(PID), "--print-config"],
+        runner=ss_saying(ss_line(DEBUGPY_PORT, pid=4242)),
+        **debugpy_seat(tmp_path),
+    )
+
+    assert code == 0
+    assert "cannot attribute the socket" in capsys.readouterr().err
+
+
+def test_the_server_this_run_starts_gets_a_port_the_kernel_chose(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The acceptance property, at unit scale: two seats on one node must not
+    both inject on 5678. The injection, the emitted configuration and the
+    re-probe that confirms the server all have to agree on the one port."""
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    write_debugpy(
+        proc / str(PID) / "root" / SITE_PACKAGES.lstrip("/"),
+        helpers=["attach_linux_amd64.so"],
+    )
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+
+    assert code == 0
+    assert uv.injected_port == INJECT_PORT
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"][0]["connect"]["port"] == (
+        INJECT_PORT
+    )
+    # The re-probe has to follow the injection to its port. Looking at 5678
+    # afterwards would report the run's own new server missing and print the
+    # "start one" hint over the top of the one just started.
+    assert "nothing is listening" not in captured.err
+    assert f"already listening on 127.0.0.1:{INJECT_PORT}" in captured.err
+
+
+def test_a_named_port_is_the_users_and_is_not_overridden(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--port` is the way to pin one, so a verb that chose anyway would leave
+    no way to. It pins both halves: where a running server is looked for, and
+    where a new one is started."""
+    code = main(
+        [str(PID), "--print-config", "--port", "9999"],
+        runner=no_listeners,
+        **debugpy_seat(tmp_path),
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"][0]["connect"]["port"] == 9999
+    assert "--listen 127.0.0.1:9999" in captured.err
+
+
+def test_ephemeral_port_is_read_back_from_the_kernel(tmp_path: Path) -> None:
+    """Bind zero and read back what was assigned. The only unit-level proof
+    that this is a *choice* rather than a constant is that the number it hands
+    back is one nothing holds — so it is bound here, once, and released."""
+    port = ephemeral_port()
+    assert 1024 < port < 65536
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", port))
+
+
+def test_a_seat_that_cannot_bind_falls_back_rather_than_failing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A seat with no loopback still authors a correct configuration; it just
+    cannot promise the port is free, and says which flag pins one."""
+
+    def refuses() -> int:
+        raise OSError(1, "Operation not permitted")
+
+    seat = debugpy_seat(tmp_path)
+    seat["port_chooser"] = refuses
+    code = main([str(PID), "--print-config"], runner=no_listeners, **seat)
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"][0]["connect"]["port"] == (
+        DEBUGPY_PORT
+    )
+    assert "could not ask the kernel for a free port" in captured.err
+    assert "`--port`" in captured.err
+
+
+# -- what a hostNetwork pod is told ------------------------------------------
+
+
+def test_a_host_network_pod_is_warned_the_port_is_node_visible(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Allowed, with the warning, and not refused: the pods podbench exists for
+    at Diamond are hostNetwork IOCs. A debugpy server authenticates nobody, so
+    on the node's loopback it is an arbitrary-code-execution endpoint for every
+    other hostNetwork pod and every node daemon on the box."""
+    monkeypatch.setenv("PODBENCH_HOST_NETWORK", "true")
+    code = main(
+        [str(PID), "--print-config"], runner=no_listeners, **debugpy_seat(tmp_path)
+    )
+
+    assert code == 0
+    warned = capsys.readouterr().err
+    assert "hostNetwork: true" in warned
+    assert "authenticates nobody" in warned
+    assert "node daemon" in warned
+    # Every prose remedy names its flag, and the way out of a shared port is to
+    # pin one.
+    assert "`--port`" in warned
+
+
+def test_a_pod_with_its_own_namespace_is_not_warned_about_the_node(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary case, where loopback is the pod's and the blast radius is
+    the one the seat already has. A warning here would be noise on every run."""
+    monkeypatch.setenv("PODBENCH_HOST_NETWORK", "false")
+    main([str(PID), "--print-config"], runner=no_listeners, **debugpy_seat(tmp_path))
+
+    warned = capsys.readouterr().err
+    assert "hostNetwork" not in warned
+    assert "node daemon" not in warned
+
+
+def test_a_seat_without_the_variable_says_unknown_and_not_no(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seat landed by an older launcher carries no such variable. Reading its
+    absence as "no hostNetwork" would put back exactly the claim the whole
+    change exists to stop, so absence is a third answer with its own sentence
+    and its own way out."""
+    monkeypatch.delenv("PODBENCH_HOST_NETWORK", raising=False)
+    main([str(PID), "--print-config"], runner=no_listeners, **debugpy_seat(tmp_path))
+
+    warned = capsys.readouterr().err
+    assert "cannot tell whether" in warned
+    assert "podbench attach" in warned

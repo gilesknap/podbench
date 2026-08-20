@@ -75,7 +75,7 @@ STAGING_FAILED = "copying the target's aside failed"
 
 Checked *before* :data:`BFD_COMPLAINTS`, and it is not decoration. ``image/bin/
 gdb-podbench`` captures only the stdout of its ``podbench dbg
---print-exec-file`` call, so that note lands on gdb's stderr, and
+--print-startup-commands`` call, so that note lands on gdb's stderr, and
 :func:`_in_seat` merges both streams. The note quotes ``.gnu.version_r invalid
 entry`` verbatim — it is telling the user what to expect — so it matches the
 ``invalid entry`` phrase below and would report a failed *copy* as gdb reading

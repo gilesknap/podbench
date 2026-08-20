@@ -33,7 +33,9 @@ from podbench.sshcfg import (
     known_hosts_entry,
     proxy_command,
     proxy_command_string,
+    seat_control_path,
     sshd_config,
+    unsafe_set_env,
 )
 
 
@@ -229,6 +231,45 @@ def test_control_path_default_fits_the_sun_path_limit() -> None:
     assert expanded_control_path_length(CONTROL_PATH) < SUN_PATH_MAX
 
 
+def test_a_seat_control_path_still_fits_for_the_longest_alias() -> None:
+    # A pod UID is 36 characters and a seat name is bounded by the pod's own
+    # name length limit; neither reaches the socket path, because the digest is
+    # fixed width. Asserted anyway, since the whole point of the digest is that
+    # this arithmetic is knowable before ssh sees the path.
+    alias = host_key_alias("3f2c1a90-7b6d-4e21-9a55-0c1e2f3a4b5c", "podbench-10")
+    path = seat_control_path(alias)
+    assert control_path_ok(path)
+    assert expanded_control_path_length(path) == 74
+
+
+def test_two_seats_in_one_pod_do_not_share_a_control_socket() -> None:
+    """The finding-10 regression: ``%C`` alone collides, and silently.
+
+    ``%C`` hashes the resolved HostName, and both stanzas set it to the pod's
+    name, so nothing in the alias as typed separates them. Sharing the master
+    would mean the second alias reaching the first seat's container *without a
+    host-key check*, which is the part that makes this a security bug and not
+    only a wrong-container bug.
+    """
+    uid = "3f2c1a90-7b6d-4e21-9a55-0c1e2f3a4b5c"
+    first = seat_control_path(host_key_alias(uid, "podbench-1"))
+    second = seat_control_path(host_key_alias(uid, "podbench-2"))
+    assert first != second
+
+
+def test_a_recreated_pod_does_not_inherit_the_control_socket() -> None:
+    """Same namespace, same pod name, same seat name — new UID, new socket.
+
+    Deleting a pod is how a seat is reset, and the replacement mints fresh host
+    keys. A digest over namespace/pod/container would be identical across that
+    reset and hand the new pod the old master.
+    """
+    seat = "podbench-1"
+    before = seat_control_path(host_key_alias("3f2c1a90-7b6d-4e21-9a55-0c1e", seat))
+    after = seat_control_path(host_key_alias("b81d4fe3-9c2a-41f7-8e60-5a2b7c1d", seat))
+    assert before != after
+
+
 def test_control_path_guard_catches_a_long_path() -> None:
     long_path = (
         "/home/dev/very/deeply/nested/workspace/directory/tree/"
@@ -261,7 +302,10 @@ def test_client_config_carries_the_measured_defaults() -> None:
     assert "ServerAliveInterval 15" in text
     assert "ServerAliveCountMax 3" in text
     assert "ControlMaster auto" in text
-    assert f"ControlPath {CONTROL_PATH}" in text
+    # The exact line, not a prefix: `CONTROL_PATH` is a prefix of every seat's
+    # socket, so a substring assertion would pass on the bare `%C` this commit
+    # exists to remove.
+    assert f"    ControlPath {seat_control_path(binding.alias)}\n" in text
     assert "ControlPersist 10m" in text
     assert "IdentitiesOnly yes" in text
     assert "HostKeyAlias podbench-9a1e-uid" in text
@@ -316,13 +360,22 @@ def test_session_env_is_named_in_the_config_because_sshd_leaks_nothing() -> None
     """
     config = sshd_config(
         SshdLayout.for_uid(0),
-        {"PODBENCH_TARGET_CID": "abc", "PODBENCH_NODE_NAME": "n1"},
+        {
+            "PODBENCH_TARGET_CID": "abc",
+            "PODBENCH_NODE_NAME": "n1",
+            "PATH": "/app/.venv/bin:/usr/bin",
+            "DEBUGINFOD_URLS": "https://debuginfod.debian.net",
+        },
     )
     # One directive, not one per variable: sshd resolves each keyword
     # first-match-wins, so a second SetEnv line never takes effect. Found on a
     # real cluster, where only the alphabetically-first variable arrived.
     assert config.count("SetEnv ") == 1
-    assert "SetEnv PODBENCH_NODE_NAME=n1 PODBENCH_TARGET_CID=abc" in config
+    assert (
+        "SetEnv DEBUGINFOD_URLS=https://debuginfod.debian.net "
+        "PATH=/app/.venv/bin:/usr/bin "
+        "PODBENCH_NODE_NAME=n1 PODBENCH_TARGET_CID=abc" in config
+    )
 
 
 def test_a_name_or_value_sshd_would_misparse_is_dropped() -> None:
@@ -334,6 +387,15 @@ def test_a_name_or_value_sshd_would_misparse_is_dropped() -> None:
     assert "A=B" not in config
     assert "has space" not in config
     assert "SetEnv OK=fine" in config
+
+
+def test_the_names_sshd_would_misparse_are_reported_to_the_caller() -> None:
+    """Dropping them is not enough. The set carries ``PATH`` now, and a seat
+    that loses it silently is the defect this route exists to fix, so the
+    caller is handed the names to say so."""
+    assert unsafe_set_env({"PATH": "/opt/my tools/bin", "OK": "fine"}) == ("PATH",)
+    assert unsafe_set_env({"A=B": "y", "BAD NAME": "x"}) == ("A=B", "BAD NAME")
+    assert unsafe_set_env({"PODBENCH_TARGET_CID": "abc"}) == ()
 
 
 def test_no_session_env_leaves_the_config_as_it_was() -> None:

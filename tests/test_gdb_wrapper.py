@@ -13,15 +13,26 @@ absolute path, both right for the image and untestable here, so each test runs a
 copy with those two strings rewritten to stubs. :func:`_wrapper` asserts each
 rewrite actually matched, so the day the script calls either of them differently
 these tests fail rather than quietly testing nothing.
+
+What the stub podbench answers with comes from
+:func:`podbench.gdbcmd.startup_commands` rather than from a list typed here, so
+these tests measure the wrapper's *handling* of the sequence and can never
+disagree with the sequence itself. That is the whole point of finding 17.6: the
+two lines this script used to carry by hand were a copy, and the copy silently
+fell two lines behind.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+from podbench.gdbcmd import startup_commands
 
 WRAPPER = Path(__file__).resolve().parents[1] / "image" / "bin" / "gdb-podbench"
 
@@ -29,7 +40,7 @@ REAL_GDB = "/usr/bin/gdb"
 """The one spelling the script uses to reach gdb. Rewritten to the stub."""
 
 REAL_PODBENCH = "/usr/local/bin/podbench"
-"""How the script asks for the exec file to give ``file`` (issue #90).
+"""How the script asks for the commands to run before the caller's own attach.
 
 Absolute, and the image's shim rather than the venv, for the same reason
 ``gdb-podbench`` is reached absolutely: debugpy shells out through ``sh -c``
@@ -48,27 +59,37 @@ done
 """
 
 _PODBENCH_STUB = """#!/bin/sh
-# Stand in for `podbench dbg <pid> --print-exec-file`: record the argv so a test
-# can assert it was not called at all, then answer with whatever the test put in
-# ANSWER (an empty file standing for "nothing to say").
+# Stand in for `podbench dbg <pid> --print-startup-commands`: record the argv so
+# a test can assert it was not called at all, then answer with whatever the test
+# put in ANSWER (an empty file standing for "nothing to say").
+#
+# `--version` is the wrapper's viability probe and answers nothing, so that the
+# recorded argv stays the sequence of *questions* the wrapper asked.
 printf '%s\\n' "$*" >> "ARGV"
+[ "$1" = --version ] && exit 0
 cat "ANSWER"
 """
 
 
-def _wrapper(tmp_path: Path, *, exec_file: str | None = None) -> Path:
+def _wrapper(
+    tmp_path: Path, *, commands: Sequence[str] = (), podbench_missing: bool = False
+) -> Path:
     """A runnable copy of the wrapper whose gdb and podbench are both stubs.
 
-    ``exec_file`` is what the stub podbench answers with; ``None`` is the seat
-    that could not read ``/proc/<pid>/exe``, which has to leave gdb exactly as
-    it was.
+    ``commands`` is what the stub podbench answers with; empty is the seat
+    whose podbench is older or could not read ``/proc/<pid>/exe``, which has to
+    leave the wrapper doing what it did before it asked.
+
+    ``podbench_missing`` rewrites the call to a path that does not exist, which
+    is the seat whose podbench cannot be run at all — the same fallback, but
+    reached through the shell rather than through podbench.
     """
     stub = tmp_path / "stub-gdb"
     stub.write_text(_STUB)
     stub.chmod(0o755)
 
     answer = tmp_path / "answer"
-    answer.write_text("" if exec_file is None else f"{exec_file}\n")
+    answer.write_text("".join(f"{command}\n" for command in commands))
     podbench = tmp_path / "stub-podbench"
     podbench.write_text(
         _PODBENCH_STUB.replace("ARGV", str(tmp_path / "podbench-argv")).replace(
@@ -76,6 +97,8 @@ def _wrapper(tmp_path: Path, *, exec_file: str | None = None) -> Path:
         )
     )
     podbench.chmod(0o755)
+    if podbench_missing:
+        podbench = tmp_path / "no-such-podbench"
 
     source = WRAPPER.read_text()
     for real, replacement in ((REAL_GDB, stub), (REAL_PODBENCH, podbench)):
@@ -164,56 +187,83 @@ always there, and is the pid a seat's target usually has anyway.
 """
 
 
+SEQUENCE = startup_commands(
+    LIVE_PID, exec_file="/tmp/podbench-exe/12/python3.11", debuginfod=None
+)
+"""What ``podbench dbg --print-startup-commands`` answers, from its own author.
+
+Never a list typed out here. The sequence is a correctness property of report
+4.3 and of finding 17.6, and a fixture copy of it would be one more copy to
+fall behind — which is the defect this test module now guards.
+"""
+
+
 @pytest.mark.parametrize("spelling", ["--pid {pid}", "--pid={pid}", "-p {pid}"])
-def test_a_live_pid_gets_a_sysroot(tmp_path: Path, spelling: str) -> None:
+def test_a_live_pid_gets_the_whole_startup_sequence(
+    tmp_path: Path, spelling: str
+) -> None:
     """Every spelling gdb accepts, because a caller picks its own.
 
-    ``-iex`` rather than ``-ex``: ``--pid`` attaches during startup, so an
-    ``-ex`` command runs after the attach and is too late.
+    ``-iex`` rather than ``-ex`` throughout: ``--pid`` attaches during startup,
+    so an ``-ex`` command runs after the attach and is too late — and the same
+    is true of every line, not only the sysroot. The caller's own arguments
+    stay last and stay in order.
     """
     pid = LIVE_PID
     given = spelling.format(pid=pid).split()
-    seen = _run(_wrapper(tmp_path), *given)
 
-    assert seen.args[:2] == ["-iex", f"set sysroot /proc/{pid}/root"]
-    assert seen.args[2:] == given
+    seen = _run(_wrapper(tmp_path, commands=SEQUENCE), *given)
+
+    expected: list[str] = []
+    for command in SEQUENCE:
+        expected += ["-iex", command]
+    assert seen.args == [*expected, *given]
 
 
-def test_a_live_pid_also_gets_an_exec_file(tmp_path: Path) -> None:
+def test_the_sequence_carries_the_lines_the_copy_used_to_miss(
+    tmp_path: Path,
+) -> None:
+    """Finding 17.6, stated as the two commands that were silently absent.
+
+    ``add-auto-load-safe-path`` is what lets a sysrooted gdb auto-load the
+    target's ``libthread_db``; without it every thread-aware command is gone
+    and gdb says nothing about why. ``handle SIGURG`` pins gdb's own default,
+    which is what keeps an attached Go target from becoming a wall of ``Program
+    received signal SIGURG`` on a gdb configured otherwise. Both reach gdb
+    through the wrapper now, and neither is spelled in the script.
+    """
+    seen = _run(_wrapper(tmp_path, commands=SEQUENCE), "--pid", str(LIVE_PID))
+
+    assert f"add-auto-load-safe-path /proc/{LIVE_PID}/root" in seen.args
+    assert "handle SIGURG nostop noprint pass" in seen.args
+
+
+def test_the_exec_file_reaches_gdb_before_the_attach(tmp_path: Path) -> None:
     """Issue #90: without a ``file`` command gdb reads *this* container's binary.
 
     ``gdb --pid <n>`` finds the exec file from /proc/<n>/exe and canonicalises
-    the name; /proc/<n>/root canonicalises to ``/``, so the sysroot injected
-    above is erased and BFD opens our own file of the same name. Both commands
-    are ``-iex`` because --pid attaches during startup, and both must precede
-    the caller's own arguments.
+    the name; /proc/<n>/root canonicalises to ``/``, so the sysroot is erased
+    and BFD opens our own file of the same name. The staged path podbench
+    answers with has to arrive as ``-iex``, ahead of the caller's ``--pid``.
     """
-    seen = _run(
-        _wrapper(tmp_path, exec_file="/tmp/podbench-exe/12/python3.11"),
-        "--nx",
-        "--pid",
-        str(LIVE_PID),
-    )
+    seen = _run(_wrapper(tmp_path, commands=SEQUENCE), "--nx", "--pid", str(LIVE_PID))
 
-    assert seen.args[:4] == [
-        "-iex",
-        f"set sysroot /proc/{LIVE_PID}/root",
-        "-iex",
-        "file /tmp/podbench-exe/12/python3.11",
-    ]
-    assert seen.args[4:] == ["--nx", "--pid", str(LIVE_PID)]
+    file_command = "file /tmp/podbench-exe/12/python3.11"
+    assert file_command in seen.args
+    assert seen.args[seen.args.index(file_command) - 1] == "-iex"
+    assert seen.args[-3:] == ["--nx", "--pid", str(LIVE_PID)]
 
 
 def test_a_seat_with_no_answer_still_gets_its_sysroot(tmp_path: Path) -> None:
-    """The exec file is an improvement, never a prerequisite.
+    """The sequence is an improvement, never a prerequisite.
 
-    A degraded rung cannot read /proc/<pid>/exe at all, and a seat whose
-    podbench is missing or broken answers nothing either. Both must leave the
-    wrapper doing exactly what it did before the exec file was staged, because
-    the sysroot alone is still the difference between this container's
-    libraries and the target's (report 3.3).
+    A degraded rung cannot read /proc/<pid>/exe at all, a podbench older than
+    this flag refuses it, and a seat whose podbench is missing or broken
+    answers nothing either. All three must leave the wrapper doing what it did
+    before it asked, because the sysroot alone is still the difference between
+    this container's libraries and the target's (report 3.3).
     """
-    seen = _run(_wrapper(tmp_path, exec_file=None), "--pid", str(LIVE_PID))
+    seen = _run(_wrapper(tmp_path), "--pid", str(LIVE_PID))
 
     assert seen.args == [
         "-iex",
@@ -221,7 +271,25 @@ def test_a_seat_with_no_answer_still_gets_its_sysroot(tmp_path: Path) -> None:
         "--pid",
         str(LIVE_PID),
     ]
-    assert "file" not in " ".join(seen.args)
+
+
+def test_the_fallback_is_the_only_command_the_script_spells_out() -> None:
+    """The guard on finding 17.6: one hand-written command, and it is the last.
+
+    Everything else is generated, so the only ``-iex`` literals in the script
+    are the loop's ``$command`` and the fallback's sysroot. A third one means
+    somebody has started keeping a copy again — which is exactly how
+    ``add-auto-load-safe-path`` came to be missing for as long as it was.
+
+    The fallback itself is checked against the generator rather than against a
+    string, so it cannot drift either.
+    """
+    literals = re.findall(r'-iex "([^"]*)"', WRAPPER.read_text())
+
+    assert literals == ["$command", "set sysroot /proc/$pid/root"]
+    assert literals[1].replace("$pid", str(LIVE_PID)) in startup_commands(
+        LIVE_PID, debuginfod=None
+    )
 
 
 def test_podbench_is_not_asked_when_there_is_no_pid(tmp_path: Path) -> None:
@@ -230,17 +298,78 @@ def test_podbench_is_not_asked_when_there_is_no_pid(tmp_path: Path) -> None:
     The wrapper is ``gdb`` on PATH for everything in the seat, so the question
     is only worth asking where an attach is actually happening.
     """
-    _run(_wrapper(tmp_path, exec_file="/tmp/whatever"), "--nx", "/app/victim")
+    _run(_wrapper(tmp_path, commands=SEQUENCE), "--nx", "/app/victim")
 
     assert not (tmp_path / "podbench-argv").exists()
 
 
-def test_the_exec_file_is_asked_for_by_pid(tmp_path: Path) -> None:
-    """The wrapper knows the pid and nothing else; podbench works out the rest."""
-    _run(_wrapper(tmp_path, exec_file="/tmp/x"), "--pid", str(LIVE_PID))
+def test_the_sequence_is_asked_for_by_pid(tmp_path: Path) -> None:
+    """The wrapper knows the pid and nothing else; podbench works out the rest.
 
-    argv = (tmp_path / "podbench-argv").read_text().split()
-    assert argv == ["dbg", str(LIVE_PID), "--print-exec-file"]
+    Two questions, in this order: can podbench run, and then the real one. The
+    probe is what keeps the shell's own ``not found`` off the user's terminal
+    on the path this fallback exists for.
+    """
+    _run(_wrapper(tmp_path, commands=SEQUENCE), "--pid", str(LIVE_PID))
+
+    asked = (tmp_path / "podbench-argv").read_text().splitlines()
+    assert asked == ["--version", f"dbg {LIVE_PID} --print-startup-commands"]
+
+
+def test_a_podbench_that_cannot_run_falls_back_without_a_word(
+    tmp_path: Path,
+) -> None:
+    """The fallback's own path must not narrate itself in shell.
+
+    A seat whose podbench is missing - or whose venv is broken, which is the
+    same message one script down - printed
+    ``gdb-podbench: 123: /usr/local/bin/podbench: not found`` and then attached
+    perfectly well. The reader is handed a raw shell error naming a line number
+    in a wrapper they did not know they were running, immediately before a
+    session with nothing wrong with it.
+    """
+    script = _wrapper(tmp_path, podbench_missing=True)
+
+    result = subprocess.run(
+        [str(script), "--pid", str(LIVE_PID)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stderr == ""
+    assert Invocation.parse(result.stdout).args == [
+        "-iex",
+        f"set sysroot /proc/{LIVE_PID}/root",
+        "--pid",
+        str(LIVE_PID),
+    ]
+
+
+def test_a_podbench_that_does_run_keeps_its_stderr(tmp_path: Path) -> None:
+    """Silencing the probe must not silence the answer.
+
+    podbench's warnings on this path are how a reader learns that
+    ``/proc/<pid>/exe`` could not be read, and which file gdb was pointed at
+    instead - the one notice issue #90 turns on. A ``2>/dev/null`` over the
+    real call would have taken it.
+    """
+    script = _wrapper(tmp_path, commands=SEQUENCE)
+    noisy = tmp_path / "stub-podbench"
+    noisy.write_text(
+        noisy.read_text().replace(
+            "cat ", 'printf "warning: gdb will read a copy\\n" >&2\ncat ', 1
+        )
+    )
+
+    result = subprocess.run(
+        [str(script), "--pid", str(LIVE_PID)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "warning: gdb will read a copy" in result.stderr
 
 
 @pytest.mark.parametrize("pid", ["notanumber", "999999999"])

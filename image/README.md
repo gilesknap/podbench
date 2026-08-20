@@ -127,14 +127,18 @@ structural; neither is a convenience.
 
 | On PATH | What it is | Why it has to exist |
 |---|---|---|
-| `podbench` | `exec /app/.venv/bin/podbench "$@"` | the venv is on no default `PATH`, and report 4.1's sshd_config sets `UsePAM no`, so `ssh <seat> podbench pids` gets sshd's compiled-in `PATH`. That includes `/usr/local/bin` and not `/app/.venv/bin`. |
+| `podbench` | `exec /app/.venv/bin/podbench "$@"` | the venv is on no default `PATH`. The agent's generated sshd_config carries the container's `PATH` into a session with `SetEnv`, but this file is what makes the verb resolve when that line was never written or was refused — `/usr/local/bin` is on sshd's compiled-in `PATH` and `/app/.venv/bin` is on nothing's. |
 | `gdb-podbench` | a shell wrapper around `/usr/bin/gdb`, installed as `gdb` too | its caller is a *third party* — debugpy's injection shells out to `gdb --nw --nh --nx --pid 1`, and without the wrapper it gets no `set sysroot`, no exec file that survives gdb's canonicalisation (issue #90) and a cwd VS Code may have deleted. No podbench subcommand can stand in for it. |
 
 The `podbench` shim calls the venv by **absolute path** on purpose: `ssh <host>
 podbench capreport` runs a non-login, non-interactive shell that sources
-nothing, so the image's `ENV PATH` is not in effect. Interactive login shells
-are covered separately by `/etc/profile.d/podbench.sh`, needed for the same
-`UsePAM no` reason.
+nothing and inherits none of the image's `ENV PATH`. What it does get is the
+`SetEnv` line `podbench agent` writes into the sshd config — `PATH`,
+`DEBUGINFOD_URLS`, `DEBUGINFOD_TIMEOUT` and every `PODBENCH_*` — which is the
+transport's only route for the image's environment, and the shim is what
+survives its absence. Interactive login shells need
+`/etc/profile.d/podbench.sh` on top of both: Debian's `/etc/profile` assigns
+`PATH` outright, so it overwrites whatever the session was handed.
 
 Everything a seat can do is reached as `podbench <verb>` — `podbench pids`,
 `podbench dbg`, `podbench capreport`, `podbench debug-config`, `podbench
@@ -148,13 +152,41 @@ extension directory as a cwd, which VS Code deletes on update — gdb's libpytho
 then fails `getcwd()` and the process dies during startup with no signal name.
 See the script's own comment, and `docs/how-to/debug-with-gdb.md`.
 
-It does *call* one, though: `podbench dbg <pid> --print-exec-file`, for the path
-to give gdb's `file` command. Deciding that path means knowing whether the
-target shares this container's mount namespace and whether anything of ours sits
-at its `exe` path, which is deviation 2's rule exactly — worked out once in
-Python, where it is tested, rather than a second time in `sh` where it could
-only drift. The call is optional: no answer, and the wrapper behaves as it did
-before, which is what a seat with a broken venv still deserves.
+It does *call* one, though: `podbench dbg <pid> --print-startup-commands`, for
+every gdb command that must precede an attach the caller is making itself. That
+is deviation 2's rule exactly — the sequence is authored once in Python, where
+it is tested, rather than a second time in `sh`. It used to be two of those
+lines copied into the script by hand, and the copy fell behind twice without
+anything saying so: `add-auto-load-safe-path` was never in it, so a sysrooted
+gdb declined to auto-load `libthread_db` and every caller in the seat silently
+lost thread debugging, and `handle SIGURG nostop noprint pass` arrived later
+still. The call is optional: no answer, and the wrapper supplies the sysroot
+alone as it did before, which is what a seat with a broken venv still deserves.
+
+## Rust pretty-printers
+
+`/opt/podbench/gdb/rust_printers.py`, copied from `image/gdb/`. Not on `PATH`
+and not a helper — it is a gdb Python script, sourced by
+`podbench.gdbcmd.RUST_PRETTY_PRINTERS` only when `podbench.elf` has identified
+the target as a Rust binary.
+
+It exists because the mechanism rustc relies on cannot work here. A Rust binary
+names `gdb_load_rust_pretty_printers.py` in its `.debug_gdb_scripts` section,
+gdb resolves that against its auto-load scripts directory, and the file ships
+with a **rustup toolchain** — which a production container does not have and
+this image does not carry. Without it `Vec`, `String` and `Option` render as the
+`RawVecInner`/`Unique`/`NonNull` nest they are made of.
+
+Four printers, covering exactly those three types, and every decision that could
+be wrong is taken before a printer object exists: an unfamiliar layout returns
+`None` from the lookup and gdb renders the value its own way. A `Vec` shown as a
+struct is an inconvenience; a `Vec` shown with the wrong three elements is the
+plausible-and-wrong answer this repository exists to prevent.
+
+Rust is the *only* language here that is served by a configuration and still
+needed something in the image. Java and Erlang targets get no configuration at
+all — see `podbench.flavour._assess_gdb`, issue #114 — and Go's delve is
+absent on purpose (issue #115).
 
 ## Deviations from the brief
 
@@ -181,7 +213,15 @@ before, which is what a seat with a broken venv still deserves.
    Debian falls back to the same URL via `/etc/debuginfod/elfutils.urls` when the
    variable is unset (verified in-cluster), so this changes no behaviour — it
    makes the setting visible in `docker inspect` and gives the launcher one
-   place to point at a mirror. S3 measured the endpoint working.
+   place to point at a mirror. S3 measured the endpoint working. An `ENV` alone
+   does not reach an ssh session, so the agent names it in the sshd config's
+   `SetEnv` line as well; without that, `set debuginfod enabled on` was inert
+   over podbench's own transport and worked under `kubectl exec`.
+   `DEBUGINFOD_TIMEOUT=2` goes with it, because gdb's default is 90 seconds and
+   it spends them *per shared library*, after the attach, with the workload
+   stopped. The agent also connects to that server once at start-up and drops
+   the URL from ssh sessions when nothing answers, so an egress policy costs one
+   connect rather than a timeout per library at the first breakpoint.
 6. **The per-subcommand helpers are gone.** The brief's `bin/` sketch names
    `pids`, `dbg`, `capreport`, `debug-config`, `dev-bootstrap` and `run`/`stop`
    as files on `PATH`; the image ships none of them ([#47]). Each was literally

@@ -878,6 +878,15 @@ into `podbench-2` over `kubectl exec`, correctly, while the editor read `podbenc
 hours earlier. `podbench pids` showed it plainly — every vscode-server process in the old seat's
 container id, nothing but an agent in the new one.
 
+*The second half of that shipped later, on 2026-08-19.* Naming the seat in the `HostKeyAlias`
+settled the overwritten stanza; `ControlPath` stayed on the bare `%C` for two more days, and `%C`
+hashes the **resolved** `HostName` rather than the `Host` alias as typed, so the multiplexing key
+was still one per pod. The socket is now `/tmp/podbench-cm/%C-<digest>`, the digest taken over the
+seat's `HostKeyAlias` — the same identity that pins the key, so the two cannot come apart, and a
+pod deleted and recreated under its own name gets a new socket rather than the old master. Read
+the checklist entry in §4 with this correction: `ControlPath /tmp/podbench-cm/%C` on its own is
+the defect, not the recommendation.
+
 **R10 — Ephemeral-container state loss on pod restart.** The apt-installed sshd, host keys,
 `authorized_keys`, the 690 MiB server and all extensions live in the ephemeral container's writable
 layer, and the ephemeral container spec is immutable and unrestartable. A pod restart or an OOM

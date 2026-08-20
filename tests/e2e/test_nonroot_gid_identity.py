@@ -7,7 +7,7 @@ gid**, and the image's ``/etc/passwd`` is writable only by GID 0. On
 could not append the record sshd resolves a login name through, ``ssh-keygen``
 died with "No user exists for uid 36070" before a host key was ever written, and
 the seat landed with **no ssh at all**: no editor, no Remote-SSH. The documented
-way out, ``--seat-gid-root``, pins ``runAsGroup: 0``, and the gid is half of the
+way out then, ``--seat-gid-root``, pinned ``runAsGroup: 0``, and the gid is half of the
 credential match ``__ptrace_may_access`` makes, so it bought the transport and
 took the debugger (#98).
 
@@ -15,13 +15,14 @@ The fix gives the image a second NSS source — ``libnss-extrausers``, its datab
 world-writable — so the append needs no capability, no particular gid and no edit
 to the workload's manifest. ``apps/nonroot-gid.yaml`` is the target's shape.
 
-**The setup is the whole test, and it is easy to get wrong: on an unrestricted
-cluster this defect cannot appear.** The ladder takes the full rung, the seat is
-root, ``/etc/passwd`` is writable and the append succeeds by a route that has
-nothing to do with the fix. ``deny-sys-ptrace.yaml`` is bound to refuse that rung
-so the walk reaches ``degraded``, which is the rung that lands in the most
-hostile namespaces and the one the field target gets. Unbind it and every
-assertion below passes vacuously.
+**The setup is the whole test, and it is easy to get wrong: a seat that lands as
+root cannot show this defect at all.** ``/etc/passwd`` is then writable and the
+append succeeds by a route that has nothing to do with the fix. Two things keep
+the walk off that rung, and the policy is the one that does not depend on the
+launcher: the target names a non-root uid, so the ladder now starts at
+``degraded`` of its own accord, *and* ``deny-sys-ptrace.yaml`` is bound to refuse
+the rung above it. Unbind it, change the ordering rule, and every assertion below
+passes vacuously — so the refusal is checked for rather than assumed.
 
 **Unlike ``test_dls_ioc.py``, this module needs nothing of the node's Yama.** An
 NSS lookup is not a ptrace, so the identity half of a seat is decided identically
@@ -62,7 +63,11 @@ SSH_TIMEOUT = 120.0
 
 NO_MULTIPLEXING = ("-o", "ControlMaster=no", "-o", "ControlPath=none")
 """The generated stanza asks for a ControlMaster, and a shared connection would
-make one test's failure the next one's, so every session here is its own."""
+make one test's failure the next one's, so every session here is its own.
+
+Kept after finding 10, and not as cover for it: the two seats this file lands
+now get one socket each, and only ``FIRST_SEAT`` is ever sshed to anyway. What
+this turns off is reuse *between tests*."""
 
 TARGET_POD = "nonroot-gid-target"
 TARGET_CONTAINER = "app"
@@ -104,13 +109,15 @@ FLOOR_PROBE_GID = 101
 """A record below both floors — nginx-unprivileged's and envoy's credentials.
 
 A distinct login name so the probe cannot be confused with the seat's own record,
-and cannot shadow it if the cleanup below ever fails to run.
+and cannot shadow it if the cleanup below ever fails to run — and so that the
+``getpwnam`` half stays a clean refusal, since ``files`` carries no such name.
 
-101 also has to be a uid the image has no account for, or the lookup would be
-answered by ``files`` and the test would pass without the floors existing. The
-runtime image's highest system uid is 100 (``sshd``, from openssh-server), so 101
-is free — checked against the built image, not assumed. gid 101 is ``_ssh``, which
-is a *group* and so cannot answer a ``getent passwd``.
+The ``getpwuid`` half cannot be a clean refusal any more and the assertion below
+says so instead of pretending: since #103 the image pre-seeds ``/etc/passwd``
+with a static record for every free uid under 500, which is this whole range, so
+``getent passwd 101`` is *answered* — by ``podbench-101``, out of ``files``. What
+the floor still decides is whether it is answered by the record just appended to
+the extrausers database, and that is what is checked.
 """
 
 
@@ -338,11 +345,12 @@ def test_a_non_zero_gid_target_lands_a_degraded_seat_that_has_ssh(
     """
     uid, gid = target_credentials
     assert Rung.DEGRADED.value in gid_seat, gid_seat
-    assert f"uids        seat {uid}, target {uid}" in gid_seat, gid_seat
+    assert f"ids         seat {uid}:{gid}, target {uid}:{gid}" in gid_seat, gid_seat
     assert SSH_SEAT_TICKED in gid_seat, gid_seat
     assert "no ssh config was written" not in gid_seat, gid_seat
-    # The gid is the half that was broken, and the report does not print it, so
-    # it is read from the seat rather than inferred from the rung.
+    # The gid is the half that was broken, and since #103 the report prints it -
+    # so this asserts the number the report showed is the number the pod has,
+    # rather than trusting either on its own.
     assert gid == TARGET_GID
 
 
@@ -424,10 +432,15 @@ def test_etc_passwd_is_neither_written_nor_writable(
     have written it and happened not to. This asserts the condition that used to
     end the attach — the file is not writable by this uid and gid — while the seat
     has ssh regardless.
+
+    The match is anchored to ``podbench:`` because the image now ships a static
+    ``podbench-<uid>`` record for every uid below extrausers' floor of 500 (#103).
+    Those are records for other uids, not for this seat at 36070, and an
+    unanchored grep counts all 482 of them.
     """
     # `|| true` because grep exits 1 on no match, which is the expected answer
     # here and would otherwise be raised as a failed command rather than asserted.
-    found = _in_seat(gid_kubectl, f"grep -c '{SEAT_USER}' {PASSWD_PATH} || true")
+    found = _in_seat(gid_kubectl, f"grep -c '^{SEAT_USER}:' {PASSWD_PATH} || true")
     assert int(found.strip() or 0) == 0
     writable = _in_seat(
         gid_kubectl, f"test -w {PASSWD_PATH} && echo writable || echo refused"
@@ -453,21 +466,27 @@ def test_nss_resolves_the_seat_by_uid_and_by_name(
 # -- the fallback, which is the half that is easy to break ----------------
 
 
-def test_a_seat_gid_root_seat_falls_back_to_etc_passwd_and_still_has_ssh(
+def test_a_gid_0_seat_falls_back_to_etc_passwd_and_still_has_ssh(
     gid_client: PodbenchCli,
     gid_kubectl: KubectlCli,
     gid_seat: str,
     podbench_image: str,
     ssh_identity: tuple[Path, str],
 ) -> None:
-    """``--seat-gid-root`` survives the change, because extrausers refuses gid 0.
+    """The ``/etc/passwd`` fallback survives, because extrausers refuses gid 0.
 
-    This is the regression test for the bug *inside* the fix. Routing on the
+    This is the regression test for the bug *inside* #102's fix. Routing on the
     database's mode instead of on the seat's credentials would send this seat to
     :data:`SEAT_NSS_PATH`, where the record is written, ignored for being below
-    ``MINGID``, and never resolved — taking ssh away from the one flag that is
-    documented as the way out. It would have been invisible at Diamond, whose
-    36070/36070 clears every floor.
+    ``MINGID``, and never resolved. It would have been invisible at Diamond,
+    whose 36070/36070 clears every floor.
+
+    ``--seat-gid-root`` used to pose this seat and retired with #103, so the
+    shape is posed by ``--target-gid 0`` instead — which is not a workaround: a
+    target whose own group really *is* 0 is the seat this fallback now exists
+    for, and pinning the gid explicitly is what podbench does for it. The pin
+    also suppresses the id correction, which is the other half of the contract:
+    a flag the launcher quietly overrode would be worse than a wrong seat.
 
     Ordered after the seat above by depending on it: this is a second ephemeral
     container, and its name is burnt for the pod's lifetime either way.
@@ -483,7 +502,8 @@ def test_a_seat_gid_root_seat_falls_back_to_etc_passwd_and_still_has_ssh(
         "--identity",
         str(identity),
         "--new",
-        "--seat-gid-root",
+        "--target-gid",
+        "0",
         "--print-config",
         *gid_client.common(),
         timeout=420,
@@ -528,7 +548,10 @@ def test_the_image_libnss_extrausers_has_the_floors_the_agent_hardcodes(
 
     The probe writes a record below both floors, checks that the real library
     ignores it for *both* lookups, and removes it again — so the seat this module
-    shares is left exactly as it was found.
+    shares is left exactly as it was found. "Ignores" is not "nothing answers":
+    ``files`` answers ``getpwuid`` for this uid now (see
+    :data:`FLOOR_PROBE_UID`), so what is asserted is that the answer is not the
+    appended record.
     """
     probe = (
         f"{FLOOR_PROBE_USER}:x:{FLOOR_PROBE_UID}:{FLOOR_PROBE_GID}:"
@@ -549,7 +572,10 @@ def test_the_image_libnss_extrausers_has_the_floors_the_agent_hardcodes(
         f"cat /tmp/nss-kept > {SEAT_NSS_PATH}"
     )
     printed = _in_seat(gid_kubectl, script)
-    assert "NO_UID" in printed, printed
+    # Not "nothing answered": the image's own static record for uid 101 answers,
+    # which is #103's fix for the range below the floor. What must not answer is
+    # the record just appended to the extrausers database.
+    assert f"{FLOOR_PROBE_USER}:" not in printed.split("NO_NAME")[0], printed
     assert "NO_NAME" in printed, printed
     # The record really was in the file while the lookups were refused, so this
     # is the library's floor and not a failed write.

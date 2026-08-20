@@ -20,6 +20,7 @@ proved it cannot be done naively:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -31,12 +32,14 @@ from .model import as_dict
 __all__ = [
     "ADMISSION_DENIAL_MARKERS",
     "CREATE_CONTAINER_CONFIG_ERROR",
+    "DRY_RUN_QUERY",
     "PSA_SYS_PTRACE_DENIAL",
     "CommandResult",
     "EphemeralContainerError",
     "Kubectl",
     "KubectlError",
     "Runner",
+    "allowed_run_as_user",
     "next_container_name",
     "run_subprocess",
 ]
@@ -91,6 +94,32 @@ anyway.
 
 CREATE_CONTAINER_CONFIG_ERROR = "CreateContainerConfigError"
 """The kubelet's waiting reason when it refuses a container the API server took."""
+
+DRY_RUN_QUERY = "?dryRun=All"
+"""Ask the API server to run the whole admission chain and store nothing.
+
+Measured against the target cluster on 2026-08-19: on
+``pods/{pod}/ephemeralcontainers`` this returns the pod as admission *would*
+have stored it, spends no container name, and leaves the pod's ephemeral
+container list unchanged. That is what makes it worth a round trip per rung —
+the alternative currency is a name burnt for the pod's lifetime (report 4.2).
+
+What it cannot see is the kubelet, which refuses asynchronously and seconds
+later (report 3.18). ``dryRun`` is an API-server verb: it surfaces every
+synchronous refusal and every *mutation*, and never a
+``CreateContainerConfigError``. The one refusal that actually burns a name is
+therefore still pre-empted by reading the target's ``runAsNonRoot`` rather than
+provoked.
+"""
+
+_ALLOWED_RUN_AS_USER = re.compile(r"Allowed runAsUser values are:\s*\"?([0-9|,\s]+)")
+"""How a policy that allow-lists ``runAsUser`` names the uids it will take.
+
+Standard DLS policy for a pod that does host mounts, confirmed by the
+maintainer on 2026-08-19 and not local drift, so the wording is worth reading
+rather than relaying: a refusal that names admissible uids is a question with an
+answer, and ``--target-uid`` is where the answer goes.
+"""
 
 DEFAULT_POLL_INTERVAL = 0.5
 
@@ -213,6 +242,46 @@ class KubectlError(RuntimeError):
             all(fragment in text for fragment in group)
             for group in ADMISSION_DENIAL_MARKERS
         )
+
+    @property
+    def allowed_run_as_user(self) -> tuple[int, ...]:
+        """Uids this refusal says it would have admitted, if it named any.
+
+        See :func:`allowed_run_as_user`. Empty for every refusal that is not
+        about the uid, which is most of them.
+        """
+        return allowed_run_as_user(f"{self.stderr}\n{self.stdout}")
+
+
+def allowed_run_as_user(message: str) -> tuple[int, ...]:
+    """The uids an admission refusal says it *would* have taken, if it says.
+
+    A policy that allow-lists ``runAsUser`` refuses every other value, so the
+    seat rung cannot invent one: podbench pins the target's own uid and the
+    cluster has the last word on whether that is admissible. When it is not,
+    this turns the refusal into an instruction — the caller can name the uids
+    and the flag that selects one, instead of relaying a paragraph of policy.
+
+    Measured against a DLS namespace on 2026-08-19: a seat authored at uid 4000
+    was refused with the message below, and the same pod admitted one at 37887.
+
+    >>> allowed_run_as_user(
+    ...     "validate user id: The fields spec.securityContext.runAsUser is "
+    ...     'set to an invalid value. Allowed runAsUser values are: '
+    ...     '"36096|37887".'
+    ... )
+    (36096, 37887)
+    >>> allowed_run_as_user("pods are forbidden in this namespace")
+    ()
+    """
+    match = _ALLOWED_RUN_AS_USER.search(message)
+    if match is None:
+        return ()
+    return tuple(
+        int(value)
+        for value in re.split(r"[|,\s]+", match.group(1).strip())
+        if value.isdigit()
+    )
 
 
 class EphemeralContainerError(RuntimeError):
@@ -416,6 +485,29 @@ class Kubectl:
             if isinstance(item, dict)
         ]
 
+    def top_pod(self, name: str) -> str | None:
+        """What ``kubectl top`` says this pod is using, or ``None`` if it will not.
+
+        ``check=False`` and a ``None`` rather than an error: the metrics API is
+        an add-on, ``pods.metrics.k8s.io`` is a resource of its own that
+        podbench's chart does not grant, and a pod the sampler has not reached
+        yet answers with nothing at all. Every one of those is ordinary on a
+        working cluster.
+
+        The distinction the caller must keep is that ``None`` means *unmeasured*
+        and never *fine*: podbench has now twice reported an unreadable thing as
+        a good one (issue #89's ``/proc`` path, C14's address-space check), and
+        this is read to decide whether to stay quiet about memory.
+
+        Text, not JSON: ``kubectl top`` has no ``-o json`` — it renders the
+        metrics API itself — so :func:`podbench.resize.parse_top_memory` reads
+        the column.
+        """
+        result = self.run("top", "pod", name, "--no-headers", check=False)
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:
         """A pod subresource's JSON, e.g. ``ephemeralcontainers``."""
         result = self.run(
@@ -478,6 +570,9 @@ class Kubectl:
         ``kubectl replace --raw`` reads the body from stdin when the filename is
         ``-``, which keeps the manifest out of a temp file the caller would have
         to clean up.
+
+        ``path`` is opaque, query string included, which is what lets
+        :data:`DRY_RUN_QUERY` be appended without a second code path.
         """
         return self.run("replace", "--raw", path, "-f", "-", stdin=json.dumps(body))
 
@@ -562,13 +657,38 @@ class Kubectl:
 
     # -- ephemeral containers ---------------------------------------------
 
-    def add_ephemeral_container(self, pod: str, spec: Mapping[str, Any]) -> None:
+    def add_ephemeral_container(
+        self, pod: str, spec: Mapping[str, Any], *, dry_run: bool = False
+    ) -> dict[str, Any]:
         """Add one ephemeral container through the subresource.
 
         Not ``kubectl debug``: that merges the chosen debug profile *after* any
         ``--custom`` JSON, so asking for ``runAsUser: 1000`` yields a container
         that also carries ``SYS_PTRACE`` — the combination the kernel turns into
         ``CapEff: 0`` (report 3.14). The subresource takes the spec verbatim.
+
+        Returns the pod as the API server reports it back, which is the whole
+        point of ``dry_run``: the response is the pod as *admission* would store
+        it, so a policy that rewrites the request instead of refusing it can be
+        read out of it (:data:`DRY_RUN_QUERY`). The response of a real add is
+        parsed by the same path and returned for free; ``{}`` where the server
+        said nothing parseable, since no caller needs it.
+
+        The body is the **whole pod**, not just the containers being added, and
+        that is load-bearing rather than incidental: admission judges the object
+        it is handed, so a body carrying only ``spec.ephemeralContainers`` is
+        missing ``spec.hostNetwork`` and every policy keyed on it takes the
+        wrong branch. Measured at DLS 2026-08-19: the same probe container is
+        admitted when the pod object is preserved and refused — for a capability
+        the request never asked for, which a mutating policy added on the
+        strength of the absent field — when it is not. The failure is silent and
+        points at the cluster rather than at the caller, so keep the pod the
+        subresource GET returned and splice into it.
+
+        The list must also carry the existing entries; omitting one is refused
+        with ``existing ephemeral containers "podbench-1" may not be removed``.
+        So a caller comparing what it asked for against what came back must find
+        its own container by name — admission rewrites the others too.
 
         Raises :class:`KubectlError` on a synchronous refusal; check
         :attr:`KubectlError.is_psa_ptrace_denial` to tell a capability refusal
@@ -587,10 +707,12 @@ class Kubectl:
             ]
         pod_spec["ephemeralContainers"] = [*kept, dict(spec)]
         current["spec"] = pod_spec
-        self.raw_put(
-            f"/api/v1/namespaces/{self.namespace}/pods/{pod}/ephemeralcontainers",
-            current,
-        )
+        path = f"/api/v1/namespaces/{self.namespace}/pods/{pod}/ephemeralcontainers"
+        result = self.raw_put(f"{path}{DRY_RUN_QUERY}" if dry_run else path, current)
+        try:
+            return _parse_json_object(result.stdout, result.argv)
+        except (KubectlError, json.JSONDecodeError):
+            return {}
 
     def wait_for_ephemeral_container(
         self,

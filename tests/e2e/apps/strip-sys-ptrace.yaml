@@ -34,6 +34,11 @@
 #     securityContext {"runAsUser":0,"capabilities":{}}     <- what was given
 #     capreport   CAP_SYS_PTRACE (eff) no … live attach (pid 12) OK
 #
+# Both halves of that have since been fixed and are now regressions rather than
+# behaviour: the rung is withdrawn at the dry run before a name is spent, and a
+# seat that does land has its rung read from its own `/proc/self/status`, so the
+# line above cannot be printed for a container with `CapEff: 0` again.
+#
 # uid 0 tracing uid 0 under `kernel.yama.ptrace_scope=0` is classic ptrace and
 # needs no capability, so the probe attaches and every capability-derived claim
 # beside it was wrong in a different direction. `status` said, of that seat:

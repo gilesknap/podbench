@@ -299,7 +299,9 @@ def test_ensure_sshd_config_matches_the_generator(
 ) -> None:
     layout = make_layout(tmp_path, root=False)
     agent.ensure_all(layout, env=env, runner=FakeRunner())
-    assert Path(layout.config_path).read_text() == sshd_config(layout)
+    assert Path(layout.config_path).read_text() == sshd_config(
+        layout, agent.session_env(env)
+    )
 
 
 def test_privsep_dir_created_only_for_root(tmp_path: Path) -> None:
@@ -400,12 +402,11 @@ def test_a_seat_the_extrausers_floors_reject_takes_etc_passwd_instead(
     for it, get "NSS still does not resolve" and land with no ssh, where before
     #102 the same seat appended to ``/etc/passwd`` and logged in.
 
-    gid 0 is the case that matters, not a curiosity. A target that sets
-    ``runAsUser`` and no ``runAsGroup`` — the default shape of a hardened
-    workload — gives :func:`podbench.spec.target_uid_gid` a gid of ``None``, so
-    the seat pins no group and runs with the image's gid 0; and that is also
-    exactly what ``--seat-gid-root`` asks for. Both can write ``/etc/passwd``,
-    which has no floor.
+    gid 0 is the case that matters, not a curiosity. It is what a seat carries
+    when nobody supplied a group — before #103, every target that set
+    ``runAsUser`` and no ``runAsGroup``; since it, a target whose own group
+    really is 0. Either way ``/etc/passwd`` has no floor and gid 0 can write it,
+    which is what this asserts.
     """
     layout = make_layout(tmp_path, root=False)
 
@@ -431,9 +432,9 @@ def test_a_seat_carrying_the_targets_gid_registers_its_own_record(
     it as well as the uid. ``/etc/passwd`` in the image is writable by GID 0 and
     nothing else, so the append this seat needs went to a file it had no write
     permission on, ``ssh-keygen`` died with "No user exists for uid 36070", and
-    the seat landed with no ssh at all. The documented way out
-    (``--seat-gid-root``) pins ``runAsGroup: 0`` and so pays for ssh with the
-    debugger.
+    the seat landed with no ssh at all. The documented way out then was to pin
+    ``runAsGroup: 0``, which pays for ssh with the debugger and was retired in
+    #103 for saying so too quietly.
 
     So ``/etc/passwd`` is denied here on purpose: this test fails the moment
     registration goes back to a file only GID 0 can write.
@@ -562,7 +563,8 @@ def test_registration_is_skipped_with_a_reason_when_neither_database_is_writable
     assert "not writable" in message
     assert f"{passwd.path} is not writable" in message, "the path actually tried"
     assert str(passwd.nss_path) not in message, "not the one it fell back from"
-    assert "--seat-gid-root" in message, "the way out has to be in the message"
+    assert "group of 500 or more" in message, "the way out has to be in it"
+    assert "--seat-gid-root" not in message, "that flag retired with #103"
     assert "kubectl exec" in message
     assert passwd.name_for(UNKNOWN_UID) is None
 
@@ -620,7 +622,7 @@ def test_the_check_on_a_writable_database_blames_the_step_not_the_gid(
     database *is* writable at that gid, so an unresolved uid can only be the
     registration step having failed for some other reason: the check says so and
     sends the reader to the start-up output, because telling them to re-attach
-    with ``--seat-gid-root`` would cost them the debugger for nothing.
+    into group 0 would cost them the debugger for nothing.
 
     Which makes this the branch the launcher relays most often, and it is the one
     branch that cannot state the reason — that was raised inside the seat minutes
@@ -761,20 +763,22 @@ def test_the_way_out_is_the_one_the_container_reading_it_can_take() -> None:
     deploy in the hope it fixes this.
     """
     text = agent.NSS_WAY_OUT
-    assert "--seat-gid-root" in text
     assert "kubectl exec" in text, "what still works belongs in the message"
     assert "subPath" in text, "the reason the volume cannot help has to be given"
     assert "podbench dev" in text, "and where the volume *is* used"
     # The advice this replaced: it told an ephemeral seat to mount the volume
     # over /etc/passwd, which is the one thing that container may not do.
     assert "which the seat mounts read-only" not in text
-    assert text.index("--seat-gid-root") < text.index(SEAT_IDENTITY_VOLUME)
-    # Issue #102 sent one seat round this loop twice, because the flag was
-    # offered as *the* way out with none of what it costs: the free route has to
-    # come first, and the flag cannot be named without its price beside it.
     assert REAL_SEAT_NSS_PATH in text
-    assert text.index(REAL_SEAT_NSS_PATH) < text.index("--seat-gid-root")
-    assert "takes the debugger" in text, "the price of gid 0, where it is offered"
+    assert text.index(REAL_SEAT_NSS_PATH) < text.index(SEAT_IDENTITY_VOLUME)
+    # Issue #102 sent one seat round this loop twice, because gid 0 was offered
+    # as *the* way out with none of what it costs. #103 removed the flag
+    # entirely: __ptrace_may_access() compares the group ids as peers of the
+    # user ids, so the seat that took it could log in and not trace. A reader
+    # who cannot get a login will pay any price for one, so this text must not
+    # grow it back - not even as a footnote.
+    assert "--seat-gid-root" not in text
+    assert "runAsGroup: 0" not in text
 
 
 def test_the_image_provides_the_database_this_module_appends_to() -> None:
@@ -793,8 +797,8 @@ def test_the_image_provides_the_database_this_module_appends_to() -> None:
     package has to be installed, ``nsswitch.conf``'s ``passwd`` line has to name
     ``extrausers`` (a database NSS does not consult is a file the agent writes and
     nothing reads), and ``chmod g=u /etc/passwd`` has to *stay* — a ``podbench
-    dev`` sidecar's projection and ``--seat-gid-root`` both still rest on it, so
-    this change adds a route and removes none.
+    dev`` sidecar's projection rests on it, and so does the one seat whose group
+    genuinely is 0, so this change adds a route and removes none.
     """
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
 
@@ -807,6 +811,45 @@ def test_the_image_provides_the_database_this_module_appends_to() -> None:
         "nsswitch's passwd line must consult extrausers, after files"
     )
     assert "chmod g=u /etc/passwd" in dockerfile, "the GID 0 fallback is not retired"
+
+
+def test_the_image_pre_seeds_the_uids_the_database_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, passwd: FakePasswd
+) -> None:
+    """The sub-500 range, which had no route at all before #103.
+
+    ``libnss-extrausers`` ignores a record whose uid is below 500, and a seat at
+    such a uid is almost always in a group below 500 too (grafana 472:472,
+    nginx-unprivileged 101:101), so it cannot write ``/etc/passwd`` either. It
+    landed with no ssh whatever podbench did. A record baked at build time needs
+    no writable surface at all, and the range is small enough to enumerate -
+    which the range above 500 is not, and is what the database is for.
+
+    Checked against the Dockerfile as text for the same reason the extrausers
+    contract above is: every unit test here points the paths at a temporary file,
+    so nothing else in this suite can see the image drift away from the code.
+    And checked against the *reason* as well - the seats this serves are exactly
+    the ones :func:`agent.extrausers_serves` refuses.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+
+    assert "seq 1 499" in dockerfile, "the range extrausers refuses"
+    assert "getent passwd" in dockerfile, (
+        "a uid the distribution already uses must be skipped, not shadowed"
+    )
+    assert ">> /etc/passwd" in dockerfile, "and the records go in the files database"
+    assert agent.extrausers_serves(472, 472) is False, "which is why they are needed"
+
+    # And once such a record exists, registration does nothing at all: no file
+    # is opened, no mode is consulted, and the way-out text is never reached.
+    make_unwritable(monkeypatch, passwd.path)
+    layout = make_layout(tmp_path, root=False)
+
+    def resolves(uid: int | None = None) -> str | None:
+        return "podbench-472"
+
+    monkeypatch.setattr(agent, "login_name", resolves)
+    assert agent.ensure_passwd_entry(layout, uid=472, gid=472) is False
 
 
 @pytest.mark.parametrize("verb", ["capreport", "pids", "dbg"])
@@ -992,7 +1035,7 @@ def test_self_check_names_a_missing_nss_identity_and_the_way_out(
     assert not check.ok
     assert check.name == "nss-identity"
     assert "no NSS entry" in check.detail
-    assert "--seat-gid-root" in check.detail
+    assert "group of 500 or more" in check.detail
 
 
 def test_print_login_user_reports_the_name_or_the_reason(
@@ -1024,7 +1067,7 @@ def test_print_login_user_reports_the_name_or_the_reason(
     assert agent.main(["--print-login-user"]) == 1
     captured = capsys.readouterr()
     assert captured.out.strip() == ""
-    assert "--seat-gid-root" in captured.err
+    assert "group of 500 or more" in captured.err
 
 
 def test_self_check_passes_on_a_prepared_container(
@@ -1150,11 +1193,165 @@ def test_main_print_host_key(
     assert "ssh-ed25519 AAAAHOST podbench" in capsys.readouterr().out
 
 
-def test_session_env_forwards_podbench_variables_only() -> None:
+def test_session_env_forwards_podbench_variables_and_the_named_few() -> None:
+    """The transport carries the image's environment, not just podbench's.
+
+    sshd leaks none of its own environment, and one missing mechanism read as
+    three defects: no ``PATH``, so the injection recipe died with ``sh: 1:
+    python: not found``; no ``DEBUGINFOD_URLS``, so gdb's ``set debuginfod
+    enabled on`` was inert over podbench's own transport while working under
+    ``kubectl exec``; no ``PODBENCH_TARGET_CID``, so the helpers guessed. It is
+    still an allow-list — the sshd config is world-readable — so a variable
+    nobody named stays behind.
+    """
     forwarded = agent.session_env(
-        {"PODBENCH_TARGET_CID": "abc", "PATH": "/usr/bin", "HOME": "/root"}
+        {
+            "PODBENCH_TARGET_CID": "abc",
+            "PATH": "/app/.venv/bin:/usr/bin",
+            "DEBUGINFOD_URLS": "https://debuginfod.debian.net",
+            "HOME": "/root",
+            "LANG": "C.UTF-8",
+        }
     )
-    assert forwarded == {"PODBENCH_TARGET_CID": "abc"}
+    assert forwarded == {
+        "PODBENCH_TARGET_CID": "abc",
+        "PATH": "/app/.venv/bin:/usr/bin",
+        "DEBUGINFOD_URLS": "https://debuginfod.debian.net",
+    }
+
+
+def test_a_named_variable_that_is_unset_is_simply_absent() -> None:
+    """The allow-list names variables, not requirements: a session whose
+    environment carries none of them is written without them rather than with
+    empty values, which sshd would parse as pairs of its own."""
+    assert "DEBUGINFOD_TIMEOUT" in agent.SESSION_ENV_NAMES
+    assert agent.session_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+# -- the symbol server, bounded and checked ---------------------------------
+
+
+def test_an_unreachable_symbol_server_is_withdrawn_from_the_session() -> None:
+    """gdb fetches a library's debuginfo *after* the attach, with the workload
+    stopped, and waits DEBUGINFOD_TIMEOUT for each one. A seat behind an egress
+    policy would pay that repeatedly for nothing, so the URL is dropped - which
+    is the off switch, since gdb's client has nothing to query without it."""
+    check = agent.check_debuginfod(
+        {"DEBUGINFOD_URLS": "https://debuginfod.debian.net", "PATH": "/usr/bin"},
+        reachable=lambda urls: False,
+    )
+
+    assert "DEBUGINFOD_URLS" not in check.env
+    assert check.env["PATH"] == "/usr/bin"
+    assert check.note is not None
+    # The way out for the one route no sshd config reaches.
+    assert "--no-debuginfod" in check.note
+
+
+def test_a_reachable_server_is_bounded_rather_than_taken_on_trust() -> None:
+    """Kept on - S3 got a fully symbolised backtrace out of it - but never
+    unbounded: gdb's own default is 90s per library."""
+    check = agent.check_debuginfod(
+        {"DEBUGINFOD_URLS": "https://debuginfod.debian.net"},
+        reachable=lambda urls: True,
+    )
+
+    assert check.env["DEBUGINFOD_URLS"] == "https://debuginfod.debian.net"
+    assert check.env["DEBUGINFOD_TIMEOUT"] == agent.DEBUGINFOD_TIMEOUT_SECONDS
+    assert check.note is None
+
+
+def test_a_timeout_the_image_already_set_is_left_alone() -> None:
+    """The image's ENV is the value that also bounds `kubectl exec` and the gdb
+    cpptools starts, so a seat that was given one is not second-guessed."""
+    check = agent.check_debuginfod(
+        {"DEBUGINFOD_URLS": "https://elsewhere", "DEBUGINFOD_TIMEOUT": "9"},
+        reachable=lambda urls: True,
+    )
+
+    assert check.env["DEBUGINFOD_TIMEOUT"] == "9"
+
+
+def test_nothing_is_probed_when_no_server_was_named() -> None:
+    """Without a URL gdb's debuginfod is already inert, and probing a server
+    nobody named would mean inventing one."""
+    asked: list[str] = []
+
+    def reachable(urls: str) -> bool:
+        asked.append(urls)
+        return True
+
+    check = agent.check_debuginfod({"PATH": "/usr/bin"}, reachable=reachable)
+
+    assert asked == []
+    assert check.note is None
+    assert "DEBUGINFOD_TIMEOUT" not in check.env
+
+
+def test_the_probe_answers_false_rather_than_raising() -> None:
+    """Every failure mode - no host, an unparseable port, a name that does not
+    resolve - means the same thing to the caller, and this runs in PID 1."""
+    assert not agent.debuginfod_reachable("not-a-url")
+    assert not agent.debuginfod_reachable("https://host:notaport")
+    assert not agent.debuginfod_reachable("")
+
+
+def test_a_seat_that_cannot_reach_the_server_says_so_and_writes_no_url(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decision has to reach the config, and the reason has to reach the
+    container's start-up log: an unreachable symbol server is invisible
+    otherwise until the first breakpoint, where it costs the pause."""
+
+    def unreachable(urls: str, *, timeout: float = 0.0) -> bool:
+        return False
+
+    monkeypatch.setattr(agent, "debuginfod_reachable", unreachable)
+    layout = make_layout(tmp_path, root=False)
+
+    report = agent.ensure_all(
+        layout,
+        env={**env, "DEBUGINFOD_URLS": "https://debuginfod.debian.net"},
+        runner=FakeRunner(),
+    )
+
+    written = Path(layout.config_path).read_text()
+    assert "DEBUGINFOD_URLS" not in written
+    assert any("debuginfod is off" in change for change in report.changes)
+    assert report.ok
+
+
+def test_the_image_sets_the_timeout_the_agent_would_have_supplied() -> None:
+    """The ENV is what bounds the routes no sshd config reaches - a kubectl exec
+    shell, and the gdb cpptools starts through gdb-podbench. Two copies of one
+    number, so the drift is what this pins."""
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+
+    assert (
+        f"ENV DEBUGINFOD_TIMEOUT={agent.DEBUGINFOD_TIMEOUT_SECONDS}"
+        in dockerfile.read_text()
+    )
+
+
+def test_a_path_sshd_cannot_carry_is_reported_rather_than_dropped(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    """A ``PATH`` with a space in it is not hypothetical, and losing it silently
+    is the exact bug SetEnv was widened to fix. The config is still written —
+    with everything that did survive — and the step records the reason."""
+    layout = make_layout(tmp_path, root=False)
+
+    report = agent.ensure_all(
+        layout,
+        env={**env, "PATH": "/opt/my tools/bin", "PODBENCH_NODE_NAME": "nuc2"},
+        runner=FakeRunner(),
+    )
+
+    assert [failure.name for failure in report.failures] == ["ensure-sshd-config"]
+    assert "PATH" in report.failures[0].detail
+    written = Path(layout.config_path).read_text()
+    assert "SetEnv PODBENCH_NODE_NAME=nuc2 " in written
+    assert "my tools" not in written
 
 
 def test_the_ssh_public_key_is_never_forwarded_into_a_session() -> None:

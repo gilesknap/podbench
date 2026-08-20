@@ -97,12 +97,16 @@ rung
   will admit. There is no rung between full and degraded, because a capability added
   to a non-root container is a silent no-op.
 
-  A rung is what was *asked for*, and the seat's rung is read back off the container
-  the cluster admitted — which is not the same as what the seat can do. A mutating
-  webhook that strips `capabilities.add` leaves a root seat indistinguishable from
-  the degraded rung while it attaches perfectly well, so the rung names no verdict.
-  What a seat can do is measured by {term}`capreport`, and `status` reports that
-  measurement — or `not probed`, never the rung — beside each seat it lists.
+  `attach` reports the rung it *measured*, from the seat's own `/proc/self/status`:
+  the uid the kernel gave the container and its `CapEff`. The rung it asked for is
+  on the ladder lines, and the two can differ in both directions — a mutating
+  webhook that strips `capabilities.add` leaves a root seat whose spec is
+  indistinguishable from the degraded rung, and a stored spec carrying thirteen
+  capabilities can belong to a container with none effective.
+
+  A rung is still not a verdict. What a seat can *do* is measured by
+  {term}`capreport`, and `status` reports that measurement — or `not probed`,
+  never the rung — beside each seat it lists.
 
 seat
   A podbench container you can work in: an editor, a shell, git and a debugger, inside
@@ -118,10 +122,11 @@ seat identity
   `/var/lib/extrausers/passwd`, which the image ships world-writable so that a seat
   running as the target's uid *and gid* can, needing no flag and no cooperation from
   the pod. A `dev` sidecar is given a projected `/etc/passwd` file instead and writes
-  nothing. `--seat-gid-root` is the older route, over the group-writable
-  `/etc/passwd`, and is still the only one for a seat that database will not serve —
-  it ignores records below uid or gid 500 — at the cost of the {term}`ptrace`
-  credential match against a target whose gid is not 0.
+  nothing. A seat that database will not serve — it ignores records below uid or
+  gid 500 — falls back to `/etc/passwd`, which the image pre-seeds with a static
+  record for every free uid under 500 so that no write is needed. Pinning the
+  seat to group 0 to make that file writable is not offered: the gid is half of
+  the {term}`ptrace` credential match.
 
 sidecar
   An ordinary container added beside the application in a {term}`dev pod`. Unlike an
@@ -356,9 +361,12 @@ ambient set
   seat that looks privileged and behaves unprivileged.
 
 AppArmor
-  A Linux security module that confines processes by profile. One of the four
-  {term}`blocker`s: a profile can deny ptrace between two domains, returning the same
-  {term}`EPERM` as everything else.
+  A Linux security module that confines processes by profile — one of the two
+  podbench names, beside SELinux, as the LSM {term}`blocker`. ptrace is denied
+  between two *different* labels, returning the same {term}`EPERM` as everything
+  else, so the report compares the seat's with the target's rather than judging
+  either alone. Which module owns the label is read from `/sys`:
+  `/proc/<pid>/attr/current` is a slot they share.
 
 bounding set
   The ceiling on the capabilities a process can ever hold. A capability here but not
@@ -428,9 +436,11 @@ ptrace
   The system call debuggers use to attach to and inspect a running process. Whether it
   is permitted is the single question the {term}`capability ladder` and
   {term}`capreport` exist to answer. Without {term}`CAP_SYS_PTRACE` the kernel compares
-  credentials, and it compares the **gid** as well as the uid — a mismatch denies in
-  both directions, measured — which is why a seat runs as the target's group and why
-  `--seat-gid-root`, which replaces it with group 0, costs the debugger.
+  credentials, and `__ptrace_may_access()` compares six ids and not three — `gid`,
+  `egid` and `sgid` are peers of `uid`, `euid` and `suid`, and one differing pair
+  denies in both directions, measured. That is why a seat runs as the target's
+  group, why the report prints `uid:gid` for both sides, and why podbench lands a
+  corrected seat when the measurement disagrees with what it authored.
 
 reaping
   Collecting the exit status of terminated child processes so they do not accumulate

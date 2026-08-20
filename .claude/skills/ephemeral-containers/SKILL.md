@@ -59,11 +59,18 @@ This is why the seat's identity has two mechanisms, split by container kind:
 | `attach` (ephemeral) | the agent registers a passwd record for its own uid at start-up, in `/var/lib/extrausers/passwd` — a second NSS source the image installs `libnss-extrausers` for and ships **mode 0666**, which is what permits the append: the seat's credentials are discovered at attach time, so no owner or group baked into the image could be the writable one |
 | `podbench dev` (ordinary pod) | the projected identity from the chart's `seatIdentity`, mounted with `subPath` — better, since the identity is declared rather than written and nothing in the seat has to be writable |
 
-The image's group-writable `/etc/passwd` is the *fallback*, reached by `--seat-gid-root`
-and by any seat `extrausers` will not serve, and it is not free: `__ptrace_may_access`
-compares the gid as well as the uid, so pinning `runAsGroup: 0` against a target whose
-gid is not 0 buys ssh and takes the debugger (#102, measured — it is how one seat was
-sent round the loop twice). Do not "fix" a seat with no login by reaching for that flag.
+The image's group-writable `/etc/passwd` is the *fallback*, reached by any seat
+`extrausers` will not serve, and it is not free: `__ptrace_may_access` compares the gid
+as well as the uid, so pinning `runAsGroup: 0` against a target whose gid is not 0 buys
+ssh and takes the debugger (#102, measured — it is how one seat was sent round the loop
+twice). **`--seat-gid-root` retired in #103** for exactly that: a reader who cannot log
+in will take any offer, so the offer is gone. Do not reintroduce it, and do not "fix" a
+seat with no login by pinning group 0 by hand.
+
+The sub-500 range needs no write at all now: the image pre-seeds `/etc/passwd` with a
+static record for every free uid below 500, which is the range the database refuses. A
+static record costs no writable surface, and the range is small enough to enumerate —
+which is why the same trick is not available above 500.
 
 **0666 means every process in the seat, not "the seat's uid".** Matching the target's
 credentials is not what grants the write — the mode is, and that is the point, since the
@@ -83,8 +90,16 @@ nothing resolves. So the append target is chosen on the seat's uid and gid
 that check, and would have taken ssh away from the commonest shape there is: a target
 that sets `runAsUser` and no `runAsGroup` leaves `target_uid_gid` returning a gid of
 `None`, so the seat pins no group and runs with the image's **gid 0**. Also from every
-`--seat-gid-root` seat, and from every target on a low-numbered system uid (grafana
-472, nginx-unprivileged 101).
+target on a low-numbered system uid (grafana 472, nginx-unprivileged 101).
+
+**That first shape is now fixed rather than routed around** (#103). A seat at the
+target's uid in the image's group 0 could log in and could not trace — six equalities,
+not three — so `probe` reads the target's gid from its world-readable
+`/proc/<pid>/status`, `launcher.id_correction` compares it against what the seat
+actually got, and `attach` lands **one** corrected seat itself. The bound is
+`running_seat(ids=...)`: the corrected container is *found* on every later attach
+instead of landed again, so the cost is one extra permanent name per pod and never one
+per attach. `--target-gid` pins it up front for one name; `--no-correct-ids` opts out.
 
 The package is installed unversioned, so those two numbers are an assumption about a
 build, and they are checked rather than pinned: a pinned apt version rots as soon as the

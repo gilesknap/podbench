@@ -72,8 +72,33 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.slug }}
           cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
 
-      - name: Test cli works in cached runtime image
-        run: docker run --rm tag_for_testing --version
+      # The version *compiled into the image*, asserted rather than printed and
+      # discarded. setuptools_scm marks anything that is not exactly a tagged,
+      # clean commit with a `.dev` segment and a `+g<sha>` local version — and
+      # appends `.dYYYYMMDD` to the local version when the build context had
+      # uncommitted changes. That is the same predicate
+      # `podbench.model.image_tag_for` applies to decide which image a launcher
+      # may ask for, so a release tag published from such a build ships an image
+      # naming a version no image was ever built from: an image tagged 0.4.0b1
+      # whose `podbench --version` said 0.4.0b2.dev0+g01d9ac8f8.d20260818, which
+      # is how this check came to exist.
+      #
+      # Only a tag build is held to it. A branch prerelease is legitimately a
+      # `.dev`/`+g<sha>` version — that is what makes it unmistakably not a
+      # release — so failing those would fail every branch push.
+      - name: Test the cli runs and reports a publishable version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          version=$(docker run --rm tag_for_testing --version)
+          echo "the image reports podbench $version"
+          if [[ $REF_TYPE == tag && ( $version == *.dev* || $version == *+* ) ]]; then
+            echo "::error::$GITHUB_REF_NAME is a release tag, but the image was" \
+                 "built from a post-tag or dirty tree and reports $version." \
+                 "Build the tagged commit from a clean checkout."
+            exit 1
+          fi
 
       # The image is only useful in a cluster, so exercise the in-pod verbs too:
       # they are the surface `podbench` drives once attached.
@@ -116,8 +141,10 @@ jobs:
       # gives the same answer - while `extrausers_serves` sent a uid-300 seat to
       # /etc/passwd, which on a non-zero gid it cannot write. So the pair 500 and
       # 499 pins MINUID from both sides, 501:499 pins MINGID without moving the
-      # uid, 502:100 pins the exemption, and 36071:0 keeps the `--seat-gid-root`
-      # shape explicit because it is the one whose mis-routing costs a user ssh.
+      # uid, 502:100 pins the exemption, and 36071:0 keeps the gid 0 shape
+      # explicit because it is the one whose mis-routing costs a user ssh - a
+      # target whose own group really is 0 is routed to /etc/passwd on the
+      # strength of this refusal.
       #
       # The wiring proof is what makes every refusal mean something: 36070:36070
       # resolving out of the same file in the same run says the database is
@@ -148,7 +175,7 @@ jobs:
             refused pbuidbelow  "uid 499 must be below MINUID, so MINUID has moved"
             refused pbgidbelow  "gid 499 must be below MINGID, so MINGID has moved"
             served  pbgidusers  "gid 100 must stay the USERSGID exemption"
-            refused pbgidzero   "gid 0 must be refused, or --seat-gid-root routing is now wrong"
+            refused pbgidzero   "gid 0 must be refused, or the /etc/passwd routing for a gid 0 target is now wrong"
             [ "$fail" = 0 ] || { echo "agent.extrausers_serves needs updating to match this build"; exit 1; }
             echo "floors pinned: MINUID 500, MINGID 500, USERSGID 100 - as agent.extrausers_serves assumes"
           '

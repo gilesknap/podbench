@@ -22,8 +22,11 @@ That last one is the weakest of them, and only ever a fallback: the injection
 needs *ptrace*, which the capability is one of four ways to have — a same-uid
 attach under ``ptrace_scope=0`` needs none of it. So where an attach has really
 been tried, :attr:`Seat.target_attach_ok` decides and the bit does not (issue
-#89); where it has not, the bit still decides, because an unmeasured attach is
-no evidence that attach works.
+#89); where it has not, the bit is not the last word either, because a clear
+bit is no evidence that attach *fails*. :func:`ptrace_evidence` keeps the three
+answers apart — attached, refused, and nobody asked — and an unasked attach
+falls back to whether this seat may read ``/proc/<pid>/root``, which the kernel
+gates on the same credential comparison the attach takes.
 
 **Nothing here decides for the user.** :func:`assess` returns a verdict for
 every flavour, so ``debug-config`` can emit each configuration that applies and
@@ -57,15 +60,19 @@ import enum
 import os
 import re
 import shutil
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .elf import ElfInfo, debugpy_helper_name, debugpy_helper_published, read_elf
+from .execfile import shadowing_file
 from .proc import (
     DEFAULT_PROC,
+    ptrace_readable,
     read_cmdline,
+    read_comm,
     read_exe,
+    read_mapped_objects,
     same_root,
     self_capabilities,
     sysroot_path,
@@ -74,12 +81,16 @@ from .provision import PROVISION_DEST, provision_paste
 
 __all__ = [
     "DEBUGPY_PORT",
+    "NATIVE_LANGUAGES",
     "SEAT_DEBUGPY_PATH",
+    "SEAT_PYTHON",
+    "AddressSpace",
     "Assessment",
     "Debugger",
     "Flavour",
     "Language",
     "Mode",
+    "PtraceEvidence",
     "Seat",
     "Target",
     "Which",
@@ -90,6 +101,7 @@ __all__ = [
     "format_inventory",
     "inspect_target",
     "inventory",
+    "ptrace_evidence",
     "survey_seat",
 ]
 
@@ -109,6 +121,24 @@ runtime dependency and that is the CLI, an invariant ``tests/test_packaging.py``
 asserts; and this copy has to be put on ``PYTHONPATH`` by hand for the injection
 recipe, which is easier to state when it is one path rather than a venv's
 site-packages.
+"""
+
+SEAT_PYTHON = "/app/.venv/bin/python"
+"""The interpreter that drives the injection, named in full rather than found.
+
+The seat ships two: this venv, and the uv-managed CPython under
+``/python/cpython-<version>-<triple>/`` that ``UV_PYTHON_INSTALL_DIR`` points at
+so a workspace ``uv venv`` does not download a third. Only one of them can run
+the driver — the image resolves debugpy against this one
+(``uv pip install --python /app/.venv/bin/python --target``
+:data:`SEAT_DEBUGPY_PATH`) — and a bare ``python`` names whichever of the two a
+``PATH`` happens to reach.
+
+That ``PATH`` is not ours to assume. The transport now carries the image's own
+(:data:`podbench.agent.SESSION_ENV_NAMES`), but ``SetEnv`` is a directive an
+sshd may refuse, and the recipe is printed to be *pasted* — into a
+``kubectl exec``, into a shell the launcher never saw, into a bug report. An
+absolute path costs nothing and resolves the same way in all of them.
 """
 
 _HELPER_RELATIVE = "debugpy/_vendored/pydevd/pydevd_attach_to_process"
@@ -154,13 +184,69 @@ class Flavour(enum.Enum):
 
 
 class Language(enum.Enum):
-    """What the target process runs, as far as a debugger is concerned."""
+    """What the target process runs, as far as a debugger is concerned.
+
+    Every member other than :attr:`NATIVE` and :attr:`UNKNOWN` is here because
+    something has to be *said* about it — a different adapter is emitted, or no
+    configuration is emitted and the tool that would have worked is named. That
+    is the whole reason the list grew: :attr:`NATIVE` is the fallback, and a
+    runtime nobody had taught this enum about reached it and was handed a
+    confident ``cppdbg`` entry pointed at somebody else's interpreter loop.
+    """
 
     NATIVE = "native"
+    """C, C++, and anything else whose frames really are the user's code."""
+
     GO = "go"
+    RUST = "rust"
+    """Also native, and served by the same gdb and lldb. It is spelled
+    separately because ``Vec``, ``String`` and ``Option`` are unreadable without
+    the pretty-printers, so what changes is what gdb is *told*, not which
+    debugger is chosen."""
+
     PYTHON = "python"
     NODE = "node"
+
+    JVM = "jvm"
+    """HotSpot. Refused: gdb debugs the JVM, not the program it is running."""
+
+    ERLANG = "erlang"
+    """The BEAM emulator. Refused for the same reason, one runtime along."""
+
     UNKNOWN = "unknown"
+
+
+NATIVE_LANGUAGES = (Language.NATIVE, Language.RUST, Language.UNKNOWN)
+"""The languages the gdb and lldb path really serves.
+
+:attr:`Language.UNKNOWN` is in the list on purpose and is the reason the tuple
+exists rather than a ``not in`` test: reading the target's ELF needs
+``PTRACE_MODE_READ``, so on the degraded rung an ordinary C binary is
+``UNKNOWN``, and withdrawing a working configuration there would be a silent
+wrong answer in a new place. :attr:`Language.GO` is deliberately *not* in it —
+gdb is offered for Go, but as a named fallback rather than as the right tool.
+"""
+
+#: Managed runtimes podbench has no debugger for, by the *exact* basename of
+#: ``exe`` or ``argv[0]``. Exact and never a prefix: the interpreter table
+#: can afford ``python`` matching ``python3.12`` because every such name is one,
+#: while a ``beam`` prefix would swallow every binary on a beamline.
+_RUNTIMES = {
+    "java": Language.JVM,
+    "beam.smp": Language.ERLANG,
+    "beam.debug.smp": Language.ERLANG,
+    "beam": Language.ERLANG,
+}
+
+#: The same runtimes, by a library or emulator mapped into the address space.
+#: This is the half that survives a wrapper: an Argo- or entrypoint-launched
+#: workload has an ``argv[0]`` naming the wrapper, and ``libjvm.so`` names the
+#: runtime whatever the wrapper is called.
+_MAPPED_RUNTIMES = {
+    "libjvm.so": Language.JVM,
+    "beam.smp": Language.ERLANG,
+    "beam.debug.smp": Language.ERLANG,
+}
 
 
 class Mode(enum.Enum):
@@ -173,6 +259,97 @@ class Mode(enum.Enum):
     """A process in *this* container — a ``podbench dev`` pod, where the seat
     owns PID 1. Launch rather than attach, and no mappings at all, because the
     editor and the interpreter share the same inodes."""
+
+
+class PtraceEvidence(enum.Enum):
+    """What is known about ptracing the target, and how it came to be known.
+
+    Six answers rather than a boolean, because "may this seat ptrace" and "did
+    anyone find out" are different questions and the second one decides what may
+    be *said*. Two of these permit the injection with no attach having been
+    made, and one refuses it with no capability at fault; a caller that
+    collapsed them into yes/no would print a sentence for the wrong mechanism.
+    """
+
+    ATTACHED = "attached"
+    """A real attach was made from this seat and succeeded. Proof."""
+
+    REFUSED = "refused"
+    """A real attach was made from this seat and was refused. Also proof, and
+    the capability is not necessarily what said no."""
+
+    CAPABILITY = "capability"
+    """Nobody attached, and this seat holds CAP_SYS_PTRACE."""
+
+    CREDENTIALS = "credentials"
+    """Nobody attached, and this seat may take ``PTRACE_MODE_READ`` on the
+    target — the same ``ptrace_may_access()`` comparison, one mode weaker.
+
+    Enough not to refuse, never enough to claim: Yama and the LSMs gate attach
+    and not read, so a seat here may still be refused by one of them. Anything
+    printed on this evidence has to say the attach was not measured."""
+
+    DENIED = "denied"
+    """Nobody attached, and ``PTRACE_MODE_READ`` on the target is denied.
+
+    Conclusive, in the one direction the implication runs: ``PTRACE_MODE_ATTACH``
+    is strictly stronger, so nothing that refuses the read permits the attach."""
+
+    UNKNOWN = "unknown"
+    """Nobody attached, no capability, and readability was never measured — a
+    synthetic ``/proc``, or a ``Seat`` a caller assembled by hand."""
+
+    @property
+    def permits(self) -> bool:
+        """Whether the injection may be offered on this evidence.
+
+        >>> [e.name for e in PtraceEvidence if e.permits]
+        ['ATTACHED', 'CAPABILITY', 'CREDENTIALS']
+        """
+        return self in (
+            PtraceEvidence.ATTACHED,
+            PtraceEvidence.CAPABILITY,
+            PtraceEvidence.CREDENTIALS,
+        )
+
+
+@dataclass(frozen=True)
+class AddressSpace:
+    """What is mapped into the target, and which of it carries symbols.
+
+    It exists because "no symbols" said of ``/proc/<pid>/exe`` is not "no
+    symbols", and the gap between the two is the whole of finding 13: a JVM's
+    own executable is a launcher stub with nothing in it, and ``libjvm.so``
+    mapped in beside it held 65,843. Reasoning over the main binary alone
+    announced the first and never looked for the second.
+    """
+
+    inspected: bool
+    """Whether the mapped files could be opened and read as ELF.
+
+    ``False`` is a refusal rather than an emptiness. ``maps`` is one of
+    :data:`podbench.model.PTRACE_READ_PATHS` and the files behind it are under
+    ``/proc/<pid>/root``, so both are gated on the same
+    ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)`` comparison that
+    :attr:`PtraceEvidence.DENIED` reports — one refusal, and the same one
+    :func:`_readable_rootfs` already measures. A seat that was refused it must
+    say the address space is *unmeasured*, never that it is bare.
+    """
+
+    objects: tuple[str, ...] = ()
+    """The distinct mapped files, in the target's own spelling.
+
+    Populated whenever ``maps`` itself could be read, which is not quite the
+    same condition as :attr:`inspected`: the *names* are evidence on their own —
+    ``libjvm.so`` identifies a JVM whatever the executable is called — while
+    saying anything about their symbols needs the files themselves.
+    """
+
+    with_debug_info: tuple[str, ...] = ()
+    """Mapped objects carrying DWARF. Meaningless unless :attr:`inspected`."""
+
+    with_symbols: tuple[str, ...] = ()
+    """Mapped objects carrying a symbol table, DWARF or not. Same caveat."""
 
 
 @dataclass(frozen=True)
@@ -203,6 +380,23 @@ class Target:
     cwd: str | None = None
     """The target's working directory, in its *own* rootfs's spelling."""
 
+    comm: str | None = None
+    """The kernel's own name for the process, or ``None`` if it was unreadable.
+
+    Kept beside :attr:`program` because it is the half of the identity that
+    distinguishes two candidates a launch.json entry name would otherwise
+    confuse: three children of one entrypoint script are all ``python``,
+    and their :attr:`name` is the same word three times.
+    """
+
+    address_space: AddressSpace | None = None
+    """What else is mapped into the process, or ``None`` when nobody looked.
+
+    ``None`` and ``AddressSpace(inspected=False)`` are different answers and
+    both are real: a hand-assembled :class:`Target` never asked, and a seat at
+    the wrong credentials asked and was refused.
+    """
+
     notes: tuple[str, ...] = ()
 
     @property
@@ -224,21 +418,31 @@ class Target:
         return f"pid {self.pid}"
 
     @property
-    def source_root(self) -> str | None:
-        """The directory the debuggee will report its source paths under.
+    def label(self) -> str:
+        """The name *and* the process, for a launch.json entry.
 
-        The script's directory first and the working directory second: an app
-        started as ``python /src/app.py`` reports ``/src/app.py`` whatever its
-        cwd happens to be, and it is that spelling — not the cwd — that has to
-        appear on the right-hand side of a ``pathMappings`` entry.
+        ``launch.json`` holds one flat list and VS Code's dropdown shows nothing
+        but these names, so an entry that names only the program is unusable the
+        moment two candidates share a basename — which is the normal case, not
+        the exotic one: an entrypoint script's children are three ``python``
+        processes, and ``merge_launch_configs`` matches existing entries *by
+        name*, so three identical names also silently replace one another in a
+        file the user already had.
 
-        >>> Target(1, Language.PYTHON, "/usr/bin/python3",
-        ...        script="/src/app.py", cwd="/").source_root
-        '/src'
+        >>> Target(12, Language.PYTHON, "/usr/bin/python3",
+        ...        script="/app/serve.py", comm="python").label
+        'serve.py [pid 12 python]'
+
+        The pid is not repeated when it is already the whole name:
+
+        >>> Target(603, Language.NATIVE, None, comm="victim").label
+        'pid 603 [victim]'
         """
-        if self.script and self.script.startswith("/"):
-            return str(Path(self.script).parent)
-        return self.cwd
+        bare = f"pid {self.pid}"
+        if self.name == bare:
+            return bare if self.comm is None else f"{bare} [{self.comm}]"
+        inner = bare if self.comm is None else f"{bare} {self.comm}"
+        return f"{self.name} [{inner}]"
 
 
 @dataclass(frozen=True)
@@ -283,7 +487,25 @@ class Seat:
     """Whether a bare ``gdb`` on PATH sets the sysroot before it attaches."""
 
     listening_port: int | None = None
-    """A debugpy server already accepting connections in this pod, if any."""
+    """A debugpy server already accepting connections in this pod, if any.
+
+    Set only where the listening socket was **attributed to a container in this
+    pod**. Under ``hostNetwork: true`` the namespace ``ss`` reads is the node's,
+    so a port being held is not evidence of anything in this pod — that is how a
+    seat announced another pod's debugpy server as this one's and emitted a
+    configuration pointing at it (issue #87). An unattributable listener leaves
+    this ``None``, which is the same answer as an empty port.
+    """
+
+    listening_owner: str | None = None
+    """Who holds :attr:`listening_port`, as
+    :meth:`podbench.dev.PortOwner.describe` names them.
+
+    Carried beside the port because the two useful cases are indistinguishable
+    from the number alone: the target's *own* ``debugpy.listen()`` is the good
+    case and worth connecting to, while a server in the seat is debugging the
+    wrong process.
+    """
 
     program_load_error: str | None = None
     """What gdb said when asked to load the target's binary, if it objected.
@@ -299,8 +521,26 @@ class Seat:
     versioning*.
     """
 
+    exec_file_shadow: str | None = None
+    """A file *of this seat's own* standing at the target's exe path, if any.
+
+    :func:`podbench.execfile.shadowing_file`'s answer, carried here because it
+    decides two flavours in opposite directions. gdb is handed a staged copy at
+    a path nothing shadows and debugs the right binary (issue #90); lldb cannot
+    be, because it discards the path it is given and re-resolves the executable
+    from the process after attaching, in this seat's mount namespace. So the
+    same fact that costs gdb a megabyte of ``/tmp`` withdraws the CodeLLDB
+    configuration outright.
+
+    Measured 2026-08-19 on the k3s bed with **standalone lldb 21.1.8**;
+    CodeLLDB's own bundled lldb in a remote extension host was not observed.
+    ``None`` is both "nothing shadows it" and "the exe is unknown", which agree:
+    ``_no_program`` has already refused every flavour that needs a
+    ``program`` by then.
+    """
+
     target_attach_ok: bool | None = None
-    """Whether a real ``PTRACE_ATTACH`` to the target succeeded from this seat.
+    """Whether a real ptrace attach to the target succeeded from this seat.
 
     The same measurement ``capreport`` lands in
     :attr:`~podbench.model.CapabilityReport.target_attach_ok`, and it is carried
@@ -310,10 +550,58 @@ class Seat:
     all (issue #89).
 
     ``None`` means nobody measured it — which is **not** the same as ``False``.
-    :func:`assess` falls back to the capability bit in that case, because an
-    unmeasured attach is not evidence that attach works, and reporting one as if
-    it were is the overclaim spike S5 and issue #51 exist to prevent.
+    :func:`ptrace_evidence` falls back to the capability bit and then to
+    :attr:`target_ptrace_readable` in that case, because an unmeasured attach is
+    not evidence that attach works, and reporting one as if it were is the
+    overclaim spike S5 and issue #51 exist to prevent.
     """
+
+    target_ptrace_readable: bool | None = None
+    """Whether this seat may take ``PTRACE_MODE_READ`` on the target.
+
+    Free, and so read on every survey: opening ``/proc/<pid>/root`` is gated on
+    the ``ptrace_may_access()`` credential comparison an attach takes, with no
+    ptrace syscall, no signal and no stop
+    (:func:`podbench.proc.ptrace_readable`).
+
+    It is read in one direction only, because the implication runs in one
+    direction only. ``PTRACE_MODE_ATTACH`` is strictly stronger than
+    ``PTRACE_MODE_READ``, so a denial here is conclusive and a success is merely
+    encouraging: Yama and the LSMs gate attach and not read. That is enough to
+    stop *refusing* an unmeasured attach and never enough to *claim* one, which
+    is the whole distinction :func:`ptrace_evidence` exists to keep.
+    """
+
+    @property
+    def target_rootfs_denied(self) -> bool:
+        """Whether this seat was refused the target's filesystem outright.
+
+        :attr:`PtraceEvidence.DENIED` under the name of its *other* consequence.
+        One ``listdir`` answers both: ``/proc/<pid>/root`` opens under
+        ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)``, so "may not read the
+        tree" and "may not attach" are one refusal rather than two facts that
+        agree, and reporting them as two would tell the reader two stories about
+        one denial.
+
+        Spelled separately because what follows differs: the evidence decides
+        whether the injection may be *offered*, and this decides whether
+        anything the search failed to find under that tree is a finding at all.
+
+        It goes through :func:`ptrace_evidence` and not through
+        :attr:`target_ptrace_readable`, so that a measurement outranks it here
+        exactly as it does everywhere else — a seat that really attached read
+        the tree, whatever a hand-assembled ``Seat`` says.
+
+        >>> Seat(machine="x86_64", cap_sys_ptrace=False).target_rootfs_denied
+        False
+        >>> Seat(machine="x86_64", cap_sys_ptrace=False,
+        ...      target_ptrace_readable=False).target_rootfs_denied
+        True
+        >>> Seat(machine="x86_64", cap_sys_ptrace=False, target_attach_ok=True,
+        ...      target_ptrace_readable=False).target_rootfs_denied
+        False
+        """
+        return ptrace_evidence(self) is PtraceEvidence.DENIED
 
     def has(self, name: str) -> bool:
         """Whether the inventory found ``name``."""
@@ -354,6 +642,34 @@ class Assessment:
 # -- what the target is ----------------------------------------------------
 
 
+def _readable_rootfs(pid: int, *, proc: Path = DEFAULT_PROC) -> Path | None:
+    """The target's filesystem, or ``None`` when the kernel refuses the read.
+
+    The one gate on every path this module opens under ``/proc/<pid>/root``,
+    and it is a *measurement* rather than a caught exception. pathlib's
+    ``_IGNORED_ERRNOS`` is ``(ENOENT, ENOTDIR, EBADF, ELOOP)`` on the 3.11
+    floor and ``EACCES`` is not in it, so every ``is_file()`` past this point
+    answers ``False`` for "not there" and **raises** for "not allowed" — and
+    ``debug-config`` writes ``launch.json`` last, so one raise here costs the
+    whole file and the verb exits on a traceback with nothing landed. ``glob``
+    raises for a less obvious reason worth keeping in mind if this moves:
+    ``_WildcardSelector`` does catch ``PermissionError`` from ``scandir``, but
+    ``_Selector.select_from`` stats the parent first, and that stat is naked.
+
+    The measurement is one the report already has a word for, and it is free:
+    :func:`podbench.proc.ptrace_readable` opens this very directory, which the
+    kernel gates on ``ptrace_may_access(PTRACE_MODE_READ_FSCREDS)``. So a
+    refused filesystem read and :attr:`PtraceEvidence.DENIED` are not two facts
+    that happen to agree — they are one ``listdir`` consulted twice, which is
+    what keeps the reader from being told two stories about one refusal.
+
+    >>> _readable_rootfs(1, proc=Path("/nonexistent")) is None
+    True
+    """
+    root = Path(proc) / str(pid) / "root"
+    return root if ptrace_readable(pid, proc=proc) else None
+
+
 def inspect_target(
     pid: int, *, proc: Path = DEFAULT_PROC, program: str | None = None
 ) -> Target:
@@ -365,6 +681,7 @@ def inspect_target(
     interpreter, which is the case that decides the Python flavour.
     """
     notes: list[str] = []
+    root = _readable_rootfs(pid, proc=proc)
     exe = program or read_exe(pid, proc=proc)
     cmdline = read_cmdline(pid, proc=proc) or ""
     if exe is None:
@@ -377,7 +694,7 @@ def inspect_target(
     # binary with the same name (report §3.3). The read goes through ``proc``
     # while the message quotes the real spelling, so a synthetic tree can stand
     # in for /proc without the emitted paths becoming synthetic too.
-    elf = read_elf(Path(proc) / str(pid) / "root" / exe.lstrip("/")) if exe else None
+    elf = read_elf(root / exe.lstrip("/")) if exe and root is not None else None
     if exe and elf is None:
         notes.append(
             f"{sysroot_path(pid)}{exe} could not be read as ELF, so neither the "
@@ -386,9 +703,9 @@ def inspect_target(
 
     argv = cmdline.split()
     interpreter = _interpreter_of(exe, argv)
-    language = _language(interpreter, elf)
+    space = _scan_address_space(pid, root, proc=proc)
+    language = _language(interpreter, elf, exe, argv, space)
     script = _script_of(argv) if interpreter else None
-    root = Path(proc) / str(pid) / "root"
     return Target(
         pid=pid,
         language=language,
@@ -397,10 +714,12 @@ def inspect_target(
         elf=elf,
         interpreter=interpreter,
         script=script,
+        address_space=space,
         python_version=(
             _python_version(exe, argv, root) if interpreter == "python" else None
         ),
         cwd=_read_cwd(pid, proc=proc),
+        comm=read_comm(pid, proc=proc),
         notes=tuple(notes),
     )
 
@@ -467,7 +786,9 @@ an admitted gap.
 """
 
 
-def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | None:
+def _python_version(
+    exe: str | None, argv: Sequence[str], root: Path | None
+) -> str | None:
     """The target's CPython ``X.Y``, from its own rootfs. ``None`` is an answer.
 
     The exe link usually resolves through ``python`` to ``python3.12`` and
@@ -482,15 +803,23 @@ def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | N
     a ``sorted()`` pick puts ``python3.10`` ahead of ``python3.9`` on top of it,
     so the wrong answer would not even have been the plausible one.
 
+    ``root`` is ``None`` when the kernel refused the tree
+    (:func:`_readable_rootfs`), and then the library directories are not asked
+    at all: an unreadable rootfs holds no evidence, and walking it raises.
+
     >>> _python_version("/usr/local/bin/python3.12", [], Path("/nonexistent"))
     '3.12'
     >>> _python_version(None, ["python"], Path("/nonexistent")) is None
+    True
+    >>> _python_version(None, ["python"], None) is None
     True
     """
     for candidate in (exe, argv[0] if argv else None):
         match = _PYTHON_VERSION.match(Path(candidate).name) if candidate else None
         if match:
             return match.group(1)
+    if root is None:
+        return None
     for prefix in _SEARCH_ROOTS:
         found: list[str] = []
         for parent in (root / prefix).glob("python3.*"):
@@ -502,14 +831,111 @@ def _python_version(exe: str | None, argv: Sequence[str], root: Path) -> str | N
     return None
 
 
-def _language(interpreter: str | None, elf: ElfInfo | None) -> Language:
+def _scan_address_space(
+    pid: int, root: Path | None, *, proc: Path = DEFAULT_PROC
+) -> AddressSpace:
+    """Read the target's mapped objects, and ask each of them for symbols.
+
+    Bounded twice over, because this runs in a seat against another container:
+    :data:`podbench.proc.MAX_MAPPED_OBJECTS` caps how many files are opened at
+    all, and each is read with ``deep=False`` so nothing walks a string table.
+    The section headers are three short reads per file.
+
+    Both refusals produce an ``inspected=False`` answer rather than an empty
+    one, and they are the same refusal: ``maps`` and ``/proc/<pid>/root`` are
+    gated on one ``ptrace_may_access()`` comparison, so a seat that lost the
+    rootfs has lost the address space too.
+
+    >>> _scan_address_space(1, None, proc=Path("/nonexistent")).inspected
+    False
+    """
+    objects = read_mapped_objects(pid, proc=proc)
+    if objects is None:
+        return AddressSpace(inspected=False)
+    if root is None:
+        # The names still identify a runtime even where none of the files can
+        # be opened, so they are kept and only the symbol answers withheld.
+        return AddressSpace(inspected=False, objects=objects)
+    debug: list[str] = []
+    symbols: list[str] = []
+    for path in objects:
+        info = read_elf(root / path.lstrip("/"), deep=False)
+        if info is None:
+            continue
+        if info.has_debug_info:
+            debug.append(path)
+        if info.has_symbols:
+            symbols.append(path)
+    return AddressSpace(True, objects, tuple(debug), tuple(symbols))
+
+
+def _runtime_of(
+    exe: str | None, argv: Sequence[str], space: AddressSpace
+) -> Language | None:
+    """A managed runtime podbench cannot debug, from the two cheapest reads.
+
+    ``cmdline`` is world-readable and needs no ptrace at all, which is what
+    makes this answerable on the degraded rung where the ELF is not.
+
+    >>> _runtime_of("/opt/java/bin/java", [], AddressSpace(False)).name
+    'JVM'
+    >>> _runtime_of(None, ["/erts-15.2/bin/beam.smp", "-W", "w"],
+    ...             AddressSpace(False)).name
+    'ERLANG'
+
+    A beamline is not a BEAM, which is why the names are matched whole:
+
+    >>> _runtime_of("/app/beamline-ioc", [], AddressSpace(False)) is None
+    True
+    """
+    for candidate in (exe, argv[0] if argv else None):
+        if candidate:
+            language = _RUNTIMES.get(Path(candidate).name)
+            if language is not None:
+                return language
+    for path in space.objects:
+        language = _MAPPED_RUNTIMES.get(Path(path).name)
+        if language is not None:
+            return language
+    return None
+
+
+def _language(
+    interpreter: str | None,
+    elf: ElfInfo | None,
+    exe: str | None,
+    argv: Sequence[str],
+    space: AddressSpace,
+) -> Language:
+    """What this process runs, refusing to fall through to a guess.
+
+    The order is by evidence and not by popularity. An interpreter names itself
+    in ``argv[0]``; a runtime with no debugger of ours is asked about *before*
+    the ELF, because the last line here is a fallback and a fallback must only
+    ever be reached by something there is no evidence against.
+
+    That last line is the defect this function was rewritten for. It used to
+    read "Go if the sections say so, native otherwise", so a JVM, a BEAM and
+    anything else with a readable ELF became :attr:`Language.NATIVE` and was
+    handed a confident ``cppdbg`` configuration — named frames, plausible
+    backtrace, entirely inside somebody else's interpreter loop (finding 13).
+    A language that is *known* and unsupported must be refused by name, and
+    reaching :attr:`Language.NATIVE` has to mean nothing else fitted.
+    """
     if interpreter == "python":
         return Language.PYTHON
     if interpreter == "node":
         return Language.NODE
+    runtime = _runtime_of(exe, argv, space)
+    if runtime is not None:
+        return runtime
     if elf is None:
         return Language.UNKNOWN
-    return Language.GO if elf.is_go else Language.NATIVE
+    if elf.is_go:
+        return Language.GO
+    if elf.is_rust:
+        return Language.RUST
+    return Language.NATIVE
 
 
 def detect_mode(pid: int, *, proc: Path = DEFAULT_PROC) -> Mode:
@@ -610,6 +1036,7 @@ def survey_seat(
     which: Which = shutil.which,
     debugpy_root: str | None = None,
     listening_port: int | None = None,
+    listening_owner: str | None = None,
     provision_dest: str = PROVISION_DEST,
     program_load_error: str | None = None,
     target_attach_ok: bool | None = None,
@@ -617,18 +1044,24 @@ def survey_seat(
     """Gather every fact :func:`assess` needs, with no side effects.
 
     Deliberately *not* a ptrace probe itself: measuring attach means really
-    attaching, which SIGSTOPs the workload for an instant, and gathering facts
-    must not do that behind the caller's back. So the three facts that cost
+    attaching, and gathering facts must not touch the workload behind the
+    caller's back - which is a rule about consent, not about cost, and so
+    outlives the seize that made the attach free. So the three facts that cost
     something to learn — ``listening_port``, ``program_load_error`` and
     ``target_attach_ok`` — are handed in by a caller that decided each was worth
-    its price. What is read here costs a stat and a read of
-    ``/proc/self/status``.
+    its price. What is read here costs a stat, a read of ``/proc/self/status``
+    and one ``listdir`` of ``/proc/<pid>/root``: the last is a *credential*
+    check and not an attach, so it obeys the same rule — it touches the target
+    not at all.
     """
     here = _debugpy_dir(debugpy_root)
+    # The gate, and the same one `inspect_target` used: everything below this
+    # line stats through the target's rootfs, and a refused tree is measured
+    # rather than walked and caught (:func:`_readable_rootfs`).
+    root = _readable_rootfs(target.pid, proc=proc)
     there = _target_debugpy(
-        target.pid,
+        root,
         argv=target.cmdline.split(),
-        proc=proc,
         provision_dest=provision_dest,
     )
     return Seat(
@@ -644,9 +1077,22 @@ def survey_seat(
         debugpy_helper=_helper_present(there or here, target.machine),
         sysroot_gdb=sysroot_gdb_on_path(which),
         listening_port=listening_port,
+        listening_owner=listening_owner,
         provision_dest=provision_dest,
         program_load_error=program_load_error,
+        # Read here rather than handed in: it is one `lexists` through
+        # `/proc/self/root`, so it costs what the rest of this survey costs and
+        # touches the target not at all. The staging it decides for gdb happens
+        # elsewhere and does copy bytes — this only answers the question.
+        exec_file_shadow=(
+            shadowing_file(target.pid, target.program, proc=proc)
+            if target.program
+            else None
+        ),
         target_attach_ok=target_attach_ok,
+        # Not a second read: the gate above *is* the PTRACE_MODE_READ check,
+        # so the field and the search that was or was not run cannot disagree.
+        target_ptrace_readable=root is not None,
     )
 
 
@@ -725,13 +1171,18 @@ def _venv_site_packages(root: Path, argv: Sequence[str]) -> Path | None:
 
 
 def _target_debugpy(
-    pid: int,
+    root: Path | None,
     *,
     argv: Sequence[str] = (),
-    proc: Path = DEFAULT_PROC,
     provision_dest: str = PROVISION_DEST,
 ) -> Path | None:
     """Where the *target* keeps debugpy, as a path this container can stat.
+
+    ``root`` is the target's filesystem or ``None``, and ``None`` means the
+    kernel refused it (:func:`_readable_rootfs`) — so the answer is ``None``
+    without a search. That is not "the target has no debugpy": nobody looked,
+    and :func:`_injection_prerequisites` says so rather than offering an
+    install that would write through the path just refused.
 
     ``provision_dest`` is **one** extra fixed path, not a widened glob: it is
     where ``--provision`` puts a copy, and it is checked first because it was
@@ -746,7 +1197,8 @@ def _target_debugpy(
     so answering with a system copy would name a debugpy the bootstrap could
     not load.
     """
-    root = Path(f"{proc}/{pid}/root")
+    if root is None:
+        return None
     provisioned = root / provision_dest.lstrip("/")
     if _has_debugpy(provisioned):
         return provisioned
@@ -770,17 +1222,42 @@ def _target_debugpy(
 # -- what applies ----------------------------------------------------------
 
 
-def assess(target: Target, mode: Mode, seat: Seat) -> list[Assessment]:
+def assess(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    wanted: Collection[Flavour] | None = None,
+) -> list[Assessment]:
     """One verdict per flavour, in the order they are worth trying.
 
     Every flavour is judged, including the ones that plainly do not apply, so
     that ``--flavour delve`` against a Python process gets a sentence rather
     than an empty file.
+
+    ``wanted`` is which flavours the run will actually emit — ``None`` for all
+    of them. It changes no verdict; it is what lets a refusal say whether the
+    alternative it names is in the file beside it, since a ``--flavour`` that
+    names one flavour is the case where it is not.
     """
+    gdb = _assess_gdb(target, mode, seat)
+    gdb_entry = gdb.available and (wanted is None or Flavour.GDB in wanted)
     return [
-        _assess_gdb(target, mode, seat),
-        _assess_lldb(target, mode, seat),
-        _assess_delve(target, mode, seat),
+        gdb,
+        _assess_lldb(
+            target,
+            mode,
+            seat,
+            gdb_entry=gdb_entry,
+            gdb_available=gdb.available,
+        ),
+        _assess_delve(
+            target,
+            mode,
+            seat,
+            gdb_entry=gdb_entry,
+            gdb_available=gdb.available,
+        ),
         _assess_debugpy(target, mode, seat),
     ]
 
@@ -804,6 +1281,43 @@ def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
             "gdb would show V8's frames",
             language_mismatch=True,
         )
+    # Deliberately *not* `language_mismatch`. That flag means "this flavour is
+    # for another language and you knew that" - telling someone debugging C
+    # that delve is for Go - and it keeps the refusal quiet unless the flavour
+    # was asked for by name. These two are the opposite case: gdb is the
+    # default flavour, the target is one gdb will cheerfully attach to, and the
+    # only thing standing between the user and a plausible backtrace through
+    # HotSpot is this sentence being printed.
+    if target.language is Language.JVM:
+        return Assessment(
+            Flavour.GDB,
+            False,
+            "the target is a JVM: gdb debugs HotSpot rather than the program "
+            "it is running, so the frames come back named, plausible, and "
+            "entirely inside the interpreter",
+            remedy=(
+                "debug it over JDWP instead - add `-agentlib:jdwp="
+                "transport=dt_socket,server=y,suspend=n,address=*:5005` to the "
+                "workload's JAVA_TOOL_OPTIONS and attach with the Java "
+                "extension. podbench does not author that configuration yet: "
+                "issue #114"
+            ),
+        )
+    if target.language is Language.ERLANG:
+        return Assessment(
+            Flavour.GDB,
+            False,
+            "the target is the BEAM emulator: gdb sees the emulator's C frames "
+            "and never an Erlang process, so a backtrace here says nothing "
+            "about your module",
+            remedy=(
+                "use the BEAM's own tools - `erl -remsh <node>` for a remote "
+                "shell, `observer` for the process tree, or "
+                "`rabbitmq-diagnostics remote_shell` on RabbitMQ. gdb is the "
+                "right tool only if the emulator itself is what you are "
+                "debugging"
+            ),
+        )
     if not seat.has("gdb"):
         return Assessment(
             Flavour.GDB, False, "no gdb on PATH in this seat", remedy=_IMAGE_REMEDY
@@ -821,8 +1335,18 @@ def _assess_gdb(target: Target, mode: Mode, seat: Seat) -> Assessment:
             f"gdb cannot read {target.program}, so cpptools would abort on "
             f"startup rather than attach. gdb said: {seat.program_load_error}",
             remedy=(
-                "use the lldb entry beside this one - CodeLLDB brings its own "
-                "reader and does not go through binutils. A `.gnu.version_r` "
+                # The lldb offer is withdrawn where lldb is: this seat keeping
+                # a file at the target's exe path refuses that entry too (see
+                # `_assess_lldb`), and offering the reader an entry that is not
+                # in the file sends them looking for a bug in VS Code.
+                (
+                    "there is no lldb entry beside this one - this seat's own "
+                    f"{seat.exec_file_shadow} refuses that flavour as well. "
+                    if seat.exec_file_shadow is not None
+                    else "use the lldb entry beside this one - CodeLLDB brings "
+                    "its own reader and does not go through binutils. "
+                )
+                + "A `.gnu.version_r` "
                 "complaint means this seat's binutils is older than the "
                 "toolchain that linked the target, which is an image change, "
                 "not a flag. `podbench dbg` still attaches: a failed symbol "
@@ -855,28 +1379,99 @@ def _no_program(flavour: Flavour, target: Target) -> Assessment | None:
 
 
 def _gdb_reason(target: Target, mode: Mode) -> str:
+    """Why the gdb entry is being emitted, in the target's own language.
+
+    Two defects it exists to keep fixed, both of them finding 13. It reads
+    :attr:`Target.language` rather than assuming, because saying "native
+    target" one line after ``debug-config`` announced a "go target" is a
+    contradiction the reader has to resolve themselves (issue #115). And it
+    asks the *address space* about symbols rather than the main binary: on a
+    launcher-plus-runtime workload the executable carries nothing and every
+    symbol in the process is in a library beside it, so "expect addresses
+    rather than names" was simply false where it mattered most.
+    """
     if target.elf is None:
         return (
             "the target's binary could not be read, so this is gdb on the "
             "assumption that it is native code"
         )
-    if not target.elf.has_debug_info:
-        return "native target with no .debug_info in the binary; " + (
-            "the build-id is present, so debuginfod can still serve symbols "
-            "(report §3.2)"
-            if target.elf.has_build_id
-            else "and no build-id either, so expect addresses rather than names"
+    head = f"{target.language.value} target, {mode.value} mode"
+    if target.language is Language.GO:
+        head += (
+            "; gdb is the fallback here - goroutines and channels are delve's "
+            "job and this image ships no dlv (issue #115) - and SIGURG is "
+            "pinned to gdb's own default of nostop, so async preemption "
+            "cannot fill the session"
         )
-    return f"native target, {mode.value} mode"
+    if target.elf.has_debug_info:
+        return head
+    return f"{head}; no .debug_info in the binary, {_symbols_elsewhere(target)}"
 
 
-def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
+def _some(paths: Sequence[str], limit: int = 2) -> str:
+    """The first few basenames, so naming the evidence stays one line.
+
+    >>> _some(("/usr/lib/jvm/lib/server/libjvm.so", "/lib/libc.so.6", "/x/y.so"))
+    'libjvm.so, libc.so.6, ...'
+    """
+    names = [Path(path).name for path in paths[:limit]]
+    return ", ".join([*names, "..."] if len(paths) > limit else names)
+
+
+def _symbols_elsewhere(target: Target) -> str:
+    """What the rest of the address space carries, once the binary carries none.
+
+    Four answers, and the two that sound alike are the ones worth keeping
+    apart: an address space measured and found bare, and an address space that
+    could not be measured at all. Only the first licenses "expect addresses
+    rather than names".
+    """
+    has_build_id = target.elf is not None and target.elf.has_build_id
+    debuginfod = (
+        "the build-id is present, so debuginfod can still serve symbols (report §3.2)"
+        if has_build_id
+        else "and no build-id either, so expect addresses rather than names"
+    )
+    space = target.address_space
+    if space is None or not space.inspected:
+        return (
+            f"and /proc/{target.pid}/maps could not be read - it needs "
+            "PTRACE_MODE_READ, the same check the rootfs takes - so the rest "
+            f"of the address space is unmeasured; {debuginfod}"
+        )
+    total = len(space.objects)
+    if space.with_debug_info:
+        return (
+            f"but {len(space.with_debug_info)} of the {total} mapped objects "
+            f"do carry it ({_some(space.with_debug_info)}), so frames in those "
+            "are named and lined"
+        )
+    if space.with_symbols:
+        return (
+            f"nor in any of the {total} mapped objects, but "
+            f"{len(space.with_symbols)} of them carry a symbol table "
+            f"({_some(space.with_symbols)}), so expect function names without "
+            "source lines"
+        )
+    return f"and no symbols anywhere in the {total} mapped objects; {debuginfod}"
+
+
+def _assess_lldb(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    gdb_entry: bool = True,
+    gdb_available: bool = True,
+) -> Assessment:
     # Ruled out by a language that is *known* to be managed, never by an
     # unknown one: reading the target's ELF needs PTRACE_MODE_READ, so on the
     # degraded rung the language is unknown for a perfectly ordinary C binary,
     # and withdrawing a working configuration on that basis would be the silent
-    # wrong answer in a new place.
-    if target.language in (Language.PYTHON, Language.NODE):
+    # wrong answer in a new place. The refusal is quiet because gdb's is not:
+    # one printed sentence per target names the runtime and the tool that
+    # would work, and three say it three times.
+    if target.language in _MANAGED_LANGUAGES:
         return Assessment(
             Flavour.LLDB,
             False,
@@ -896,12 +1491,109 @@ def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
         )
     # No image check: CodeLLDB ships its own lldb and installs it into the
     # *remote* extension host, so the seat having none decides nothing.
-    return _no_program(Flavour.LLDB, target) or Assessment(
-        Flavour.LLDB, True, "native target; CodeLLDB brings its own lldb to the seat"
+    denial = _no_program(Flavour.LLDB, target)
+    if denial is not None:
+        return denial
+    if seat.exec_file_shadow is not None:
+        # Issue #90 in lldb, and the one refusal here whose remedy is "there
+        # isn't one". gdb keeps its entry because `execfile.gdb_exec_file`
+        # hands it a copy at an unshadowed path; that was measured *not* to
+        # work for lldb, which overrides the exec file after the attach with a
+        # name it re-resolves in this seat's namespace. Emitting anyway would
+        # ship the failure this module exists to prevent — believable frames
+        # off the wrong build — with a debug-console warning as its only
+        # notice.
+        return Assessment(
+            Flavour.LLDB,
+            False,
+            f"this seat has its own {seat.exec_file_shadow}, and after "
+            "attaching lldb re-resolves the executable from the process and "
+            "overrides `program` with the copy it finds here - so the session "
+            "would carry this seat's symbols for the target's code (issue #90, "
+            "measured in lldb)",
+            remedy=(
+                "no lldb setting fixes it: staging a copy elsewhere, which is "
+                "what keeps a gdb entry correct, is undone by that override, "
+                "and `target.exec-search-paths` was measured not to help. "
+                f"{_shadow_fallback(emitted=gdb_entry, available=gdb_available)}"
+                ". Measured with a standalone lldb on a test bed, against a "
+                "real mount namespace; a podbench seat and CodeLLDB's own "
+                "bundled lldb were not observed"
+            ),
+        )
+    return Assessment(
+        Flavour.LLDB,
+        True,
+        f"{target.language.value} target; CodeLLDB brings its own lldb to the "
+        "seat"
+        + (
+            ", and is the better of the two here - lldb reads Rust's enums and "
+            "slices natively"
+            if target.language is Language.RUST
+            else ""
+        ),
     )
 
 
-def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
+_MANAGED_LANGUAGES = (
+    Language.PYTHON,
+    Language.NODE,
+    Language.JVM,
+    Language.ERLANG,
+)
+"""Languages whose frames a native debugger cannot show as the user's code.
+
+Not the same list as "not :data:`NATIVE_LANGUAGES`": Go is in neither, because
+gdb on a Go binary really does show the user's functions - badly, and without
+goroutines, but it is the same code.
+"""
+
+
+def _shadow_fallback(*, emitted: bool, available: bool) -> str:
+    """Where a shadowed native target goes once lldb is refused.
+
+    The sibling of :func:`_go_fallback`, and wrong in the same way it was:
+    "the gdb entry beside this one" was said unconditionally, while
+    ``--flavour lldb`` emits nothing but this refusal — so the one run that is
+    *only* ever this sentence sent the reader to an entry that is not in the
+    file, and from there to a bug in VS Code that is not there either.
+
+    Both routes rest on one fact, that gdb and ``podbench dbg`` are handed the
+    target's binary at a staged path nothing here shadows, so they stand or
+    fall together: where this seat refuses gdb outright neither exists, and the
+    third arm offers nothing rather than a route into a second wall.
+
+    >>> _shadow_fallback(emitted=True, available=True)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    "Use the gdb entry beside this one, or `podbench dbg` - both are given
+     the target's binary at a path nothing here shadows"
+    >>> _shadow_fallback(emitted=False, available=True)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    "`--flavour gdb` emits an entry that is correct here, and `podbench dbg`
+     attaches with one - both are given the target's binary at a path nothing
+     here shadows"
+    >>> _shadow_fallback(emitted=False, available=False)
+    'There is no fallback here: this seat refuses gdb as well'
+    """
+    shadows = " - both are given the target's binary at a path nothing here shadows"
+    if emitted:
+        return f"Use the gdb entry beside this one, or `podbench dbg`{shadows}"
+    if available:
+        return (
+            "`--flavour gdb` emits an entry that is correct here, and "
+            f"`podbench dbg` attaches with one{shadows}"
+        )
+    return "There is no fallback here: this seat refuses gdb as well"
+
+
+def _assess_delve(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    gdb_entry: bool = True,
+    gdb_available: bool = True,
+) -> Assessment:
     if target.language is not Language.GO:
         return Assessment(
             Flavour.DELVE,
@@ -915,7 +1607,10 @@ def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
             Flavour.DELVE,
             False,
             "no dlv on PATH in this seat, and the Go extension runs dlv on the "
-            "remote rather than shipping one",
+            "remote rather than shipping one. The podbench image ships no "
+            "delve at all, so this is a missing tool and not a missing PATH "
+            f"entry (issue #115); "
+            f"{_go_fallback(emitted=gdb_entry, available=gdb_available)}",
             remedy=_IMAGE_REMEDY,
         )
     return _no_program(Flavour.DELVE, target) or Assessment(
@@ -923,11 +1618,76 @@ def _assess_delve(target: Target, mode: Mode, seat: Seat) -> Assessment:
     )
 
 
+def _go_fallback(*, emitted: bool, available: bool) -> str:
+    """Where a Go target goes once delve is refused, in terms of what was emitted.
+
+    "the gdb entry beside this one" was said unconditionally, and
+    ``--flavour delve`` emits nothing else — so the one run that is *only* ever
+    this sentence pointed at an entry that is not in the file, and the reader
+    goes looking for a launch.json bug. Nor is the gdb line above it always
+    there to explain itself: a refusal is printed for the flavours the run was
+    asked for, which is this one alone.
+
+    >>> _go_fallback(emitted=True, available=True)
+    'the gdb entry beside this one is the fallback'
+    >>> _go_fallback(emitted=False, available=True)  # doctest: +NORMALIZE_WHITESPACE
+    'gdb is the fallback: `--flavour gdb` emits that entry,
+     `podbench dbg` attaches with it'
+    >>> _go_fallback(emitted=False, available=False)
+    'gdb is the fallback for a Go target, and this seat refuses that too'
+    """
+    if emitted:
+        return "the gdb entry beside this one is the fallback"
+    if available:
+        return (
+            "gdb is the fallback: `--flavour gdb` emits that entry, "
+            "`podbench dbg` attaches with it"
+        )
+    # No route offered at all, rather than one into a second wall: `--flavour
+    # gdb` against a seat that has just refused gdb changes nothing, and
+    # `podbench dbg` runs the same missing binary.
+    return "gdb is the fallback for a Go target, and this seat refuses that too"
+
+
 _IMAGE_REMEDY = (
     "the image ships what `capreport` lists under DEBUGGERS; adding one is a "
     "deliberate change to the image, not something a seat can install for the "
     "session"
 )
+
+
+def _injection_reason(target: Target, seat: Seat) -> str:
+    """Why the debugpy entry is being emitted, including what was not measured.
+
+    The prerequisite list is a set of yes/no gates, and one of them can be
+    passed on evidence that is short of proof: a seat with no CAP_SYS_PTRACE
+    that nobody attached from is offered the injection because it may *read*
+    the target, which is one ptrace mode weaker than the attach. That is a good
+    enough reason to emit a configuration and not a good enough reason to say
+    the attach works, so the sentence beside it says which of the two happened.
+    Reading "every prerequisite is met" from a seat that measured nothing is how
+    a user reaches an F5 that fails four subsystems down (S5, issue #51).
+
+    >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
+    >>> reason = _injection_reason(target, Seat(machine="x86_64",
+    ...     cap_sys_ptrace=False, target_ptrace_readable=True))
+    >>> "ptrace to pid 7 was not measured" in reason
+    True
+    """
+    if ptrace_evidence(seat) is not PtraceEvidence.CREDENTIALS:
+        return (
+            "every pid-injection prerequisite is met; start the server with the "
+            "command printed below, then connect"
+        )
+    return (
+        "every pid-injection prerequisite is met, but ptrace to pid "
+        f"{target.pid} was not measured: this seat may read "
+        f"/proc/{target.pid}/root, which the kernel gates on the same "
+        "credentials an attach takes, so nothing here refuses the injection - "
+        f"it is not a claim that it works. `podbench capreport {target.pid}` "
+        "attaches for real and settles it. Start the server with the command "
+        "printed below, then connect"
+    )
 
 
 def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
@@ -951,21 +1711,26 @@ def _assess_debugpy(target: Target, mode: Mode, seat: Seat) -> Assessment:
             Flavour.DEBUGPY, True, "Python target in this container's own namespace"
         )
     if seat.listening_port is not None:
-        # The app called debugpy.listen() itself. Pure Python, so this path is
-        # architecture-independent and needs no capability at all.
+        # The app called debugpy.listen() itself, or ran `-m debugpy` at start
+        # up. Pure Python, so this path is architecture-independent and needs no
+        # capability at all.
+        #
+        # The owner is named rather than the pod: `listening_port` is only set
+        # where the socket was attributed to a container, and "in this pod" said
+        # of an unattributed port is exactly the claim issue #87 was filed for.
         return Assessment(
             Flavour.DEBUGPY,
             True,
             f"a debugpy server is already listening on 127.0.0.1:"
-            f"{seat.listening_port} in this pod",
+            f"{seat.listening_port}, held by "
+            f"{seat.listening_owner or 'a process this seat could not name'}",
         )
     unmet = _injection_prerequisites(target, seat)
     if not unmet:
         return Assessment(
             Flavour.DEBUGPY,
             True,
-            "every pid-injection prerequisite is met; start the server with the "
-            "command printed below, then connect",
+            _injection_reason(target, seat),
         )
     # Live-failure order, except that a structural blocker is promoted: every
     # other prerequisite has a remedy inside this pod, and the architecture one
@@ -995,24 +1760,98 @@ def _provision_paste(target: Target, seat: Seat) -> str:
     )
 
 
+def ptrace_evidence(seat: Seat) -> PtraceEvidence:
+    """What this seat knows about ptracing the target, in order of strength.
+
+    A measurement first, because it is the only thing that settles the question
+    either way; then the capability, which grants ptrace where it is held; and
+    only then the free ``PTRACE_MODE_READ`` check, which speaks *last* and is
+    consulted at all only where the two above have said nothing. That ordering
+    is what keeps it from taking anything away: no seat this returns
+    :attr:`~PtraceEvidence.DENIED` for would have been permitted before, since
+    an unmeasured capless seat was refused outright.
+
+    >>> capless = Seat(machine="x86_64", cap_sys_ptrace=False)
+    >>> ptrace_evidence(capless)  # nobody asked anything at all
+    <PtraceEvidence.UNKNOWN: 'unknown'>
+    >>> ptrace_evidence(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                      target_attach_ok=True, target_ptrace_readable=False))
+    <PtraceEvidence.ATTACHED: 'attached'>
+    >>> ptrace_evidence(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                      target_ptrace_readable=True))
+    <PtraceEvidence.CREDENTIALS: 'credentials'>
+    >>> ptrace_evidence(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                      target_ptrace_readable=False))
+    <PtraceEvidence.DENIED: 'denied'>
+    """
+    if seat.target_attach_ok is not None:
+        return (
+            PtraceEvidence.ATTACHED if seat.target_attach_ok else PtraceEvidence.REFUSED
+        )
+    if seat.cap_sys_ptrace:
+        return PtraceEvidence.CAPABILITY
+    if seat.target_ptrace_readable is None:
+        return PtraceEvidence.UNKNOWN
+    return (
+        PtraceEvidence.CREDENTIALS
+        if seat.target_ptrace_readable
+        else PtraceEvidence.DENIED
+    )
+
+
 def can_ptrace_target(seat: Seat) -> bool:
-    """Whether this seat may ptrace the target — measured wherever it was.
+    """Whether the injection may be offered — which is not "attach works".
 
     The one place that decision is made, because it is made twice: the debugpy
     pid-injection prerequisite here, and ``--provision``'s note about what the
     install will and will not buy. Two spellings of it drifted apart once
     already (issue #89), and the reader sees both sentences in one run.
 
+    ``True`` on unmeasured evidence means *nothing here refuses it*, and the
+    text printed alongside must say so: :func:`ptrace_evidence` is what tells
+    the two apart, and every caller that prints a sentence asks it and not this.
+
     >>> capless = Seat(machine="x86_64", cap_sys_ptrace=False)
-    >>> can_ptrace_target(capless)  # nobody attached, so the bit is all there is
+    >>> can_ptrace_target(capless)  # nothing measured, no capability, no read
     False
     >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=False,
     ...                        target_attach_ok=True))
     True
+    >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=False,
+    ...                        target_ptrace_readable=True))  # not refused
+    True
+    >>> can_ptrace_target(Seat(machine="x86_64", cap_sys_ptrace=True,
+    ...                        target_attach_ok=False))  # the measurement wins
+    False
     """
-    if seat.target_attach_ok is not None:
-        return seat.target_attach_ok
-    return seat.cap_sys_ptrace
+    return ptrace_evidence(seat).permits
+
+
+def _rootfs_denied(target: Target) -> tuple[bool, str, str]:
+    """The prerequisite a seat refused the target's filesystem fails.
+
+    Two consequences of one refusal, in one sentence, because the reader meets
+    both in the same run: nothing under the target's rootfs could be searched,
+    and ``PTRACE_MODE_ATTACH`` is strictly stronger than the read that was
+    refused, so the injection's ``gdb --pid`` would be refused too.
+
+    Not structural. The remedy is a different seat rather than a different
+    world, so it stays below the architecture refusal in
+    :func:`_assess_debugpy`'s ordering — but above everything the refusal made
+    unanswerable, which is every target-side prerequisite there is.
+    """
+    return (
+        False,
+        f"this seat may not read /proc/{target.pid}/root, which the kernel "
+        "gates on the same ptrace_may_access() credentials an attach takes - "
+        "so nothing in the target's filesystem could be searched, and "
+        "PTRACE_MODE_ATTACH is strictly stronger than the read, so the "
+        "injection's `gdb --pid` would be refused too. Not the capability: "
+        "the credentials",
+        f"`podbench capreport {target.pid}` names which of the four mechanisms "
+        "says no; where it is a uid mismatch, `podbench attach --max-rung "
+        "full` lands a seat that runs as root",
+    )
 
 
 def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str, str]]:
@@ -1022,8 +1861,16 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     second, the architecture third, ptrace fourth and the symbols gdb has to
     read once it is attached last. Reporting all of them is the point — fixing
     the headline only to meet the next wall is the experience this replaces.
+
+    A refused ``/proc/<pid>/root`` comes before all of them, because it is what
+    the seat hit before it could ask any of the target-side questions at all.
     """
     unmet: list[tuple[bool, str, str]] = []
+    if seat.target_rootfs_denied:
+        # First in the list, and so the headline: `sorted` below is stable, and
+        # only the structural arm64 refusal — which is true whatever this seat
+        # may read — outranks it.
+        unmet.append(_rootfs_denied(target))
     if seat.debugpy_here is None:
         unmet.append(
             (
@@ -1033,7 +1880,12 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                 "lists what this image actually has",
             )
         )
-    if seat.debugpy_there is None:
+    # Said only where it was really looked for. `_target_debugpy` stats through
+    # `/proc/<pid>/root`, so on a refused tree "debugpy is not importable by the
+    # target" is not a finding — it is the refusal above told a second time, and
+    # its remedy would send the reader to install through the very path the
+    # kernel just said no to. One refusal, one sentence.
+    if seat.debugpy_there is None and not seat.target_rootfs_denied:
         unmet.append(
             (
                 False,
@@ -1074,8 +1926,14 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     # "not published for x86_64" — which is false — would be worse than saying
     # nothing. The tree asked is the one the injection loads, and it is named in
     # the message, because with a copy on each side they can disagree.
+    #
+    # Not asked at all on a refused rootfs, and the fallback is why: `tree` is
+    # this seat's copy only when the target has none, which is a thing nobody
+    # found out. Asked anyway it names the wrong tree and — with the target's
+    # ELF unreadable too, so `Target.machine` is ``None`` — the wrong
+    # architecture, and reports a helper missing from a directory that has it.
     tree = seat.debugpy_there or seat.debugpy_here
-    if tree is not None and not seat.debugpy_helper:
+    if tree is not None and not seat.debugpy_helper and not seat.target_rootfs_denied:
         machine = target.machine or seat.machine
         helper = debugpy_helper_name(machine)
         if debugpy_helper_published(machine):
@@ -1109,12 +1967,19 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
     # the remedy the refusal offered, relaunching on the `full` rung, lands the
     # same capless seat again, because the policy strips it every time.
     #
-    # So the measurement wins where there is one. Where there is not, the
-    # answer is still the capability bit: an unmeasured attach is not evidence,
-    # and inferring one from the accounting is the overclaim spike S5 and issue
-    # #51 exist to prevent.
+    # So the measurement wins where there is one. Where there is not, an
+    # unmeasured attach is still not evidence that attach *works* - inferring
+    # one from the accounting is the overclaim spike S5 and issue #51 exist to
+    # prevent - but a clear capability bit is not evidence that it fails
+    # either, and refusing on it is the same #89 error in the other direction.
+    # So the fallback is the free credential check: `/proc/<pid>/root` opens
+    # under `ptrace_may_access(PTRACE_MODE_READ_FSCREDS)`, one mode weaker than
+    # the attach and no ptrace syscall at all. A denial there is conclusive and
+    # refuses; a success only declines to refuse, and every sentence printed on
+    # it says the attach was not measured.
     if not can_ptrace_target(seat):
-        if seat.target_attach_ok is False:
+        evidence = ptrace_evidence(seat)
+        if evidence is PtraceEvidence.REFUSED:
             unmet.append(
                 (
                     False,
@@ -1125,16 +1990,21 @@ def _injection_prerequisites(target: Target, seat: Seat) -> list[tuple[bool, str
                     "names is worth changing",
                 )
             )
+        elif evidence is PtraceEvidence.DENIED:
+            # Already the headline: DENIED *is* `target_rootfs_denied`, so the
+            # entry went in first, above every question it made unanswerable.
+            pass
         else:
             unmet.append(
                 (
                     False,
                     "CAP_SYS_PTRACE is not in this seat's effective set, and "
                     "the injection drives gdb to attach to the target",
-                    "relaunch on the `full` rung (root + SYS_PTRACE); "
-                    "`capreport` names which rung this seat landed on, and "
-                    "measures whether this seat can attach without the "
-                    "capability at all",
+                    "relaunch on the `full` rung with `podbench attach "
+                    "--max-rung full` (root + SYS_PTRACE); "
+                    f"`podbench capreport {target.pid}` names which rung this "
+                    "seat landed on, and measures whether this seat can attach "
+                    "without the capability at all",
                 )
             )
     # Last, because it is the last wall in live-failure order: the driver starts
@@ -1176,16 +2046,20 @@ def injection_command(target: Target, seat: Seat, port: int = DEBUGPY_PORT) -> s
     import the *target's* debugpy so that the path it injects resolves in the
     target's mount namespace too.
 
+    The interpreter is :data:`SEAT_PYTHON` and not a bare ``python``: this line
+    is as often pasted as run, and it has to reach the same one of the seat's
+    two interpreters wherever it is pasted.
+
     >>> target = Target(pid=7, language=Language.PYTHON, program="/usr/bin/python3")
     >>> seat = Seat(machine="x86_64", cap_sys_ptrace=True,
     ...             debugpy_there="/proc/7/root/usr/lib/python3/dist-packages")
     >>> print(injection_command(target, seat))
     PYTHONPATH=/proc/7/root/usr/lib/python3/dist-packages \\
-      python -m debugpy --listen 127.0.0.1:5678 --pid 7
+      /app/.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid 7
     """
     return (
         f"PYTHONPATH={seat.debugpy_there or seat.debugpy_here} \\\n"
-        f"  python -m debugpy --listen 127.0.0.1:{port} --pid {target.pid}"
+        f"  {SEAT_PYTHON} -m debugpy --listen 127.0.0.1:{port} --pid {target.pid}"
     )
 
 

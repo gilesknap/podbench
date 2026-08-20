@@ -175,7 +175,7 @@ Read the whole list, with the reasoning for each, in
 | `pods/exec` | `create` | the ssh transport — this is the entire network story |
 | `pods` | `create`, `delete` | Iterate mode only |
 | `services` | `get`, `list`, `patch` | Iterate mode with `--take-traffic`/`--cutover` only |
-| `pods/resize` | `patch` | `attach --resize` only |
+| `pods/resize` | `get`, `patch` | `attach --resize` only |
 
 `podbench doctor` asks the cluster this table one verb at a time and reports it
 per feature, so you find out before the attach rather than during it.

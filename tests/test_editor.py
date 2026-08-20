@@ -392,7 +392,7 @@ _SUCCESS = (
     "debug-config: nothing is listening on 127.0.0.1:5678 yet. Start the server "
     "inside the app with:\n"
     "PYTHONPATH=/proc/1/root/opt/podbench-debugpy \\\n"
-    "  python -m debugpy --listen 127.0.0.1:5678 --pid 1\n"
+    "  /app/.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid 1\n"
 )
 
 
@@ -505,8 +505,8 @@ def test_nothing_is_provisioned_unless_it_is_asked_for() -> None:
 
 
 def test_only_the_flavours_own_extensions_are_installed_and_remotely() -> None:
-    """In Observe mode these land on the workload's ephemeral-storage budget
-    (issue #42), so a bundle is somebody else's disk. And ``--remote`` is what
+    """In Observe mode these land on the workload's ephemeral-storage budget,
+    so a bundle is somebody else's disk. And ``--remote`` is what
     makes it the "Install in SSH:" button rather than a local install whose
     adapter runs on the laptop."""
     seat = FakeSeat()

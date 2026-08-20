@@ -289,6 +289,58 @@ def test_add_ephemeral_container_replaces_a_same_named_entry() -> None:
     assert containers == [{"name": "podbench-1", "image": "new"}]
 
 
+def test_a_dry_run_asks_the_api_server_to_store_nothing() -> None:
+    """The query is appended to an otherwise identical request.
+
+    ``raw_put``'s path is opaque, so the rehearsal and the real thing are one
+    code path: anything that made them two would let them drift, and the whole
+    value of a dry run is that it submits exactly what the create would.
+    """
+    existing = json.dumps({"spec": {"ephemeralContainers": []}})
+    admitted = json.dumps(
+        {
+            "spec": {
+                "ephemeralContainers": [
+                    {
+                        "name": "podbench-1",
+                        "securityContext": {"capabilities": {"add": ["CHOWN"]}},
+                    }
+                ]
+            }
+        }
+    )
+    runner = FakeRunner(ok(existing), ok(admitted))
+    preview = Kubectl("demo", runner=runner).add_ephemeral_container(
+        "target", {"name": "podbench-1"}, dry_run=True
+    )
+
+    put_argv = runner.calls[1][0]
+    assert put_argv[3:] == (
+        "replace",
+        "--raw",
+        "/api/v1/namespaces/demo/pods/target/ephemeralcontainers?dryRun=All",
+        "-f",
+        "-",
+    )
+    # The response is the point: a mutating policy refuses nothing, so what
+    # admission would have stored is the entire signal.
+    containers = preview["spec"]["ephemeralContainers"]
+    assert containers[0]["securityContext"]["capabilities"]["add"] == ["CHOWN"]
+
+
+def test_a_create_that_answers_with_nothing_parseable_is_not_an_error() -> None:
+    """Only a dry run reads the response, and a real create must not start
+    failing because a server said something this code cannot parse."""
+    existing = json.dumps({"spec": {"ephemeralContainers": []}})
+    runner = FakeRunner(ok(existing), ok(""))
+    assert (
+        Kubectl("demo", runner=runner).add_ephemeral_container(
+            "target", {"name": "podbench-1"}
+        )
+        == {}
+    )
+
+
 def test_wait_for_ephemeral_container_returns_started_at() -> None:
     running = pod_json(
         ephemeralContainerStatuses=[
@@ -399,3 +451,19 @@ def test_the_default_runner_really_executes(tmp_path: Path) -> None:
         kubectl.run("--boom")
     assert caught.value.returncode == 7
     assert caught.value.stderr.strip() == "it went wrong"
+
+
+def test_top_pod_returns_the_columns_and_treats_no_metrics_api_as_no_answer() -> None:
+    """The metrics API is an add-on, so its absence is data and not a failure.
+
+    ``None`` rather than an empty string, because the caller has to be able to
+    tell "nothing is using memory" from "nobody would say" - podbench has twice
+    reported an unreadable thing as a good one (issue #89, C14) and this read
+    decides whether to stay quiet about a pod's memory.
+    """
+    runner = FakeRunner(ok("target   1m   67Mi\n"))
+    assert Kubectl("demo", runner=runner).top_pod("target") == "target   1m   67Mi\n"
+    assert runner.argv[-4:] == ("top", "pod", "target", "--no-headers")
+
+    refused = FakeRunner(fail("error: Metrics API not available"))
+    assert Kubectl("demo", runner=refused).top_pod("target") is None

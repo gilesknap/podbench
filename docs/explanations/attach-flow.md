@@ -130,10 +130,21 @@ grant `SYS_PTRACE` would make an honest report look like a failure.
 
 ## The capability ladder
 
-Three rungs, tried in order, and the shape is forced rather than chosen: `SYS_PTRACE`
-on a container whose `runAsUser` is not 0 lands in the bounding set only, leaving
-`CapEff: 0` — so there is no useful middle rung to invent, and `spec.py` raises rather
-than author one.
+Three rungs, and the shape is forced rather than chosen: `SYS_PTRACE` on a container
+whose `runAsUser` is not 0 lands in the bounding set only, leaving `CapEff: 0` — so
+there is no useful middle rung to invent, and `spec.py` raises rather than author one.
+
+The **order** is the target's to imply. Where the target's uid is known and is not
+root, rung 2 already matches it, which is what the kernel's credential check wants,
+and it is tried first: the capability rung is not spent proving what the uid already
+says, and a root seat whose capability a policy strips reads *fewer* of the target's
+`/proc` files than rung 2 does (report 3.11). A root target, a target whose uid the
+pod spec does not carry, and a pod sharing one PID namespace between containers of
+different uids keep the classic order, rung 1 first — for them rung 2 cannot be
+authored, or cannot reach what the user came for. `--max-rung` states the starting
+rung explicitly and overrides all of it; it is also the only way to insist on rung 1
+for a node whose Yama `ptrace_scope` is 1 or more, which is per-node and cannot be
+read before a seat exists.
 
 ```text
                  ┌───────────────────────────────────────┐
@@ -150,6 +161,8 @@ than author one.
       pre-skipped, no API call, no name burnt:
         the pod or the container sets runAsNonRoot: true
         or --max-rung named a lower rung as the ceiling
+      withdrawn at the dry run, no name burnt:
+        admission would strip SYS_PTRACE, or add runAsNonRoot: true
       refused synchronously, in kubectl's stderr:
         PSA — 'must not include "SYS_PTRACE" in ...capabilities.add'
                                   │
@@ -161,10 +174,12 @@ than author one.
 └─────────────────────────────────┬────────────────────────────────┘
                                   │
       pre-skipped:
-        the target's uid is not in the pod spec — re-run with
-        --target-uid once the report below has read it from /proc
-        (guessing root would cost this rung its entire value)
-        or the target runs as uid 0, which runAsNonRoot cannot express
+        the target's uid is in neither the pod spec nor the node's
+        container status — re-run with --target-uid once the report
+        below has read it from /proc (guessing root would cost this
+        rung its entire value)
+        or the target runs as uid 0, by either of those two readings,
+        which runAsNonRoot cannot express
                                   │
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -179,6 +194,12 @@ Refusal arrives through two unrelated channels, and only one of them is catchabl
 around the API call:
 
 ```text
+  replace --raw .../ephemeralcontainers?dryRun=All      the rehearsal
+        │        admission runs, nothing is stored, no name is spent
+        │        → a refusal here ends the rung; a rewrite here is read
+        │          out of the response body, which is the only place a
+        │          mutating policy is visible at all
+        ▼
   replace --raw .../ephemeralcontainers
         │
         ├── non-zero exit, PSA text in stderr ──── synchronous refusal
@@ -207,15 +228,27 @@ ptrace cannot read `/proc/<pid>/root`, `maps` or `environ` either.
 
 Neither arm of the walk sees anything, so rung 1 "succeeds" and rungs 2 and 3 are
 never tried. The spec reads back afterwards as `runAsUser: 0` with nothing added,
-which is indistinguishable from rung 2 (issue #94) — the honest answer about such
-a seat is never its rung, only what `capreport` measured.
+which is indistinguishable from rung 2 (issue #94) — so no rung read off a spec
+is an honest answer about such a seat. The rung `attach` prints is not read off
+one: every attach ends by asking the seat for its own `/proc/self/status`, and
+the uid and `CapEff` in it are what the line names.
 
-`--max-rung` is the way out: it caps the walk so the rung that cannot work is
-never submitted, rather than detecting the strip afterwards. Detection is
-possible — the API server returns the mutated object in the response body, and a
-server-side dry-run would show it without storing anything — but a cap is what a
-person who knows their own cluster can state up front, and it spends no
-container name proving what they already know. Measured at DLS, 2026-08-18.
+So the rung is rehearsed first. Every rung goes through `?dryRun=All` before it is
+created: the API server runs the whole admission chain, returns the object as it
+*would* have stored it, and stores nothing. A strip is then visible in the response
+body, and rung 1 is withdrawn rather than spent — landing it would be worse than not
+landing it. The same read catches the more expensive rewrite, a `runAsNonRoot: true`
+added beside `runAsUser: 0`, which the API server takes and the kubelet then refuses
+seconds later with a container name already gone.
+
+A dry run is the admission chain and nothing else, so it never sees that kubelet
+refusal itself; that one is still pre-empted by reading the target's `runAsNonRoot`
+up front rather than provoked. And a rewrite that costs the rung nothing — the
+thirteen capabilities a DLS policy adds to a container that asked for none, measured
+2026-08-19 — is reported as one line rather than acted on.
+
+`--max-rung` remains the way to state a cap up front, and is what somebody who knows
+their own cluster reaches for. Measured at DLS, 2026-08-18.
 
 ## Every cluster call, in order
 
@@ -229,12 +262,22 @@ container name proving what they already know. Measured at DLS, 2026-08-18.
         -p '{"spec":{"containers":[{"name":C,"resources":…}]}}' \
         --subresource=resize                             # --resize only
  5  kubectl -n NS get pod POD -o json                    # the pod attach works from
- --- only when a new seat is landed: ---
+ --- only when a new seat is landed, once per rung attempted: ---
  6  kubectl -n NS get pod POD --subresource=ephemeralcontainers -o json
  7  kubectl -n NS replace --raw \
+        /api/v1/namespaces/NS/pods/POD/ephemeralcontainers?dryRun=All -f -
+                                                        # the rehearsal: admission
+                                                        # runs, nothing is stored
+ 6' kubectl -n NS get pod POD --subresource=ephemeralcontainers -o json
+ 7' kubectl -n NS replace --raw \
         /api/v1/namespaces/NS/pods/POD/ephemeralcontainers -f -
  8  kubectl -n NS get pod POD -o json                    # polled until running
  --- always: ---
+ 8' kubectl -n NS exec -c SEAT POD -- cat /proc/self/status
+                                                        # the measured rung: the
+                                                        # uid and CapEff the
+                                                        # kernel gave the seat
+ 8" kubectl -n NS exec -c SEAT POD -- podbench --version # which build answered
  9  kubectl -n NS exec -c SEAT POD -- podbench agent --print-login-user
 10  kubectl -n NS exec -c SEAT POD -- podbench capreport --json
                                                         # unless --no-probe
@@ -245,8 +288,9 @@ container name proving what they already know. Measured at DLS, 2026-08-18.
 The RBAC that adds up to — `rbac.observe` in the chart — is `get`/`list`/`watch` on
 `pods`, `get`/`patch`/`update` on `pods/ephemeralcontainers` (`update` is the one that
 matters: the container is added by PUTting the subresource), and `create` on
-`pods/exec`. `--resize` needs `patch` on `pods/resize`, granted separately because it
-changes a running workload's limits.
+`pods/exec`. `--resize` needs `get` and `patch` on `pods/resize` — kubectl reads the
+subresource before writing it — granted separately because it changes a running
+workload's limits.
 
 Note what is **not** there: no `kubectl debug`. It merges its chosen profile *after*
 your `--custom` JSON, so asking for `runAsUser: 1000` yields a container that also
@@ -287,10 +331,10 @@ completely fresh rootfs and nothing may live only in the writable layer:
         │      resolve.  It goes to /var/lib/extrausers/passwd, which the
         │      image ships world-writable, so a seat running as the
         │      target's uid *and gid* can append it with no flag and no
-        │      privilege.  /etc/passwd needs gid 0 and takes the seats
-        │      that database will not serve — it ignores a uid or gid
-        │      below 500 — at the price of the gid match ptrace makes
-        │      against the target (--seat-gid-root)
+        │      privilege.  That database ignores a uid or gid below 500;
+        │      the image pre-seeds /etc/passwd with a static record for
+        │      every free uid under 500, so those seats resolve without
+        │      writing anything at all
         ├─ ensure the host key         (ssh-keygen)
         ├─ ensure authorized_keys      (from the PODBENCH_PUBKEY env the spec carried)
         ├─ ensure the sshd config      (its own file, not the distro's)
@@ -373,7 +417,8 @@ The report is six lines of *measured* capability, not of requested capability:
   NSS identity the exec half does not.
 
 When ptrace is denied, the report names *which* of the four mechanisms said no —
-missing capability, Yama's `ptrace_scope`, seccomp or AppArmor — because all four
+missing capability, Yama's `ptrace_scope`, seccomp or the node's LSM — because
+all four
 return the same `EPERM`, and that naming is the point of the whole probe.
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`

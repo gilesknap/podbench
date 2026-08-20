@@ -2,8 +2,10 @@
 # podbench itself, on PATH for an ssh session.
 #
 # `ssh host 'podbench ...'` runs a non-interactive shell that sources no profile
-# and does not inherit the image's ENV PATH, so the venv — which is on no
-# default PATH — has to be named in full here. This one file is what makes
-# every in-pod verb reachable as `podbench <verb>`; there are no per-subcommand
-# wrappers beside it (image/README.md, deviation 6).
+# and inherits none of the image's ENV PATH: what it gets is the SetEnv line the
+# agent writes into the sshd config, or sshd's compiled-in default if that line
+# was never written. /usr/local/bin is on the compiled-in default and the venv
+# is on no default at all, so naming it in full here is what keeps every in-pod
+# verb reachable as `podbench <verb>` when the generated config cannot help.
+# There are no per-subcommand wrappers beside it (image/README.md, deviation 6).
 exec /app/.venv/bin/podbench "$@"

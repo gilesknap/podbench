@@ -69,6 +69,37 @@ def test_every_derived_tag_is_pullable(version: str) -> None:
     assert OCI_TAG.fullmatch(image_tag_for(version))
 
 
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.0.0",
+        "1.0.0b1",
+        "0.1.0a4",
+        "0.1.dev9",
+        "0.4.0b2.dev0+g01d9ac8f8",
+        "0.4.0b2.dev0+g01d9ac8f8.d20260818",
+    ],
+)
+def test_the_release_build_guard_and_the_tag_rule_are_one_predicate(
+    version: str,
+) -> None:
+    """``_container.yml`` refuses a release tag built from a tree this rejects.
+
+    Measured: a seat from an image tagged ``0.4.0b1`` reported
+    ``0.4.0b2.dev0+g01d9ac8f8.d20260818`` — a post-tag build whose context
+    carried uncommitted changes, ``.d<date>`` being setuptools_scm's dirty
+    marker. Such an image names a version no image was ever published under, so
+    a launcher of that version asks for :data:`~podbench.model.FLOATING_TAG`
+    and the two halves diverge with nothing to announce it.
+
+    The workflow tests the version string for ``.dev`` and ``+``. This asserts
+    that is the *same* predicate :func:`image_tag_for` applies, so the guard and
+    the rule it enforces cannot drift apart.
+    """
+    built_dirty = ".dev" in version or "+" in version
+    assert (image_tag_for(version) == FLOATING_TAG) is built_dirty
+
+
 def test_default_image_names_the_published_repository() -> None:
     """Spelled out rather than derived, so a repository move is caught here.
 

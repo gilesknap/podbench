@@ -14,8 +14,17 @@ from podbench.__main__ import ENTRY_POINTS, main
 
 
 def test_cli_version():
+    """One token on stdout, and nothing else on the line.
+
+    Not cosmetic. ``launcher.probe_seat_version`` execs exactly this inside the
+    seat and reads stdout as the seat's build, so a banner, a `podbench,
+    version X` prefix or a second line would make every seat report as unknown
+    — and the skew this exists to catch would go back to being invisible.
+    """
     cmd = [sys.executable, "-m", "podbench", "--version"]
-    assert subprocess.check_output(cmd).decode().strip() == __version__
+    printed = subprocess.check_output(cmd).decode().strip()
+    assert printed == __version__
+    assert len(printed.split()) == 1
 
 
 def test_help_lists_every_verb_under_where_it_runs(

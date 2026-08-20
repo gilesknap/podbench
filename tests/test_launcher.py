@@ -11,6 +11,7 @@ that only the second burns a container name.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -19,45 +20,68 @@ from typing import Any, cast
 
 import pytest
 
+from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
-from podbench.kubectl import CommandResult, Kubectl, KubectlError
+from podbench.console import console
+from podbench.kubectl import (
+    CREATE_CONTAINER_CONFIG_ERROR,
+    CommandResult,
+    Kubectl,
+    KubectlError,
+)
 from podbench.launcher import (
-    RESIZE_WARNING,
+    NO_TARGET_CONTAINER,
+    UNKNOWN_SEAT_VERSION,
+    VERSION_SKEW_WARNING,
     LauncherError,
     Session,
     attach,
     capability_report_from_json,
+    container_names,
     current_namespace,
     default_host_alias,
     emit_ssh_config,
     features,
     forget_known_hosts,
     forget_ssh_config,
+    format_seats,
     format_session,
     host_alias_in,
     kubectl_for,
     main,
     match_pod_names,
+    other_containers,
     parse_mount,
     plan_ladder,
     pod_choices,
+    probe_seat_credentials,
+    probe_seat_versions,
     resolve_pod,
     resolve_pod_name,
+    same_build,
+    seat_layout,
     seats,
     ssh_config_path,
+    target_container_name,
+    target_row,
     try_resize,
+    wait_for_seats,
 )
 from podbench.model import (
     PTRACE_READ_PATHS,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
+    SEIZE_PROBE,
     Blocker,
     ContainerRef,
+    Lsm,
     PodRef,
     Rung,
     Verdict,
+    describe_pause,
 )
+from podbench.resize import Headroom
 from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
@@ -84,6 +108,31 @@ KYVERNO_REFUSAL = (
 Kept whole rather than trimmed to the fragment that is matched: the point of the
 test is that podbench recognises what a real policy engine really says, and a
 tidied copy would keep passing against a matcher that no longer works.
+"""
+
+VAP_REFUSAL = (
+    'Error from server (Forbidden): pods "target" is forbidden: '
+    "ValidatingAdmissionPolicy 'deny-sys-ptrace' with binding "
+    "'deny-sys-ptrace-binding' denied request: SYS_PTRACE is not permitted here"
+)
+"""A native policy, which names itself and says ``denied request``.
+
+The wording misses the webhook group by one word, which is why it needed its own
+group in ``ADMISSION_DENIAL_MARKERS`` (issue #93) - and why the report needed its
+own branch, having called it a webhook until now.
+"""
+
+UID_ALLOW_LIST_REFUSAL = (
+    'admission webhook "validate.kyverno.svc-fail" denied the request: \n'
+    "kp-validate-custom-validate-user-and-group-ids:\n"
+    "  validate user id: The fields spec.securityContext.runAsUser is set to an "
+    'invalid value. Allowed runAsUser values are: "36096|37887".'
+)
+"""Verbatim from a DLS namespace, 2026-08-19.
+
+Standard policy for a pod that does host mounts, not local drift: the uid a seat
+may run as is allow-listed, so no rung may invent one. A refusal that names the
+uids it *would* take is a question with an answer, and the report gives it.
 """
 
 WEBHOOK_UNREACHABLE = (
@@ -132,6 +181,9 @@ def pod_document(
     phase: str = "Running",
     ready: bool = True,
     probes: Mapping[str, Any] | None = None,
+    host_network: bool = False,
+    siblings: Sequence[str] = (),
+    reported_uid: int | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -155,7 +207,11 @@ def pod_document(
         },
         "spec": {
             "nodeName": "node02",
-            "containers": [workload],
+            # Omitted when false, exactly as the API server serializes it: the
+            # seat has to read a missing key as "no" and a missing *variable* as
+            # "unknown", and those are not the same absence.
+            **({"hostNetwork": True} if host_network else {}),
+            "containers": [workload, *({"name": name} for name in siblings)],
             "volumes": [dict(volume) for volume in volumes],
             "ephemeralContainers": [dict(entry) for entry in ephemeral],
         },
@@ -166,6 +222,14 @@ def pod_document(
                     "name": container,
                     "containerID": f"containerd://{TARGET_CID}",
                     "ready": ready,
+                    # What the kubelet resolved after the image's own USER, and
+                    # absent on a cluster older than 1.33 - which is why the
+                    # fixture omits the key rather than reporting a null uid.
+                    **(
+                        {"user": {"linux": {"uid": reported_uid}}}
+                        if reported_uid is not None
+                        else {}
+                    ),
                 }
             ],
             "ephemeralContainerStatuses": [dict(s) for s in ephemeral_statuses],
@@ -186,13 +250,24 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
         "yama_scope": 1,
         "seccomp_mode": 2,
         "no_new_privs": False,
-        "apparmor_profile": "cri-containerd.apparmor.d (enforce)",
+        # The name the seat's label was published under before podbench knew
+        # which LSM had written it; kept, so an older launcher still finds it.
+        "apparmor_profile": "system_u:system_r:spc_t:s0",
+        "lsm": "selinux",
+        "lsm_label": "system_u:system_r:spc_t:s0",
+        "lsm_label_target": "system_u:system_r:spc_t:s0",
         "self_uid": 0,
         "target_uid": 1000,
+        # Peers of the two above: __ptrace_may_access() compares the group ids
+        # as well, and a payload with only the uids cannot answer the question
+        # the launcher's id correction asks (#103).
+        "self_gid": 0,
+        "target_gid": 1000,
         "target_pid": 17,
         "node_name": "node02",
         "child_attach_ok": True,
         "target_attach_ok": True,
+        "attach_method": SEIZE_PROBE,
         # All three, because the launcher recomputes the read-only tick from
         # exactly these and a subset is no longer a yes: the healthy default
         # has to be a healthy matrix.
@@ -223,6 +298,11 @@ class FakeCluster:
         ssh_probe_rc: int = 0,
         ssh_probe_err: str = "",
         limit_ranges: Sequence[dict[str, Any]] = (),
+        seat_version: str | None = __version__,
+        top: str | None = None,
+        mutate: Callable[[dict[str, Any]], None] | None = None,
+        allowed_uids: Sequence[int] = (),
+        seat_status: str | None = None,
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -232,6 +312,18 @@ class FakeCluster:
         self.others = [dict(other) for other in others]
         self.psa_denies_ptrace = psa_denies_ptrace
         self.admission_error = admission_error
+        # A mutating admission policy, applied to what a dry run reports back
+        # and never to what is stored: it is the half of admission that issues
+        # no refusal at all, so the launcher has nothing but the response.
+        self.mutate = mutate
+        # A policy that allow-lists runAsUser, which refuses every rung rather
+        # than one: the ladder has no lower rung that fixes a uid.
+        self.allowed_uids = tuple(allowed_uids)
+        # What `kubectl top pod` answers, and `None` for the ordinary cluster
+        # with no metrics-server: the headroom read has to degrade to
+        # "unmeasured" rather than to "fine", so the default here is the
+        # unmeasured one.
+        self.top = top
         self.kubelet_refuses_root = kubelet_refuses_root
         self.kubelet_refuses_root_image = kubelet_refuses_root_image
         self.capreport = capreport if capreport is not None else capreport_payload()
@@ -242,6 +334,16 @@ class FakeCluster:
         self.patch_error = patch_error
         self.ssh_probe_rc = ssh_probe_rc
         self.ssh_probe_err = ssh_probe_err
+        # The seat's own build, which the launcher asks for over the same
+        # exec channel. Defaulted to this launcher's so the common case in
+        # every other test is two halves that agree; `None` is the image too
+        # old to have a root `--version` at all.
+        self.seat_version = seat_version
+        # What `cat /proc/self/status` answers. Derived from the landed spec by
+        # default (`_seat_status`), so the fake says what the kernel would; set
+        # this to make the two disagree, which is the whole of issue #94 and
+        # cannot be expressed by a securityContext.
+        self.seat_status = seat_status
         self.limit_ranges = [dict(entry) for entry in limit_ranges]
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
@@ -294,6 +396,10 @@ class FakeCluster:
             return _ok("demo\n")
         if rest[:2] == ["get", "pods"]:
             return _ok(json.dumps({"items": [self.pod, *self.others]}))
+        if rest[:2] == ["top", "pod"]:
+            if self.top is None:
+                return _fail("error: Metrics API not available", returncode=1)
+            return _ok(self.top)
         if rest[:2] == ["get", "limitranges"]:
             return _ok(json.dumps({"items": list(self.limit_ranges)}))
         if rest[:2] == ["get", "pod"]:
@@ -323,7 +429,10 @@ class FakeCluster:
                 return _ok(f"pod/{rest[2]}\n")
             return _ok(json.dumps(found))
         if rest[:2] == ["replace", "--raw"]:
-            return self._add_ephemeral(stdin)
+            # `?dryRun=All` is the whole of the difference between a rehearsal
+            # and a name spent, so the fake keeps it: a dry run runs admission
+            # and stores nothing, which is the property the launcher relies on.
+            return self._add_ephemeral(stdin, dry_run=rest[2].endswith("?dryRun=All"))
         if rest[:1] == ["exec"]:
             return self._exec(rest, stdin)
         if rest[:1] == ["patch"]:
@@ -351,7 +460,7 @@ class FakeCluster:
             list[dict[str, Any]], self.pod["status"]["ephemeralContainerStatuses"]
         )
 
-    def _add_ephemeral(self, stdin: str | None) -> CommandResult:
+    def _add_ephemeral(self, stdin: str | None, *, dry_run: bool) -> CommandResult:
         assert stdin is not None, "the subresource PUT must carry a body"
         body = cast(dict[str, Any], json.loads(stdin))
         submitted = cast(list[dict[str, Any]], body["spec"]["ephemeralContainers"])
@@ -359,7 +468,12 @@ class FakeCluster:
         new = [entry for entry in submitted if entry["name"] not in known]
         assert len(new) == 1, f"expected exactly one new container, got {new}"
         spec = new[0]
-        self.added.append(spec)
+        # One entry per rung *attempt*, not per API call: a rung is now
+        # rehearsed by a dry run and then created, with the same body both
+        # times, and what these tests read `added` for is which securityContexts
+        # podbench authored.
+        if not self.added or self.added[-1] != spec:
+            self.added.append(spec)
 
         security = cast(dict[str, Any], spec.get("securityContext", {}))
         added_caps = cast(
@@ -370,6 +484,22 @@ class FakeCluster:
             return _fail(PSA_REFUSAL, returncode=1)
         if self.admission_error is not None and "SYS_PTRACE" in added_caps:
             return _fail(self.admission_error, returncode=1)
+        if self.allowed_uids and security.get("runAsUser") not in self.allowed_uids:
+            return _fail(UID_ALLOW_LIST_REFUSAL, returncode=1)
+
+        if dry_run:
+            # What admission would store, which is the only place a *mutating*
+            # policy shows itself: it refuses nothing, so the response body is
+            # the entire signal. Nothing is kept - a dry run that burnt a name
+            # would be worse than no dry run at all.
+            preview = copy.deepcopy(body)
+            containers = cast(
+                list[dict[str, Any]], preview["spec"]["ephemeralContainers"]
+            )
+            if self.mutate is not None:
+                for container in containers:
+                    self.mutate(container)
+            return _ok(json.dumps(preview))
 
         self._ephemeral_specs().append(spec)
         # The kubelet's two asynchronous refusals: a root container under the
@@ -401,8 +531,38 @@ class FakeCluster:
             )
         return _ok("")
 
+    def _seat_status(self, container: str | None) -> str:
+        """``/proc/self/status`` as the kernel would write it for that seat.
+
+        Built from the securityContext the seat actually landed with, and with
+        report §3.10 built in: capabilities reach ``CapEff`` only at uid 0, so a
+        spec that added ``SYS_PTRACE`` beside a non-zero ``runAsUser`` answers
+        an effective mask of zero here exactly as the kernel does. The uid
+        defaults to 0 for a seat that pinned none, because podbench's image
+        declares no ``USER``.
+        """
+        if self.seat_status is not None:
+            return self.seat_status
+        empty: dict[str, Any] = {}
+        spec = next(
+            (entry for entry in self._ephemeral_specs() if entry["name"] == container),
+            empty,
+        )
+        security = cast(dict[str, Any], spec.get("securityContext", {}))
+        uid = cast(int, security.get("runAsUser", 0))
+        gid = cast(int, security.get("runAsGroup", 0))
+        added = cast(
+            list[str],
+            cast(dict[str, Any], security.get("capabilities", {})).get("add", []),
+        )
+        effective = 1 << 19 if uid == 0 and "SYS_PTRACE" in added else 0
+        return status_text(uid, gid, effective)
+
     def _exec(self, rest: list[str], stdin: str | None = None) -> CommandResult:
         command = rest[rest.index("--") + 1 :]
+        if command == ["cat", "/proc/self/status"]:
+            container = rest[rest.index("-c") + 1] if "-c" in rest else None
+            return _ok(self._seat_status(container))
         # Matched as the two-token verb, not as a bare `debug-config`: the
         # image has no per-subcommand aliases on PATH, so a launcher that sent
         # one would exec nothing in a real seat and must miss here too.
@@ -421,6 +581,13 @@ class FakeCluster:
             # 3 is the read script's own "no such file"; anything else means it
             # found one and could not read it, which `--open` refuses to guess.
             return _ok(text) if text is not None else _fail("", returncode=3)
+        if command[:2] == ["podbench", "--version"]:
+            if self.seat_version is None:
+                # click's usage message, which is what an image predating the
+                # root `--version` prints - on stdout, and with exit 2. The
+                # launcher must read that as unknown rather than as a version.
+                return _ok("Usage: podbench [OPTIONS] COMMAND [ARGS]...", returncode=2)
+            return _ok(self.seat_version + "\n")
         # Same two-token rule as `debug-config` above, for the same reason.
         if command[:2] == ["podbench", "capreport"]:
             if self.capreport_output is not None:
@@ -445,6 +612,18 @@ class FakeCluster:
         raise AssertionError(f"unexpected exec: {command}")
 
 
+def status_text(uid: int, gid: int, effective: int = 0) -> str:
+    """The four lines of ``/proc/self/status`` the launcher reads."""
+    return (
+        f"Name:\tcat\n"
+        f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+        f"Gid:\t{gid}\t{gid}\t{gid}\t{gid}\n"
+        f"CapEff:\t{effective:016x}\n"
+        f"CapBnd:\t{effective:016x}\n"
+        f"CapAmb:\t0000000000000000\n"
+    )
+
+
 def _ok(stdout: str, returncode: int = 0) -> CommandResult:
     return CommandResult((), returncode, stdout, "")
 
@@ -463,16 +642,164 @@ def security_contexts(cluster: FakeCluster) -> list[dict[str, Any]]:
     ]
 
 
+def limited_pod(memory: str, *, name: str = "target") -> dict[str, Any]:
+    """A pod whose cgroup has a ceiling, which is what makes headroom a number.
+
+    The default fixture declares no limits at all, so the kubelet leaves the pod
+    cgroup unbounded and there is nothing for a seat to share. Every pod on the
+    beamline C19 was calibrated against does declare one - 19 containers, 19
+    limits - so the tests that read headroom say so explicitly.
+    """
+    pod = pod_document(uid=1000, name=name)
+    containers = cast(list[dict[str, Any]], pod["spec"]["containers"])
+    containers[0]["resources"] = {"limits": {"memory": memory}}
+    return pod
+
+
 def running_status(name: str) -> dict[str, Any]:
     return {"name": name, "state": {"running": {"startedAt": "2026-08-15T09:00:00Z"}}}
+
+
+# -- which container the seat entered ---------------------------------------
+
+
+def test_the_first_container_wins_and_a_named_one_has_to_exist() -> None:
+    pod = pod_document(container="ca-gateway", siblings=["pva-gateway"])
+
+    assert container_names(pod) == ["ca-gateway", "pva-gateway"]
+    assert target_container_name(pod) == "ca-gateway"
+    assert target_container_name(pod, "pva-gateway") == "pva-gateway"
+    # Only a *requested* name can be wrong: the default is whatever the spec
+    # puts first, which is the rule `kubectl exec` follows.
+    with pytest.raises(LauncherError, match="not in pod"):
+        target_container_name(pod, "gateway")
+    with pytest.raises(LauncherError, match="no containers"):
+        target_container_name({"spec": {"containers": []}})
+
+
+def test_a_three_container_pod_names_every_one_it_did_not_enter() -> None:
+    """``p47-proxy``, where the default target is one container of three.
+
+    The flag is spelled out per sibling rather than described, because a reader
+    who has to work out the invocation from a name is the reader who does not.
+    """
+    pod = pod_document(container="panda80", siblings=["panda8080", "pmac1025"])
+
+    assert other_containers(pod, "panda80") == ("panda8080", "pmac1025")
+    assert target_row("panda80", other_containers(pod, "panda80")) == [
+        "target      panda80; this pod also has panda8080 and pmac1025.",
+        "            reach one with `--target panda8080` or `--target pmac1025`",
+    ]
+
+
+@pytest.mark.parametrize("columns", ["60", "80", "100", "120"])
+def test_the_target_flag_is_never_parted_from_its_argument(
+    columns: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The C15 defect, at the four widths the field round was read at.
+
+    On `p47-epics-gateways-0` at 80 columns the row put ``--target`` on one line
+    and `p47-epics-gateways-pva-gateway` on the next; at 100 it broke
+    `p47-proxy`'s `panda8080` off the same way. Either way the offer stops being
+    pasteable, which is the only reason it is printed.
+    """
+    monkeypatch.setenv("COLUMNS", columns)
+    for workload, siblings in (
+        ("p47-epics-gateways-ca-gateway", ("p47-epics-gateways-pva-gateway",)),
+        ("panda80", ("panda8080", "pmac1025")),
+    ):
+        lines = target_row(workload, siblings)
+        offer = lines[-1]
+        for name in siblings:
+            assert f"`--target {name}`" in offer
+        # And the prose above it still wraps to this terminal, so the row is
+        # not simply one long line that happens to keep the flag together.
+        assert all(len(line) <= max(int(columns) - 8, 48) for line in lines[:-1])
+
+
+def test_a_single_container_pod_gains_no_line_at_all() -> None:
+    """The common case, and the reason this is a value and not a warning.
+
+    Twelve of the fifteen pods on the beamline have one container; a sentence
+    about the default on each of them is a report growing a line to say nothing.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    text = format_session(attach(talking_to(cluster), "target"))
+
+    assert "target      app" in text
+    assert "this pod also has" not in text
+
+
+def test_the_report_names_the_sibling_and_the_flag_that_reaches_it() -> None:
+    cluster = FakeCluster(
+        pod_document(uid=1000, container="ca-gateway", siblings=["pva-gateway"])
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert session.workload == "ca-gateway"
+    assert session.siblings == ("pva-gateway",)
+    # Flattened: the row wraps, and the fact is the sentence rather than any
+    # one line of it.
+    # Flattened for the prose half only: the sentence naming the sibling wraps
+    # and the fact is the sentence, not any one line of it.
+    text = format_session(session)
+    assert "target ca-gateway; this pod also has pva-gateway" in " ".join(text.split())
+    # The offer is asserted as a *line*, because the thing under test is that
+    # nothing broke it.
+    assert "            reach it with `--target pva-gateway`" in text.splitlines()
+
+
+def test_the_seat_carries_the_container_it_entered_and_the_pods_others() -> None:
+    """Neither fact is derivable in the seat: it sees namespaces, not the pod.
+
+    Without them ``pids`` can only offer "the pod's processes" over one
+    container's namespace, which is the reading finding 15 is about.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000, container="ca-gateway", siblings=["pva-gateway"])
+    )
+    attach(talking_to(cluster), "target")
+
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["PODBENCH_TARGET"] == "ca-gateway"
+    assert env["PODBENCH_POD_CONTAINERS"] == "ca-gateway,pva-gateway"
+
+
+def test_a_reconnect_reports_the_container_the_seat_is_really_in() -> None:
+    """``--target`` cannot move a seat, so the report must not say it did.
+
+    An ephemeral container's ``targetContainerName`` is fixed for its lifetime.
+    A reconnect that was handed another name is still in the first container,
+    and the siblings named beside it have to be that container's.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="ca-gateway",
+            siblings=["pva-gateway"],
+            ephemeral=[{"name": "podbench-1", "targetContainerName": "pva-gateway"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target", target="ca-gateway")
+
+    assert session.reused
+    assert session.workload == "pva-gateway"
+    assert session.siblings == ("ca-gateway",)
 
 
 # -- the ladder -------------------------------------------------------------
 
 
 def test_full_rung_lands_when_the_namespace_allows_it() -> None:
+    # Asked for, because it is no longer where the walk starts: a target at a
+    # known non-root uid has its own rung tried first. `--max-rung full` is how
+    # somebody who needs the capability - a node with Yama ptrace_scope >= 1
+    # exempts nothing else - says so.
     cluster = FakeCluster(pod_document(uid=1000))
-    session = attach(talking_to(cluster), "pod/target", public_key=CLIENT_KEY)
+    session = attach(
+        talking_to(cluster), "pod/target", public_key=CLIENT_KEY, max_rung=Rung.FULL
+    )
 
     assert session.rung is Rung.FULL
     assert session.seat == ContainerRef(PodRef("demo", "target"), "podbench-1")
@@ -488,11 +815,28 @@ def test_full_rung_lands_when_the_namespace_allows_it() -> None:
     assert env["PODBENCH_SSH_PUBKEY"] == CLIENT_KEY
     assert env["PODBENCH_NODE_NAME"] == "node02"
     assert "HOME" not in env
+    # Written both ways round, always. Nothing inside a container can work out
+    # whether 127.0.0.1 is the pod's loopback or the node's, and a seat that
+    # simply finds the variable missing has to keep reading that as "an older
+    # launcher landed me" rather than as "no" (issue #87).
+    assert env["PODBENCH_HOST_NETWORK"] == "false"
+
+
+def test_a_host_network_pod_says_so_in_the_seats_environment() -> None:
+    """The six hostNetwork IOCs on one beamline node are the case: there,
+    127.0.0.1 in the seat is the *node's* loopback, so a port found on it is
+    not evidence of anything in this pod and a debugpy server started on it is
+    reachable by every other pod on the node."""
+    cluster = FakeCluster(pod_document(uid=1000, host_network=True))
+    attach(talking_to(cluster), "pod/target", public_key=CLIENT_KEY)
+
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["PODBENCH_HOST_NETWORK"] == "true"
 
 
 def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None:
     cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
-    session = attach(talking_to(cluster), "target")
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
     assert session.rung is Rung.DEGRADED
     # A synchronous refusal means the container was never created, so the name
@@ -523,7 +867,7 @@ def test_the_seat_imposes_no_seccomp_profile_its_target_does_not_have() -> None:
     cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
     attach(talking_to(cluster), "target")
 
-    assert "seccompProfile" not in security_contexts(cluster)[1]
+    assert "seccompProfile" not in security_contexts(cluster)[0]
 
 
 def test_the_seat_mirrors_a_seccomp_profile_its_target_does_have() -> None:
@@ -539,12 +883,14 @@ def test_the_seat_mirrors_a_seccomp_profile_its_target_does_have() -> None:
     )
     attach(talking_to(cluster), "target")
 
-    assert security_contexts(cluster)[1]["seccompProfile"] == profile
+    assert security_contexts(cluster)[0]["seccompProfile"] == profile
 
 
 def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
     cluster = FakeCluster(pod_document(uid=1000), kubelet_refuses_root=True)
-    session = attach(talking_to(cluster), "target", poll_interval=0.0)
+    session = attach(
+        talking_to(cluster), "target", poll_interval=0.0, max_rung=Rung.FULL
+    )
 
     assert session.rung is Rung.DEGRADED
     # The rejected container exists and is unrestartable, so its name is gone.
@@ -597,12 +943,54 @@ def test_an_unknown_target_uid_skips_the_degraded_rung_rather_than_guessing() ->
     assert plan[Rung.SEAT] is None
 
 
+def test_a_root_target_the_spec_does_not_pin_is_not_offered_the_flag() -> None:
+    """argus (hgv27681, 2026-08-20): no pod in the namespace states runAsUser.
+
+    The spec saying nothing is not the same as the uid being unknown - the
+    image's USER decides it and the node publishes the answer. On all eight pods
+    there the answer was 0, and this line was advising `--target-uid` four lines
+    above a capability report that had read the target's uid as 0, for a rung
+    the same sentence says uid 0 cannot express. Running it confirmed it:
+    `--target-uid 0 --new` prints the refusal and spends a container name.
+    """
+    plan = dict(plan_ladder(pod_document(reported_uid=0), "app"))
+
+    degraded = plan[Rung.DEGRADED]
+    assert degraded is not None
+    assert "--target-uid" not in degraded
+    assert "runAsNonRoot: true cannot express" in degraded
+
+
+def test_a_non_root_target_the_spec_does_not_pin_is_offered_the_uid() -> None:
+    """And where the flag *can* change the outcome it carries the number, so the
+    re-run is a paste rather than a hunt through /proc."""
+    plan = dict(plan_ladder(pod_document(reported_uid=37887), "app"))
+
+    degraded = plan[Rung.DEGRADED]
+    assert degraded is not None
+    assert "--target-uid 37887" in degraded
+
+
+def test_a_uid_no_source_reports_still_asks_for_the_flag() -> None:
+    """The genuinely unknown case, which is a cluster older than 1.33 as often
+    as it is anything about the pod. The advice stands there - the capability
+    report reads the uid from /proc, and the flag is how it gets used."""
+    plan = dict(plan_ladder(pod_document(), "app"))
+
+    degraded = plan[Rung.DEGRADED]
+    assert degraded is not None
+    assert "neither the pod spec nor the node" in degraded
+    assert "--target-uid" in degraded
+
+
 def test_target_uid_override_re_enables_the_degraded_rung() -> None:
     cluster = FakeCluster(pod_document(), psa_denies_ptrace=True)
     session = attach(talking_to(cluster), "target", target_uid=1000)
 
     assert session.rung is Rung.DEGRADED
-    assert security_contexts(cluster)[1]["runAsUser"] == 1000
+    # And is where the walk starts: a uid the launcher was handed is a uid the
+    # degraded rung can match, so nothing is spent on the rung above it.
+    assert security_contexts(cluster)[0]["runAsUser"] == 1000
 
 
 def test_an_exhausted_ladder_raises_with_every_reason() -> None:
@@ -806,6 +1194,72 @@ def test_attach_reconnects_to_a_running_container() -> None:
     assert cluster.added == [], "reconnecting must not append a container"
 
 
+def test_a_reconnect_reports_the_capability_admission_took() -> None:
+    """Reconnecting is the common case, and it said nothing about the strip.
+
+    Both admission warnings were produced inside the ladder walk, which only the
+    *first* attach runs. Somebody who attaches on Monday and reconnects all week
+    was never told the seat had lost SYS_PTRACE - and the evidence was in the
+    pod document the reconnect had already fetched: a seat at uid 0 with an
+    empty capabilities.add is a full rung admission stripped, since no rung
+    below full ever writes runAsUser: 0.
+    """
+    cluster = stripped_root_seat()
+    session = attach(talking_to(cluster), "target")
+
+    assert session.reused
+    assert cluster.added == [], "a reconnect must not rehearse a new container"
+    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
+
+
+def test_a_reconnect_reports_the_capabilities_admission_added() -> None:
+    """The other half of the same pass: thirteen capabilities beside a
+    `drop: [ALL]` that asked for none of them (DLS, 2026-08-19). podbench adds
+    nothing but SYS_PTRACE and only on the full rung, so anything else in a
+    landed seat's capabilities.add came from a policy."""
+    seat = {
+        "name": "podbench-1",
+        "securityContext": {
+            "runAsUser": 1000,
+            "capabilities": {"drop": ["ALL"], "add": ["CHOWN", "SETGID"]},
+        },
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[seat],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target")
+
+    rewrite = [
+        warning for warning in session.warnings if "admission rewrote" in warning
+    ]
+    assert len(rewrite) == 1
+    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+
+
+def test_a_reconnect_to_an_unmutated_seat_says_nothing_about_admission() -> None:
+    """The scalars are not reconstructed, so nothing is inferred from their
+    absence: a seat landed by a podbench that stated fewer fields than this one
+    must not have the difference reported as a policy's work."""
+    seat = {
+        "name": "podbench-1",
+        "securityContext": {"runAsUser": 0, "capabilities": {"add": ["SYS_PTRACE"]}},
+    }
+    cluster = FakeCluster(
+        pod_document(
+            uid=0,
+            ephemeral=[seat],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert not any("admission" in warning for warning in session.warnings)
+
+
 def test_force_new_appends_the_next_name() -> None:
     existing = {
         "name": "podbench-1",
@@ -946,7 +1400,7 @@ def test_a_volume_the_application_does_not_mount_needs_an_explicit_path() -> Non
         attach(talking_to(cluster), "target", mounts=["myapp-venv"])
 
     session = attach(talking_to(cluster), "target", mounts=["myapp-venv:/opt/venv"])
-    assert session.rung is Rung.FULL
+    assert session.rung is Rung.DEGRADED
     assert cluster.added[0]["volumeMounts"] == [
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
     ]
@@ -1105,7 +1559,7 @@ def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
     assert "volumeMounts" not in cluster.added[0]
     assert not session.identity_mounted
     assert not session.identity_declared
-    assert session.rung is Rung.FULL
+    assert session.rung is Rung.DEGRADED
 
 
 def test_no_seat_identity_opts_out(tmp_path: Path) -> None:
@@ -1187,11 +1641,11 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     to the same identity is the seat's own record in
     :data:`podbench.agent.SEAT_NSS_PATH`, which asks nothing of the pod.
 
-    That route needs no flag, so the note names none. ``--seat-gid-root`` is the
-    fallback for an image predating the database and it costs the ptrace gid
-    match (#102), which is a price the *reason* line below states — offering it
-    here, on the line about a volume, would be the second half of the trap issue
-    #102 walked into.
+    That route needs no flag, so the note names none — and in particular it must
+    not name a group. Pinning the seat to gid 0 to win a writable
+    ``/etc/passwd`` costs the ptrace credential match (#102, #103), so offering
+    it here, on the line about a volume, would be the second half of the trap
+    issue #102 walked into.
     """
     cluster = FakeCluster(identity_pod(), login_user=None)
     session = attach(talking_to(cluster), "target")
@@ -1206,11 +1660,11 @@ def test_the_report_says_why_the_declared_identity_volume_is_unused() -> None:
     text = format_session(session)
     assert SEAT_IDENTITY_VOLUME in text
     assert SEAT_NSS_PATH in text
-    # The flag is not in the report at all now. Where it survives is the agent's
-    # own reason - NSS_WAY_OUT, relayed verbatim, and abridged by this fake -
-    # and the ways-out block `main` prints under the missing stanza, which
-    # test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza asserts.
+    # The retired flag is nowhere in the report, and nor is the thing it did:
+    # a reader who cannot get a login will take any offer, so the group-0 route
+    # is not one this verb makes (#103).
     assert "--seat-gid-root" not in text
+    assert "runAsGroup: 0" not in text
 
     # …and a pod without the volume says nothing of the sort.
     plain = attach(talking_to(FakeCluster(pod_document(uid=1000))), "target")
@@ -1380,7 +1834,11 @@ def test_the_report_names_the_mechanism_that_blocked_attach() -> None:
     text = format_session(session)
     assert "ptrace_scope" in text
     assert "node02" in text
-    assert "OOM-kill" in text, "the shared-limits warning is not optional"
+    # And the pod's memory is stated as a measurement rather than as a caution:
+    # this fixture declares no limit, so there is no ceiling for the seat to
+    # share and nothing to warn about (C19, finding 18).
+    assert "memory      no pod memory limit" in text
+    assert "OOM" not in text
 
 
 DIAMOND_READS = {
@@ -1581,6 +2039,55 @@ def test_an_unknown_verdict_is_said_rather_than_flattened() -> None:
     assert any("single-step only" in note for note in report.notes)
 
 
+def test_the_pause_a_probe_cost_is_stated_and_the_flag_that_skips_it_named() -> None:
+    """Both halves of finding 14: the probe stops nothing now, and it says so.
+
+    The complaint was never the stop — it was that a pause happened silently,
+    on pods where a pause is forbidden. A line that appears only when something
+    went wrong cannot be checked beforehand, so this one is unconditional, and
+    it sits under a heading naming the flag that skips the whole block.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    text = format_session(attach(talking_to(cluster), "target"))
+    assert "measured    --no-probe skips this block" in text
+    assert "pause       none - PTRACE_SEIZE does not stop the tracee" in text
+
+
+def test_an_image_older_than_the_seize_reports_an_unmeasured_pause() -> None:
+    """A missing key is "this seat is older than the question", and must not be
+    rendered as an assurance that nothing was stopped."""
+    payload = capreport_payload()
+    del payload["attach_method"]
+    report = capability_report_from_json(payload)
+    assert report.attach_method is None
+    assert describe_pause(report.attach_method, report.target_attach_ok) == (
+        "not measured"
+    )
+
+
+def test_an_image_older_than_the_lsm_question_keeps_its_label() -> None:
+    """#104 renamed the key, and the versioning rule cuts both ways.
+
+    A seat older than the rename sends only ``apparmor_profile``, and its
+    string is still the seat's label - so it is read, not discarded. What is
+    *not* invented is which LSM wrote it: an absent ``lsm`` is ``NONE``, the
+    same "this image never said" silence ``self_gid`` and ``attach_method``
+    use, and it is not grounds for reporting a mismatch.
+    """
+    payload = capreport_payload()
+    for key in ("lsm", "lsm_label", "lsm_label_target"):
+        del payload[key]
+    report = capability_report_from_json(payload)
+    assert report.lsm_label == "system_u:system_r:spc_t:s0"
+    assert report.lsm is Lsm.NONE
+    assert report.lsm_label_target is None
+
+
+def test_an_lsm_this_launcher_has_never_heard_of_is_not_invented() -> None:
+    report = capability_report_from_json(capreport_payload(lsm="tomoyo"))
+    assert report.lsm is Lsm.NONE
+
+
 def test_capability_report_from_json_keeps_an_unreadable_target_uid_none() -> None:
     report = capability_report_from_json(
         capreport_payload(target_uid=None, target_pid=None, yama_scope=None)
@@ -1613,6 +2120,11 @@ def test_attach_writes_an_includeable_stanza_and_a_known_hosts_entry(
             identity(tmp_path),
             "--config-dir",
             str(tmp_path / "cfg"),
+            # The ProxyCommand under test is the root sshd's, which is the full
+            # rung's; a target at a known non-root uid otherwise gets the rung
+            # below and the layout that goes with it.
+            "--max-rung",
+            "full",
         ],
         runner=cluster,
     )
@@ -1660,7 +2172,7 @@ def test_a_degraded_seat_points_at_the_non_root_sshd_layout(
     out = capsys.readouterr().out
     # $HOME is pinned in the container spec precisely so this path is knowable.
     assert "/tmp/podbench-home/.podbench/sshd_config" in out
-    env = {entry["name"]: entry["value"] for entry in cluster.added[1]["env"]}
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
     assert env["HOME"] == "/tmp/podbench-home"
 
 
@@ -1786,15 +2298,16 @@ def test_the_login_name_is_the_one_the_seat_answered_not_the_rung_default(
     assert "User root" in capsys.readouterr().out
 
 
-def test_a_stripped_root_seat_is_not_described_as_running_at_the_targets_uid() -> None:
+def test_a_stripped_root_seat_is_reported_as_what_it_measures() -> None:
     """The rung line's half of #89, which the verdict column's fix left behind.
 
     ``rung_of_spec`` reads a pinned ``runAsUser`` and no added capability as
     :attr:`Rung.DEGRADED`, which is true of a seat authored at that rung *and*
     of a full-rung seat a mutating policy took the capability from. Only the
-    first is at the target's uid — this one is root against a uid-1000 target —
-    so a rung description naming the target's UID tells a reconnecting user
-    their seat is running as somebody it is not.
+    first is at the target's uid — this one is root against a uid-1000 target.
+    The rung line used to weaken its wording to survive that ambiguity ("a
+    pinned UID"); the ambiguity is in the *source*, so the reconnect measures
+    the seat instead and the line names both numbers.
 
     The target is uid 1000 here rather than the root one
     :func:`stripped_root_seat` builds, because against a root target "the
@@ -1810,11 +2323,120 @@ def test_a_stripped_root_seat_is_not_described_as_running_at_the_targets_uid() -
     )
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert session.rung is Rung.SEAT, (
+        "root with no effective capability is not the degraded rung: it reads "
+        "three of the six probe paths where that rung reads all six (3.11)"
+    )
     assert session.uid == 0, "the seat admission left behind is root"
     text = format_session(session)
-    assert "degraded - a pinned UID, all capabilities dropped" in text
+    assert "rung        seat - uid 0, gid 0, CapEff 0000000000000000" in text
     assert "the target's UID" not in text
+    assert "a pinned UID" not in text
+
+
+def test_the_rung_line_is_measured_where_the_spec_says_otherwise() -> None:
+    """The opposite direction, and the one a dry run cannot reach.
+
+    A seat whose spec pins the target's uid and adds nothing reads back as the
+    degraded rung, and this one is running as root with CAP_SYS_PTRACE anyway —
+    a node whose runtime granted more than the stored spec asked for. The spec
+    is not the container in either direction, so the label comes from the only
+    place that can settle it.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        seat_status=status_text(0, 0, 1 << 19),
+        login_user="root",
+    )
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.FULL
+    assert "rung        full - uid 0, gid 0, CapEff 0000000000080000" in format_session(
+        session
+    )
+
+
+def test_an_unreadable_seat_reports_the_rung_as_asked_for_and_says_so() -> None:
+    """``cat`` is universal, but an exec can still be refused.
+
+    Nothing may fail an attach that has landed (report 4.2), so the rung
+    reverts to the walk's own claim — labelled as one, because a rung that is
+    not a measurement is exactly what issue #94 was.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), seat_status="")
+    session = attach(talking_to(cluster), "target")
+
+    assert session.credentials is None
+    assert session.rung is Rung.DEGRADED
+    text = format_session(session)
+    assert "rung        degraded - as asked for; the seat's own" in text
+
+
+def test_no_probe_still_measures_the_rung() -> None:
+    """The cheap question and the expensive one are not the same flag.
+
+    ``--no-probe`` declines to ptrace the target. Reading the seat's own
+    ``/proc/self/status`` attempts nothing against anybody, so it stays — which
+    is what leaves a ``--no-probe`` attach with one measured line rather than
+    with none.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 0}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        login_user="root",
+    )
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert session.report is None
+    assert session.rung is Rung.SEAT
+    text = format_session(session)
+    assert "rung        seat - uid 0, gid 0, CapEff 0000000000000000" in text
+    assert "\nmeasured\n" not in text, "the capability report block still ran"
+
+
+def test_the_ssh_stanza_names_the_login_the_seat_runs_as_not_the_rungs() -> None:
+    """The #94 seat, reached by the verb that only ever sees the spec.
+
+    ``ssh-config`` builds its session from the container's securityContext, and
+    this one pins uid 1000 while the container runs as root — a node's runtime
+    granting more than the stored spec asked for. Both halves of the transport
+    turn on that uid: sshd's config lives in ``/etc/podbench`` for root and
+    under ``$HOME`` for anybody else, and ``podbench`` is a login name NSS
+    cannot resolve at uid 0.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        seat_status=status_text(0, 0),
+        # The seat cannot say either: an image with no account for uid 0 beyond
+        # `root` answers with nothing, which is what leaves the fallback in
+        # charge of the whole transport.
+        login_user=None,
+    )
+    session = Session(
+        seat=ContainerRef(PodRef("demo", "target"), "podbench-1"),
+        workload="app",
+        rung=Rung.DEGRADED,
+        reused=True,
+        uid=1000,
+        credentials=probe_seat_credentials(
+            talking_to(cluster), ContainerRef(PodRef("demo", "target"), "podbench-1")
+        ),
+    )
+
+    assert session.root_seat
+    assert seat_layout(session).run_as_root
+    assert seat_layout(session).config_path.startswith("/etc/podbench")
 
 
 def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
@@ -1853,7 +2475,8 @@ def test_a_seat_with_no_login_identity_gets_a_reason_not_a_stanza(
     assert not (tmp_path / "cfg" / "config.d").exists()
     # Named mechanism, then the way out, then what does work today.
     assert "not writable" in out
-    assert "--seat-gid-root" in out
+    assert "group of 500 or more" in out
+    assert "--seat-gid-root" not in out, "the flag retired with #103"
     # Every remedy offered has to be able to work. A released launcher computes
     # its image tag from its own version, so `--new --pull always` re-pulls the
     # identical tag and lands the identical seat - having burnt a second
@@ -1931,7 +2554,7 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     ladder. A denial is a verdict about one rung, not about the attach.
     """
     cluster = FakeCluster(pod_document(uid=1000), admission_error=KYVERNO_REFUSAL)
-    session = attach(talking_to(cluster), "target")
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
     assert session.rung is Rung.DEGRADED
     # Nothing was stored, so the name the refused rung was submitted under is
@@ -1939,7 +2562,9 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     assert session.seat.container == "podbench-1"
     steps = {step.rung: step for step in session.steps}
     assert not steps[Rung.FULL].admitted
-    assert "an admission webhook refused it" in steps[Rung.FULL].detail
+    # "the dry run", because that is where it was refused now: the rung is
+    # rehearsed before a name is committed to it (report 4.2).
+    assert "an admission webhook refused the dry run" in steps[Rung.FULL].detail
     # The policy's own words, whole: they name the rule and the field, which is
     # the only thing in the message a cluster admin can act on.
     assert "kp-validate-block-privileged-containers-standard" in (
@@ -1947,28 +2572,408 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     )
 
 
+def stored(cluster: FakeCluster) -> list[dict[str, Any]]:
+    """The ephemeral containers the pod actually carries.
+
+    Distinct from ``cluster.added``, which is every spec podbench *authored*: a
+    rung refused or withdrawn at the dry run is authored and never stored, and
+    the difference between the two lists is the container names C2 stops
+    spending.
+    """
+    return cast(list[dict[str, Any]], cluster.pod["spec"]["ephemeralContainers"])
+
+
+def test_a_dry_run_refusal_costs_no_container_name() -> None:
+    """The rehearsal, and the reason for it (report 4.2).
+
+    A synchronous refusal never stored anything either, so what this pins is the
+    mechanism: the refused rung goes through ``?dryRun=All``, and the pod ends
+    the attach carrying exactly the one container that landed.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert any("dryRun=All" in arg for call in cluster.calls for arg in call)
+    assert session.seat.container == "podbench-1"
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+
+
+def test_a_validating_admission_policy_is_not_reported_as_a_webhook() -> None:
+    """Issue #93's other half. The ladder already *acted* on a native policy
+    correctly; the report called it a webhook, which sends a reader looking for
+    a webhook that does not exist."""
+    cluster = FakeCluster(pod_document(uid=1000), admission_error=VAP_REFUSAL)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert session.rung is Rung.DEGRADED
+    detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
+    assert "a ValidatingAdmissionPolicy refused" in detail
+    assert "webhook" not in detail
+
+
+def test_a_stripped_capability_is_seen_before_the_rung_is_spent() -> None:
+    """The mutating half of admission, which refuses nothing (issue #94).
+
+    A policy that strips ``capabilities.add`` leaves the update succeeding and a
+    root seat landing with ``CapEff: 0``, which reads three of the six probe
+    paths where the degraded rung at the target's own uid reads all six (report
+    3.11). Landing it is worse than not landing it, and the dry run is the only
+    place the strip is visible.
+    """
+
+    def strip(container: dict[str, Any]) -> None:
+        security = cast(dict[str, Any], container.get("securityContext", {}))
+        cast(dict[str, Any], security.get("capabilities", {})).pop("add", None)
+
+    cluster = FakeCluster(pod_document(uid=1000), mutate=strip)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert session.rung is Rung.DEGRADED
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+    detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
+    assert "remove SYS_PTRACE" in detail
+    assert "--max-rung degraded" in detail
+
+
+def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
+    """Report 3.11 compares two rungs, and a root target only has one.
+
+    The strip above drops the full rung because the rung below, at the target's
+    own uid, reads more. Against a root target there is no rung below:
+    ``runAsNonRoot: true`` cannot express uid 0, so every lower rung is ruled
+    out before the walk starts. Refusing there leaves nothing admitted at all —
+    which is what the ``dls-ioc`` e2e fixture measured, losing its seat.
+    """
+
+    def strip(container: dict[str, Any]) -> None:
+        security = cast(dict[str, Any], container.get("securityContext", {}))
+        cast(dict[str, Any], security.get("capabilities", {})).pop("add", None)
+
+    cluster = FakeCluster(pod_document(uid=0), mutate=strip)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    # A seat, rather than the "no rung of the capability ladder was admitted"
+    # the refusal produced. One name, and the strip is said out loud.
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+    full = {step.rung: step for step in session.steps}[Rung.FULL]
+    assert full.admitted
+    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
+    assert any("no rung below to prefer" in text for text in session.warnings)
+    # And it does not cite the number report 3.11 measured in the case this
+    # line never covers. §3.11 put a root seat against a *non-root* target, a
+    # uid mismatch; here the walk found no non-root uid to pin, so the uids
+    # agree and the reads are unaffected. On argus (hgv27681) `capreport`
+    # measured 6/6 while this warning claimed three, four lines under a
+    # `supports` block that had already said all six were readable.
+    assert not any("three of the six" in text for text in session.warnings)
+
+
+def test_a_strip_and_a_rewrite_are_both_reported() -> None:
+    """Both DLS clusters do both, in one pass, and only the strip was printed.
+
+    The stripped-capability arm used to return before the rewrite check, so on a
+    policy that removes ``SYS_PTRACE`` *and* hands the seat the thirteen
+    capabilities of its own baseline - which is every attach on p47-beamline and
+    on hgv27681 - the rewrite was dropped on the floor. Two facts, two lines: a
+    warning is one line, and these have two different remedies.
+    """
+
+    def strip_and_add(container: dict[str, Any]) -> None:
+        security = cast(dict[str, Any], container["securityContext"])
+        cast(dict[str, Any], security["capabilities"])["add"] = ["CHOWN", "SETGID"]
+
+    cluster = FakeCluster(pod_document(uid=0), mutate=strip_and_add)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
+    rewrite = [
+        warning for warning in session.warnings if "admission rewrote" in warning
+    ]
+    assert len(rewrite) == 1
+    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+    # And the strip is named once. It has its own warning above; repeating it
+    # inside the rewrite list would be one event answered twice.
+    assert "removed SYS_PTRACE" not in rewrite[0]
+
+
+def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
+    """The expensive one: ``runAsNonRoot: true`` beside uid 0.
+
+    The API server takes it and the kubelet refuses it seconds later, which is
+    the one refusal that burns a container name for the pod's lifetime (report
+    3.18). ``spec.py`` never authors that pair; a mutating policy assembles it,
+    and the dry run reads it back before a name is committed.
+    """
+
+    def add_non_root(container: dict[str, Any]) -> None:
+        cast(dict[str, Any], container["securityContext"])["runAsNonRoot"] = True
+
+    cluster = FakeCluster(pod_document(uid=0), mutate=add_non_root)
+    session = attach(talking_to(cluster), "target", poll_interval=0.0)
+
+    # The seat rung authors that pair itself against a root target, having no
+    # uid it may pin, so it is not read as a rewrite and still lands.
+    assert session.rung is Rung.SEAT
+    assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
+    detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
+    assert "CreateContainerConfigError" in detail
+
+
+def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() -> None:
+    """DLS, 2026-08-19: podbench asks for ``drop: [ALL]`` and adds nothing, and
+    the pod comes back with thirteen capabilities added to it. Harmless to the
+    rung, and still not what was asked for - so it is said once, on the line the
+    rung is reported on, rather than acted on."""
+
+    def add_baseline(container: dict[str, Any]) -> None:
+        capabilities = cast(
+            dict[str, Any],
+            cast(dict[str, Any], container["securityContext"])["capabilities"],
+        )
+        capabilities["add"] = ["CHOWN", "SETGID"]
+
+    cluster = FakeCluster(pod_document(uid=1000), mutate=add_baseline)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    rewrite = [
+        warning for warning in session.warnings if "admission rewrote" in warning
+    ]
+    assert len(rewrite) == 1
+    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+    # The stored spec is not the container, so the warning does not send the
+    # reader to `status` to find out what landed - the rung line above it is
+    # already a measurement, and the capabilities admission added are in
+    # `CapBnd` at this uid rather than in the effective set (report 3.10).
+    assert "read from the seat itself" in rewrite[0]
+    assert session.credentials is not None
+    assert session.credentials.capabilities.effective == 0
+
+
+def test_an_allow_listed_run_as_user_refusal_names_the_uids_and_the_flag() -> None:
+    """The refusal with an answer (DLS, 2026-08-19).
+
+    The seat rung may not invent a uid: this cluster allow-lists the ones a
+    host-mounting pod may run as, so the fix is to pick one, and the report is
+    where the reader finds out which and how.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), allowed_uids=(36096, 37887))
+    with pytest.raises(LauncherError) as raised:
+        attach(talking_to(cluster), "target")
+
+    message = str(raised.value)
+    assert "takes only 36096, 37887" in message
+    assert "--target-uid 36096" in message
+    assert stored(cluster) == []
+
+
+def test_a_target_at_a_known_uid_starts_at_the_rung_that_matches_it() -> None:
+    """Sweep finding 07, and report 3.11 behind it.
+
+    A seat at the target's own uid satisfies ``PTRACE_MODE_ATTACH`` by
+    credential match, which is where all nine of the sweep's symbolised
+    backtraces came from. Trying the capability rung first spends a permanent
+    container name proving something the target already implied.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    assert security_contexts(cluster) == [
+        {
+            "capabilities": {"drop": ["ALL"]},
+            "runAsNonRoot": True,
+            "privileged": False,
+            "allowPrivilegeEscalation": False,
+            "runAsUser": 1000,
+        }
+    ]
+    # Said rather than left out: the full rung is above this one and was never
+    # tried, and the ladder line is where that is explained.
+    full = {step.rung: step for step in session.steps}[Rung.FULL]
+    assert not full.admitted
+    assert "--max-rung full" in full.detail
+
+
+def test_a_root_target_still_starts_at_the_capability_rung() -> None:
+    """There is no degraded rung for uid 0 to fall back to - ``runAsNonRoot:
+    true`` cannot express it - so the capability rung is the only one worth a
+    name, and it is kept."""
+    plan = [rung for rung, _ in plan_ladder(pod_document(uid=0), "app")]
+    assert plan[0] is Rung.FULL
+
+
 def test_a_webhook_that_did_not_answer_is_still_an_error() -> None:
     """ "Unreachable" is not "denied", and retrying lower rungs against a broken
     webhook would turn one honest failure into three."""
     cluster = FakeCluster(pod_document(uid=1000), admission_error=WEBHOOK_UNREACHABLE)
     with pytest.raises(KubectlError, match="failed calling webhook"):
-        attach(talking_to(cluster), "target")
+        attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
 
-def test_seat_gid_root_lands_a_seat_that_can_register_itself() -> None:
-    """Opt-in, and the only difference it makes to the spec is the group."""
+def test_target_gid_pins_the_group_the_manifest_did_not_state() -> None:
+    """``--target-gid`` for the manifest that names a uid and no group.
+
+    Which is the shape that costs the debugger: the seat lands in the debug
+    image's group 0 against a target in its own image's group, and
+    ``__ptrace_may_access()`` compares the group ids as peers of the user ids.
+    The flag is the way to spend one container name instead of two - podbench
+    measures the gid and lands a corrected seat by itself, but only after the
+    first one has landed and been probed.
+    """
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
-    session = attach(talking_to(cluster), "target", seat_gid_root=True)
+    session = attach(talking_to(cluster), "target", target_gid=1000)
 
     assert session.rung is Rung.DEGRADED
+    assert session.gid == 1000
     assert security_contexts(cluster)[0] == {
         "capabilities": {"drop": ["ALL"]},
         "runAsNonRoot": True,
         "privileged": False,
         "allowPrivilegeEscalation": False,
         "runAsUser": 1000,
-        "runAsGroup": 0,
+        "runAsGroup": 1000,
     }
+
+
+MISMATCHED = capreport_payload(
+    verdict="none",
+    exit_code=20,
+    blocker="gid-mismatch",
+    cap_sys_ptrace=False,
+    self_uid=1000,
+    self_gid=0,
+    target_uid=1000,
+    target_gid=1000,
+    target_attach_ok=False,
+    proc_reads={"root": False, "maps": False, "environ": False},
+)
+"""The seat #103 was reported for: the uid mirrors, the group does not.
+
+Measured on p47-blueapi-0 (2026-08-19), whose manifest sets ``runAsUser: 1000``
+and no ``runAsGroup`` while the process runs at gid 1000 out of its image's own
+``ubuntu`` user. The seat lands at 1000:0 and reads nothing."""
+
+
+def test_a_seat_in_the_wrong_group_is_replaced_by_a_corrected_one() -> None:
+    """The whole of #103's remedy, and it costs the second name deliberately.
+
+    The manifest states a uid and no group, so nothing laptop-side knows the
+    target's gid: only ``/proc/<pid>/status`` does, and only a landed seat can
+    read it. The securityContext of an ephemeral container is fixed for its
+    lifetime, so acting on that measurement means a new container - which
+    podbench lands itself, because leaving it to the user means printing a
+    warning nobody reads and a seat that cannot trace.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.seat.container == "podbench-2", "the corrected seat, not the first"
+    assert session.gid == 1000
+    assert [context.get("runAsGroup") for context in security_contexts(cluster)] == [
+        None,
+        1000,
+    ]
+    warning = next(w for w in session.warnings if "corrected seat" in w)
+    assert "podbench-1" in warning, "which name was spent"
+    assert "1000:0" in warning and "1000:1000" in warning
+    assert "--no-correct-ids" in warning, "every remedy names its flag"
+    assert "--target-gid" in warning
+
+
+def test_the_correction_is_made_once_and_never_recurses() -> None:
+    """One extra name, whatever the second seat measures.
+
+    The fake answers every probe with the same mismatch, so a correction that
+    corrected its own correction would spend names until the container list was
+    refused. The recursion carries ``correct_ids=False`` for exactly that.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target")
+
+    assert len(cluster.added) == 2
+    assert session.seat.container == "podbench-2"
+    assert sum("corrected seat" in w for w in session.warnings) == 1
+
+
+def test_a_later_attach_finds_the_corrected_seat_instead_of_landing_another() -> None:
+    """The bound that matters, and it is across invocations rather than within one.
+
+    The first seat is still *running* - an ephemeral container cannot be stopped
+    - so every later attach reconnects to it, measures the same mismatch and
+    wants the same corrected ids. Without :func:`running_seat`'s ``ids`` filter
+    that is one permanent name per attach, for ever.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    attach(talking_to(cluster), "target")
+    assert len(cluster.added) == 2
+
+    again = attach(talking_to(cluster), "target")
+    assert len(cluster.added) == 2, "the corrected seat was found, not landed again"
+    assert again.seat.container == "podbench-2"
+    assert again.reused
+
+
+def test_no_correct_ids_leaves_the_first_seat_alone() -> None:
+    """The opt-out, for the user who would rather keep the name than the group."""
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", correct_ids=False)
+
+    assert len(cluster.added) == 1
+    assert session.seat.container == "podbench-1"
+    assert not any("corrected seat" in w for w in session.warnings)
+    # The reason is still stated - the seat reported the blocker and the report
+    # prints it - so the user is told what they are keeping.
+    assert session.report is not None
+    assert session.report.blocker is Blocker.GID_MISMATCH
+
+
+def test_a_pinned_gid_is_not_overridden_by_the_measurement() -> None:
+    """``--target-gid`` is an instruction, not a hint.
+
+    A launcher that quietly re-authored a seat the user had pinned would be the
+    ``--max-rung`` mistake again: the flag exists for the cluster or the target
+    podbench reads wrongly, so the measurement disagreeing with it is the
+    expected case rather than the surprising one.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", target_gid=0)
+
+    assert len(cluster.added) == 1
+    assert security_contexts(cluster)[0]["runAsGroup"] == 0
+    assert not any("corrected seat" in w for w in session.warnings)
+
+
+def test_a_seat_too_old_to_report_its_gid_is_not_corrected() -> None:
+    """The versioning rule the capreport JSON shape carries.
+
+    ``self_gid`` was added after the shape was published, so an older image
+    sends a payload without it. ``None`` there means "this seat cannot answer",
+    which is not "gid 0" - reading it as 0 would spend a permanent container
+    name on a seat that may well be right already.
+    """
+    old = capreport_payload(self_uid=1000, target_uid=1000)
+    del old["self_gid"]
+    del old["target_gid"]
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=old)
+    session = attach(talking_to(cluster), "target")
+
+    assert len(cluster.added) == 1
+    assert session.report is not None
+    assert session.report.self_gid is None
+    assert "ids         seat 1000:?, target 1000:?" in format_session(session)
+
+
+def test_the_report_prints_both_ids_for_both_sides() -> None:
+    """The line that made #103 invisible for a year.
+
+    It said ``uids  seat 1000, target 1000`` over a seat that could not read a
+    single ptrace-gated path, because the half that differed was not printed.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", correct_ids=False)
+
+    assert "ids         seat 1000:0, target 1000:1000" in format_session(session)
 
 
 def test_the_default_seat_keeps_the_targets_group() -> None:
@@ -1977,7 +2982,15 @@ def test_the_default_seat_keeps_the_targets_group() -> None:
     assert "runAsGroup" not in security_contexts(cluster)[0]
 
 
-def test_reconnecting_cannot_change_the_seats_group_and_says_so() -> None:
+def test_reconnecting_cannot_change_the_seats_group_so_it_is_not_reused() -> None:
+    """An ephemeral container's group is fixed, so the running seat is refused.
+
+    The precedent is ``--max-rung``: a flag that cannot be honoured by
+    reconnecting must not be honoured by pretending. Here the currency is the
+    same and the reason is the kernel's - a seat pinned to another group can log
+    in and cannot trace - so the warning names the seat, both id pairs, and what
+    the new container costs.
+    """
     existing = {
         "name": "podbench-1",
         "securityContext": {"runAsUser": 1000},
@@ -1989,9 +3002,12 @@ def test_reconnecting_cannot_change_the_seats_group_and_says_so() -> None:
             ephemeral_statuses=[running_status("podbench-1")],
         )
     )
-    session = attach(talking_to(cluster), "target", seat_gid_root=True)
-    assert session.reused
-    assert any("--seat-gid-root" in warning for warning in session.warnings)
+    session = attach(talking_to(cluster), "target", target_gid=1000)
+    assert not session.reused
+    warning = next(w for w in session.warnings if "podbench-1 is running" in w)
+    assert "1000:?" in warning, "what the running seat is pinned to"
+    assert "1000:1000" in warning, "and what was asked for"
+    assert session.gid == 1000
 
 
 def test_ssh_config_without_a_session_says_so(
@@ -2031,7 +3047,9 @@ def test_open_configures_the_seats_home_and_opens_that(
     a seat that cannot be restarted."""
     cluster = FakeCluster(pod_document(uid=1000))
     code = main(
-        attach_argv(tmp_path, "--open"),
+        # `/root` is the full rung's home, and that rung is now asked for
+        # rather than assumed: the target's uid implies the one below it.
+        attach_argv(tmp_path, "--open", "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -2266,7 +3284,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
     cluster = FakeCluster(pod_document(uid=1000))
     cluster.unwritable.add("/root/.vscode/settings.json")
     code = main(
-        attach_argv(tmp_path, "--open"),
+        attach_argv(tmp_path, "--open", "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
@@ -2376,18 +3394,35 @@ def test_a_side_loaded_image_is_not_asked_for_from_a_registry() -> None:
     assert cluster.added[0]["imagePullPolicy"] == "IfNotPresent"
 
 
-def test_a_moving_tag_is_named_in_the_report_rather_than_guessed_about() -> None:
-    """No symptom is the problem: the seat starts, and is simply older."""
+def test_the_seat_is_asked_its_version_rather_than_guessed_about() -> None:
+    """No symptom is the problem: the seat starts, and is simply older.
+
+    A moving tag used to be the only signal, and it is a guess in both
+    directions — it cannot confirm a skew and cannot rule one out. The seat is
+    on the other end of an open exec channel, so it is asked, and where it
+    answers the guess is not printed beside the answer.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     session = attach(talking_to(cluster), "target", image="ghcr.io/x/podbench:main")
 
+    assert session.seat_version == __version__
+    assert not any("a tag that moves" in note for note in session.warnings)
+    assert VERSION_SKEW_WARNING not in session.warnings
+
+
+def test_a_seat_that_will_not_say_falls_back_to_the_tag_guess() -> None:
+    """The guess survives for exactly the case that has no measurement."""
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
+    session = attach(talking_to(cluster), "target", image="ghcr.io/x/podbench:main")
+
+    assert session.seat_version is None
     assert any("a tag that moves" in note for note in session.warnings)
     assert any("--pull always" in note for note in session.warnings)
 
 
 def test_asking_for_always_says_nothing_about_staleness() -> None:
     """The warning is about the policy that cannot notice, not about the tag."""
-    cluster = FakeCluster(pod_document(uid=1000))
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
     session = attach(
         talking_to(cluster),
         "target",
@@ -2397,6 +3432,95 @@ def test_asking_for_always_says_nothing_about_staleness() -> None:
 
     assert cluster.added[0]["imagePullPolicy"] == "Always"
     assert not any("a tag that moves" in note for note in session.warnings)
+
+
+def test_a_matching_seat_version_is_reported_without_a_warning() -> None:
+    """The row is printed either way: agreement is a fact worth reading."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    text = format_session(attach(talking_to(cluster), "target"))
+
+    # Flattened: the row wraps at a narrow terminal, and where the break lands
+    # must not decide whether this holds (`console.wrap` collapses runs).
+    assert f"version {__version__}, the same build as this launcher" in " ".join(
+        text.split()
+    )
+    assert "different build of podbench" not in text
+
+
+def test_a_skewed_seat_version_is_one_warning_carrying_no_numbers() -> None:
+    """Both numbers on the `version` row, the consequence in one warning line.
+
+    The evidence this exists for: a seat from an image tagged 0.4.0b1 reported
+    `0.4.0b2.dev0+g01d9ac8f8.d20260818`, a post-tag build of a dirty tree. The
+    launcher and the seat share the agent's argv and capreport's JSON, so that
+    is a hazard rather than untidiness — and a fix-test cycle that cannot see it
+    burns rounds asking why the fix did not work.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), seat_version="0.0.1b1")
+    session = attach(talking_to(cluster), "target")
+    text = format_session(session)
+
+    assert session.warnings.count(VERSION_SKEW_WARNING) == 1
+    assert f"version 0.0.1b1 in the seat, {__version__} in this launcher" in " ".join(
+        text.split()
+    )
+    # One leader per warning, which is what makes the block a list rather than
+    # an essay: the numbers stay on the row above and are not repeated here.
+    leaders = [line for line in text.splitlines() if line.startswith("WARNING")]
+    assert len(leaders) == len(session.warnings)
+    assert "0.0.1b1" not in VERSION_SKEW_WARNING
+
+
+def test_a_dirty_build_of_our_own_commit_is_not_a_skew() -> None:
+    """The field defect: the warning fired on all eight attaches of the
+    2026-08-19 round, and its own remedy could not clear it.
+
+    setuptools_scm marks a dirty tree with a `.d<date>` component in the local
+    segment, which says when the wheel was built and nothing about what went
+    into it. The seat reported `...+g87be67bc8.d20260819` where this launcher
+    reported `...+g87be67bc8` — one commit, two wheels — and an exact string
+    comparison called that a skew.
+    """
+    seat = f"{__version__}.d20260819" if "+" in __version__ else __version__
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=seat)
+    session = attach(talking_to(cluster), "target")
+
+    assert VERSION_SKEW_WARNING not in session.warnings
+    # The row agrees with the warning block, which is the other half of the
+    # defect: a `version` line calling this a skew is the same false positive.
+    assert "in this launcher" not in " ".join(format_session(session).split())
+
+
+def test_same_build_reads_the_commit_and_not_the_build_date() -> None:
+    """Unit-level, because `__version__` here may be a clean checkout's and
+    then the attach above has no `.d<date>` to strip."""
+    assert same_build("0.4.0b2.dev24+g87be67bc8.d20260819", "0.4.0b2.dev24+g87be67bc8")
+    assert same_build(
+        "0.4.0b2.dev24+g87be67bc8.d20260819", "0.4.0b2.dev24+g87be67bc8.d20260820"
+    )
+    # The case the warning exists for, in both halves of the version.
+    assert not same_build("0.4.0b2.dev24+g87be67bc8", "0.4.0b2.dev25+gdeadbeef1")
+    assert not same_build("0.4.0b2.dev24+g87be67bc8", "0.4.0b1.dev0+g87be67bc8")
+    # No hash on either side leaves the whole string as the only evidence.
+    assert same_build("0.4.0", "0.4.0")
+    assert not same_build("0.4.0", "0.4.1")
+    assert not same_build("0.4.0", "0.4.0b2.dev24+g87be67bc8")
+
+
+def test_a_seat_that_cannot_be_asked_its_version_still_attaches() -> None:
+    """Report 4.2: the seat is already in the pod and cannot be relanded.
+
+    So a diagnostic that did not arrive degrades to unknown. An image predating
+    the root `--version` answers with click's usage text and exit 2, which is
+    neither a version nor a reason to fail an attach that has landed.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
+    session = attach(talking_to(cluster), "target")
+
+    assert session.rung is Rung.DEGRADED
+    assert session.seat_version is None
+    assert VERSION_SKEW_WARNING not in session.warnings
+    assert UNKNOWN_SEAT_VERSION in format_session(session)
 
 
 def test_two_seats_on_one_pod_get_two_aliases_and_two_stanzas() -> None:
@@ -2699,6 +3823,189 @@ def test_an_unreadable_creation_stamp_costs_a_column_not_the_listing() -> None:
 # -- status, list, resize, namespace ----------------------------------------
 
 
+def waiting_status(name: str, reason: str = "ContainerCreating") -> dict[str, Any]:
+    """A seat the node has taken and not yet started."""
+    return {
+        "name": name,
+        "state": {"waiting": {"reason": reason, "message": "pulling the image"}},
+    }
+
+
+def test_a_waiting_reason_with_no_message_is_not_a_dangling_colon() -> None:
+    """`state     PodInitializing:` - a colon introducing nothing.
+
+    The kubelet sends `PodInitializing` and `ContainerCreating` bare; only the
+    error reasons carry prose. Formatting every reason as `reason: message`
+    printed the punctuation for a message that was never there, which reads to
+    a user as one this code dropped on the floor.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            ephemeral=[
+                {"name": "podbench-1", "securityContext": {"runAsUser": 1000}},
+                {"name": "podbench-2", "securityContext": {"runAsUser": 1000}},
+            ],
+            ephemeral_statuses=[
+                {"name": "podbench-1", "state": {"waiting": {"reason": "Pending"}}},
+                {
+                    "name": "podbench-2",
+                    "state": {"waiting": {"reason": "Blank", "message": "   "}},
+                },
+            ],
+        )
+    )
+
+    listed = {seat.name: seat for seat in seats(cluster.pod)}
+
+    assert listed["podbench-1"].detail == "Pending"
+    # Whitespace is not a message either: `console.wrap` would collapse it and
+    # leave the same colon at the end of the line.
+    assert listed["podbench-2"].detail == "Blank"
+
+
+def test_a_waiting_message_is_still_joined_to_its_reason() -> None:
+    """The colon earns its place wherever the kubelet did send prose."""
+    cluster = starting_cluster()
+
+    listed = {seat.name: seat for seat in seats(cluster.pod)}
+
+    assert listed["podbench-1"].detail == "ContainerCreating: pulling the image"
+
+
+class FakeTime:
+    """A clock that moves only when the code under test sleeps.
+
+    The pod is mutated from ``sleep`` too, so a test says "this is what the
+    next poll finds" in the one place the wait can observe a change.
+    """
+
+    def __init__(self, on_sleep: Callable[[], None] | None = None) -> None:
+        self.now = 0.0
+        self.sleeps = 0
+        self._on_sleep = on_sleep
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        self.sleeps += 1
+        if self._on_sleep is not None:
+            self._on_sleep()
+
+
+def starting_cluster(reason: str = "ContainerCreating") -> FakeCluster:
+    return FakeCluster(
+        pod_document(
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[waiting_status("podbench-1", reason)],
+        )
+    )
+
+
+def test_a_plain_status_reads_the_pod_once_and_never_sleeps() -> None:
+    """The default has to cost exactly what it did before the flag existed."""
+    cluster = starting_cluster()
+    clock = FakeTime()
+
+    present = wait_for_seats(
+        talking_to(cluster), "target", timeout=0.0, clock=clock, sleep=clock.sleep
+    )
+
+    assert [seat.phase for seat in present] == ["waiting"]
+    assert clock.sleeps == 0
+
+
+def test_status_can_wait_for_a_seat_that_is_still_starting() -> None:
+    """Finding 17.1: 15 of 15 agents typed `--timeout` at `status` and were
+    refused, having just needed it for `attach` on a cluster whose image pull
+    is slow. Waiting is what it means here."""
+    cluster = starting_cluster()
+
+    def lands() -> None:
+        statuses = cast(dict[str, Any], cluster.pod["status"])
+        statuses["ephemeralContainerStatuses"] = [running_status("podbench-1")]
+
+    clock = FakeTime(on_sleep=lands)
+
+    present = wait_for_seats(
+        talking_to(cluster),
+        "target",
+        timeout=120.0,
+        poll_interval=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert [seat.phase for seat in present] == ["running"]
+    assert clock.sleeps == 1
+
+
+def test_a_seat_that_never_starts_is_reported_rather_than_refused() -> None:
+    """`status` exists to say what is there, so a passed deadline is not an
+    error: `waiting` is the true answer the caller asked for longer to
+    improve on."""
+    cluster = starting_cluster()
+    clock = FakeTime()
+
+    present = wait_for_seats(
+        talking_to(cluster),
+        "target",
+        timeout=3.0,
+        poll_interval=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert [seat.phase for seat in present] == ["waiting"]
+    assert clock.now >= 3.0
+
+
+def test_a_kubelet_refusal_is_not_something_to_wait_for() -> None:
+    """A container the kubelet refused sits in `waiting` for the pod's lifetime
+    (report 3.18), so polling it would spend the whole timeout on a state that
+    has already settled."""
+    cluster = starting_cluster(CREATE_CONTAINER_CONFIG_ERROR)
+    clock = FakeTime()
+
+    present = wait_for_seats(
+        talking_to(cluster), "target", timeout=120.0, clock=clock, sleep=clock.sleep
+    )
+
+    assert [seat.phase for seat in present] == ["waiting"]
+    assert clock.sleeps == 0
+
+
+def test_status_accepts_the_flag_attach_needed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The papercut itself: the same spelling `attach` takes, on the verb
+    reached for next."""
+    cluster = FakeCluster(
+        pod_document(
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+    code = main(
+        [
+            "status",
+            "target",
+            "-n",
+            "demo",
+            "--timeout",
+            "300",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    assert "podbench-1" in capsys.readouterr().out
+
+
 def test_status_lists_every_container_live_or_burnt(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2774,7 +4081,10 @@ def test_status_reports_the_probe_rather_than_the_rung_it_landed_on(
 
     assert "live attach available" in out
     assert "read-only" not in out
-    assert Rung.DEGRADED.description not in out
+    # The per-rung prose this column once borrowed is gone outright: a rung has
+    # no description of its own any more, and `attach` cites the seat's own
+    # /proc/self/status instead (`podbench.model.describe_credentials`).
+    assert "all capabilities dropped" not in out
 
 
 def test_status_says_not_probed_and_claims_nothing_when_it_measured_nothing(
@@ -2845,6 +4155,297 @@ def test_status_says_why_a_running_seat_could_not_be_probed(
 
     assert "not probed - capreport produced no parsable JSON" in out
     assert "live attach" not in out
+
+
+def test_status_reports_each_running_seats_own_build() -> None:
+    """The same measurement `attach` prints, per seat.
+
+    Read from the seat and not from its image reference: an ephemeral
+    container's `image` is what the spec *asked* for, and `IfNotPresent` over a
+    tag that moves serves whatever the node had cached.
+    """
+    cluster = degraded_seat()
+    pod = PodRef("demo", "target")
+    present = seats(cluster.pod)
+
+    assert probe_seat_versions(talking_to(cluster), pod, present) == {
+        "podbench-1": __version__
+    }
+
+
+def test_status_asks_only_the_seats_that_could_answer() -> None:
+    """A container that is not running has no process to ask."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1"}, {"name": "podbench-2"}],
+            ephemeral_statuses=[running_status("podbench-2")],
+        )
+    )
+    pod = PodRef("demo", "target")
+
+    assert probe_seat_versions(talking_to(cluster), pod, seats(cluster.pod)) == {
+        "podbench-2": __version__
+    }
+
+
+def test_status_keeps_a_seat_that_would_not_say_its_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Asked and unanswered is not the same fact as never asked."""
+    cluster = degraded_seat()
+    cluster.seat_version = None
+    out = status_of(cluster, capsys, config=tmp_path / "cfg")
+
+    assert "version unknown - this seat did not answer" in out
+    assert "version not probed" not in out
+
+
+def test_status_says_not_probed_for_a_version_it_did_not_ask_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--no-probe` is for a listing that touches nothing, versions included."""
+    out = status_of(degraded_seat(), capsys, "--no-probe", config=tmp_path / "cfg")
+
+    assert "version not probed" in out
+
+
+def test_a_listing_that_measured_nothing_claims_no_version(tmp_path: Path) -> None:
+    """`list` has no probe at all, and an image tag is not a version."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "image": "ghcr.io/x/podbench:main"}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "version   not probed" in text
+    assert "ghcr.io/x/podbench:main" not in text
+
+
+LONG_POD = "fastcs-p47-ioc-example-01-5d8b9c7f4-xk2wq"
+"""A pod name of the length a Deployment on a real beamline produces.
+
+Long enough that the kubelet's own reference to it does not fit under the
+``state`` label, which is the whole defect: the length is the field's, not a
+number chosen to make a test fail.
+"""
+
+KUBELET_REFUSAL_WITH_POD_REF = (
+    f"{KUBELET_REFUSAL} "
+    f'(pod: "{LONG_POD}_hgv27681(2b1f8a3e-9c4d-4f21-b8e7-1a2c3d4e5f60)", '
+    "container: podbench-1)"
+)
+"""What the kubelet really sends: `format.Pod` appended to the message."""
+
+
+def refused_seat_listing(directory: Path) -> str:
+    """One pod whose first seat the kubelet refused, formatted for `list`."""
+    document = pod_document(
+        name=LONG_POD,
+        uid=1000,
+        ephemeral=[{"name": "podbench-1"}],
+        ephemeral_statuses=[
+            {
+                "name": "podbench-1",
+                "state": {
+                    "waiting": {
+                        "reason": CREATE_CONTAINER_CONFIG_ERROR,
+                        "message": KUBELET_REFUSAL_WITH_POD_REF,
+                    }
+                },
+            }
+        ],
+    )
+    return format_seats(
+        PodRef("hgv27681", LONG_POD), seats(document), directory=directory
+    )
+
+
+def test_a_refused_seats_listing_does_not_run_past_the_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole listing, because a refused seat overflowed it twice.
+
+    `"<pod>_<ns>(<uid>)",` has no space in it, so `console.wrap` breaks
+    nowhere in the `state` row; and the offer below it is deliberately never
+    wrapped, so the prose that used to trail the pod name could not move
+    either. Neither has a width that fixes it - both were fixed by printing
+    less - which is why this asserts against the terminal and not against a
+    number.
+    """
+    monkeypatch.setenv("COLUMNS", "100")
+
+    lines = refused_seat_listing(tmp_path / "cfg").splitlines()
+
+    assert lines
+    assert max(len(line) for line in lines) <= console().width
+
+
+def test_the_offer_under_a_seatless_pod_ends_with_what_to_paste(
+    tmp_path: Path,
+) -> None:
+    """The shape `ssh_connect_line`'s own missing-stanza answers already use.
+
+    This line is never wrapped, because wrapping would break the command on a
+    space, so anything after the command is columns nothing can shorten - and
+    it also has to be selected around before the command can be pasted.
+    """
+    text = refused_seat_listing(tmp_path / "cfg")
+
+    assert text.endswith(
+        f"nothing to ssh to here: podbench attach -n hgv27681 {LONG_POD}"
+    )
+
+
+def test_only_the_kubelets_reference_to_the_pod_is_dropped(tmp_path: Path) -> None:
+    """Elided because the reader has it twice already, not to save columns.
+
+    The listing is headed `namespace/pod` and the row above names the seat, so
+    what the tail adds is a pod UID nobody reading a pod by name can use. What
+    the kubelet actually said about the container has to survive it.
+    """
+    text = refused_seat_listing(tmp_path / "cfg")
+    # Flattened: the message wraps, so a phrase assertion would measure the
+    # wrap and not the elision (see tests/test_doctor.py::flowed).
+    flowed = " ".join(text.split())
+
+    assert CREATE_CONTAINER_CONFIG_ERROR in flowed
+    assert KUBELET_REFUSAL in flowed, "the refusal itself is the reason"
+    assert "2b1f8a3e" not in flowed
+    assert "(pod:" not in flowed
+
+
+def test_a_message_with_ordinary_parentheses_is_left_alone(tmp_path: Path) -> None:
+    """The elision is one kubelet format, not a rule about brackets.
+
+    Relayed text is not ours to edit generally; this is one machine-generated
+    tail whose every field is already on screen.
+    """
+    document = pod_document(
+        uid=1000,
+        ephemeral=[{"name": "podbench-1"}],
+        ephemeral_statuses=[
+            {
+                "name": "podbench-1",
+                "state": {
+                    "waiting": {
+                        "reason": CREATE_CONTAINER_CONFIG_ERROR,
+                        "message": 'secret "ioc-creds" not found (check the pod)',
+                    }
+                },
+            }
+        ],
+    )
+
+    text = format_seats(
+        PodRef("demo", "target"), seats(document), directory=tmp_path / "cfg"
+    )
+
+    assert "(check the pod)" in text
+
+
+def test_a_listing_says_which_container_each_seat_is_in(tmp_path: Path) -> None:
+    """Two seats on one pod can be in different containers, so it is per seat.
+
+    An ephemeral container with no ``targetContainerName`` is in none of them -
+    it runs in the pod's own namespaces - and that is a third answer rather
+    than a synonym for the first container.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="ca-gateway",
+            siblings=["pva-gateway"],
+            ephemeral=[
+                {"name": "podbench-1", "targetContainerName": "pva-gateway"},
+                {"name": "podbench-2"},
+            ],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "target    pva-gateway" in text
+    assert f"target    {NO_TARGET_CONTAINER}" in text
+
+
+def test_a_listing_marks_the_seat_the_gid_correction_replaced(
+    tmp_path: Path,
+) -> None:
+    """Two live seats, and nothing else on the rows says which one to use."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="app",
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000},
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "note      superseded by podbench-2" in text
+    assert "--target-gid" in " ".join(text.split())
+    # Only the earlier one, and the note is not repeated under the seat that
+    # replaced it.
+    assert text.count("superseded by") == 1
+
+
+def test_a_deliberate_second_seat_is_not_called_superseded(tmp_path: Path) -> None:
+    """``--new`` lands a seat pinned exactly as the first one is.
+
+    Nothing replaced anything, so a listing that said otherwise would be
+    inventing a reason to distrust a seat the user asked for.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            container="app",
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+    text = format_seats(
+        PodRef("demo", "target"), seats(cluster.pod), directory=tmp_path
+    )
+
+    assert "superseded" not in text
 
 
 def test_list_finds_pods_carrying_a_seat(
@@ -3079,14 +4680,79 @@ def test_the_resize_warning_keeps_the_quota_caveats_it_has_not_narrowed() -> Non
     assert "ResourceQuota" in note
     assert "partly proven" in note
     assert "ReplicaSet" in note
-    # …and the line an attach that did not resize prints is an offer, not this.
-    assert "partly proven" in RESIZE_WARNING
-    assert "ResourceQuota" not in RESIZE_WARNING
 
 
-def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
+def test_a_refused_resize_says_once_that_it_probably_did_not_matter() -> None:
+    """Detecting the refusal was always right; the alarm around it was not.
+
+    The sweep filed this as "not podbench" - the service account lacked
+    `pods/resize`, podbench printed the API error and carried on - but a reader
+    who is told only that a mutation failed goes looking for the RBAC to make it
+    succeed. Naming what a seat actually costs is what stops that, and it is
+    said on this path only, where somebody just asked for the resize.
+    """
+    cluster = FakeCluster(pod_document(uid=1000), patch_error="pods is forbidden")
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+
+    assert "was refused" in note
+    assert "13-23 MiB" in note, "the measured cost, so the refusal can be sized"
+    assert "2026-08-19" in note, "dated, because it is one beamline at one moment"
+    assert "vscode-server" in note, "the one cost that is still worth acting on"
+
+
+def test_the_clusters_own_words_end_the_refusal_and_are_not_run_into() -> None:
+    """`...namespace "hgv27681" A seat itself measured...` - one seam, invisible.
+
+    Relayed stderr is not ours to reflow and may or may not end in a stop, so
+    anything podbench appends after it reads as more of the API server's
+    message. Nothing follows it now, and what introduces it is ours.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        patch_error='pods "app" is forbidden in namespace "hgv27681"',
+    )
+
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+
+    assert note.endswith(
+        'The API server said: pods "app" is forbidden in namespace "hgv27681"'
+    )
+    # The seat's own cost still precedes it: the reader is told the refusal
+    # probably did not matter before being handed the cluster's wording.
+    assert note.index("13-23 MiB") < note.index("The API server said:")
+
+
+def test_a_claim_explanation_joins_our_sentence_and_not_the_clusters() -> None:
+    """The other seam the refusal used to sit between.
+
+    `explain_claim_refusal` opens in lower case because it continues a sentence;
+    continuing the *cluster's* is what made it unreadable, so it now continues
+    podbench's own.
+    """
+    document = pod_document(uid=1000)
+    document["spec"]["containers"][0]["resources"] = {
+        "claims": [{"name": "bl01c-ea-flip-02"}]
+    }
+    cluster = FakeCluster(
+        document, patch_error="only cpu and memory resources are mutable"
+    )
+
+    note = try_resize(talking_to(cluster), "target", "app", "6Gi")
+
+    assert "existing limits - the target container holds a resource claim" in note
+    assert note.index("bl01c-ea-flip-02") < note.index("The API server said:")
+
+
+def test_an_attach_that_changed_no_limits_never_offers_the_flag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Issue #54, and the measurement that made it safe to close.
+
+    The report used to spend two warnings on memory: an offer of a mode nobody
+    had asked for, and a caution written against an assumption. Ten live seats
+    on DLS p47 (2026-08-19) cost 13-23 MiB against 170-3858 MiB of pod headroom,
+    so both are gone and what is left is a row stating the number.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     code = main(
         [
@@ -3102,10 +4768,136 @@ def test_attach_without_resize_warns_about_the_limit_it_cannot_reserve(
         runner=cluster,
     )
     assert code == 0
-    # The report wraps warnings, so match words rather than phrases.
     out = capsys.readouterr().out
-    assert "OOM-kill" in out, "the limits it cannot reserve are the point"
-    assert "--resize" in out, "and the one flag that buys headroom on a live pod"
+    assert "resize" not in out
+    assert "WARNING" not in out
+    assert "memory      " in out, "the fact stays; only the alarm goes"
+
+
+def test_a_pod_with_room_gets_the_number_and_no_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`bl47p-ea-simdet-03-0`: the *tightest* pod on the beamline, and fine.
+
+    256Mi of limit against 86Mi in use, carrying a seat already. A threshold
+    keyed on the container's limit - which is how the plan worded it - would
+    have flagged p47's three 100Mi socat containers, which sit in the pod with
+    the most room per byte used. Headroom is the number that decides.
+    """
+    cluster = FakeCluster(limited_pod("256Mi"), top="target   1m   86Mi\n")
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "memory      170Mi free of 256Mi (86Mi in use)" in out
+    assert "WARNING" not in out
+
+
+def test_a_pod_with_no_room_left_is_warned_about_with_its_own_numbers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The case the threshold is kept for: a 100Mi pod really using 80.
+
+    No pod on p47 is in this state, which is the point - the warning has to be
+    able to fire, and has to stay silent on every pod that was measured.
+    """
+    cluster = FakeCluster(limited_pod("100Mi"), top="target   1m   80Mi\n")
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "WARNING only 20Mi of memory headroom" in out
+    assert "13-23 MiB" in out, "what a seat costs, so 20Mi can be judged"
+    assert "--resize MEMORY" in out, "the flag that buys headroom in place"
+
+
+def test_an_unreadable_headroom_reads_as_unmeasured_and_warns_about_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No metrics-server is ordinary, and it is not evidence of anything.
+
+    Both halves matter and they have bitten this branch twice already (#89's
+    `/proc` path, C14's address space): a missing measurement must not be
+    reported as a good one, and it must not be turned into a caution either -
+    that would put the always-on memory warning straight back on every cluster
+    without a metrics API.
+    """
+    cluster = FakeCluster(limited_pod("256Mi"))
+    code = main(
+        [
+            "attach",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+        runner=cluster,
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "memory      limit 256Mi; in use not measured (no metrics API here)" in out
+    assert "WARNING" not in out
+
+
+def test_the_metrics_api_is_not_asked_about_a_pod_with_no_ceiling() -> None:
+    """An unbounded pod cgroup has no headroom question, so it costs no call."""
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target")
+
+    assert session.headroom == Headroom(limit=None, used=None)
+    assert not [call for call in cluster.calls if "top" in call]
+
+
+def test_opening_an_editor_is_measured_against_vscode_and_not_against_the_seat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one memory cost that survived the measurement, on the flag that spends it.
+
+    1024Mi of headroom carries a 13-23 MiB seat with room to spare and says
+    nothing about it; vscode-server measured 1215 MiB live with a single
+    extension (2026-08-16), which is the case that still OOMs a pod. So the
+    warning is keyed on `--open` rather than on the attach.
+    """
+    cluster = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
+    code = main(
+        attach_argv(tmp_path, "--open"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "memory 1Gi free of 4Gi (3Gi in use)" in out
+    assert "vscode-server here and it measured 1215Mi" in out
+
+    # …and the same pod, attached without the editor, spends no warning on it.
+    plain = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
+    assert main(attach_argv(tmp_path, "--no-prompt"), runner=plain) == 0
+    assert "vscode-server" not in capsys.readouterr().out
 
 
 def test_current_namespace_falls_back_to_default() -> None:

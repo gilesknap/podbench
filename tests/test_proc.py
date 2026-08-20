@@ -13,7 +13,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from podbench.model import ProcInfo
-from podbench.proc import candidate_note, debug_candidates, read_ppid, scan_processes
+from podbench.proc import (
+    candidate_note,
+    debug_candidates,
+    is_shell,
+    read_ppid,
+    scan_processes,
+    shares_pod_pid_namespace,
+)
+from proc_samples import CID, sample, targets, without_measurements, write_tree
 
 TARGET_CID = "cafe1234cafe1234cafe1234cafe1234"
 
@@ -123,3 +131,156 @@ def test_the_scan_carries_the_parent_through(tmp_path: Path) -> None:
     targets = scan_processes(TARGET_CID, proc=tmp_path).targets
     assert {info.pid: info.ppid for info in targets} == {1: 0, 13: 1}
     assert [info.pid for info in debug_candidates(targets)] == [13, 1]
+
+
+# -- the four pods the ranking was corrected against -------------------------
+#
+# Each of these is a `/proc` capture from the p47 beamline (2026-08-19), not an
+# invented tree: see tests/proc_samples.py. Ranking on depth alone picked the
+# wrong process on three of the four, and each got a different predicate wrong.
+
+
+def test_a_zombie_never_outranks_the_process_that_forked_it() -> None:
+    """blueapi, and the whole of issue #52.
+
+    An unreaped ``multiprocessing`` child sits two levels below pid 1, so depth
+    put it first on every fresh pod. It has no ``mm_struct``, which means
+    ``maps`` opens with no ptrace check and the read matrix scores it 3/6 — a
+    number that reads exactly like a partial LSM denial. ``PTRACE_ATTACH`` to it
+    is EPERM; to pid 1, from the same seat in the same second, it is not.
+    """
+    candidates = debug_candidates(targets("blueapi"))
+    assert [info.pid for info in candidates] == [1, 233, 10, 232, 518]
+    zombie = candidates[-1]
+    assert zombie.pid == 518
+    assert zombie.state == "Z"
+    assert not zombie.alive
+
+
+def test_a_throwaway_helper_does_not_outrank_the_broker() -> None:
+    """rabbitmq: ``beam.smp`` at depth 1, ``inet_gethost`` at depth 3.
+
+    A DNS resolver the VM forks and reaps continuously, with one thread against
+    the broker's 208. Depth cannot tell them apart and thread count does not
+    have to try.
+    """
+    candidates = debug_candidates(targets("rabbitmq"))
+    assert candidates[0].pid == 1
+    assert candidates[0].comm == "beam.smp"
+    assert candidates[0].threads == 208
+    # The two helpers are still offered, just not first: they are live, and a
+    # process nobody wants to debug is not a process nobody may debug.
+    assert [info.comm for info in candidates[1:3]] == ["inet_gethost"] * 2
+
+
+def test_a_worker_this_seat_cannot_ptrace_does_not_outrank_the_master() -> None:
+    """opis: an nginx master at uid 0 and 97 workers at uid 101.
+
+    The seat here is root and *capless*, so the kernel's credential check lets
+    it ptrace the master and none of the workers — while depth prefers a worker,
+    every one of which is one level below the master.
+    """
+    candidates = debug_candidates(targets("opis"))
+    assert candidates[0].pid == 1
+    assert candidates[0].uid == 0
+    assert candidates[0].ptrace_readable
+    workers = [info for info in candidates if info.uid == 101]
+    assert len(workers) > 90
+    assert not any(info.ptrace_readable for info in workers)
+
+
+def test_a_start_script_in_the_command_line_is_not_a_shell() -> None:
+    """simdet: one process, ``comm=stdio-socket``, argv ending in ``start.sh``.
+
+    Only ``argv[0]``'s basename is consulted, so the ``/epics/ioc/start.sh``
+    further along the line does not disqualify the single process this pod has.
+    """
+    only = targets("simdet")
+    assert len(only) == 1
+    assert not is_shell(only[0])
+    assert debug_candidates(only) == only
+
+
+def test_a_seat_that_measured_nothing_falls_back_to_depth() -> None:
+    """An older image reports no state, threads or readability.
+
+    ``None`` there must mean "not measured" and not "denied": demoting every
+    process for a question that was never asked would leave the ranking worse
+    than the depth-only one it replaced.
+    """
+    unmeasured = without_measurements(targets("rabbitmq"))
+    ranked = [info.pid for info in debug_candidates(unmeasured)]
+    # The pre-C8 answer: deepest non-shell first, the entrypoint shell last.
+    assert ranked[0] == 224
+    assert ranked[-1] == 447
+
+
+def test_the_note_separates_the_disqualified_from_the_alternatives() -> None:
+    """ "Choose another" is only advice for a process that could be chosen."""
+    note = candidate_note(debug_candidates(targets("blueapi")), "probing")
+    assert note is not None
+    assert "probing pid 1 (python), the only live process here" not in note
+    assert "Skipped as dead: 518 (python)" in note
+    assert "518" not in note.split("Skipped as dead")[0]
+
+
+def test_the_note_counts_the_workers_it_does_not_name() -> None:
+    """opis names four runners-up and counts the rest.
+
+    Naming 97 identical nginx workers turns a one-line note into a paragraph,
+    and the line is relayed into the attach report where a paragraph is against
+    the house style.
+    """
+    note = candidate_note(debug_candidates(targets("opis")), "probing")
+    assert note is not None
+    assert "the only process here this seat can ptrace-read" in note
+    assert "Not ptrace-readable from this seat: 29 (nginx)" in note
+    assert "more" in note
+    assert len(note.splitlines()) == 1
+
+
+def test_the_scan_reads_state_threads_and_readability(tmp_path: Path) -> None:
+    """The ranking is only as good as the fields it ranks on."""
+    proc = write_tree(tmp_path, sample("blueapi"))
+    listing = scan_processes(CID, proc=proc)
+    by_pid = {info.pid: info for info in listing.targets}
+    assert by_pid[1].state == "S"
+    assert by_pid[1].threads == 195
+    assert by_pid[1].ptrace_readable is True
+    assert by_pid[518].state == "Z"
+    assert by_pid[518].ptrace_readable is False
+    assert [info.pid for info in debug_candidates(listing.targets)][0] == 1
+
+
+# --- which PID namespace this seat landed in --------------------------------
+
+
+def _pid_one(tmp_path: Path, comm: str | None) -> Path:
+    """A ``/proc`` with the given ``comm`` on pid 1, or with none at all."""
+    proc = tmp_path / "proc"
+    (proc / "1").mkdir(parents=True)
+    if comm is not None:
+        (proc / "1" / "comm").write_text(f"{comm}\n")
+    return proc
+
+
+def test_a_pause_process_means_the_pod_shares_its_namespace(tmp_path: Path) -> None:
+    """``shareProcessNamespace: true`` is the only thing that puts it there."""
+    assert shares_pod_pid_namespace(proc=_pid_one(tmp_path, "pause")) is True
+
+
+def test_an_entrypoint_on_pid_one_means_the_targets_own_namespace(
+    tmp_path: Path,
+) -> None:
+    """Finding 17.2, and the case 15 of 15 p47 pods are in.
+
+    Without the flag an ephemeral container joins the target container's
+    namespace through ``targetContainerName``, so pid 1 is the workload's own
+    entrypoint and everything podbench says about the pause process is false.
+    """
+    assert shares_pod_pid_namespace(proc=_pid_one(tmp_path, "ioc")) is False
+
+
+def test_an_unreadable_pid_one_is_neither_answer(tmp_path: Path) -> None:
+    """``None`` is "do not know", and a caller must hedge rather than pick."""
+    assert shares_pod_pid_namespace(proc=_pid_one(tmp_path, None)) is None

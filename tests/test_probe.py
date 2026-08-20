@@ -13,29 +13,41 @@ import ctypes
 import errno
 import json
 import os
+import signal
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from podbench.model import Blocker, Verdict
+from podbench.model import (
+    ATTACH_PROBE,
+    SEIZE_PROBE,
+    Blocker,
+    CapabilityReport,
+    Lsm,
+    Verdict,
+)
 from podbench.probe import (
     PTRACE_ATTACH,
     PTRACE_DETACH,
+    PTRACE_SEIZE,
+    Attacher,
     AttachOutcome,
     CtypesAttacher,
     SkippedAttacher,
     derive_verdict,
     format_report,
-    main,
-    probe,
 )
+from podbench.probe import main as _main
+from podbench.probe import probe as _probe
 from podbench.proc import (
     Attribution,
-    apparmor_profile,
+    Credentials,
     list_processes,
+    lsm_label,
     no_new_privs,
     proc_read_matrix,
+    read_gid,
     read_status_field,
     read_uid,
     scan_processes,
@@ -44,6 +56,7 @@ from podbench.proc import (
     strip_container_scheme,
     yama_scope,
 )
+from proc_samples import CID, sample, write_tree
 
 TARGET_CID = "87d20e2380a1c0ffee0b1e5deadbeef00d15ea5e0000111122223333444455556"
 OTHER_CID = "7206c89b11111111222222223333333344444444555555556666666677777777"
@@ -55,9 +68,64 @@ CAP_WITH_PTRACE = "00000000a80c25fb"
 CAP_WITHOUT_PTRACE = "00000000a80425fb"
 
 
+# A representative SELinux context from a p47-beamline RHEL9 node, and the one
+# the seat and its target both carried on 2026-08-19 - no MCS categories, both
+# sides identical, ptrace permitted. A matching pair is the normal case at DLS.
+SPC_T = "system_u:system_r:spc_t:s0"
+CONTAINER_T = "system_u:system_r:container_t:s0:c34,c721"
+
+
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+
+
+def sysfs_of(proc: Path) -> Path:
+    """The synthetic ``/sys`` built beside a synthetic ``/proc``.
+
+    Which LSM is active is a property of the *node*, so letting it default to
+    the host's ``/sys`` would assert whatever the machine happened to run - and
+    they disagree: the CI runners have AppArmor enabled, the k3s bed has it
+    compiled in and switched off, the beamline nodes run SELinux.
+    """
+    return proc.parent / "sys"
+
+
+def make_sys(root: Path, lsm: Lsm) -> Path:
+    """A ``/sys`` that answers :func:`podbench.proc.lsm_label`'s discriminator.
+
+    Both signals are written the way they were measured: selinuxfs mounted at
+    ``/sys/fs/selinux``, and AppArmor's module parameter reading ``Y`` or ``N``
+    (the k3s bed boots ``apparmor=0`` and reads ``N`` with the file present).
+    """
+    if lsm is Lsm.SELINUX:
+        (root / "fs" / "selinux").mkdir(parents=True, exist_ok=True)
+    enabled = "Y" if lsm is Lsm.APPARMOR else "N"
+    write(root / "module" / "apparmor" / "parameters" / "enabled", enabled + "\n")
+    return root
+
+
+def probe(
+    target_pid: int | None,
+    *,
+    proc: Path,
+    sysfs: Path | None = None,
+    attacher: Attacher | None = None,
+    node_name: str | None = None,
+) -> CapabilityReport:
+    """:func:`podbench.probe.probe`, pinned to the tree's own ``/sys``."""
+    return _probe(
+        target_pid,
+        proc=proc,
+        sysfs=sysfs_of(proc) if sysfs is None else sysfs,
+        attacher=attacher,
+        node_name=node_name,
+    )
+
+
+def main(args: list[str], *, proc: Path, attacher: Attacher | None = None) -> int:
+    """:func:`podbench.probe.main`, pinned the same way."""
+    return _main(args, proc=proc, sysfs=sysfs_of(proc), attacher=attacher)
 
 
 def make_status(
@@ -68,11 +136,17 @@ def make_status(
     seccomp: int,
     nnp: int,
     tracer_pid: int = 0,
+    gid: int | None = None,
 ) -> str:
+    # The gid defaults to the uid because that is the shape of nearly every
+    # workload, and because a fixture whose two ids differed by accident would
+    # make every credential test ambiguous. Where a test means them to differ it
+    # says so - that difference is the whole of #103.
+    group = uid if gid is None else gid
     return (
         "Name:\tpython3\n"
         f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
-        f"Gid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+        f"Gid:\t{group}\t{group}\t{group}\t{group}\n"
         f"TracerPid:\t{tracer_pid}\n"
         "CapPrm:\t0000000000000000\n"
         f"CapEff:\t{capeff}\n"
@@ -93,22 +167,40 @@ def make_proc(
     seccomp: int = 0,
     nnp: int = 0,
     yama: int | None = 1,
-    apparmor: str | None = "cri-containerd.apparmor.d (enforce)",
+    lsm: Lsm = Lsm.NONE,
+    label: str | None = None,
+    target_label: str | None = None,
     target_uid: int = 1000,
     target_reads: bool = True,
     target_tracer_pid: int = 0,
+    self_gid: int | None = None,
+    target_gid: int | None = None,
 ) -> Path:
-    """A synthetic /proc with our own container (pid 42) and a target (pid 1)."""
+    """A synthetic /proc with our own container (pid 42) and a target (pid 1).
+
+    ``lsm`` builds the matching ``/sys`` beside it, and defaults to "neither" -
+    the k3s bed's answer, and the one that keeps a test from asserting the
+    host's. ``target_label`` defaults to ``label``: containers in a pod share a
+    label, so a *mismatch* has to be asked for explicitly.
+    """
     proc = tmp_path / "proc"
+    make_sys(tmp_path / "sys", lsm)
 
     write(
         proc / "self" / "status",
-        make_status(self_uid, capeff=capeff, capbnd=capbnd, seccomp=seccomp, nnp=nnp),
+        make_status(
+            self_uid,
+            capeff=capeff,
+            capbnd=capbnd,
+            seccomp=seccomp,
+            nnp=nnp,
+            gid=self_gid,
+        ),
     )
     write(proc / "self" / "comm", "capreport\n")
     write(proc / "self" / "cgroup", OWN_CGROUP + "\n")
-    if apparmor is not None:
-        write(proc / "self" / "attr" / "current", apparmor + "\n")
+    if label is not None:
+        write(proc / "self" / "attr" / "current", label + "\n")
 
     if yama is not None:
         write(proc / "sys" / "kernel" / "yama" / "ptrace_scope", f"{yama}\n")
@@ -123,13 +215,15 @@ def make_proc(
             seccomp=0,
             nnp=0,
             tracer_pid=target_tracer_pid,
+            gid=target_gid,
         ),
     )
     write(proc / "1" / "comm", "python3\n")
     write(proc / "1" / "cmdline", "python3\x00-u\x00-c\x00app\x00")
     write(proc / "1" / "cgroup", f"0::/../cri-containerd-{TARGET_CID}.scope\n")
-    if apparmor is not None:
-        write(proc / "1" / "attr" / "current", apparmor + "\n")
+    seen_by_target = label if target_label is None else target_label
+    if seen_by_target is not None:
+        write(proc / "1" / "attr" / "current", seen_by_target + "\n")
     if target_reads:
         write(proc / "1" / "maps", "6549010cd000-6549010ce000 r--p /usr/bin/python3\n")
         write(proc / "1" / "environ", "PODBENCH_SECRET_MARKER=s5-environ-canary\x00")
@@ -164,8 +258,10 @@ class FakeAttacher:
         return self._target
 
 
-OK = AttachOutcome(ok=True)
-EPERM = AttachOutcome(ok=False, errno=1, message="Operation not permitted")
+OK = AttachOutcome(ok=True, method=SEIZE_PROBE)
+EPERM = AttachOutcome(
+    ok=False, errno=1, message="Operation not permitted", method=SEIZE_PROBE
+)
 
 
 def attacher(
@@ -184,12 +280,28 @@ def test_read_status_field_and_uid(tmp_path: Path) -> None:
     assert read_status_field("self", "Nonesuch", proc=proc) is None
 
 
+def test_read_gid_is_the_real_gid_and_not_the_uid(tmp_path: Path) -> None:
+    """Both ids, read separately, because the kernel compares them separately.
+
+    ``__ptrace_may_access()`` wants six equalities and not three, so a seat that
+    could only read uids could not say whether the credential check passes -
+    which is how a seat at 1000:0 against a target at 1000:1000 was reported as
+    a match (#103). ``status`` is world-readable, so this works from a seat that
+    can do nothing else to the target: it is where the truth lives when the
+    manifest sets ``runAsUser`` and no ``runAsGroup``.
+    """
+    proc = make_proc(tmp_path, self_uid=1000, self_gid=0, target_uid=1000)
+    assert (read_uid("self", proc=proc), read_gid("self", proc=proc)) == (1000, 0)
+    assert (read_uid(1, proc=proc), read_gid(1, proc=proc)) == (1000, 1000)
+    assert read_gid(1, proc=tmp_path / "empty") is None
+
+
 def test_readers_tolerate_missing_paths(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
     assert read_uid(1, proc=empty) is None
     assert yama_scope(proc=empty) is None
-    assert apparmor_profile("self", proc=empty) is None
+    assert lsm_label("self", proc=empty, sysfs=empty) == (Lsm.NONE, None)
     assert seccomp_mode(proc=empty) is None
     assert no_new_privs(proc=empty) is None
     assert self_capabilities(proc=empty).readable is False
@@ -212,9 +324,80 @@ def test_self_capabilities_bit_19(tmp_path: Path) -> None:
     assert caps.effective_hex == CAP_WITHOUT_PTRACE
 
 
-def test_apparmor_empty_attribute_means_unconfined(tmp_path: Path) -> None:
-    proc = make_proc(tmp_path, apparmor="")
-    assert apparmor_profile("self", proc=proc) == "unconfined"
+def test_credentials_decode_the_seat_measured_at_dls() -> None:
+    """Verbatim shape from ``bl47p-ea-fastcs-01-0``, 2026-08-19.
+
+    The stored spec of that seat carries thirteen capabilities and its process
+    reports none effective, because capabilities beside a non-zero ``runAsUser``
+    reach ``CapBnd`` and stop there (report §3.10). Both halves are here, since
+    it is the *pair* that says the spec is not the container.
+    """
+    status = (
+        "Name:\tcat\n"
+        "Uid:\t37887\t37887\t37887\t37887\n"
+        "Gid:\t37887\t37887\t37887\t37887\n"
+        "CapBnd:\t00000000a80425fb\n"
+        "CapEff:\t0000000000000000\n"
+        "CapAmb:\t0000000000000000\n"
+    )
+    credentials = Credentials.from_status(status)
+
+    assert credentials is not None
+    assert (credentials.uid, credentials.gid) == (37887, 37887)
+    assert credentials.capabilities.effective == 0
+    assert credentials.capabilities.sys_ptrace_effective is False
+    assert credentials.capabilities.effective_hex == "0000000000000000"
+    # Not "no capabilities were granted" - the mask that grants nothing to a
+    # non-root uid is still populated, which is exactly the silent no-op.
+    assert credentials.capabilities.bounding == 0xA80425FB
+
+
+def test_credentials_from_an_exec_that_answered_nothing() -> None:
+    """Empty stdout is a refused exec, not a process with no ids."""
+    assert Credentials.from_status("") is None
+    assert Credentials.from_status("cannot exec: permission denied") is None
+
+
+def test_an_empty_attribute_is_no_label_not_unconfined(tmp_path: Path) -> None:
+    """#104: "unconfined" is a state AppArmor spells itself.
+
+    Synthesising it for an empty slot is what made a node with no LSM at all
+    look like a confined one - and, with `_confined()` reading any other
+    string as confinement, made every SELinux seat look blocked.
+    """
+    proc = make_proc(tmp_path, label="")
+    assert lsm_label("self", proc=proc, sysfs=sysfs_of(proc)) == (Lsm.NONE, None)
+
+
+def test_the_lsm_is_read_from_sysfs_not_the_per_lsm_attributes(
+    tmp_path: Path,
+) -> None:
+    """The discriminator the plan proposed does not work on the target cluster.
+
+    Measured 2026-08-19 in a seat on a p47-beamline RHEL9 node: `attr/current`
+    held the SELinux context while *both* `attr/selinux/current` and
+    `attr/apparmor/current` read empty. So the per-LSM paths are written here
+    exactly as they were measured - empty - and the answer still has to be
+    SELinux.
+    """
+    proc = make_proc(tmp_path, lsm=Lsm.SELINUX, label=SPC_T)
+    write(proc / "self" / "attr" / "selinux" / "current", "")
+    write(proc / "self" / "attr" / "apparmor" / "current", "")
+
+    assert lsm_label("self", proc=proc, sysfs=sysfs_of(proc)) == (Lsm.SELINUX, SPC_T)
+
+
+def test_apparmor_compiled_in_but_switched_off_is_neither(tmp_path: Path) -> None:
+    """The k3s bed's shape: `apparmor=0` on the kernel command line, so the
+    module parameter is present and reads `N`, and there is no selinuxfs."""
+    proc = make_proc(tmp_path, lsm=Lsm.NONE)
+    assert lsm_label("self", proc=proc, sysfs=sysfs_of(proc))[0] is Lsm.NONE
+
+    apparmor = make_proc(tmp_path / "aa", lsm=Lsm.APPARMOR, label="unconfined")
+    assert lsm_label("self", proc=apparmor, sysfs=sysfs_of(apparmor)) == (
+        Lsm.APPARMOR,
+        "unconfined",
+    )
 
 
 def test_proc_read_matrix(tmp_path: Path) -> None:
@@ -445,41 +628,96 @@ def test_yama_scope_three_blocks_own_child(tmp_path: Path) -> None:
     assert report.verdict.value == 20
 
 
-def test_apparmor_blocks_own_child(tmp_path: Path) -> None:
+def test_a_label_alone_does_not_convict_the_scratch_attach(tmp_path: Path) -> None:
+    """#104: a forked child inherits our label, so there is no pair to compare.
+
+    This used to be `Blocker.APPARMOR` on the strength of one string, on a node
+    whose LSM is SELinux. The honest answer is that none of the known
+    mechanisms explains it - with the node's audit log named, since that is
+    where an LSM denial actually lands.
+    """
     report = probe(
         1,
-        proc=make_proc(tmp_path, seccomp=0, yama=1, apparmor="podbench-custom"),
+        proc=make_proc(tmp_path, seccomp=0, yama=1, lsm=Lsm.SELINUX, label=CONTAINER_T),
         attacher=attacher(child=EPERM),
+        node_name="cn01",
     )
-    assert report.blocker is Blocker.APPARMOR
+    assert report.blocker is Blocker.UNKNOWN
+    assert any("ausearch -m avc" in note and "cn01" in note for note in report.notes)
 
 
 def test_unclassified_structural_failure(tmp_path: Path) -> None:
     report = probe(
         1,
-        proc=make_proc(tmp_path, seccomp=0, yama=1, apparmor=""),
+        proc=make_proc(tmp_path, seccomp=0, yama=1),
         attacher=attacher(child=EPERM),
     )
     assert report.blocker is Blocker.UNKNOWN
+    # No LSM here, so no LSM homework: the old tail sent every reader to
+    # AppArmor regardless of whether the node had ever heard of it.
+    prose = " ".join(report.notes)
+    assert "neither SELinux nor AppArmor" in prose
+    assert "ausearch" not in prose
 
 
-def test_denied_despite_capability_is_apparmor(tmp_path: Path) -> None:
-    report = probe(
-        1,
-        proc=make_proc(tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0),
-        attacher=attacher(),
-    )
-    assert report.blocker is Blocker.APPARMOR
+def test_differing_labels_are_the_blocker_matching_ones_are_not(
+    tmp_path: Path,
+) -> None:
+    """The comparison is the whole check. Both halves are measured cases.
 
-
-def test_denied_despite_capability_unconfined_is_unknown(tmp_path: Path) -> None:
-    report = probe(
+    p47-blueapi-0 on 2026-08-19: seat and target both `spc_t:s0`, ptrace
+    permitted - so a matching pair must stay quiet, and calling it confinement
+    would have accused a working seat. A pair that genuinely differs - MCS
+    categories under SELinux, profiles under AppArmor - is denied exactly as
+    the old code claimed a lone label was.
+    """
+    matching = probe(
         1,
         proc=make_proc(
-            tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0, apparmor=""
+            tmp_path / "same",
+            self_uid=0,
+            capeff=CAP_WITH_PTRACE,
+            target_uid=0,
+            lsm=Lsm.SELINUX,
+            label=SPC_T,
         ),
         attacher=attacher(),
     )
+    assert matching.blocker is Blocker.UNKNOWN
+
+    differing = probe(
+        1,
+        proc=make_proc(
+            tmp_path / "differ",
+            self_uid=0,
+            capeff=CAP_WITH_PTRACE,
+            target_uid=0,
+            lsm=Lsm.SELINUX,
+            label=SPC_T,
+            target_label=CONTAINER_T,
+        ),
+        attacher=attacher(),
+        node_name="cn01",
+    )
+    assert differing.blocker is Blocker.LSM_MISMATCH
+    prose = " ".join(differing.notes)
+    assert "SELinux labels differ" in prose
+    assert CONTAINER_T in prose
+    assert "ausearch -m avc" in prose and "cn01" in prose
+
+
+def test_an_unreadable_target_label_is_not_a_mismatch(tmp_path: Path) -> None:
+    """A seat denied PTRACE_MODE_READ cannot read the target's label either.
+
+    Treating "we could not read it" as "it differs" would blame the LSM for
+    every credential failure - which is the shape #104 exists to stop.
+    """
+    proc = make_proc(
+        tmp_path, self_uid=0, capeff=CAP_WITH_PTRACE, target_uid=0, lsm=Lsm.SELINUX
+    )
+    write(proc / "self" / "attr" / "current", SPC_T + "\n")
+    report = probe(1, proc=proc, attacher=attacher())
+    assert report.lsm_label_target is None
     assert report.blocker is Blocker.UNKNOWN
 
 
@@ -510,10 +748,14 @@ def test_an_existing_tracer_outranks_a_uid_mismatch(tmp_path: Path) -> None:
         cap_sys_ptrace=True,
         yama=1,
         seccomp=0,
-        apparmor_self="cri-containerd.apparmor.d (enforce)",
-        apparmor_target="custom",
+        lsm=Lsm.SELINUX,
+        lsm_label=SPC_T,
+        lsm_label_target=CONTAINER_T,
+        node_name="cn01",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         tracer_pid=8123,
         child=OK,
@@ -577,36 +819,110 @@ def test_skipped_probe_with_capability_names_no_blocker(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("seccomp", "yama", "apparmor", "expected"),
+    ("seccomp", "yama", "label", "expected"),
     [
-        (2, 1, "unconfined", Blocker.SECCOMP),
-        (0, 3, "unconfined", Blocker.YAMA_SCOPE),
+        (2, 1, None, Blocker.SECCOMP),
+        (0, 3, None, Blocker.YAMA_SCOPE),
         # Scope 2 is the one Yama setting with no descendant exemption, so a
         # scratch attach can fail on it — and it used to fall past this table
         # to "none of the known mechanisms accounts for it", with the scope
         # printed six lines above in the same report.
-        (0, 2, "unconfined", Blocker.YAMA_SCOPE),
-        (0, 1, "custom", Blocker.APPARMOR),
-        (0, None, "unconfined", Blocker.UNKNOWN),
+        (0, 2, None, Blocker.YAMA_SCOPE),
+        # This row read APPARMOR until #104. A label is not a verdict, and the
+        # child that failed here carries ours, so there is nothing to compare
+        # it with - the table must fall through.
+        (0, 1, CONTAINER_T, Blocker.UNKNOWN),
+        (0, None, None, Blocker.UNKNOWN),
     ],
 )
 def test_structural_classification(
-    seccomp: int, yama: int | None, apparmor: str, expected: Blocker
+    seccomp: int, yama: int | None, label: str | None, expected: Blocker
 ) -> None:
     _, blocker, _ = derive_verdict(
         cap_sys_ptrace=False,
         yama=yama,
         seccomp=seccomp,
-        apparmor_self=apparmor,
-        apparmor_target=apparmor,
+        lsm=Lsm.SELINUX if label else Lsm.NONE,
+        lsm_label=label,
+        lsm_label_target=label,
+        node_name="cn01",
         self_uid=1000,
         target_uid=1000,
+        self_gid=1000,
+        target_gid=1000,
         target_pid=1,
         child=EPERM,
         target_attach=EPERM,
         proc_reads={"maps": True},
     )
     assert blocker is expected
+
+
+def test_a_matching_uid_in_another_group_is_named_as_the_gid(tmp_path: Path) -> None:
+    """#103: the arm between the uid check and Yama, because the kernel puts it there.
+
+    ``__ptrace_may_access()`` compares ``gid``/``egid``/``sgid`` as peers of the
+    three user ids and returns before Yama is consulted, so this seat is denied
+    on the group alone. Before this arm existed it fell through to ``UNKNOWN``,
+    whose text sends the reader off to check AppArmor and user namespaces - past
+    a Yama line printed six rows above, on a node where Yama was not the answer.
+
+    The fixture is p47-blueapi-0 as measured on 2026-08-19: manifest ``runAsUser:
+    1000`` and no ``runAsGroup``, real gid 1000, seat at 1000:0.
+    """
+    report = probe(
+        1,
+        proc=make_proc(
+            tmp_path,
+            self_uid=1000,
+            self_gid=0,
+            target_uid=1000,
+            target_gid=1000,
+            yama=1,
+        ),
+        attacher=attacher(),
+    )
+    assert report.blocker is Blocker.GID_MISMATCH
+    assert report.self_gid == 0
+    assert report.target_gid == 1000
+    prose = " ".join(report.notes)
+    assert "tracer gid=0, target gid=1000" in prose
+    assert "PTRACE_MODE_READ" in prose, "the reads go with it, and they are the loss"
+    # Yama is set in this fixture and is not the answer: naming it would send
+    # the reader to a node sysctl no securityContext change can reach.
+    assert "ptrace_scope" not in prose
+
+
+def test_matching_ids_still_reach_yama(tmp_path: Path) -> None:
+    """The arm above must not swallow the one below it.
+
+    A seat whose uid *and* gid match the target has passed the credential check,
+    so a denial there is Yama's - and that verdict is the one with the
+    ``PR_SET_PTRACER`` way out in it.
+    """
+    report = probe(
+        1,
+        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=1),
+        attacher=attacher(),
+    )
+    assert report.blocker is Blocker.YAMA_SCOPE
+
+
+def test_an_unreadable_target_gid_is_not_reported_as_a_mismatch(
+    tmp_path: Path,
+) -> None:
+    """``None`` is "nobody looked", and it must not be compared against 0.
+
+    Reading it as a gid would name this seat's group as the blocker on a target
+    whose ``status`` could not be read at all - and the correction the launcher
+    makes off the back of the blocker would spend a permanent container name on
+    it.
+    """
+    proc = make_proc(tmp_path, self_uid=1000, self_gid=0, target_uid=1000, yama=0)
+    (proc / "1" / "status").write_text("Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\n")
+    report = probe(1, proc=proc, attacher=attacher())
+    assert report.target_gid is None
+    assert report.blocker is not Blocker.GID_MISMATCH
 
 
 def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
@@ -620,10 +936,14 @@ def test_scope_two_with_the_capability_is_not_blamed_on_yama() -> None:
         cap_sys_ptrace=True,
         yama=2,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=1000,
         target_uid=1000,
+        self_gid=1000,
+        target_gid=1000,
         target_pid=1,
         child=EPERM,
         target_attach=EPERM,
@@ -637,10 +957,14 @@ def test_no_reads_but_our_own_child_attaches_is_launch_only() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=OK,
         target_attach=EPERM,
@@ -658,10 +982,14 @@ def test_no_reads_and_no_ptrace_at_all_is_verdict_none() -> None:
         cap_sys_ptrace=False,
         yama=3,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=EPERM,
         target_attach=EPERM,
@@ -682,10 +1010,14 @@ def test_a_partly_denied_matrix_still_points_at_the_sysroot() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=OK,
         target_attach=EPERM,
@@ -704,10 +1036,14 @@ def test_read_only_does_not_claim_gdb_launch_it_never_measured() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=1000,
         target_uid=1000,
+        self_gid=1000,
+        target_gid=1000,
         target_pid=1,
         child=AttachOutcome.skip("no libc"),
         target_attach=AttachOutcome.skip("no libc"),
@@ -724,10 +1060,14 @@ def test_an_unmeasured_scratch_attach_does_not_claim_launch_only() -> None:
         cap_sys_ptrace=False,
         yama=1,
         seccomp=0,
-        apparmor_self="unconfined",
-        apparmor_target="unconfined",
+        lsm=Lsm.NONE,
+        lsm_label=None,
+        lsm_label_target=None,
+        node_name="nuc2",
         self_uid=0,
         target_uid=1000,
+        self_gid=0,
+        target_gid=1000,
         target_pid=1,
         child=AttachOutcome.skip("no libc"),
         target_attach=AttachOutcome.skip("no libc"),
@@ -747,9 +1087,18 @@ class FakeLibc:
     its own syscall layer instead.
     """
 
-    def __init__(self, *, attach_errno: int = 0, detach_errno: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        seize_errno: int = 0,
+        attach_errno: int = 0,
+        detach_errno: int = 0,
+        stops: bool = False,
+    ) -> None:
         self.requests: list[int] = []
+        self._stops = stops
         self._failures = {
+            PTRACE_SEIZE: seize_errno,
             PTRACE_ATTACH: attach_errno,
             PTRACE_DETACH: detach_errno,
         }
@@ -758,6 +1107,12 @@ class FakeLibc:
         self.requests.append(request)
         failure = self._failures.get(request, 0)
         ctypes.set_errno(failure)
+        if self._stops and not failure and request == PTRACE_ATTACH:
+            # What the kernel does, and what the reap after it is waiting for:
+            # without a stop to collect, `_reap` blocks until the child dies of
+            # something else. Only for tests that pass a pid they really forked
+            # — the rest hand this their own pid on purpose.
+            os.kill(pid, signal.SIGSTOP)
         return -1 if failure else 0
 
 
@@ -765,10 +1120,41 @@ def ctypes_attacher(libc: FakeLibc) -> CtypesAttacher:
     return CtypesAttacher(cast(ctypes.CDLL, libc))
 
 
-def test_a_successful_attach_detaches_and_leaves_no_note() -> None:
+def test_the_live_probe_seizes_and_leaves_nothing_to_undo() -> None:
+    """The measurement the workload does not pay for.
+
+    ``libc.requests`` being empty *in this process* is the whole point rather
+    than an accident of the fake: the seize is issued by a child whose exit is
+    the detach, so nothing here is holding a tracee, there is no stop to reap
+    and no detach to fail.
+    """
     libc = FakeLibc()
     outcome = ctypes_attacher(libc).attach(os.getpid())
     assert outcome.ok
+    assert outcome.method == SEIZE_PROBE
+    assert libc.requests == []
+    assert outcome.notes == ()
+
+
+def test_a_denied_seize_is_not_retried_with_the_stopping_attach() -> None:
+    """Both primitives take ``PTRACE_MODE_ATTACH_REALCREDS``, so a refusal is
+    the same refusal — and retrying it would stop a workload to be told so."""
+    libc = FakeLibc(seize_errno=errno.EPERM)
+    outcome = ctypes_attacher(libc).attach(4242)
+    assert not outcome.ok
+    assert outcome.errno == errno.EPERM
+    assert outcome.method == SEIZE_PROBE
+    assert libc.requests == []
+    assert outcome.notes == ()
+
+
+def test_a_kernel_without_seize_falls_back_to_the_stopping_pair() -> None:
+    """EIO is a kernel older than 3.4 answering a request it has never heard
+    of, and the only answer worth asking the other way."""
+    libc = FakeLibc(seize_errno=errno.EIO)
+    outcome = ctypes_attacher(libc).attach(os.getpid())
+    assert outcome.ok
+    assert outcome.method == ATTACH_PROBE
     assert libc.requests == [PTRACE_ATTACH, PTRACE_DETACH]
     assert outcome.notes == ()
 
@@ -778,8 +1164,10 @@ def test_a_failed_detach_resumes_the_target_rather_than_freezing_it() -> None:
 
     capreport freezing the workload it was asked to describe is worse than any
     verdict it could print, so the detach result is checked and the stop lifted.
+    The seize made this path rare, not unreachable: it is what a pre-3.4 kernel
+    still gets.
     """
-    libc = FakeLibc(detach_errno=errno.ESRCH)
+    libc = FakeLibc(seize_errno=errno.EIO, detach_errno=errno.ESRCH)
     # SIGCONT to our own already-running process is a no-op, so this is safe.
     outcome = ctypes_attacher(libc).attach(os.getpid())
     assert outcome.ok
@@ -796,19 +1184,83 @@ def test_a_failed_detach_that_cannot_be_resumed_says_so(
         raise ProcessLookupError("No such process")
 
     monkeypatch.setattr(os, "kill", refuse)
-    outcome = ctypes_attacher(FakeLibc(detach_errno=errno.ESRCH)).attach(os.getpid())
+    outcome = ctypes_attacher(
+        FakeLibc(seize_errno=errno.EIO, detach_errno=errno.ESRCH)
+    ).attach(os.getpid())
     assert outcome.ok
     assert "SIGCONT failed too" in outcome.notes[0]
 
 
 def test_a_failed_attach_never_detaches() -> None:
     # Nothing was attached, so there is no stop to lift and nothing to say.
-    libc = FakeLibc(attach_errno=errno.EPERM)
+    libc = FakeLibc(seize_errno=errno.EIO, attach_errno=errno.EPERM)
     outcome = ctypes_attacher(libc).attach(4242)
     assert not outcome.ok
     assert outcome.errno == errno.EPERM
+    assert outcome.method == ATTACH_PROBE
     assert libc.requests == [PTRACE_ATTACH]
     assert outcome.notes == ()
+
+
+def _forked(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record every pid this process forks, so a test can check it was reaped."""
+    pids: list[int] = []
+    real_fork = os.fork
+
+    def spy() -> int:
+        pid = real_fork()
+        if pid:
+            pids.append(pid)
+        return pid
+
+    monkeypatch.setattr(os, "fork", spy)
+    return pids
+
+
+def test_the_scratch_attach_stops_its_own_child_and_reaps_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The structural probe keeps the stopping pair, and really forks.
+
+    Its tracee exists to be stopped and is killed a line later, so the pause
+    costs nothing — and it must stay a *descendant* of this process, because
+    Yama ``ptrace_scope=1`` exempts descendants and nothing else.
+    """
+    forked = _forked(monkeypatch)
+    libc = FakeLibc(stops=True)
+    outcome = ctypes_attacher(libc).attach_child()
+    assert outcome.ok
+    assert libc.requests == [PTRACE_ATTACH, PTRACE_DETACH]
+    assert len(forked) == 1
+    with pytest.raises(ChildProcessError):
+        os.waitpid(forked[0], os.WNOHANG)
+
+
+def test_a_refused_kill_still_reaps_the_scratch_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#92: the kill was unguarded, so a raising ``os.kill`` skipped the reap.
+
+    The child then went on calling ``signal.pause()`` holding the seat's
+    ``kubectl exec`` pipes open, and the launcher waited for an EOF that could
+    not come — a hang, from the one call in the probe that had nothing to say.
+    """
+    forked = _forked(monkeypatch)
+    real_kill = os.kill
+
+    def kill_then_complain(pid: int, sig: int) -> None:
+        # Kills for real, then reports what a seccomp filter or an exotic LSM
+        # would: the test is about the raise, not about orphaning a process.
+        # Narrowed to SIGKILL so the fake libc's own SIGSTOP still lands.
+        real_kill(pid, sig)
+        if sig == signal.SIGKILL:
+            raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", kill_then_complain)
+    outcome = ctypes_attacher(FakeLibc(stops=True)).attach_child()
+    assert outcome.ok
+    with pytest.raises(ChildProcessError):
+        os.waitpid(forked[0], os.WNOHANG)
 
 
 def test_an_unresumable_target_is_reported_in_the_notes(tmp_path: Path) -> None:
@@ -837,13 +1289,31 @@ JSON_KEYS = {
     "yama_scope",
     "seccomp_mode",
     "no_new_privs",
+    # The name this string was published under before podbench knew which LSM
+    # it had read. Kept emitting, because the versioning rule cuts both ways:
+    # an older launcher still finds the seat's label where it expects it.
     "apparmor_profile",
+    # ...and the same string under the name that says what it is, beside the
+    # LSM it belongs to and the target's label - the only comparison with any
+    # content in it (#104).
+    "lsm",
+    "lsm_label",
+    "lsm_label_target",
     "self_uid",
     "target_uid",
+    # Peers of the two above, not refinements of them: __ptrace_may_access()
+    # compares the group ids as well, so a payload carrying only the uids
+    # cannot say whether the credential check passes (#103).
+    "self_gid",
+    "target_gid",
     "target_pid",
     "node_name",
     "child_attach_ok",
     "target_attach_ok",
+    # Which primitive the live attach used, because the two cost the workload
+    # different things and a report that cannot say which was paid cannot be
+    # checked before it is run.
+    "attach_method",
     "proc_reads",
     # The corrected boolean, so a shell branching on --json need not know which
     # three of the six reads ptrace gates (issue #51).
@@ -870,6 +1340,8 @@ def test_json_shape_is_stable(tmp_path: Path) -> None:
     assert payload["blocker"] == "yama-scope"
     assert payload["yama_scope"] == 1
     assert payload["node_name"] == "nuc2"
+    assert payload["self_gid"] == 1000
+    assert payload["target_gid"] == 1000
     assert payload["child_attach_ok"] is True
     assert payload["target_attach_ok"] is False
     assert payload["proc_reads"]["root"] is True
@@ -899,6 +1371,80 @@ def test_human_report_names_the_mechanism(tmp_path: Path) -> None:
     assert Blocker.YAMA_SCOPE.explanation.split(":")[0] in text
     assert "scratch attach (own child) OK" in text
     assert "live attach (pid 1)" in text
+
+
+def test_the_report_names_the_primitive_and_states_the_pause(
+    tmp_path: Path,
+) -> None:
+    """Which call was made, and what it cost the workload, on every report.
+
+    Proven against live `p47-blueapi-0` pid 1 (195 threads) from a capless seat
+    on 2026-08-19: `S (sleeping)` before the seize, during it and after.
+    """
+    report = probe(
+        1,
+        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=0),
+        attacher=attacher(target=OK),
+    )
+    text = format_report(report, False)
+    assert "OK via PTRACE_SEIZE" in text
+    assert "workload pause" in text
+    assert "none - PTRACE_SEIZE does not stop the tracee" in text
+    assert json.loads(format_report(report, True))["attach_method"] == SEIZE_PROBE
+
+
+def test_a_fallback_attach_admits_the_pause_it_cost(tmp_path: Path) -> None:
+    """A pre-3.4 kernel gets the stopping primitive, and the report says so
+    rather than repeating the reassurance the seize had earned."""
+    report = probe(
+        1,
+        proc=make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=0),
+        attacher=attacher(target=AttachOutcome(ok=True, method=ATTACH_PROBE)),
+    )
+    text = format_report(report, False)
+    assert "OK via PTRACE_ATTACH" in text
+    assert "brief - PTRACE_ATTACH stopped it until the probe detached" in text
+
+
+def test_the_report_names_the_lsm_that_is_there_and_prints_both_labels(
+    tmp_path: Path,
+) -> None:
+    """#104: the heading said "AppArmor" whatever the node ran.
+
+    All four shapes, because the heading *is* the claim: the pair is printed
+    whether or not it matches, so a reader can check the comparison instead of
+    taking a verdict on trust.
+    """
+
+    def rows(lsm: Lsm, label: str | None, target_label: str | None = None) -> str:
+        proc = make_proc(
+            tmp_path / f"{lsm.value}-{target_label}",
+            self_uid=1000,
+            target_uid=1000,
+            yama=0,
+            lsm=lsm,
+            label=label,
+            target_label=target_label,
+        )
+        return format_report(probe(1, proc=proc, attacher=attacher()), False)
+
+    matching = rows(Lsm.SELINUX, SPC_T)
+    assert f"SELinux                    {SPC_T}" in matching
+    assert f"SELinux                    {SPC_T} (same as tracer)" in matching
+    assert "AppArmor" not in matching
+
+    differing = rows(Lsm.SELINUX, SPC_T, CONTAINER_T)
+    assert f"SELinux                    {CONTAINER_T} (MISMATCH)" in differing
+
+    apparmor = rows(Lsm.APPARMOR, "cri-containerd.apparmor.d (enforce)")
+    assert "AppArmor                   cri-containerd.apparmor.d (enforce)" in apparmor
+    assert "SELinux" not in apparmor
+
+    # The bed's shape, and the one the old report could not express: no LSM row
+    # for the target, because there is no label to compare.
+    neither = rows(Lsm.NONE, None)
+    assert "LSM                        none - neither SELinux nor AppArmor" in neither
+    assert "AppArmor  " not in neither
 
 
 def test_human_report_without_target(tmp_path: Path) -> None:
@@ -947,3 +1493,56 @@ def test_main_refuses_to_guess_the_target(
     assert payload["target_pid"] is None
     assert code == Verdict.LIVE_ATTACH.value
     assert any("PODBENCH_TARGET_CID" in note for note in payload["notes"])
+
+
+# -- the verdict names the pid it is a verdict about -------------------------
+
+
+def test_the_verdict_names_the_pid_and_why_it_was_chosen(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every number in the report is a measurement of one process.
+
+    blueapi's is pid 1, and it says so — with the predicate that beat the
+    zombie, so a reader who disagrees can name the pid they wanted instead.
+    """
+    proc = write_tree(tmp_path / "proc", sample("blueapi"))
+    main(["--json", "--container-id", CID], proc=proc, attacher=attacher())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["target_pid"] == 1
+    assert any("probing pid 1 (python)" in note for note in payload["notes"])
+    assert any("Skipped as dead: 518" in note for note in payload["notes"])
+
+
+def test_a_container_of_zombies_is_not_scored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A zombie's `maps` opens with no ptrace check, so it scores 3/6 and reads
+    like a partial LSM denial (issue #52). The honest answer is to score nothing
+    and say the target is dead, because the denial is not about this seat."""
+    dead = [
+        info
+        for info in sample("blueapi")
+        if info.pid in (518, 525) or not info.is_target
+    ]
+    proc = write_tree(tmp_path / "proc", dead)
+    code = main(["--json", "--container-id", CID], proc=proc, attacher=attacher())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["target_pid"] is None
+    assert payload["proc_reads"] == {}
+    assert any("it is dead" in note for note in payload["notes"])
+    assert code == Verdict.LIVE_ATTACH.value
+
+
+def test_an_unreadable_best_candidate_says_so_beside_its_score(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`cmdline`, `status` and `fd` answer on any pod whatsoever, so a matrix
+    taken at the wrong credentials still scores 3/6. The number is only not
+    flattering if the reason is next to it."""
+    workers = [info for info in sample("opis") if info.uid == 101 or not info.is_target]
+    proc = write_tree(tmp_path / "proc", workers)
+    main(["--json", "--container-id", CID], proc=proc, attacher=attacher())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["target_pid"] is not None
+    assert any("not ptrace-readable from this seat" in n for n in payload["notes"])

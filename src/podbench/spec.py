@@ -36,6 +36,7 @@ from .model import (
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
     TARGET_CID_ENV,
+    TARGET_NAME_ENV,
     Rung,
     as_dict,
 )
@@ -51,6 +52,9 @@ __all__ = [
     "WORKSPACE_MOUNT_PATH",
     "WORKSPACE_VOLUME",
     "InvalidSpecError",
+    "admission_rewrites",
+    "admission_wedges_the_kubelet",
+    "capabilities_removed",
     "container_id",
     "cutover_selector_patch",
     "dev_pod_spec",
@@ -60,9 +64,13 @@ __all__ = [
     "PULL_POLICIES",
     "ephemeral_container_spec",
     "moves",
+    "reported_target_uid",
+    "requested_seat_spec",
     "runs_as_non_root",
+    "ephemeral_container",
     "seat_identity_volume_mounts",
     "service_selector_patch",
+    "shares_pid_namespace_across_uids",
     "target_seccomp_profile",
     "target_uid_gid",
     "validate_ephemeral_volume_mounts",
@@ -336,7 +344,6 @@ def ephemeral_container_spec(
     command: Sequence[str] = AGENT_COMMAND,
     env: Mapping[str, str] | None = None,
     volume_mounts: Sequence[Mapping[str, Any]] | None = None,
-    seat_gid_root: bool = False,
     seccomp_profile: Mapping[str, Any] | None = None,
     pull_policy: str = DEFAULT_PULL_POLICY,
 ) -> dict[str, Any]:
@@ -366,12 +373,13 @@ def ephemeral_container_spec(
     not necessarily have, and a node whose ``RuntimeDefault`` denies ``ptrace``
     turns it into the blocker (measured at DLS, 2026-08-18).
 
-    ``seat_gid_root`` pins ``runAsGroup: 0`` on the non-root rungs, which is
-    what lets the agent write ``/etc/passwd``. It stopped being the difference
-    between a seat with ssh and one reachable only by ``kubectl exec`` in #102 -
-    the agent registers its record in :data:`podbench.agent.SEAT_NSS_PATH`
-    instead, whatever gid the seat carries - and against a non-zero-gid target it
-    now costs more than it buys. See :func:`_seat_gid`.
+    ``target_gid`` is pinned as ``runAsGroup`` on the non-root rungs, and it is
+    not decoration beside ``target_uid``: ``__ptrace_may_access()`` compares
+    ``gid``, ``egid`` and ``sgid`` as peers of the three user ids, so a seat that
+    mirrors the uid and leaves the group at the image's gid 0 is denied every
+    ptrace-gated operation exactly as one that mirrors neither (#103, measured on
+    p47-blueapi-0). Where the manifest is silent the caller has to have measured
+    it - :func:`target_uid_gid` returns ``None`` and only ``/proc`` knows.
     """
     spec: dict[str, Any] = {
         "name": name,
@@ -383,7 +391,6 @@ def ephemeral_container_spec(
             rung,
             target_uid,
             target_gid,
-            seat_gid_root=seat_gid_root,
             seccomp_profile=seccomp_profile,
         ),
     }
@@ -409,34 +416,6 @@ def ephemeral_container_spec(
 
     validate_security_context(as_dict(spec["securityContext"]))
     return spec
-
-
-def _seat_gid(context: dict[str, Any], gid_root: bool) -> dict[str, Any]:
-    """Apply the opt-in ``runAsGroup: 0`` override to a non-root rung.
-
-    GID 0 *was* how a container running as an arbitrary uid registered itself in
-    NSS: the debug image makes ``/etc/passwd`` group-writable (OpenShift's
-    convention) and the agent appends a record for whatever uid it turned out to
-    be. Since #102 that is the fallback, not the route - the record goes to
-    :data:`podbench.agent.SEAT_NSS_PATH`, which the image ships world-writable,
-    so a seat that database will serve needs no gid pinned to get a login.
-
-    The flag stays because the fallback stays reachable, and for more seats than
-    an old image: ``extrausers`` ignores a record whose uid or gid is under its
-    compiled-in floor of 500, so a target running as a low-numbered system uid
-    needs the old route as much as an image whose ``nsswitch.conf`` never named
-    the database (:func:`podbench.agent.extrausers_serves`). Pod Security
-    Admission does not constrain
-    ``runAsGroup`` at any level, so it remains admissible wherever the rung
-    itself is - measured on a ``restricted`` namespace, uid 1000 / gid 0. What it
-    costs is not admission but the debugger: ``__ptrace_may_access`` compares the
-    gid as well as the uid, and a mismatch denies in both directions (measured on
-    #98), so pinning group 0 against a target in group 36070 leaves a seat that
-    can log in and cannot trace.
-    """
-    if gid_root:
-        context["runAsGroup"] = 0
-    return context
 
 
 _NOT_PRIVILEGED = {
@@ -474,7 +453,6 @@ def _rung_security_context(
     target_uid: int | None,
     target_gid: int | None,
     *,
-    seat_gid_root: bool = False,
     seccomp_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if rung is Rung.FULL:
@@ -522,7 +500,7 @@ def _rung_security_context(
         # halves to match (#98), and the uid half is already gone.
         if target_uid and target_gid is not None:
             restricted["runAsGroup"] = target_gid
-        return _seat_gid(restricted, seat_gid_root)
+        return restricted
 
     if target_uid is None:
         raise InvalidSpecError(
@@ -538,17 +516,16 @@ def _rung_security_context(
             "namespace admits SYS_PTRACE, otherwise Rung.SEAT."
         )
     restricted["runAsUser"] = target_uid
-    # The target's own gid is the default and is worth defending, because it used
-    # to look like a cost: it is what stops the seat writing /etc/passwd, and
-    # until #102 that read as "this rung has no ssh". The gid was still right and
-    # the append was wrong — ptrace compares the gid as well as the uid, so a seat
-    # in another group can log in and not trace (measured, #98) — and the seat now
-    # registers its record somewhere a non-zero gid can write. `seat_gid_root`
-    # keeps the old route one flag away for the seats that database will not
-    # serve: an image without it, or a target under its uid/gid floors.
+    # The target's own gid, and it is half the rung rather than a refinement of
+    # it: __ptrace_may_access() wants six equalities, so a seat at the target's
+    # uid in the image's group 0 reads /proc/<pid>/root, maps, environ and exe
+    # exactly as well as a seat at the wrong uid does, which is not at all
+    # (#103). `None` here means nobody has measured it yet - the manifest does
+    # not say and no seat has read /proc - and pinning a guess would be worse
+    # than pinning nothing.
     if target_gid is not None:
         restricted["runAsGroup"] = target_gid
-    return _seat_gid(restricted, seat_gid_root)
+    return restricted
 
 
 def seat_identity_volume_mounts() -> list[dict[str, Any]]:
@@ -863,7 +840,7 @@ def _sidecar(
 
     environment = {
         "HOME": WORKSPACE_MOUNT_PATH,
-        "PODBENCH_TARGET": target_container,
+        TARGET_NAME_ENV: target_container,
         **dict(env or {}),
     }
     return {
@@ -935,7 +912,17 @@ def target_uid_gid(
 
     ``None`` means the manifest does not say, and the effective id comes from
     the image — which only the running process knows, so the caller must read
-    ``/proc/<pid>/status`` instead of assuming root.
+    ``/proc/<pid>/status`` (:func:`podbench.proc.read_uid`,
+    :func:`podbench.proc.read_gid`) instead of assuming root.
+
+    A ``None`` **gid beside a stated uid is the common case, not the exotic
+    one**: ``runAsUser`` with no ``runAsGroup`` is what a hardened workload
+    usually declares, and the group then comes from the image's own user.
+    Measured on p47-blueapi-0 (2026-08-19), whose manifest sets ``runAsUser:
+    1000`` and nothing else while the process runs at gid 1000. A seat that
+    treats that ``None`` as "no group to mirror" pins none, runs at the debug
+    image's gid 0, and fails the credential check on the group half alone
+    (#103).
     """
     spec = as_dict(pod_json.get("spec"))
     pod_context = as_dict(spec.get("securityContext"))
@@ -949,6 +936,48 @@ def target_uid_gid(
         return None
 
     return pick("runAsUser"), pick("runAsGroup")
+
+
+def reported_target_uid(pod_json: Mapping[str, Any], container: str) -> int | None:
+    """The uid the *node* says the named container's process is running as.
+
+    ``status.containerStatuses[].user.linux.uid`` is what the kubelet resolved
+    after the image's own ``USER`` was applied, so it answers the question
+    :func:`target_uid_gid` cannot: a manifest that states no ``runAsUser`` is
+    not a target whose uid is unknown, it is a target whose uid is in the image.
+    Measured on argus (hgv27681, 2026-08-20), where no pod in the namespace
+    states one and every container is really root — and where the ladder was
+    therefore advising ``--target-uid`` on all eight of them, four lines above a
+    capability report reading the same uid as 0.
+
+    ``None`` where the field is absent, which is a *cluster* answer and not a
+    container one: it arrived with ``SupplementalGroupsPolicy`` (beta and on by
+    default in Kubernetes 1.33), so an older API server reports it for nothing.
+
+    It is read for the ladder's *advice* rather than for its rungs. Authoring
+    the degraded rung from it would pin a uid off the node's word alone, and the
+    rung's own refusal (report 4.5) is that a guessed uid costs the sysroot,
+    maps, environ and exe reads the rung exists for.
+
+    >>> user = {"linux": {"uid": 37887, "gid": 37887}}
+    >>> pod = {"status": {"containerStatuses": [{"name": "app", "user": user}]}}
+    >>> reported_target_uid(pod, "app")
+    37887
+    >>> reported_target_uid(pod, "other") is None
+    True
+    >>> reported_target_uid({"status": {"containerStatuses": [
+    ...     {"name": "app"}]}}, "app") is None
+    True
+    """
+    statuses = as_dict(pod_json.get("status")).get("containerStatuses")
+    if not isinstance(statuses, list):
+        return None
+    for entry in cast(list[Any], statuses):
+        status = as_dict(entry)
+        if status.get("name") != container:
+            continue
+        return _as_uid(as_dict(as_dict(status.get("user")).get("linux")).get("uid"))
+    return None
 
 
 def target_seccomp_profile(
@@ -1008,6 +1037,297 @@ def runs_as_non_root(pod_json: Mapping[str, Any], container: str) -> bool:
     if isinstance(value, bool):
         return value
     return as_dict(spec.get("securityContext")).get("runAsNonRoot") is True
+
+
+def shares_pid_namespace_across_uids(
+    pod_json: Mapping[str, Any], container: str, uid: int | None
+) -> bool:
+    """Whether a seat pinned to ``uid`` would see processes it cannot trace.
+
+    ``shareProcessNamespace: true`` puts every container's processes in one PID
+    namespace, and the credential check in ``__ptrace_may_access`` compares uids
+    before Yama is consulted (report 3.11/3.12). So a seat matching the target
+    container's uid can trace that container and *only* that container, and on
+    such a pod the capability is the only thing that reaches the rest — which is
+    the one case where the full rung is worth a name even though the target's
+    own uid is known.
+
+    A container whose uid the manifest does not state counts as different: it
+    comes from the image and cannot be shown to match. Where the pod does not
+    share its PID namespace the question does not arise — the seat joins the
+    target container's namespace and sees nothing else.
+
+    >>> pod = {"spec": {"shareProcessNamespace": True, "containers": [
+    ...     {"name": "app", "securityContext": {"runAsUser": 1000}},
+    ...     {"name": "sidecar", "securityContext": {"runAsUser": 2000}}]}}
+    >>> shares_pid_namespace_across_uids(pod, "app", 1000)
+    True
+    >>> del pod["spec"]["shareProcessNamespace"]
+    >>> shares_pid_namespace_across_uids(pod, "app", 1000)
+    False
+    """
+    spec = as_dict(pod_json.get("spec"))
+    if spec.get("shareProcessNamespace") is not True:
+        return False
+    containers = spec.get("containers")
+    if not isinstance(containers, list):
+        return False
+    for entry in cast(list[Any], containers):
+        if not isinstance(entry, dict):
+            continue
+        other = cast(dict[str, Any], entry)
+        name = other.get("name")
+        if name == container or not isinstance(name, str):
+            continue
+        if target_uid_gid(pod_json, name)[0] != uid:
+            return True
+    return False
+
+
+def ephemeral_container(
+    pod_json: Mapping[str, Any], name: str
+) -> dict[str, Any] | None:
+    """The named ephemeral container as this pod document carries it.
+
+    By name, never by position. The subresource replace submits the pod's whole
+    ephemeral container list, so what comes back from a server-side dry-run
+    describes the seats podbench did not author as well as the one it proposed —
+    and admission rewrites those too. Only the proposed container is podbench's
+    to reason about.
+
+    >>> pod = {"spec": {"ephemeralContainers": [{"name": "podbench-1"}]}}
+    >>> ephemeral_container(pod, "podbench-1")
+    {'name': 'podbench-1'}
+    >>> ephemeral_container(pod, "podbench-2") is None
+    True
+    """
+    entries = as_dict(pod_json.get("spec")).get("ephemeralContainers")
+    if not isinstance(entries, list):
+        return None
+    for entry in cast(list[Any], entries):
+        if isinstance(entry, dict) and cast(dict[str, Any], entry).get("name") == name:
+            return cast(dict[str, Any], entry)
+    return None
+
+
+_REWRITTEN_FIELDS: tuple[str, ...] = (
+    "runAsUser",
+    "runAsGroup",
+    "runAsNonRoot",
+    "privileged",
+    "allowPrivilegeEscalation",
+    "readOnlyRootFilesystem",
+)
+"""securityContext scalars worth naming when admission changes one.
+
+The whole securityContext and nothing else, because that is what decides the
+rung. A policy that rewrites it issues no refusal, so the ladder drops no rung,
+and podbench goes on naming a rung the seat does not have (issue #94).
+"""
+
+
+def _capabilities(context: Mapping[str, Any], key: str) -> list[str]:
+    entries = as_dict(context.get("capabilities")).get(key)
+    if not isinstance(entries, list):
+        return []
+    return [item for item in cast(list[Any], entries) if isinstance(item, str)]
+
+
+def _rendered(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def capabilities_removed(
+    requested: Mapping[str, Any], admitted: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Capabilities the request added that admission would not store.
+
+    The full rung's entire content is ``SYS_PTRACE``, so a policy that strips it
+    leaves a root container with no capability. Against a **non-root** target
+    that reads three of the six probe paths where the degraded rung at the
+    target's own uid reads all six (report 3.11), so landing it is strictly
+    worse than not landing it; against a root target the uids agree and there is
+    no rung below to fall to anyway, which is
+    :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`'s case. Either way the
+    only signal is this difference: the update itself succeeds.
+
+    >>> capabilities_removed(
+    ...     {"securityContext": {"capabilities": {"add": ["SYS_PTRACE"]}}},
+    ...     {"securityContext": {"capabilities": {"drop": ["ALL"]}}},
+    ... )
+    ('SYS_PTRACE',)
+    """
+    stored = set(_capabilities(as_dict(admitted.get("securityContext")), "add"))
+    asked = _capabilities(as_dict(requested.get("securityContext")), "add")
+    return tuple(name for name in asked if name not in stored)
+
+
+def admission_rewrites(
+    requested: Mapping[str, Any],
+    admitted: Mapping[str, Any],
+    *,
+    include_removed_capabilities: bool = True,
+    include_scalars: bool = True,
+) -> tuple[str, ...]:
+    """How admission would rewrite this container's securityContext.
+
+    Each phrase is one difference between the container podbench authored and
+    the container a server-side dry-run says would be stored. A *mutating*
+    policy is the quiet half of admission: it does not refuse, so nothing in the
+    walk reacts, and the seat that lands is not the seat that was asked for.
+
+    Measured at DLS on 2026-08-19: podbench asks for
+    ``{"capabilities": {"drop": ["ALL"]}}`` and adds nothing; the pod comes back
+    with thirteen capabilities added to it.
+
+    ``include_removed_capabilities=False`` drops the one phrase that has a
+    warning of its own — :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`
+    is printed for the same event, and the two are emitted together on a
+    cluster that strips and rewrites in one pass, which is both of DLS's.
+
+    ``include_scalars=False`` compares only the capability sets. It is for
+    :func:`requested_seat_spec`, whose reconstruction knows what podbench asked
+    for in ``capabilities`` and nothing about the rest: comparing the scalars
+    against a request that never stated any would report every one of them as a
+    rewrite.
+
+    >>> admission_rewrites(
+    ...     {"securityContext": {"capabilities": {"drop": ["ALL"]}}},
+    ...     {"securityContext": {"capabilities": {"drop": ["ALL"],
+    ...                                           "add": ["KILL", "CHOWN"]}}},
+    ... )
+    ('added CHOWN, KILL to capabilities.add',)
+    >>> admission_rewrites(
+    ...     {"securityContext": {"runAsUser": 0}},
+    ...     {"securityContext": {"runAsUser": 0, "runAsNonRoot": True}},
+    ... )
+    ('set runAsNonRoot: true',)
+    >>> admission_rewrites({"securityContext": {}}, {"securityContext": {}})
+    ()
+    >>> asked = {"securityContext": {"capabilities": {"add": ["SYS_PTRACE"]}}}
+    >>> landed = {"securityContext": {"capabilities": {"add": ["CHOWN"]}}}
+    >>> admission_rewrites(asked, landed, include_removed_capabilities=False)
+    ('added CHOWN to capabilities.add',)
+    """
+    asked = as_dict(requested.get("securityContext"))
+    stored = as_dict(admitted.get("securityContext"))
+    phrases: list[str] = []
+
+    added = sorted(set(_capabilities(stored, "add")) - set(_capabilities(asked, "add")))
+    if added:
+        phrases.append(f"added {', '.join(added)} to capabilities.add")
+    removed: tuple[str, ...] = ()
+    if include_removed_capabilities:
+        removed = capabilities_removed(requested, admitted)
+    if removed:
+        phrases.append(f"removed {', '.join(removed)} from capabilities.add")
+    undropped = sorted(
+        set(_capabilities(asked, "drop")) - set(_capabilities(stored, "drop"))
+    )
+    if undropped:
+        phrases.append(f"removed {', '.join(undropped)} from capabilities.drop")
+
+    for field in _REWRITTEN_FIELDS if include_scalars else ():
+        before, after = asked.get(field), stored.get(field)
+        if before == after and (field in asked) == (field in stored):
+            continue
+        if field not in asked:
+            phrases.append(f"set {field}: {_rendered(after)}")
+        elif field not in stored:
+            phrases.append(f"unset {field}")
+        else:
+            phrases.append(
+                f"changed {field} from {_rendered(before)} to {_rendered(after)}"
+            )
+    return tuple(phrases)
+
+
+def requested_seat_spec(stored: Mapping[str, Any]) -> dict[str, Any]:
+    """What podbench is known to have asked for, read back off the seat stored.
+
+    A reconnect has the landed spec and no memory of the request, so the two
+    admission facts a first attach reports — a stripped capability and a
+    rewritten securityContext — have nothing to diff against. The *capability*
+    half is recoverable anyway, and it is the half both DLS clusters mutate:
+    podbench asks for ``SYS_PTRACE`` on the full rung and for nothing at all on
+    every rung below, and the full rung is the only one that writes
+    ``runAsUser: 0`` — the degraded rung refuses a root target outright, and the
+    seat rung drops uid 0 rather than pin it beside ``runAsNonRoot: true``
+    (report 3.18). So a root seat with an empty ``capabilities.add`` was
+    stripped, and any capability in that list at all was added by somebody else.
+
+    Deliberately **only** the capability set. Reconstructing the scalars would
+    mean assuming which fields the podbench that landed the seat authored, and a
+    version that stated fewer of them would have the difference reported as
+    admission's work — an invented fact, where a missing one merely costs the
+    reader a line. What lands the reader nothing here is the walk's own dry run,
+    which diffs the real request and reports the scalars too.
+
+    >>> requested_seat_spec({"securityContext": {"runAsUser": 0}})
+    {'securityContext': {'capabilities': {'add': ['SYS_PTRACE']}}}
+    >>> requested_seat_spec({"securityContext": {"runAsUser": 1000}})
+    {'securityContext': {'capabilities': {}}}
+    """
+    security = as_dict(stored.get("securityContext"))
+    uid = _as_uid(security.get("runAsUser"))
+    add = ["SYS_PTRACE"] if uid == 0 else []
+    return {"securityContext": {"capabilities": {"add": add} if add else {}}}
+
+
+def _as_uid(value: Any) -> int | None:
+    """An id from a spec, or ``None`` for anything that is not one."""
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def admission_wedges_the_kubelet(
+    requested: Mapping[str, Any], admitted: Mapping[str, Any]
+) -> str | None:
+    """Whether admission assembled the pair the kubelet refuses, seconds later.
+
+    ``runAsNonRoot: true`` with no non-zero uid beside it is accepted by the API
+    server and then refused by the *node*, with
+    ``CreateContainerConfigError: container has runAsNonRoot and image will run
+    as root`` (report 3.18). That is the one refusal that burns a container
+    name for the pod's lifetime, and ``?dryRun=All`` will never see it: a dry
+    run is the admission chain and stops there.
+
+    :func:`_rung_security_context` is careful never to author that pair against
+    a target it could pin a uid from. It never imagined admission assembling it
+    — a policy that adds ``runAsNonRoot: true`` to the full rung produces a
+    request that succeeds and a container that waits forever. So the pair is
+    read out of what admission says it would store, and only where the request
+    did not already carry it: the seat rung against a *root* target authors that
+    shape deliberately, having no uid it may pin, and that is podbench's own
+    known trade rather than a rewrite.
+
+    >>> admission_wedges_the_kubelet(
+    ...     {"securityContext": {"runAsUser": 0}},
+    ...     {"securityContext": {"runAsUser": 0, "runAsNonRoot": True}},
+    ... )
+    'admission would add runAsNonRoot: true beside uid 0'
+    >>> seat = {"securityContext": {"runAsNonRoot": True}}
+    >>> admission_wedges_the_kubelet(seat, seat) is None
+    True
+    """
+    if _wedged(as_dict(requested.get("securityContext"))):
+        return None
+    stored = as_dict(admitted.get("securityContext"))
+    if not _wedged(stored):
+        return None
+    uid = stored.get("runAsUser")
+    beside = "uid 0" if isinstance(uid, int) else "no uid at all"
+    return f"admission would add runAsNonRoot: true beside {beside}"
+
+
+def _wedged(context: Mapping[str, Any]) -> bool:
+    if context.get("runAsNonRoot") is not True:
+        return False
+    uid = context.get("runAsUser")
+    return not isinstance(uid, int) or isinstance(uid, bool) or uid == 0
 
 
 def container_id(pod_json: Mapping[str, Any], container: str) -> str | None:

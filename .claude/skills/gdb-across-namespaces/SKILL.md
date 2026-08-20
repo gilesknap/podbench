@@ -75,7 +75,8 @@ second implementation could only drift.
 It has to be wired into **every** place podbench names an exec file, and there are three:
 
 - `podbench dbg`
-- `image/bin/gdb-podbench`, via `podbench dbg <pid> --print-exec-file`
+- `image/bin/gdb-podbench`, via `podbench dbg <pid> --print-startup-commands`,
+  which carries the exec file as one line of the whole pre-attach sequence
 - `debug-config`'s cppdbg `program`
 
 The third is not optional and cannot be fixed any other way: **cpptools sends `program` as
@@ -84,6 +85,26 @@ launch configuration executes early enough to correct it.
 
 Targets that shadow nothing are untouched, and report §4.3's sequence stays byte-identical
 for them.
+
+### lldb has the bug and cannot take the cure
+
+Measured, not reasoned: standalone lldb 21.1.8 on the k3s bed, against a real mount
+namespace built with podman - not inside a podbench seat.
+gdb canonicalises *the path you give it*, which staging defeats. lldb **ignores** the path
+you give it — after the attach it re-resolves the exe from the process and overrides the
+target with the name resolved in the seat's namespace (`warning: Executable binary changed
+from "/tmp/podbench-exe/<pid>/victim" to "/app/victim"`). A staged copy is loaded and then
+dropped, and `settings set target.exec-search-paths` does not help. Moving the seat's own
+file aside does, which is the same mechanism with no remedy available in a pod.
+
+So `flavour._assess_lldb` **withdraws the CodeLLDB configuration** wherever
+`execfile.shadowing_file` finds a collision, rather than emitting one that debugs the
+seat's binary behind a debug-console warning. Do not "fix" it by giving `lldb_configuration`
+an `exec_file` parameter — that was the measurement that failed.
+
+**CodeLLDB's own bundled lldb, in a remote extension host, has not been observed doing
+this**, and `platform select remote-linux` against an lldb-server inside the target's
+namespace has not been tried; it is the shape that would be correct.
 
 ## The wrapper is on `PATH` as `gdb`, so it is not only cpptools calling it
 
