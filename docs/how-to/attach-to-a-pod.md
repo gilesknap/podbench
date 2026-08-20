@@ -141,7 +141,7 @@ invocation that reaches each:
 
 ```
 target      p47-epics-gateways-ca-gateway; this pod also has
-            p47-epics-gateways-pva-gateway
+            p47-epics-gateways-pva-gateway.
             reach it with `--target p47-epics-gateways-pva-gateway`
 ```
 

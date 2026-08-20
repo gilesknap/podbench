@@ -687,7 +687,7 @@ def test_a_three_container_pod_names_every_one_it_did_not_enter() -> None:
 
     assert other_containers(pod, "panda80") == ("panda8080", "pmac1025")
     assert target_row("panda80", other_containers(pod, "panda80")) == [
-        "target      panda80; this pod also has panda8080 and pmac1025",
+        "target      panda80; this pod also has panda8080 and pmac1025.",
         "            reach one with `--target panda8080` or `--target pmac1025`",
     ]
 

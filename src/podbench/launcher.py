@@ -2804,12 +2804,18 @@ def target_row(workload: str, siblings: Sequence[str] = ()) -> list[str]:
     :func:`podbench.gdbcmd.listing_heading` prints the same sentence above
     ``pids`` and has never had the defect, because it emits its lines finished.
 
+    The prose half ends in a full stop, which the single-line version did not
+    need: once it wraps, its continuation and the offer below it sit at the same
+    indent, and without a terminator there is nothing to say which of the two
+    the second line belongs to. ``listing_heading`` is short enough never to
+    wrap, so the same two sentences there need no stop between them.
+
     >>> for line in target_row("api"):
     ...     print(line)
     target      api
     >>> for line in target_row("gateway-ca", ["gateway-pva"]):
     ...     print(line)
-    target      gateway-ca; this pod also has gateway-pva
+    target      gateway-ca; this pod also has gateway-pva.
                 reach it with `--target gateway-pva`
     """
     indent = " " * 12
@@ -2819,7 +2825,7 @@ def target_row(workload: str, siblings: Sequence[str] = ()) -> list[str]:
     reach = "reach it with" if len(siblings) == 1 else "reach one with"
     return [
         *paragraph(
-            f"{workload}; this pod also has {and_list(siblings)}",
+            f"{workload}; this pod also has {and_list(siblings)}.",
             first="target      ",
             indent=indent,
         ),
