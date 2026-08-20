@@ -1374,8 +1374,9 @@ def _gdb_reason(target: Target, mode: Mode) -> str:
     if target.language is Language.GO:
         head += (
             "; gdb is the fallback here - goroutines and channels are delve's "
-            "job and this image ships no dlv (issue #115) - and SIGURG is set "
-            "to nostop so Go's async preemption does not halt the session"
+            "job and this image ships no dlv (issue #115) - and SIGURG is "
+            "pinned to gdb's own default of nostop, so async preemption "
+            "cannot fill the session"
         )
     if target.elf.has_debug_info:
         return head

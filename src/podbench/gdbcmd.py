@@ -110,13 +110,20 @@ GdbRunner = Callable[[Sequence[str]], int]
 """How ``dbg`` finally starts gdb. A seam so tests never exec a real gdb."""
 
 SIGURG_COMMAND = "handle SIGURG nostop noprint pass"
-"""Issued for *every* target, not only for Go ones.
+"""Issued for *every* target, not only for Go ones — and it pins a default.
 
-Go's runtime preempts goroutines by sending SIGURG, at up to a few hundred a
-second on a busy process. gdb's default is to stop and announce each one, which
-turns an attached Go session into a wall of ``Program received signal SIGURG``
-and nothing else — the session is not slow, it is unusable, and nothing in it
-says why.
+Measured, not assumed: a stock gdb 17.1 with no startup commands and no attach
+already answers ``info handle SIGURG`` with ``SIGURG No No Yes``, which is
+these three words. So this line is insurance rather than a repair, and the
+claim it used to carry — that without it an attached Go target is a wall of
+``Program received signal SIGURG`` — was describing work it does not do.
+
+What it insures against is a gdb configured otherwise: a system ``gdbinit``, a
+distribution patch, a future release. Go's runtime preempts goroutines by
+sending SIGURG at up to a few hundred a second on a busy process, and a gdb
+that stops and announces each one turns an attached session into that wall and
+nothing else — not slow, unusable, and nothing in it says why. One command is
+cheap against a failure that reports itself as the program misbehaving.
 
 Unconditional because the sequence has no language to switch on: ``podbench
 dbg`` and ``gdb-podbench`` attach to whatever pid they are handed, and a config

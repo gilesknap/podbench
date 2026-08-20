@@ -215,9 +215,10 @@ def test_the_sequence_carries_the_lines_the_copy_used_to_miss(
 
     ``add-auto-load-safe-path`` is what lets a sysrooted gdb auto-load the
     target's ``libthread_db``; without it every thread-aware command is gone
-    and gdb says nothing about why. ``handle SIGURG`` is what keeps an attached
-    Go target from becoming a wall of ``Program received signal SIGURG``. Both
-    reach gdb through the wrapper now, and neither is spelled in the script.
+    and gdb says nothing about why. ``handle SIGURG`` pins gdb's own default,
+    which is what keeps an attached Go target from becoming a wall of ``Program
+    received signal SIGURG`` on a gdb configured otherwise. Both reach gdb
+    through the wrapper now, and neither is spelled in the script.
     """
     seen = _run(_wrapper(tmp_path, commands=SEQUENCE), "--pid", str(LIVE_PID))
 

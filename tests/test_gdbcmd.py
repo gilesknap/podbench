@@ -197,12 +197,13 @@ def test_attach_sequence_is_pinned_in_order() -> None:
 
 
 def test_sigurg_is_handled_before_the_process_resumes() -> None:
-    """Go preempts goroutines with SIGURG, hundreds a second on a busy process.
+    """The ordering, which is what this line's value depends on.
 
-    gdb's default is to stop and announce each one, which does not make the
-    session slow, it makes it unusable - and nothing in the wall of `Program
-    received signal SIGURG` says why. It has to precede the attach, because the
-    flood starts the moment the inferior resumes.
+    `nostop noprint pass` is already gdb's default - a stock gdb 17.1 reports
+    `SIGURG No No Yes` with no startup commands at all - so this pins it rather
+    than repairing a flood. Pinning it is only worth anything before the attach:
+    on a gdb configured otherwise the flood starts the moment the inferior
+    resumes, and Go preempts goroutines hundreds of times a second.
     """
     commands = attach_commands(TARGET_PID, exe="/app/victim")
     assert commands.index("handle SIGURG nostop noprint pass") < commands.index(
@@ -737,8 +738,9 @@ def test_startup_commands_are_the_attach_sequence_without_the_attach() -> None:
 
     ``gdb-podbench`` supplies its own ``--pid``, and used to carry two of these
     lines hand-copied into ``sh`` — missing ``add-auto-load-safe-path``, which
-    costs every thread-aware command, and later ``handle SIGURG``, which costs
-    a Go session its readability. Neither absence reports anything.
+    costs every thread-aware command, and later ``handle SIGURG``, which pins
+    the default a Go session's readability rests on. Neither absence reports
+    anything.
     """
     attach = attach_commands(TARGET_PID, exe="/app/victim")
 

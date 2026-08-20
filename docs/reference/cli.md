@@ -1079,8 +1079,8 @@ every line above except the `attach`, which the caller is making itself with
 an `-ex` command would run after it. It is generated here rather than kept in
 the wrapper so that the two cannot disagree — the wrapper carried two of these
 lines by hand and was silently missing `add-auto-load-safe-path`, which costs
-every thread-aware command, and later `handle SIGURG`, which costs a Go session
-its readability.
+every thread-aware command, and later `handle SIGURG`, which pins the default a
+Go session's readability rests on.
 
 ### `debug-config`
 
@@ -1176,8 +1176,8 @@ nothing about the program. Those targets get a sentence naming JDWP (issue #114)
 or `erl -remsh`/`observer`, and no configuration. Go gets a `cppdbg` entry and a
 sentence saying it is a fallback — the image ships no `dlv` and the Go extension
 runs delve on the remote rather than shipping one (issue #115) — plus
-`handle SIGURG nostop noprint pass`, without which Go's async preemption fills
-the session with signal reports. Rust is served by the native path, with
+`handle SIGURG nostop noprint pass`, which pins gdb's own default so that Go's
+async preemption cannot fill the session with signal reports. Rust is served by the native path, with
 `/opt/podbench/gdb/rust_printers.py` sourced so `Vec`, `String` and `Option`
 print as themselves.
 

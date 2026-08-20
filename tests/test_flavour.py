@@ -526,7 +526,12 @@ def test_the_gdb_reason_names_the_language_rather_than_assuming_native(
     # tool is not here.
     assert "delve" in reason
     assert "#115" in reason
+    # SIGURG is named, and named as what it is. `nostop noprint pass` is gdb's
+    # own default - a stock gdb 17.1 reports `SIGURG No No Yes` before anything
+    # runs - so a sentence promising the user it stops a flood is promising
+    # work the line does not do.
     assert "SIGURG" in reason
+    assert "default" in reason
 
 
 def test_symbols_in_a_mapped_library_are_not_no_symbols(tmp_path: Path) -> None:
