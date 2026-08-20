@@ -566,10 +566,10 @@ def test_the_gdb_reason_names_the_language_rather_than_assuming_native(
     assert "delve" in reason
     assert "#115" in reason
     # SIGURG is named, and named as what it is. `nostop noprint pass` is the
-    # default of the gdb it was measured on - the development container's 17.1,
-    # which reports `SIGURG No No Yes` before anything runs - so a sentence
-    # promising the user it stops a flood is promising work the line does not
-    # do. What the image's Debian gdb 13 defaults to is unread either way.
+    # default of the gdb this seat has - the image's Debian 13.1, which reports
+    # `SIGURG No No Yes` before anything runs, and the same for SIGCHLD and
+    # SIGWINCH - so a sentence promising the user it stops a flood is promising
+    # work the line does not do.
     assert "SIGURG" in reason
     assert "default" in reason
 

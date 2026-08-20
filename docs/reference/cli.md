@@ -1176,8 +1176,9 @@ nothing about the program. Those targets get a sentence naming JDWP (issue #114)
 or `erl -remsh`/`observer`, and no configuration. Go gets a `cppdbg` entry and a
 sentence saying it is a fallback — the image ships no `dlv` and the Go extension
 runs delve on the remote rather than shipping one (issue #115) — plus
-`handle SIGURG nostop noprint pass`, which pins gdb's own default so that Go's
-async preemption cannot fill the session with signal reports. Rust is served by the native path, with
+`handle SIGURG nostop noprint pass`, which pins the default the image's gdb
+13.1 already reports, so that Go's async preemption cannot fill the session with
+signal reports. Rust is served by the native path, with
 `/opt/podbench/gdb/rust_printers.py` sourced so `Vec`, `String` and `Option`
 print as themselves.
 

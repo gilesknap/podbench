@@ -112,17 +112,21 @@ GdbRunner = Callable[[Sequence[str]], int]
 SIGURG_COMMAND = "handle SIGURG nostop noprint pass"
 """Issued for *every* target, not only for Go ones — and it pins a default.
 
-Measured, not assumed — on the *development container's* gdb 17.1, which with
-no startup commands and no attach already answers ``info handle SIGURG`` with
-``SIGURG No No Yes``, these three words. So this line is insurance rather than
-a repair, and the claim it used to carry — that without it an attached Go
-target is a wall of ``Program received signal SIGURG`` — was describing work it
-does not do.
+Measured, not assumed, on the gdb a reader in a seat actually has: the image's
+Debian 13.1-3, with no startup commands and no attach, already answers ``info
+handle SIGURG`` with ``SIGURG No No Yes``, these three words. So this line is
+insurance rather than a repair, and the claim it used to carry — that without
+it an attached Go target is a wall of ``Program received signal SIGURG`` — was
+describing work it does not do. (The reading is of ``/usr/bin/gdb``: ``gdb`` on
+the image's PATH is the ``gdb-podbench`` wrapper, which issues this very
+command, so repeating it with a plain ``gdb`` measures the wrapper.)
 
-The image ships Debian bookworm's gdb 13, whose default is not asserted here:
-nobody has run that reading. What this line insures against is any gdb
-configured otherwise, that one included — a system ``gdbinit``, a distribution
-patch, a future release. Go's runtime preempts goroutines by
+SIGCHLD and SIGWINCH read identically, so ``No No Yes`` is gdb's default class
+for a routine signal rather than anything gdb decided about SIGURG — which is
+what makes this line insurance against an unusual configuration and not a bet
+against the next release. What it insures against is a gdb configured
+otherwise: a system ``gdbinit``, a distribution patch, a build with different
+defaults. Go's runtime preempts goroutines by
 sending SIGURG at up to a few hundred a second on a busy process, and a gdb
 that stops and announces each one turns an attached session into that wall and
 nothing else — not slow, unusable, and nothing in it says why. One command is
