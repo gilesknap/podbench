@@ -1241,14 +1241,21 @@ def assess(
     names one flavour is the case where it is not.
     """
     gdb = _assess_gdb(target, mode, seat)
+    gdb_entry = gdb.available and (wanted is None or Flavour.GDB in wanted)
     return [
         gdb,
-        _assess_lldb(target, mode, seat),
+        _assess_lldb(
+            target,
+            mode,
+            seat,
+            gdb_entry=gdb_entry,
+            gdb_available=gdb.available,
+        ),
         _assess_delve(
             target,
             mode,
             seat,
-            gdb_entry=gdb.available and (wanted is None or Flavour.GDB in wanted),
+            gdb_entry=gdb_entry,
             gdb_available=gdb.available,
         ),
         _assess_debugpy(target, mode, seat),
@@ -1449,7 +1456,14 @@ def _symbols_elsewhere(target: Target) -> str:
     return f"and no symbols anywhere in the {total} mapped objects; {debuginfod}"
 
 
-def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
+def _assess_lldb(
+    target: Target,
+    mode: Mode,
+    seat: Seat,
+    *,
+    gdb_entry: bool = True,
+    gdb_available: bool = True,
+) -> Assessment:
     # Ruled out by a language that is *known* to be managed, never by an
     # unknown one: reading the target's ELF needs PTRACE_MODE_READ, so on the
     # degraded rung the language is unknown for a perfectly ordinary C binary,
@@ -1499,11 +1513,10 @@ def _assess_lldb(target: Target, mode: Mode, seat: Seat) -> Assessment:
             "measured in lldb)",
             remedy=(
                 "no lldb setting fixes it: staging a copy elsewhere, which is "
-                "what keeps the gdb entry correct, is undone by that override, "
-                "and `target.exec-search-paths` was measured not to help. Use "
-                "the gdb entry beside this one, or `podbench dbg` - both are "
-                "given the target's binary at a path nothing here shadows. "
-                "Measured with a standalone lldb on a test bed, against a "
+                "what keeps a gdb entry correct, is undone by that override, "
+                "and `target.exec-search-paths` was measured not to help. "
+                f"{_shadow_fallback(emitted=gdb_entry, available=gdb_available)}"
+                ". Measured with a standalone lldb on a test bed, against a "
                 "real mount namespace; a podbench seat and CodeLLDB's own "
                 "bundled lldb were not observed"
             ),
@@ -1534,6 +1547,43 @@ Not the same list as "not :data:`NATIVE_LANGUAGES`": Go is in neither, because
 gdb on a Go binary really does show the user's functions - badly, and without
 goroutines, but it is the same code.
 """
+
+
+def _shadow_fallback(*, emitted: bool, available: bool) -> str:
+    """Where a shadowed native target goes once lldb is refused.
+
+    The sibling of :func:`_go_fallback`, and wrong in the same way it was:
+    "the gdb entry beside this one" was said unconditionally, while
+    ``--flavour lldb`` emits nothing but this refusal — so the one run that is
+    *only* ever this sentence sent the reader to an entry that is not in the
+    file, and from there to a bug in VS Code that is not there either.
+
+    Both routes rest on one fact, that gdb and ``podbench dbg`` are handed the
+    target's binary at a staged path nothing here shadows, so they stand or
+    fall together: where this seat refuses gdb outright neither exists, and the
+    third arm offers nothing rather than a route into a second wall.
+
+    >>> _shadow_fallback(emitted=True, available=True)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    "Use the gdb entry beside this one, or `podbench dbg` - both are given
+     the target's binary at a path nothing here shadows"
+    >>> _shadow_fallback(emitted=False, available=True)
+    ... # doctest: +NORMALIZE_WHITESPACE
+    "`--flavour gdb` emits an entry that is correct here, and `podbench dbg`
+     attaches with one - both are given the target's binary at a path nothing
+     here shadows"
+    >>> _shadow_fallback(emitted=False, available=False)
+    'There is no fallback here: this seat refuses gdb as well'
+    """
+    shadows = " - both are given the target's binary at a path nothing here shadows"
+    if emitted:
+        return f"Use the gdb entry beside this one, or `podbench dbg`{shadows}"
+    if available:
+        return (
+            "`--flavour gdb` emits an entry that is correct here, and "
+            f"`podbench dbg` attaches with one{shadows}"
+        )
+    return "There is no fallback here: this seat refuses gdb as well"
 
 
 def _assess_delve(

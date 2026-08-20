@@ -689,6 +689,59 @@ def test_the_lldb_refusal_offers_gdb_and_denies_that_a_flag_exists(
     assert "not observed" in remedy
 
 
+def test_the_lldb_refusal_only_points_at_a_gdb_entry_that_exists(
+    tmp_path: Path,
+) -> None:
+    """The delve defect, one flavour along: `--flavour lldb` emits nothing else.
+
+    A shadowed exe with lldb asked for by name produces this refusal and an
+    otherwise empty file, so "the gdb entry beside this one" named an entry
+    that was never written - and the reader goes hunting for a launch.json bug
+    that is not there.
+    """
+    proc = make_proc(tmp_path)
+    shadow_the_exe(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(target, proc=proc, which=which_of(*FULL_SEAT), debugpy_root=None)
+
+    alone = (
+        verdict(
+            assess(target, Mode.OBSERVE, seat, wanted={Flavour.LLDB}), Flavour.LLDB
+        ).remedy
+        or ""
+    )
+    assert "beside this one" not in alone
+    assert "--flavour gdb" in alone
+    assert "not observed" in alone
+
+    beside = verdict(assess(target, Mode.OBSERVE, seat), Flavour.LLDB).remedy or ""
+    assert "Use the gdb entry beside this one" in beside
+
+
+def test_the_lldb_refusal_promises_no_gdb_entry_this_seat_refuses(
+    tmp_path: Path,
+) -> None:
+    """Where gdb is refused too there is no route, and none may be named.
+
+    Both halves of the offer - the entry and `podbench dbg` - rest on the same
+    staged copy, so a seat with no gdb at all has neither. Naming `--flavour
+    gdb` there would be the second wall rather than the way past the first.
+    """
+    proc = make_proc(tmp_path)
+    shadow_the_exe(tmp_path)
+    target = inspect_target(PID, proc=proc)
+    seat = survey_seat(target, proc=proc, which=which_of(), debugpy_root=None)
+
+    assert not verdict(assess(target, Mode.OBSERVE, seat), Flavour.GDB).available
+    remedy = verdict(assess(target, Mode.OBSERVE, seat), Flavour.LLDB).remedy or ""
+    assert "beside this one" not in remedy
+    assert "--flavour gdb" not in remedy
+    assert "podbench dbg" not in remedy
+    assert "no fallback here" in remedy
+    # The provenance outlives every arm; it is what the refusal is evidence of.
+    assert "not observed" in remedy
+
+
 def test_lldb_stays_where_this_seat_shadows_nothing(tmp_path: Path) -> None:
     """The refusal is the collision's, not lldb's: no shadow, no withdrawal."""
     proc = make_proc(tmp_path)
