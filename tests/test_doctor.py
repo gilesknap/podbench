@@ -834,6 +834,28 @@ def test_each_feature_is_reported_separately(home: Path) -> None:
     assert verdicts["hotfix"] is Status.OK
 
 
+def test_resize_needs_the_read_kubectl_makes_before_the_write(home: Path) -> None:
+    """The argus defect: `doctor` said `resize [ok]` where resize was Forbidden.
+
+    `kubectl patch --subresource=resize` issues a GET on the subresource before
+    it sends the PATCH, so a service account holding `pods/resize: [patch]` and
+    no `get` fails on the read (measured with `kubectl --v=8` on hgv27681: the
+    GET is Forbidden and the PATCH is never sent). The feature declared only
+    `patch`, four lines under an `attach` feature that declares both verbs on
+    `pods/ephemeralcontainers` for exactly this reason.
+
+    Not asserted through `can-i`: on that same cluster
+    `kubectl auth can-i get pods/resize` answers yes while the real GET is
+    refused, so what has to be right is the grant list, and this pins it.
+    """
+    wired(home)
+    machine = FakeMachine(allowed=without(Grant("get", "pods/resize")))
+    report = diagnose(runner=machine, which=machine.which)
+
+    assert statuses(report)["resize"] is Status.WARN
+    assert "missing: get pods/resize" in flowed(report)
+
+
 def test_a_cluster_that_cannot_be_reached_is_unknown_and_not_denied(
     home: Path,
 ) -> None:

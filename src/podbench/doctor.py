@@ -214,7 +214,18 @@ FEATURES: tuple[RbacFeature, ...] = (
     RbacFeature(
         "resize",
         "resize",
-        (Grant("patch", "pods/resize"),),
+        (
+            # `get` as well as `patch`, for the same reason
+            # `pods/ephemeralcontainers` above needs both: kubectl issues a GET
+            # on the subresource before it sends the write. Measured on argus
+            # (hgv27681, 2026-08-20) with `kubectl --v=8` against a service
+            # account holding `pods/resize: [patch]` and no `get` - the GET is
+            # Forbidden and the PATCH is never sent, while `doctor` said the
+            # tier was fine. `kubectl auth can-i get pods/resize` answers yes on
+            # that same cluster, so the grant list is what has to be right here.
+            Grant("get", "pods/resize"),
+            Grant("patch", "pods/resize"),
+        ),
     ),
     RbacFeature(
         "hotfix",

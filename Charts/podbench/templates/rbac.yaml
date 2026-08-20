@@ -51,9 +51,12 @@ rules:
   # its own, so a large editor session can get the workload OOM-killed. In-place
   # resize is the mitigation; it is granted separately because it changes a
   # running workload's limits.
+  # `get` as well as `patch`: kubectl reads the subresource back before it sends
+  # the write, so `patch` alone gets a Forbidden on the GET and never reaches
+  # the resize (measured on hgv27681, 2026-08-20).
   - apiGroups: [""]
     resources: ["pods/resize"]
-    verbs: ["patch"]
+    verbs: ["get", "patch"]
   {{- end }}
   {{- if .Values.rbac.hotfix }}
   # Hotfix mode builds on rbac.observe — it reads the pod to find the application

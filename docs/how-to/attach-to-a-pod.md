@@ -438,8 +438,9 @@ unrelated rollout to take it away.
 Failure is reported, not fatal — a seat that lands with a loud warning beats one
 that does not land.
 
-It also needs `pods/resize` `patch`, which the chart grants separately from the
-rest.
+It also needs `get` and `patch` on `pods/resize`, which the chart grants
+separately from the rest. Both verbs: kubectl reads the subresource back before
+it sends the write, so `patch` alone fails on the GET.
 
 ## Opening VS Code on the seat
 

@@ -187,7 +187,7 @@ RBAC in demo (kubectl auth can-i, as your kubeconfig's user)
   [ok]    attach         all 5 verbs allowed
   [warn]  iterate        missing: create pods, delete pods
           grant it with the chart's rbac.iterate=true, or the equivalent Role
-  [warn]  resize         missing: patch pods/resize
+  [warn]  resize         missing: get pods/resize, patch pods/resize
           grant it with the chart's rbac.resize=true, or the equivalent Role
   [ok]    hotfix         all 5 verbs allowed
 ----------------------------------------------------------------------------
@@ -477,9 +477,10 @@ Notes:
     preparation failed. Where a seat *does* carry the identity, the same line
     credits it.
 * `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
-  `pods/resize` `patch`. An attach that used neither prints one line offering
-  them; one that used either prints what it cost — including that the raised
-  limit is on the pod and not on its controller, so a rollout reverts it.
+  `get` and `patch` on `pods/resize`. An attach that used neither prints one
+  line offering them; one that used either prints what it cost — including that
+  the raised limit is on the pod and not on its controller, so a rollout
+  reverts it.
   Both take `LIMIT` or `REQUEST:LIMIT`, and raise the request alongside the
   limit where a `LimitRange` bounds the ratio between them.
 * **`--target-gid` and the automatic correction** are one mechanism seen from
