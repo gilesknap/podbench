@@ -1121,7 +1121,10 @@ def capabilities_removed(
 
 
 def admission_rewrites(
-    requested: Mapping[str, Any], admitted: Mapping[str, Any]
+    requested: Mapping[str, Any],
+    admitted: Mapping[str, Any],
+    *,
+    include_removed_capabilities: bool = True,
 ) -> tuple[str, ...]:
     """How admission would rewrite this container's securityContext.
 
@@ -1133,6 +1136,11 @@ def admission_rewrites(
     Measured at DLS on 2026-08-19: podbench asks for
     ``{"capabilities": {"drop": ["ALL"]}}`` and adds nothing; the pod comes back
     with thirteen capabilities added to it.
+
+    ``include_removed_capabilities=False`` drops the one phrase that has a
+    warning of its own — :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`
+    is printed for the same event, and the two are emitted together on a
+    cluster that strips and rewrites in one pass, which is both of DLS's.
 
     >>> admission_rewrites(
     ...     {"securityContext": {"capabilities": {"drop": ["ALL"]}}},
@@ -1147,6 +1155,10 @@ def admission_rewrites(
     ('set runAsNonRoot: true',)
     >>> admission_rewrites({"securityContext": {}}, {"securityContext": {}})
     ()
+    >>> asked = {"securityContext": {"capabilities": {"add": ["SYS_PTRACE"]}}}
+    >>> landed = {"securityContext": {"capabilities": {"add": ["CHOWN"]}}}
+    >>> admission_rewrites(asked, landed, include_removed_capabilities=False)
+    ('added CHOWN to capabilities.add',)
     """
     asked = as_dict(requested.get("securityContext"))
     stored = as_dict(admitted.get("securityContext"))
@@ -1155,7 +1167,9 @@ def admission_rewrites(
     added = sorted(set(_capabilities(stored, "add")) - set(_capabilities(asked, "add")))
     if added:
         phrases.append(f"added {', '.join(added)} to capabilities.add")
-    removed = capabilities_removed(requested, admitted)
+    removed: tuple[str, ...] = ()
+    if include_removed_capabilities:
+        removed = capabilities_removed(requested, admitted)
     if removed:
         phrases.append(f"removed {', '.join(removed)} from capabilities.add")
     undropped = sorted(

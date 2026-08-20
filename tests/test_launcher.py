@@ -2552,6 +2552,34 @@ def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
     assert not any("three of the six" in text for text in session.warnings)
 
 
+def test_a_strip_and_a_rewrite_are_both_reported() -> None:
+    """Both DLS clusters do both, in one pass, and only the strip was printed.
+
+    The stripped-capability arm used to return before the rewrite check, so on a
+    policy that removes ``SYS_PTRACE`` *and* hands the seat the thirteen
+    capabilities of its own baseline - which is every attach on p47-beamline and
+    on hgv27681 - the rewrite was dropped on the floor. Two facts, two lines: a
+    warning is one line, and these have two different remedies.
+    """
+
+    def strip_and_add(container: dict[str, Any]) -> None:
+        security = cast(dict[str, Any], container["securityContext"])
+        cast(dict[str, Any], security["capabilities"])["add"] = ["CHOWN", "SETGID"]
+
+    cluster = FakeCluster(pod_document(uid=0), mutate=strip_and_add)
+    session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
+
+    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
+    rewrite = [
+        warning for warning in session.warnings if "admission rewrote" in warning
+    ]
+    assert len(rewrite) == 1
+    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+    # And the strip is named once. It has its own warning above; repeating it
+    # inside the rewrite list would be one event answered twice.
+    assert "removed SYS_PTRACE" not in rewrite[0]
+
+
 def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
     """The expensive one: ``runAsNonRoot: true`` beside uid 0.
 

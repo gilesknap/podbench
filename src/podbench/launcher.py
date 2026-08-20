@@ -2017,17 +2017,29 @@ def _dry_run_rung(
             ),
             (),
         )
+    warnings: list[str] = []
     if stripped:
         # No rung below to prefer, so the stripped seat is the best there is
         # rather than the worst: against a root target `runAsNonRoot: true`
         # cannot express uid 0, so every lower rung is already ruled out.
         # Refusing here would end the walk with nothing admitted at all.
-        return None, (CAPABILITY_STRIPPED_WARNING.format(stripped=", ".join(stripped)),)
+        warnings.append(
+            CAPABILITY_STRIPPED_WARNING.format(stripped=", ".join(stripped))
+        )
 
-    rewrites = admission_rewrites(spec, admitted)
-    if not rewrites:
-        return None, ()
-    return None, (ADMISSION_MUTATION_WARNING.format(rewrites="; ".join(rewrites)),)
+    # Both, where admission did both. A policy that strips a capability
+    # usually rewrites the rest of the securityContext in the same pass - on
+    # both DLS clusters every attach is stripped *and* handed thirteen
+    # capabilities it never asked for - and returning after the strip meant the
+    # rewrite was never once printed. The strip keeps its own line rather than
+    # being folded into the rewrite list, because a warning is one line and
+    # these are two facts with two remedies.
+    rewrites = admission_rewrites(
+        spec, admitted, include_removed_capabilities=not stripped
+    )
+    if rewrites:
+        warnings.append(ADMISSION_MUTATION_WARNING.format(rewrites="; ".join(rewrites)))
+    return None, tuple(warnings)
 
 
 def _refusal_detail(error: KubectlError, *, dry_run: bool = False) -> str:
