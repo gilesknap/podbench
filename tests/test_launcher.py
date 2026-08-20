@@ -4266,26 +4266,40 @@ def refused_seat_listing(directory: Path) -> str:
     )
 
 
-def test_a_refused_seats_state_row_does_not_run_past_the_terminal(
+def test_a_refused_seats_listing_does_not_run_past_the_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`"<pod>_<ns>(<uid>)",` has no space in it, so nothing can wrap it.
+    """The whole listing, because a refused seat overflowed it twice.
 
-    `console.wrap` breaks on whitespace and that token carries none, so the
-    `state` row ran four columns past a 100-column terminal - and no width
-    helps, since a 90-character token does not fit under a 14-column indent at
-    any terminal size. The fix is to print less, not to break the token.
+    `"<pod>_<ns>(<uid>)",` has no space in it, so `console.wrap` breaks
+    nowhere in the `state` row; and the offer below it is deliberately never
+    wrapped, so the prose that used to trail the pod name could not move
+    either. Neither has a width that fixes it - both were fixed by printing
+    less - which is why this asserts against the terminal and not against a
+    number.
     """
     monkeypatch.setenv("COLUMNS", "100")
 
-    facts = [
-        line
-        for line in refused_seat_listing(tmp_path / "cfg").splitlines()
-        if line.startswith("    ")
-    ]
+    lines = refused_seat_listing(tmp_path / "cfg").splitlines()
 
-    assert facts, "the state row is what is being measured"
-    assert max(len(line) for line in facts) <= console().width
+    assert lines
+    assert max(len(line) for line in lines) <= console().width
+
+
+def test_the_offer_under_a_seatless_pod_ends_with_what_to_paste(
+    tmp_path: Path,
+) -> None:
+    """The shape `ssh_connect_line`'s own missing-stanza answers already use.
+
+    This line is never wrapped, because wrapping would break the command on a
+    space, so anything after the command is columns nothing can shorten - and
+    it also has to be selected around before the command can be pasted.
+    """
+    text = refused_seat_listing(tmp_path / "cfg")
+
+    assert text.endswith(
+        f"nothing to ssh to here: podbench attach -n hgv27681 {LONG_POD}"
+    )
 
 
 def test_only_the_kubelets_reference_to_the_pod_is_dropped(tmp_path: Path) -> None:

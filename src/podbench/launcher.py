@@ -4075,9 +4075,14 @@ def format_seats(
         if seat.running:
             lines.append(ssh_connect_line(directory, pod, seat.name))
     if not any(seat.running for seat in present):
+        # The command ends the line, as it does on `ssh_connect_line`'s two
+        # missing-stanza answers: this line is never wrapped - the right-hand
+        # half is there to be pasted and `wrap` would break it on a space - so
+        # the prose that used to trail the pod name was 20 columns nothing could
+        # shorten. On a beamline's pod names that alone ran the listing past a
+        # 100-column terminal, and the reader had to select around it to paste.
         lines.append(
-            f"  nothing to ssh to here: podbench attach -n {pod.namespace} "
-            f"{pod.name} lands the next seat"
+            f"  nothing to ssh to here: podbench attach -n {pod.namespace} {pod.name}"
         )
     return "\n".join(lines)
 
