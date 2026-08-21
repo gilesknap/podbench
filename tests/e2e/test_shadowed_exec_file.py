@@ -15,12 +15,18 @@ and, in the runs where the two builds are close enough not to error, no message
 at all and the wrong symbols.
 
 The fixture is the Diamond IOC reconstruction (``apps/dls-ioc.yaml``) because
-the collision has to be *real*: the seat image and that workload both set
-``UV_PYTHON_INSTALL_DIR=/python``, so a uv-managed interpreter lands at one
-absolute path in both containers. :func:`test_this_seat_shadows_the_targets_exe`
-asserts that premise before anything else runs — without two different files at
-one path there is no #90 to regress, and every other assertion here would pass
-vacuously.
+the *target* has to be real: a uv-managed interpreter under ``/python``, reached
+through ``/proc/<pid>/root``, which is the shape #90 was reported on.
+
+The **collision** is planted rather than inherited — see :func:`shadowed_exe`.
+It used to come for free, because the seat image and that workload both set
+``UV_PYTHON_INSTALL_DIR=/python`` and happened to resolve the same CPython. That
+was a coincidence of two release cadences, one pinned and one floating, and it
+ran out on 2026-08-21: the path carries the patch version, so the day they
+disagreed the premise failed and #90 silently had no regression test.
+:func:`test_this_seat_shadows_the_targets_exe` still asserts the premise before
+anything else runs, because a planted collision that failed to plant is the same
+vacuum as one that never happened.
 
 Deliberately in its own module rather than beside ``test_dls_ioc.py``. That file
 needs a cluster serving ``MutatingAdmissionPolicy`` and skips without one; #90
@@ -99,7 +105,9 @@ def seat(kube: Kubectl, target: str, podbench_image: str) -> Session:
 
 
 @pytest.fixture(scope="module")
-def dry_run(kubectl: KubectlCli, target: str, seat: Session) -> list[str]:
+def dry_run(
+    kubectl: KubectlCli, target: str, seat: Session, shadowed_exe: str
+) -> list[str]:
     """``podbench dbg --dry-run``, run in the seat, with no pid given.
 
     No pid on purpose: the discovery is part of what is under test here, and it
@@ -134,6 +142,78 @@ def app_pid(dry_run: list[str], kubectl: KubectlCli, target: str, seat: Session)
     )
     assert pid != 1, "the point of this fixture is that the app is not PID 1"
     return pid
+
+
+DECOY_MARKER = "podbench-e2e-shadow"
+"""Appended to the planted binary so its size cannot match the target's.
+
+An ELF reader stops at the section table, so trailing bytes leave it a valid
+binary that gdb will open and BFD will try to read — which is the whole point.
+What they buy is that ``sizes[0] != sizes[1]`` cannot fail by coincidence, even
+where the seat's interpreter and the target's are the same upstream build.
+"""
+
+
+@pytest.fixture(scope="module")
+def shadowed_exe(kubectl: KubectlCli, target: str, seat: Session) -> str:
+    """Guarantee two different files at the target's interpreter path.
+
+    #90 needs one absolute path to name a different file in each mount
+    namespace. The fixture used to get that for free: the seat and the pinned
+    IOC image both set ``UV_PYTHON_INSTALL_DIR=/python``, so a uv-managed
+    CPython landed at ``/python/cpython-<version>-<triple>/`` in both.
+
+    That was a coincidence of release cadences, and it ran out on 2026-08-21.
+    The path carries the **patch** version, the IOC image is pinned at
+    ``fastcs-thorlabs-mff:0.2.0`` with 3.11.15 frozen into it, and the seat is
+    built on every CI run with ``uv sync --managed-python``, which resolves
+    whatever 3.11.x exists that day. The moment those differ there is no
+    collision, the premise fails, and #90 has no regression test — which is
+    what happened to the 0.4.0 tag build.
+
+    So the collision is *made* rather than hoped for. Only when the seat has no
+    file at that path: where it already has one the natural collision is the
+    better fixture, and overwriting would mean writing to the seat's own
+    running interpreter — ``cp`` onto a mapped executable is ``ETXTBSY``, and
+    succeeding would be worse than failing.
+    """
+    # Asked of the *target container*, not of /proc/<pid>/exe, and that is the
+    # whole reason this fixture takes no pid: the pid comes from `dry_run`, and
+    # `dry_run` has to run with the collision already in place. `gdb_exec_file`
+    # stages a copy only where it finds a shadowing file, so a dry run taken
+    # first correctly decides that no staging is needed and prints a sequence
+    # that is unsafe by the time anything replays it - measured, and the only
+    # test of the four that failed. `test_this_seat_shadows_the_targets_exe`
+    # checks this path against /proc/<pid>/exe once there is a pid to check.
+    exe = kubectl.exec(
+        target,
+        ["readlink", "-f", "/app/.venv/bin/python"],
+        container=TARGET_CONTAINER,
+    ).stdout.strip()
+    assert exe.startswith("/python/cpython-"), (
+        f"the IOC's interpreter is no longer a uv-managed one at /python: {exe}. "
+        "That is a change in the *target* image, not the drift this fixture "
+        "plants around - the path below is what #90 collides on"
+    )
+    planted = _in_seat(
+        kubectl,
+        target,
+        seat,
+        # `-e` so a failed mkdir or cp is this fixture's error rather than an
+        # empty listing blamed on the assertion below.
+        "set -e\n"
+        f'if [ ! -e "{exe}" ]; then\n'
+        f'  mkdir -p "$(dirname "{exe}")"\n'
+        f'  cp "$(readlink -f /app/.venv/bin/python)" "{exe}"\n'
+        f'  printf %s {DECOY_MARKER} >> "{exe}"\n'
+        "fi\n"
+        f'stat -c %s "{exe}"',
+    )
+    assert planted.split() and planted.split()[0].isdigit(), (
+        f"could not put a second build at {exe} in the seat, so #90 cannot "
+        f"happen here and nothing below tests it:\n{planted}"
+    )
+    return exe
 
 
 def _in_seat(
@@ -189,37 +269,44 @@ def _require_live_attach(seat: Session) -> None:
 
 
 def test_this_seat_shadows_the_targets_exe(
-    kubectl: KubectlCli, target: str, seat: Session, app_pid: int
+    kubectl: KubectlCli, target: str, seat: Session, app_pid: int, shadowed_exe: str
 ) -> None:
     """Two *different* files at one absolute path, which is all #90 needs.
 
-    The control for the whole file. If podbench's image stops installing its
-    interpreter at ``/python/cpython-<version>-<triple>/`` — a legitimate way to
-    dodge this one collision — the fixture no longer reproduces the defect and
-    the tests below would pass without testing anything. Fail loudly instead:
-    the file then needs a target that collides with whatever the seat does ship.
+    The control for the whole file, and the reason it is checked rather than
+    assumed: without something for gdb's canonicalisation to land on there is no
+    #90 to regress, and every assertion below would pass vacuously.
+
+    :func:`shadowed_exe` establishes it. What is left here is that it *held* —
+    the two files exist and differ — which is not the same statement and is the
+    one the tests below depend on.
     """
-    exe = kubectl.exec(
+    running = kubectl.exec(
         target, ["readlink", f"/proc/{app_pid}/exe"], container=seat.seat.container
     ).stdout.strip()
+    assert running == shadowed_exe, (
+        f"the app runs {running} but the collision was planted at "
+        f"{shadowed_exe}, so gdb has nothing to misread and every assertion "
+        "below is vacuous. `shadowed_exe` reads the target container's own "
+        "interpreter rather than /proc/<pid>/exe, and the two have diverged"
+    )
     listing = _in_seat(
         kubectl,
         target,
         seat,
-        f"stat -c '%s' '{exe}' 2>&1; stat -c '%s' '/proc/{app_pid}/root{exe}' 2>&1",
+        f"stat -c '%s' '{shadowed_exe}' 2>&1; "
+        f"stat -c '%s' '/proc/{app_pid}/root{shadowed_exe}' 2>&1",
     )
 
-    assert exe.startswith("/python/cpython-"), (
-        f"the IOC's interpreter is no longer a uv-managed one at /python: {exe}"
-    )
     sizes = listing.split()
     assert len(sizes) == 2 and all(size.isdigit() for size in sizes), (
-        f"this seat has no file of its own at {exe}, so gdb's canonicalisation "
-        f"has nothing to land on and #90 cannot happen here:\n{listing}"
+        f"this seat has no file of its own at {shadowed_exe}, so gdb's "
+        f"canonicalisation has nothing to land on and #90 cannot happen "
+        f"here:\n{listing}"
     )
     assert sizes[0] != sizes[1], (
-        f"the two builds at {exe} are the same size, so this run cannot tell a "
-        f"correct read from the collapsed one:\n{listing}"
+        f"the two builds at {shadowed_exe} are the same size, so this run "
+        f"cannot tell a correct read from the collapsed one:\n{listing}"
     )
 
 
@@ -227,7 +314,11 @@ def test_this_seat_shadows_the_targets_exe(
 
 
 def test_dbg_hands_gdb_the_targets_own_binary(
-    kubectl: KubectlCli, target: str, seat: Session, app_pid: int
+    kubectl: KubectlCli,
+    target: str,
+    seat: Session,
+    app_pid: int,
+    shadowed_exe: str,
 ) -> None:
     """The file ``dbg`` names must hold the *target's* bytes.
 
@@ -259,7 +350,12 @@ def test_dbg_hands_gdb_the_targets_own_binary(
 
 
 def test_dbgs_own_sequence_resolves_the_targets_symbols(
-    kubectl: KubectlCli, target: str, seat: Session, dry_run: list[str], app_pid: int
+    kubectl: KubectlCli,
+    target: str,
+    seat: Session,
+    dry_run: list[str],
+    app_pid: int,
+    shadowed_exe: str,
 ) -> None:
     """Report 4.3's sequence, run verbatim, must not produce #90's text.
 
@@ -293,7 +389,11 @@ def test_dbgs_own_sequence_resolves_the_targets_symbols(
 
 
 def test_a_third_party_gdb_pid_attach_resolves_them_too(
-    kubectl: KubectlCli, target: str, seat: Session, app_pid: int
+    kubectl: KubectlCli,
+    target: str,
+    seat: Session,
+    app_pid: int,
+    shadowed_exe: str,
 ) -> None:
     """debugpy's own argv, which is how #90 was reported.
 
