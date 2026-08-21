@@ -261,7 +261,11 @@ def test_a_filling_column_is_cut_so_the_rows_below_stay_aligned() -> None:
         width=30,
     )
     assert len(lines[1].plain) == 30
-    assert lines[1].plain.endswith("…")
+    # The middle goes, so both ends of the cell survive — the head says what
+    # kind of thing it is and the tail is what tells one row from the next.
+    assert "…" in lines[1].plain
+    assert lines[1].plain.startswith("1    x")
+    assert lines[1].plain.endswith("x")
     # The short row is not padded out to the margin: trailing space is not
     # content, and these listings are pasted as often as they are read.
     assert lines[2].plain == "22   short"
@@ -317,7 +321,7 @@ def test_the_ellipsis_degrades_where_stdout_cannot_carry_it(
     # And the cut still lands inside the budget, three columns rather than one.
     (row,) = table([Column("CMD", fill=True)], [Row(["x" * 40])], width=20)[1:]
     assert len(row.plain) == 20
-    assert row.plain.endswith("...")
+    assert "..." in row.plain
 
 
 def test_a_cell_that_fills_its_field_still_reads_as_a_cell(

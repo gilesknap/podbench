@@ -518,10 +518,10 @@ def test_pids_table_marks_only_the_target(
     # The mark and the column agree, which is the whole value of the mark:
     # it names the pid `dbg` will use, and `dbg` uses a target-container pid.
     assert [pid for pid, cells in rows.items() if cells[PICKED]] == [str(TARGET_PID)]
-    # The prefix, not the whole argv: CMDLINE is cut to the width the other
-    # columns left, which at the suite's pinned 80 is not much. That the cut
-    # happens at all is pinned separately, below.
-    assert rows[str(TARGET_PID)]["CMDLINE"].startswith("/app/victim")
+    # Not the whole argv: CMDLINE is cut to the width the other columns left,
+    # which at the suite's pinned 80 is not much. What must survive is the
+    # *end* — see the elision test below.
+    assert rows[str(TARGET_PID)]["CMDLINE"].endswith("--loop")
 
 
 def test_pids_targets_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -561,7 +561,14 @@ def test_a_long_cmdline_is_cut_rather_than_left_to_wrap(
     out = capsys.readouterr().out
     assert max(len(line) for line in out.splitlines()) <= 80
     cut = table_rows(out)[str(TARGET_PID)]["CMDLINE"]
-    assert cut.endswith(ellipsis())
+    assert ellipsis() in cut
+    # The tail, and this is the finding a real pod produced (a Diamond IOC,
+    # 2026-08-21): every process in the target container was a venv Python, so
+    # all four cmdlines opened `/app/.venv/bin/python /app/.venv/bin/…` and
+    # only the program and its arguments told them apart. Cutting from the
+    # right kept the identical half of every row and deleted the answer.
+    assert cut.endswith("--loop")
+    assert cut.startswith("/app")
 
     main(["pids", "--container-id", TARGET_CID, "--json"], proc=proc)
     payload = json.loads(capsys.readouterr().out)

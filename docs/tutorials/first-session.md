@@ -201,8 +201,10 @@ target container.
 argument at all. Rows outside the target container are dimmed — that second one
 is this seat's own agent — and `CMDLINE` is cut to the width the other columns
 leave, since one long argv would otherwise be wrapped by the terminal and put
-the next row's `PID` under this row's `PTRACE`. `podbench pids --json` has the
-untruncated form.
+the next row's `PID` under this row's `PTRACE`. The cut takes the **middle**:
+on a pod whose processes are all one interpreter every cmdline opens
+`/app/.venv/bin/python …`, so the end is the only part that tells one row from
+the next. `podbench pids --json` has the untruncated form.
 
 There is no listening socket in that pod, no port-forward and no pod IP
 involved. ssh's `ProxyCommand` is a `kubectl exec` running `sshd -i -e` on the

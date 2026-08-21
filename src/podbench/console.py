@@ -474,7 +474,11 @@ def table(
     ... ):
     ...     print(line.plain)
     PID  CMD
-    1    /usr/bin/python3 -…
+    1    /usr/b… --port 8080
+
+    The middle goes, not the end, and :data:`_HEAD` says why: on a pod whose
+    processes are all one interpreter, the head of every cmdline is the same
+    and the answer is in the tail.
     """
     limit = table_width() if width is None else width
     grid = [[*(column.heading for column in columns)], *(list(r.cells) for r in rows)]
@@ -491,8 +495,7 @@ def table(
         widths[index] = max(_FILL_FLOOR, limit - spent - gaps)
         cut = ellipsis()
         for row in grid:
-            if len(row[index]) > widths[index]:
-                row[index] = row[index][: widths[index] - len(cut)] + cut
+            row[index] = _elide(row[index], widths[index], cut)
     columns = [columns[index] for index in live]
     widths = [widths[index] for index in live]
     grid = [[row[index] for index in live] for row in grid]
@@ -501,6 +504,42 @@ def table(
         _styled_row(cells, columns, widths, indent=indent, row_style=style, head=first)
         for first, (cells, style) in enumerate(zip(grid, styles, strict=True))
     ]
+
+
+_HEAD = 3
+"""What fraction of an elided cell is kept from the front — one third.
+
+Weighted to the tail because that is where a cell of this kind differs. On a
+real pod (a Diamond IOC, 2026-08-21) every process in the target container was
+a venv Python, so all four cmdlines opened
+``/app/.venv/bin/python /app/.venv/bin/…`` and only the program name and its
+arguments told them apart. Cutting from the right kept the identical half of
+every row and threw away the half that answered the question — at 80 columns
+all four read ``/app/.venv/…``, which is not a truncation of the answer so much
+as a deletion of it.
+"""
+
+
+def _elide(cell: str, width: int, cut: str) -> str:
+    """``cell`` at ``width``, losing the middle rather than the end.
+
+    >>> _elide("/app/.venv/bin/python /app/.venv/bin/ioc run /etc/x.yaml", 30, "…")
+    '/app/.ven…/ioc run /etc/x.yaml'
+
+    A cell that fits is untouched, and one with no room to say anything either
+    way is cut plainly — below the width of the marker there is nothing to
+    weigh.
+
+    >>> _elide("short", 30, "…")
+    'short'
+    """
+    if len(cell) <= width:
+        return cell
+    keep = width - len(cut)
+    if keep < 2:
+        return cell[:width]
+    head = keep // _HEAD
+    return cell[:head] + cut + cell[len(cell) - (keep - head) :]
 
 
 def _styled_row(
