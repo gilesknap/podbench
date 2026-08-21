@@ -1,0 +1,611 @@
+# S2 — vscode-server inside an ephemeral container
+
+**Verdict:** PASS
+**Date:** 2026-08-15  (cluster: k3s v1.34, mixed arm64/amd64)
+
+The VS Code remote server installs, starts, listens, installs extensions and survives
+client disconnect inside a `debian:bookworm-slim` **ephemeral** container attached to a
+running pod, on **both amd64 (nuc2) and arm64 (node02/RK3588)**, reached only through
+`kubectl exec` (no port-forward, no pod IP). Cold path — download + extract + start +
+port discovery — is **5.8 s on amd64, ~10 s on arm64**.
+
+Several brief assumptions turned out wrong; see *Deviations*. The three that change the
+plan: **the version lock is a hard handshake rejection, not a soft fallback**; **the
+~1 GB budget is already blown by the stock server + one extension**; and **an OOM inside
+the debug container destroys the whole session unrecoverably** because ephemeral
+containers cannot be restarted.
+
+---
+
+## What was tested
+
+| # | Item | Result |
+|---|---|---|
+| 1 | target pod + `debian:bookworm-slim` ephemeral container, sshd re-setup | PASS |
+| 2 | glibc >= 2.28 verified **empirically** from ELF symbol versions; Alpine/musl claim tested on a real Alpine ephemeral container | PASS (claim confirmed) |
+| 3 | Download + extract + run the server (`bin/code-server --start-server`) | PASS |
+| 4 | Measured download size / on-disk size / RSS on both arches | PASS |
+| 5 | Headless `--install-extension ms-vscode.cpptools` (+ ms-python, redhat.vscode-yaml, local `.vsix`) | PASS |
+| 6 | Disconnect / reconnect survival + idempotent re-bootstrap (run 3x) | PASS, after fixing a real liveness bug |
+| 7 | Egress endpoints captured by strace + IP→hostname matching | PASS |
+| 8 | Repeat everything on arm64 (node02) | PASS |
+| — | *Extra:* commit-mismatch handshake probed at the wire protocol level | Hard rejection observed |
+| — | *Extra:* pod memory limit vs ephemeral container; in-place pod resize | Important findings |
+
+Client was the OpenSSH CLI plus a hand-written VS Code remote-protocol probe — **no real
+VS Code GUI client connected**, so no extension host / language server was ever spawned.
+All RSS numbers below are therefore *idle server* numbers (lower bound). This is the main
+limitation of the spike.
+
+---
+
+## Exact commands that worked
+
+### 1. Namespace + target pod
+
+```bash
+kubectl create namespace podbench-s2
+```
+
+```yaml
+# target-amd64.yaml  (swap nodeSelector to kubernetes.io/hostname: node02 for arm64)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: target-amd64
+  namespace: podbench-s2
+spec:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  containers:
+  - name: app
+    image: python:3.12-slim
+    imagePullPolicy: IfNotPresent
+    command: ["python3","-c","import time\nwhile True: time.sleep(5)"]
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: "2", memory: 3Gi}
+```
+
+```bash
+kubectl apply -f target-amd64.yaml
+timeout 240 kubectl -n podbench-s2 wait --for=condition=Ready pod/target-amd64 --timeout=230s
+```
+
+### 2. Ephemeral container (must have a long-running command)
+
+```bash
+kubectl -n podbench-s2 debug target-amd64 \
+  --image=debian:bookworm-slim --image-pull-policy=IfNotPresent \
+  --target=app --container=code --profile=general --attach=false -- sleep infinity
+
+timeout 180 kubectl -n podbench-s2 wait \
+  --for=jsonpath='{.status.ephemeralContainerStatuses[?(@.name=="code")].state.running.startedAt}' \
+  pod/target-amd64 --timeout=170s
+```
+
+### 3. sshd, and ssh **without any listening socket** (inetd mode over `kubectl exec`)
+
+```bash
+PUB=$(cat podbench_key.pub)
+kubectl -n podbench-s2 exec target-amd64 -c code -- bash -lc "
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq && apt-get install -y -qq openssh-server curl ca-certificates procps
+  ssh-keygen -A; mkdir -p /run/sshd /root/.ssh; chmod 700 /root/.ssh
+  echo '$PUB' > /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys
+  printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nUsePAM no\n' \
+    > /etc/ssh/sshd_config.d/podbench.conf
+  /usr/sbin/sshd -t && echo sshd_ok"
+```
+
+```text
+# ssh_config
+Host podbench-s2
+  HostName target-amd64
+  User root
+  IdentityFile ./podbench_key
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  ProxyCommand kubectl -n podbench-s2 exec -i target-amd64 -c code -- /usr/sbin/sshd -i
+```
+
+```console
+$ ssh -F ssh_config podbench-s2 'echo SSH_OK; id; uname -m'
+SSH_OK
+uid=0(root) gid=0(root) groups=0(root)
+x86_64
+```
+
+`sshd -i` (inetd mode) means **no TCP listener anywhere in the pod** — the SSH transport
+is the exec channel itself. Session setup 0.28–0.32 s; bulk throughput **27 MB/s**
+(200 MiB in 7.4 s). Note: do **not** pass `-e` to `sshd` — it writes the auth log to
+stderr, which kubectl exec muxes back onto the client's stderr and pollutes every session.
+
+### 4. Server URLs (both arches exist; commit is the identity)
+
+```console
+$ curl -sSL -o /dev/null -w '%{url_effective}\n' \
+    https://update.code.visualstudio.com/latest/server-linux-x64/stable
+https://vscode.download.prss.microsoft.com/dbazure/download/stable/a5b500951314efd502d07465bd138dfbd714a960/vscode-server-linux-x64.tar.gz
+
+# arm64 and the small CLI tarball resolve at the same commit, both HTTP 200:
+#   .../a5b5009.../vscode-server-linux-arm64.tar.gz
+#   .../a5b5009.../vscode_cli_linux_x64_cli.tar.gz
+```
+
+Enumerate every published server commit:
+
+```console
+$ curl -sS https://update.code.visualstudio.com/api/commits/stable/server-linux-x64 | jq length
+200
+$ curl -sS https://update.code.visualstudio.com/api/update/linux-x64/stable/latest | jq -c '{name,version}'
+{"name":"1.133.0","version":"a5b500951314efd502d07465bd138dfbd714a960"}
+```
+
+### 5. The bootstrap script that actually works (idempotent, zombie-safe)
+
+This is the artifact to steal for the implementation. v1 (pid-file based) had a real bug
+— see *Deviations #4*.
+
+```sh
+#!/bin/sh
+# bootstrap-server-v2.sh — run over ssh:  ssh podbench 'sh -s' < bootstrap-server-v2.sh
+set -e
+COMMIT="${VSCODE_COMMIT:-a5b500951314efd502d07465bd138dfbd714a960}"
+case "$(uname -m)" in
+  x86_64)  VSARCH=x64 ;;
+  aarch64) VSARCH=arm64 ;;
+  *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+esac
+ROOT="$HOME/.vscode-server"
+SRV="$ROOT/cli/servers/Stable-$COMMIT/server"
+DATA="$ROOT/data"
+LOG="$ROOT/.$COMMIT.log"
+PORTFILE="$ROOT/.$COMMIT.port"
+TOKENFILE="$ROOT/.$COMMIT.token"
+mkdir -p "$SRV" "$DATA"
+
+# --- install: stage then move, so a half-extracted tree is never treated as installed
+if [ ! -x "$SRV/bin/code-server" ]; then
+  echo "BOOTSTRAP: downloading server $COMMIT ($VSARCH)"
+  STAGE="$ROOT/.stage.$COMMIT.$$"; mkdir -p "$STAGE"
+  curl -fsSL "https://update.code.visualstudio.com/commit:$COMMIT/server-linux-$VSARCH/stable" \
+    | tar -xz -C "$STAGE" --strip-components=1
+  cp -a "$STAGE/." "$SRV/"; rm -rf "$STAGE"
+else
+  echo "BOOTSTRAP: server present"
+fi
+
+[ -s "$TOKENFILE" ] || cat /proc/sys/kernel/random/uuid > "$TOKENFILE"
+TOKEN=$(cat "$TOKENFILE")
+
+# --- liveness by HTTP probe, NOT by pid: pids go zombie under a non-reaping pid-1
+alive() {
+  [ -s "$PORTFILE" ] || return 1
+  curl -fsS -m 3 "http://127.0.0.1:$(cat "$PORTFILE")/version" 2>/dev/null | grep -q "^$COMMIT$"
+}
+
+if alive; then
+  echo "BOOTSTRAP: reusing running server on port $(cat "$PORTFILE")"
+else
+  rm -f "$PORTFILE"; : > "$LOG"
+  # deliberately NOT passing --enable-remote-auto-shutdown (5-min idle kill, see findings)
+  setsid nohup "$SRV/bin/code-server" \
+      --accept-server-license-terms --start-server \
+      --host=127.0.0.1 --port=0 \
+      --connection-token-file "$TOKENFILE" \
+      --telemetry-level off \
+      --server-data-dir "$DATA" >>"$LOG" 2>&1 < /dev/null &
+  i=0
+  while [ $i -lt 60 ]; do
+    P=$(sed -n 's/^Extension host agent listening on \([0-9]*\).*/\1/p' "$LOG" | head -1)
+    [ -n "$P" ] && { echo "$P" > "$PORTFILE"; break; }
+    i=$((i+1)); sleep 1
+  done
+  [ -s "$PORTFILE" ] || { echo "BOOTSTRAP: FAILED"; tail -20 "$LOG"; exit 1; }
+  echo "BOOTSTRAP: started on port $(cat "$PORTFILE")"
+fi
+echo "listeningOn==$(cat "$PORTFILE")=="
+echo "connectionToken==$TOKEN=="
+```
+
+Cold run and two warm runs (amd64):
+
+```console
+$ time ssh -F ssh_config podbench-s2 'sh -s' < bootstrap-server-v2.sh
+BOOTSTRAP: downloading server a5b500951314efd502d07465bd138dfbd714a960 (x64)
+BOOTSTRAP: started on port 38155
+listeningOn==38155==
+connectionToken==8ff4cbb3-7ef3-4cb5-a05d-e63cf27b00b7==
+cold_bootstrap_ms=5764
+
+$ ssh -F ssh_config podbench-s2 'sh -s' < bootstrap-server-v2.sh
+BOOTSTRAP: server present
+BOOTSTRAP: reusing running server on port 38155
+...
+$ ssh -F ssh_config podbench-s2 'sh -s' < bootstrap-server-v2.sh   # 3rd time, same output
+```
+
+### 6. Proving the client data path (HTTP + WebSocket over the exec channel)
+
+```console
+$ ssh -F ssh_config -f -N -L 19999:127.0.0.1:38327 -o ExitOnForwardFailure=yes podbench-s2
+$ curl -sS http://127.0.0.1:19999/version
+a5b500951314efd502d07465bd138dfbd714a960
+
+$ curl -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+    -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    "http://127.0.0.1:19999/?reconnectionToken=$(uuidgen)&reconnection=false&skipWebSocketFrames=false&connectionToken=$TOKEN"
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+### 7. Extensions, headless
+
+```console
+$ $SRV/bin/code-server --accept-server-license-terms \
+    --server-data-dir /root/.vscode-server/data --install-extension ms-vscode.cpptools --force
+Installing extension 'ms-vscode.cpptools'...
+Extension 'ms-vscode.cpptools' v1.32.2 was successfully installed.
+install_ms=8354         # amd64;  8068 ms on arm64
+
+$ du -sh /root/.vscode-server/data/extensions/*
+330M  ms-vscode.cpptools-1.32.2-linux-x64        # arm64 auto-resolved to -linux-arm64, 261M
+```
+
+Dependency resolution and local `.vsix` install both work:
+
+```console
+$ ... --install-extension ms-python.python --force
+Extension 'ms-python.vscode-python-envs' v1.36.0 was successfully installed.
+Extension 'ms-python.debugpy' v2026.6.0 was successfully installed.
+Extension 'ms-python.python' v2026.4.0 was successfully installed.
+Extension 'ms-python.vscode-pylance' v2026.3.1 was successfully installed.
+
+$ ... --install-extension /tmp/cached.vsix --force
+Extension 'cached.vsix' was successfully installed.
+```
+
+### 8. Version-lock probe (raw VS Code remote protocol over the WebSocket)
+
+Handshake is: WS upgrade with `skipWebSocketFrames=true` → raw 13-byte framed messages
+`[type:u8][id:u32][ack:u32][len:u32]`, `type=2` = Control. Message 0 is
+`{"type":"auth","auth":"<connection token>","data":...}`; message 1 is
+`{"type":"connectionType","commit":"<client commit>",...}`.
+
+```console
+### A: WRONG commit (deadbeef...)
+after auth:            {"type":"sign","data":"fh2yIw...","signedData":"8691Gx..."}
+after connectionType:  {"type":"error","reason":"Client refused: version mismatch"}   <<CLOSED>>
+
+### B: CORRECT commit (a5b5009...)
+after auth:            {"type":"sign","data":"oYAoMm...","signedData":"915dQl..."}
+after connectionType:  {"type":"error","reason":"Unauthorized client refused"}        <<CLOSED>>
+```
+
+(B fails only on the *next* check — the signed-data challenge, which the probe fakes.
+The commit check is passed.) The matching source in `out/server-main.js`:
+
+```js
+let S=v.commit, T=this._productService.commit;
+if (S && T && S !== T) return m("Client refused: version mismatch");
+```
+
+### 9. glibc / musl
+
+```console
+# Debian bookworm ephemeral container
+$ ldd --version | head -1
+ldd (Debian GLIBC 2.36-9+deb12u14) 2.36
+$ objdump -T $SRV/node | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -3
+GLIBC_2.25
+GLIBC_2.27
+GLIBC_2.28                         # <- highest required symbol version, brief confirmed
+$ objdump -T $SRV/node | grep -oE 'GLIBCXX_[0-9.]+' | sort -uV | tail -1
+GLIBCXX_3.4.21                     # libstdc++ from GCC 5.1+
+$ readelf -p .interp $SRV/node | tail -2
+  [     0]  /lib64/ld-linux-x86-64.so.2
+$ find $SRV -name '*.node' | xargs -n1 objdump -T | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
+GLIBC_2.28                         # native addons need no more than node itself
+```
+
+```console
+# alpine:3.20 ephemeral container, same pod
+$ /srv/node --version
+sh: /srv/node: not found                 # <- missing ELF interpreter, not missing file
+$ ls /lib/ld-musl-x86_64.so.1 /lib64/ld-linux-x86-64.so.2
+/lib/ld-musl-x86_64.so.1
+ls: /lib64/ld-linux-x86-64.so.2: No such file or directory
+$ /srv/bin/code-server --version; echo "exit=$?"
+/srv/bin/code-server: line 22: /srv/node: not found
+exit=0                                   # <- WRAPPER SWALLOWS THE FAILURE
+```
+
+### 10. Pod memory limit vs the debug container
+
+```console
+# pod limit is 3Gi (app container). Allocate 3.6 GiB inside the EPHEMERAL container:
+$ kubectl -n podbench-s2 exec target-amd64 -c code -- python3 -c '...allocate 3600 MiB...'
+allocated MiB: 2800
+command terminated with exit code 137
+
+$ kubectl -n podbench-s2 get pod target-amd64 -o jsonpath='{.status.ephemeralContainerStatuses[0].state}'
+{"terminated":{"exitCode":137,"reason":"OOMKilled",...}}     # the whole debug container died
+$ kubectl -n podbench-s2 get pod target-amd64 \
+    -o jsonpath='{.status.containerStatuses[0].restartCount}'
+0                                                            # app container untouched
+```
+
+In-place resize rescues it, and does **not** disturb a running ephemeral container:
+
+```text
+$ kubectl -n podbench-s2 patch pod target-amd64 --subresource resize --patch \
+   '{"spec":{"containers":[{"name":"app","resources":{"limits":{"cpu":"2","memory":"6Gi"},
+     "requests":{"cpu":"50m","memory":"64Mi"}}}]}}'
+pod/target-amd64 patched
+# event: ResizeCompleted
+$ kubectl -n podbench-s2 exec target-amd64 -c code2 -- python3 -c '...allocate 4200 MiB...'
+REACHED 4200 MiB alive
+# resizing again 6Gi -> 7Gi while code2 was running: code2 state stayed {"running":{...}}
+```
+
+### 11. Trimming the server (candidate optimisation)
+
+```console
+$ du -sh $SRV/*
+264M  extensions
+259M  node_modules
+117M  node
+7.7M  out
+$ du -sh $SRV/extensions/* | sort -rh | head -2
+160M  copilot
+59M   mermaid-markdown-features
+
+$ rm -rf $SRV/extensions/copilot $SRV/extensions/copilot-chat \
+         $SRV/extensions/mermaid-markdown-features
+$ du -sh $SRV
+428M                       # was 646M on arm64 — 34% saved
+$ curl -sS http://127.0.0.1:$PORT/version
+a5b500951314efd502d07465bd138dfbd714a960     # still starts and serves; log clean
+```
+
+---
+
+## Findings
+
+### Measurements (VS Code 1.133.0, commit `a5b5009…`)
+
+| Metric | amd64 (nuc2) | arm64 (node02, RK3588) |
+|---|---|---|
+| Server tarball download | **224,027,728 B (213.6 MiB)** | **215,331,901 B (205.4 MiB)** |
+| Download time | 2.17 s | 2.26 s |
+| Extract time | 5.62 s | 5.56 s |
+| Extracted server on disk | **713,893,077 B (680.8 MiB / 689 M `du -sh`)** | **669,263,321 B (638.3 MiB / 646 M)** |
+| Idle server RSS | **~97 MiB** (99,308 KiB fresh; 98,108 KiB with a WS client) | **~92 MiB** (93,844 KiB) |
+| Second server, same container | 85,920 KiB RSS, coexists fine | — |
+| `ms-vscode.cpptools` on disk | **330 M** (`-linux-x64`) | **261 M** (`-linux-arm64`) |
+| cpptools install time | 8.35 s | 8.07 s |
+| Cold bootstrap end-to-end over ssh | **5.76 s** | ~10 s |
+| `apt-get install openssh-server curl ca-certificates procps` | 14–21 s | 24 s |
+| Ephemeral container ready (image cached) | ~2 s | ~5 s |
+| ssh session setup through `kubectl exec` | 0.28–0.32 s | — |
+| Bulk throughput through `kubectl exec` | 27 MB/s | — |
+
+Aggregate on arm64 with exactly one extension (cpptools): `~/.vscode-server` =
+**1,043,404,085 B = 995 MiB**. Plus the Debian base layer + apt packages, a realistic
+"Observe mode" debug container is **1.1–1.3 GB of node disk**.
+
+Extra disk you will also pay for, once each:
+* `data/data/CachedExtensionVSIXs` — 190 M after 6 extensions. Safe to delete after install.
+* A second server version (client upgrade) — another full ~690 MiB, coexisting.
+  My test container reached **2.2 GB** of `~/.vscode-server` with two server versions
+  and six extensions.
+
+### Mechanism findings
+
+1. **`sshd -i` over `kubectl exec` is the right transport.** No listener, no port-forward,
+   no pod IP. 0.3 s setup, 27 MB/s, and `ssh -L` forwards work through it — the VS Code
+   remote protocol's WebSocket upgrade completed (HTTP 101) end-to-end over that path.
+2. **`code-server --port 0` picks a free port and prints it**; the parseable line is
+   `Extension host agent listening on <port>`. `/version` returns the bare commit hash and
+   is the cheapest liveness/identity probe.
+3. **The server survives client disconnect.** After `pkill`-ing every local ssh process,
+   the server was still listening on the same port and the bootstrap re-attached to it.
+   Default `reconnection-grace-time` is 10,800,000 ms (3 h).
+4. **Two commit-pinned servers run side by side happily** in the same container
+   (`cli/servers/Stable-<commit>/server`), ~86 MiB and ~98 MiB RSS.
+5. **All 200 published server commits are still downloadable** via
+   `https://update.code.visualstudio.com/commit:<sha>/server-linux-<arch>/stable`
+   (spot-checked indices 1, 5, 12, 30, 60, 100 — all HTTP 200). Older builds are much
+   smaller: index 100 is 59.5 MB vs today's 224 MB.
+6. **Extension install works headlessly, resolves `extensionDependencies`, and picks the
+   right platform-specific build per arch automatically.**
+
+### Egress endpoints (empirically observed, via `strace -e connect` + IP matching)
+
+| Host | Purpose | Confirmed |
+|---|---|---|
+| `update.code.visualstudio.com` | redirector + `/api/commits`, `/api/update` | yes (150.171.109.216) |
+| `vscode.download.prss.microsoft.com` | actual server tarball (Fastly, 199.232.x) | yes (redirect target) |
+| `marketplace.visualstudio.com` | gallery API `/‌_apis/public/gallery` | **yes, matched 150.171.74.16** |
+| `www.vscode-unpkg.net`, `<publisher>.vscode-unpkg.net` | VSIX asset download + NLS | **yes, matched 150.171.109.216** |
+| `main.vscode-cdn.net` | `extensions/marketplace.json` control list, `mcp/servers.json` | **yes, matched 150.171.109.216** |
+| `crl.microsoft.com`, `www.microsoft.com` | CRL / signature verification during VSIX install | **yes, Akamai 2.19.117.x / 23.214.210.91** |
+| `default.exp-tas.com`, `mobile.events.data.microsoft.com` | A/B experiments + telemetry | resolved, not contacted with `--telemetry-level off` |
+
+Note `crl.microsoft.com` — extension **signature verification** reaches out to Microsoft
+CRL/OCSP. Any air-gap story must account for it, not just the marketplace.
+
+---
+
+## Deviations from the brief
+
+**1. The version lock is a HARD rejection, not a soft fallback. (biggest finding)**
+The brief says pre-baking is "version-locked to the client". It is worse than that word
+suggests. The server compares the client's `commit` against its own `product.json` commit
+*at handshake message 1*, before signature validation, and closes the socket with
+`{"type":"error","reason":"Client refused: version mismatch"}`. There is no negotiation,
+no minor-version tolerance, no override flag on the server side. A user on VS Code 1.134
+cannot use a baked 1.133 server, full stop. The only escape hatch visible in the source is
+`if (S && T && ...)` — a build whose `product.json` has no `commit` accepts anything, which
+is why OSS forks are lax, but the official tarball always sets it.
+**Consequence: a baked image is correct for at most ~4 weeks** (VS Code's monthly cadence),
+and users on Insiders or a stale client are broken immediately.
+
+**2. The ~1 GB soft budget for Observe mode is already exceeded by the stock server.**
+680 MiB extracted before a single extension; cpptools alone adds 330 MiB. `~/.vscode-server`
+hit 995 MiB on arm64 with one extension and 2.2 GB on amd64 with two server versions and
+six extensions. The budget needs restating as ~1.5 GB, or the server needs trimming — 34%
+comes off by deleting `extensions/copilot` (160 M) and `extensions/mermaid-markdown-features`
+(59 M), which still starts and serves `/version`.
+
+**3. An OOM inside the debug container is unrecoverable, and the debug container has no
+resource limits of its own.** Inside the ephemeral container `/sys/fs/cgroup/memory.max`
+reads `max` and `cpu.max` reads `max 100000` — an ephemeral container's spec cannot carry
+`resources`. But it is still confined by the **pod-level** cgroup: allocating 3.6 GiB in a
+pod whose only container is limited to 3Gi OOM-killed **the ephemeral container itself**
+(exit 137, `reason: OOMKilled`), while the app container survived with 0 restarts. Because
+ephemeral containers cannot be restarted, that session was gone permanently — and a
+replacement ephemeral container comes up with a **completely fresh rootfs**
+(`ls: cannot access '/root/.vscode-server'`), so the 690 MiB server, the extensions and the
+sshd host keys all have to be reinstalled. Verified directly.
+
+**4. `kill -0 $pid` is not a valid liveness check in this environment.** With
+`--target`, the shared PID namespace's pid 1 is *the target container's app process*
+(`python3 -c ...` here), which does not reap. Every orphaned helper becomes a permanent
+zombie — I accumulated four. `code-server`'s `sh` wrapper went zombie, `kill -0` on it
+returned success, and my first bootstrap script confidently reported "already running,
+port 38327" for a server that had exited. A client following that would connect to a dead
+port. **Liveness must be an HTTP probe of `/version`, matched against the expected commit.**
+
+**5. Remote-SSH's own `--enable-remote-auto-shutdown` kills the server after 5 minutes
+idle.** Observed exactly: started 10:44:32, log line at 10:49:32 `ServerLifetime: all
+consumers inactive, shutting down`. A concurrently-running server started without the flag
+stayed alive indefinitely. This interacts badly with "ephemeral containers can't restart" —
+but only if the bootstrap is not re-runnable. Recommendation: **omit the flag** for
+long-lived debug sessions, or keep it deliberately and make re-bootstrap the documented
+reconnect path.
+
+**6. `bin/code-server` exits 0 when the interpreter is missing.** On Alpine,
+`code-server --version` printed `/srv/node: not found` and returned **exit code 0**. Any
+bootstrap that trusts the wrapper's exit status will report success on a totally broken
+install. Check for output/port, never the exit code.
+
+**7. The Alpine/musl claim is correct but for a more basic reason than glibc symbols.**
+The failure is not a missing `GLIBC_2.28` symbol — it is a missing ELF interpreter:
+node is linked against `/lib64/ld-linux-x86-64.so.2`, which Alpine does not have, so the
+kernel returns ENOENT and the shell says `not found`. (Symbol analysis independently
+confirms max requirement is exactly `GLIBC_2.28` + `GLIBCXX_3.4.21`.) So the minimum base
+is glibc ≥ 2.28 → Debian ≥ 10, Ubuntu ≥ 18.04, RHEL/UBI ≥ 8. `gcompat` was not tested.
+
+**8. In-place pod resize works on this cluster and is non-disruptive to ephemeral
+containers.** `kubectl patch pod --subresource resize` raised the app container's memory
+limit 3Gi→6Gi→7Gi with a `ResizeCompleted` event, no restarts, and the ephemeral container
+stayed `running` throughout — afterwards it could allocate 4.2 GiB. This is a genuine new
+lever the brief does not mention: **Podbench can make room for itself.**
+
+**9. Cold-start is far cheaper than the brief's framing implies, on both arches.**
+5.8 s amd64 / ~10 s arm64 for the full download-extract-start cycle. "arm64 is slow" was
+true for *image pulls*, not for this: the RK3588 extracted 646 MiB in 5.6 s and downloaded
+205 MiB in 2.3 s — statistically identical to the x86 NUC. The dominant cost is
+`apt-get install openssh-server` (14–24 s), not the VS Code server.
+
+**10. Minor mechanics.** `kubectl debug ... -- true` leaves a `Completed` ephemeral
+container that can never be reused, and the name is burnt for the pod's lifetime — always
+pass a long-running command. `kubectl debug --attach=false` plus a
+`wait --for=jsonpath=...state.running.startedAt` is the reliable ready gate. And beware
+`pkill -f server-main.js` run through `kubectl exec -- bash -lc '...'`: the pattern matches
+the exec's own command line and kills the session (exit 143).
+
+---
+
+## Recommendations for implementation
+
+**Download on first connect. Do not bake the server.**
+The version lock is absolute (Deviation 1) and the download is 2.2 s / 5.8 s end-to-end
+(Finding 9), so baking buys ~6 seconds and costs correctness within a month. Bake the
+*base* (Debian ≥ 11 slim + openssh-server + curl + gdb + your tooling) — that removes the
+14–24 s apt step, which is the actual bottleneck. If you must reduce cold-start further,
+run an **in-cluster mirror** of `vscode-server-linux-{x64,arm64}.tar.gz` keyed by commit
+and point the client at it with the `remote.SSH.serverDownloadUrlTemplate` setting
+(client-side, *not verified in this spike*), with `update.code.visualstudio.com` as
+fallback.
+
+**Ship the v2 bootstrap script verbatim.** Its three non-obvious properties are all
+load-bearing: HTTP `/version` liveness (never `kill -0`), stage-then-move extraction, and
+`setsid nohup … </dev/null`. Take `$COMMIT` from the client rather than hard-coding it —
+Remote-SSH already supplies it; a Podbench-native client should read it from the local
+VS Code's `product.json`.
+
+**Omit `--enable-remote-auto-shutdown`** and instead reclaim the whole ephemeral container
+when the session ends. If you keep it, document that reconnect after 5 min idle re-runs
+the bootstrap (which is safe — verified 3× in a row).
+
+**Size the pod before attaching.** Compute required headroom (server ~100 MiB idle + your
+language servers; Pylance alone is a 117 MiB install and its RSS was not measured here) and
+call `kubectl patch pod --subresource resize` to raise the target container's memory limit
+before starting the server, restoring it on detach. Without this, Podbench will OOM-kill
+*itself* inside tightly-limited production pods and lose all session state (Deviation 3).
+Fall back to a loud pre-flight warning when the resize subresource is unavailable or the
+pod is owned by a controller that would fight it.
+
+> **Superseded on the controller half — see report R13.** This spike only ever resized a
+> standalone pod, so "a controller that would fight it" was a guess, and it was wrong: a
+> ReplicaSet reconciles pod *existence*, not pod *spec*, and leaves an in-place resize
+> alone. The real hazard is the opposite one — the raised limit lives on the pod while the
+> controller's template does not change, so the next rollout regenerates the pod without
+> it. The recommendation above stands; only its fallback condition was mis-stated.
+
+**Treat the ephemeral container as strictly disposable.** Nothing may live only in its
+writable layer. Put `~/.vscode-server` on an `emptyDir`-backed path if the target pod has
+one, or accept a full re-bootstrap on every attach (6 s, which is acceptable). Name
+containers `podbench-<n>` with an incrementing suffix, because a dead name is burnt for the
+pod's lifetime.
+
+**Trim the built-in extensions** (`copilot`, `copilot-chat`, `mermaid-markdown-features`)
+post-extract: −218 MiB, 34%, server still healthy. Also `rm -rf
+$DATA/data/CachedExtensionVSIXs` after extension installs (−190 MiB). That brings a
+one-extension Observe-mode container back inside the ~1 GB budget. Re-validate with a real
+GUI client before shipping — this spike only confirmed the server starts and serves
+`/version` after trimming.
+
+**Base image must be glibc ≥ 2.28** — `debian:bookworm-slim` (2.36) is a good default and
+what was tested. Document Alpine as unsupported, and never trust `code-server`'s exit code
+as an install check.
+
+**Air-gap requires four host groups, not two:** the tarball origin
+(`update.code.visualstudio.com` → `vscode.download.prss.microsoft.com`), the gallery
+(`marketplace.visualstudio.com`), the asset CDN (`*.vscode-unpkg.net`, `main.vscode-cdn.net`),
+and **`crl.microsoft.com` / `www.microsoft.com` for VSIX signature verification**. The
+offline path that works today is `--install-extension /path/to.vsix`, but extensions with
+`extensionDependencies` (e.g. `ms-python.debugpy`) still reach the marketplace for their
+deps, so an air-gapped bundle must ship the full dependency closure.
+
+**Follow-up work this spike did not cover** (none of it blocking):
+* RSS under a real GUI client — extension host + Pylance/cpptools language servers are the
+  memory that actually matters, and were never spawned. This is the single biggest open
+  number for the memory budget.
+* Whether `remote.SSH.serverDownloadUrlTemplate` genuinely redirects the download.
+* Whether `gcompat` makes Alpine viable.
+* The small `vscode_cli_linux_{x64,arm64}_cli.tar.gz` bootstrap path (exists at the same
+  commit, HTTP 200 verified) as an alternative to fetching the full server tarball.
+
+---
+
+## What was left behind
+
+* **Namespace `podbench-s2` — left in place and empty** (`Active`, `No resources found`).
+* Pods `target-amd64` and `target-arm64` deleted; all ephemeral containers went with them.
+* Node-side leftovers: the `debian:bookworm-slim`, `alpine:3.20` and `python:3.12-slim`
+  images are now in containerd's image cache on **nuc2** and **node02**. Nothing was
+  written to any host path; all state lived in container writable layers, which were
+  reclaimed with the pods.
+* Nothing outside `podbench-s2` was created, patched or deleted. The in-place resizes were
+  applied only to `podbench-s2/target-amd64`, which no longer exists.
+* Local scratch artifacts (not in the repo):
+  `/tmp/claude-0/-workspaces-tpi-k3s-ansible/2c9abbf4-6c26-436d-9237-a03194fe5977/scratchpad/spikes/`
+  — `bootstrap-server.sh` (v1, buggy, kept for reference), `bootstrap-server-v2.sh`,
+  `vsx_probe.py`, `ssh_config*`, `podbench_key{,.pub}`, `target-*.yaml`, helper `*.sh`.
