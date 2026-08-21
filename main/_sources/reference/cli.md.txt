@@ -653,7 +653,7 @@ pod and not on its controller, so the next rollout silently reverts it.
   headroom is read again after the seat lands and the OOM warning is printed
   against it either way, which is also what a pod whose resize was *refused*
   sees. A container holding a `resources.claims` entry refuses every resize
-  until Kubernetes 1.36.
+  on every released Kubernetes, 1.36 included.
 * A pod with no memory limit anywhere leaves its cgroup unbounded, so there is
   no ceiling to raise and nothing is patched. A pod with no metrics API cannot
   be measured, and that is the one unmeasured case podbench warns about: the

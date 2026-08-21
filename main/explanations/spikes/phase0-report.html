@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Podbench — Phase 0 gate report &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
+    <title>Podbench — Phase 0 gate report &#8212; podbench 0.4.0b2.dev83+g50cc5414e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=502ab942"></script>
+    <script src="../../_static/documentation_options.js?v=7d47682b"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1683,8 +1683,14 @@ every device-attached IOC at Diamond is a pod where §3.9’s unrecoverable OOM 
 <code class="docutils literal notranslate"><span class="pre">--resize</span></code> cannot work, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> cannot substitute, because a claim is allocated to one
 pod and a copy would either be refused the device or take it from the workload being debugged. The
 only lever left is the workload’s own template, which costs a rollout. podbench submits the patch
-anyway rather than pre-empting it, because a 1.36 cluster will take it, and names the claim when
+anyway rather than pre-empting it, because a fixed cluster will take it, and names the claim when
 the refusal comes back.</p>
+<blockquote>
+<div><p><strong>Correction, 2026-08-21.</strong> This section predicted that Kubernetes 1.36 would carry the fix. It
+does not: kubernetes/kubernetes&#64;9a7d0e438 landed on <code class="docutils literal notranslate"><span class="pre">master</span></code> after 1.36 was cut, and the
+<code class="docutils literal notranslate"><span class="pre">Claims</span></code>-dropping line is still present in the tagged source of both v1.36.0 and v1.36.3. The
+measurement above stands; only the forecast about which release repairs it was wrong.</p>
+</div></blockquote>
 <p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> is memory-only.</strong> It takes a memory value and patches <code class="docutils literal notranslate"><span class="pre">limits.memory</span></code>; a CPU limit is
 not raised with it. That did not bite in this measurement — <code class="docutils literal notranslate"><span class="pre">cpu.stat</span></code> showed <code class="docutils literal notranslate"><span class="pre">nr_throttled</span> <span class="pre">0</span></code> with
 a vscode-server plus extensions running — but a throttled seat under a tight <code class="docutils literal notranslate"><span class="pre">limits.cpu</span></code> has no
