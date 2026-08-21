@@ -77,7 +77,6 @@ from .kubectl import (
     run_subprocess,
 )
 from .model import SEAT_HOME_VOLUME, ContainerRef, as_dict
-from .provision import CAVEATS
 from .vscode import (
     extensions_for,
     merge_extensions_json,
@@ -86,6 +85,7 @@ from .vscode import (
 )
 
 __all__ = [
+    "CONNECTION_HINT",
     "DEFAULT_EDITOR",
     "DEFAULT_SSH",
     "EXTENSIONS_DIR",
@@ -94,13 +94,50 @@ __all__ = [
     "PROVISION_FLAG",
     "SERVER_CLI_ATTEMPTS",
     "SERVER_CLI_INTERVAL",
+    "FAIL",
+    "OK",
     "Provision",
+    "WARN",
     "check_reachable",
+    "is_step",
     "open_seat",
     "remote_authority",
     "resolve_editor",
     "unpacked_extensions",
 ]
+
+OK = "[ok]"
+WARN = "[warn]"
+FAIL = "[FAIL]"
+"""What a step opens with, and the whole of how this block is coloured.
+
+``doctor``'s three tokens rather than a fourth spelling, because
+:data:`podbench.console._STATUSES` reads one vocabulary and a verb that invents
+its own gets no colour and teaches the reader a second thing. The distinction
+they draw is the one this block could not draw before: it is a *sequence of
+steps*, and it used to be fifteen undifferentiated sentences in which the two
+that had gone wrong looked exactly like the thirteen that had not.
+
+A step is one line. What forced that is the same finding the attach report was
+cut down for — the reliably-skipped part of a report is the part written as
+prose — and it applies harder here, because a step that explains itself in a
+paragraph buries the step that failed. The mechanism behind each of these lives
+in ``docs/how-to/vscode-remote-ssh.md``, said once, where somebody reading about
+the mode will meet it.
+"""
+
+
+def is_step(note: str) -> bool:
+    """Whether ``note`` is one of this module's own steps.
+
+    The other thing that comes through ``report`` is the seat's own stderr,
+    relayed verbatim (:func:`_relay`), and the two must not be laid out alike:
+    a step wraps under its tick, and relayed narration must not be touched at
+    all — one of those lines ends in a continuation ``\\`` that means nothing
+    once it is not at the end of a line.
+    """
+    return note.startswith((OK, WARN, FAIL))
+
 
 DEFAULT_EDITOR = "code"
 """The only editor ``podbench vscode`` drives.
@@ -212,24 +249,29 @@ in the hang the notice was written to make bearable.
 """
 
 _PROVISION_NOTICE = (
-    "--provision: installing debugpy into the target and starting its server, "
-    "which ptraces the app for a few seconds (deadline under `supports` above). "
-    + "; ".join(CAVEATS)
+    f"{WARN} --provision is mutating the workload: installing debugpy into the "
+    "target and starting its server, which ptraces the app for a few seconds "
+    "(deadline under `supports` above)."
 )
 """Said before the exec, not after: the install is a uv resolve and download.
 
-The costs are :data:`podbench.provision.CAVEATS` itself rather than a retelling,
-so the sentence the laptop prints cannot drift from the one the seat prints. The
-probe deadline is *pointed at* rather than repeated, for the reason the
+One line, naming the fact and the flag. It used to append
+:data:`podbench.provision.CAVEATS` in full, which put the three costs on the
+laptop's screen a second time: the seat itself names them
+(:func:`podbench.provision.install`), and this verb relays the seat's narration
+verbatim a moment later. So they are said once, by the side that is doing the
+thing, and ``docs/how-to/vscode-remote-ssh.md`` carries them for a reader who
+wants them before running anything.
+
+The probe deadline is *pointed at* rather than repeated, for the reason the
 vscode-in-a-seat skill gives: :mod:`podbench.budget` computes it from the pod
 spec and ``attach`` has already printed it, and a second hand-written copy is
 a second thing to keep true.
 """
 
 _PROVISION_REMEDY = (
-    "re-run without `--no-provision` to install it from the seat first - it is "
-    "what this verb does by default, and an opt-out rather than an opt-in "
-    "because it mutates the workload with the costs named above."
+    f"{WARN} re-run without `--no-provision` to install debugpy from the seat "
+    "first - it is what this verb does by default."
 )
 """The offer, reached now only by somebody who declined the default.
 
@@ -241,12 +283,8 @@ who said ``--no-provision`` and then met the refusal it leads to.
 """
 
 _PROVISION_NEEDED = (
-    "debugpy is what stands between this target and a bound breakpoint, which "
-    "is what the seat named `--provision` for above - either it cannot import "
-    "debugpy at all, or it can and nothing is listening on the port the "
-    "configuration connects to; provisioning it now, because that is what this "
-    "verb is for. `--no-provision` authors whatever fits the target as it "
-    "stands instead."
+    f"{OK} the seat named `--provision` above, so provisioning debugpy now; "
+    "`--no-provision` authors whatever fits the target as it stands instead."
 )
 """Said instead of :data:`_PROVISION_REMEDY` when the answer is already known.
 
@@ -264,10 +302,8 @@ naming both: the reader has the seat's own account two lines above.
 """
 
 _RELOAD_NOTE = (
-    "a window already connected to this alias needs Command Palette -> "
-    "Developer: Reload Window, or the debug adapter stays unregistered; one "
-    "this command opens for the first time does not, because the line above "
-    "asked the seat and it is already unpacked there."
+    f"{WARN} a window already connected to this seat needs Command Palette -> "
+    "Developer: Reload Window, or the debug adapter stays unregistered."
 )
 """The step a *second* run needs and a first one does not.
 
@@ -284,12 +320,21 @@ the argv.
 """
 
 _SEAT_INSTALL_RELOAD_NOTE = (
-    "the window has noticed these but not registered them: a debug adapter is "
+    f"{WARN} the window has noticed these but not registered them: a debug "
+    "adapter is "
     "contributed when the extension host starts, and that already happened. "
     "Command Palette -> Developer: Reload Window, or the Run and Debug list has "
     "no podbench entry and F5 says `could not find a debug adapter descriptor`"
 )
 """Said whenever the seat-side install ran, because it is always true of it.
+
+Longer than the one-line rule the rest of this block keeps, deliberately. The
+rule exists so the mechanism lives in ``docs/how-to/`` and the step names the
+fact and the action - but the mechanism for *this* one is in the
+``vscode-in-a-seat`` skill and in the docstring below, not on a page a reader
+meets, and it is the fix for a live failure measured at Diamond the day before
+(#152). Shortening it here to satisfy the rule would be trading a working
+explanation for a tidy one; the page it belongs on is the thing to add.
 
 VS Code distinguishes the two paths in its own log, and the wording is the whole
 explanation (measured on a Diamond seat, 2026-08-21)::
@@ -537,37 +582,55 @@ def open_seat(
     # writes ~15 MB into the workload and ptraces it, which is not worth
     # spending on a seat no editor can reach.
     check_reachable(alias, ssh=ssh, runner=run)
-    report(f"`ssh {alias}` reaches the seat, so Remote-SSH will too")
+    report(f"{OK} ssh reaches the seat, so Remote-SSH will too")
     # Everything from here is one line each: this is a sequence of steps, and
     # a step that explains itself in a paragraph buries the one that failed.
     configurations = _configurations(kubectl, seat, report, provision=provision)
     extensions = extensions_for(configurations)
 
     base = f"{folder}/{VSCODE_DIR}"
-    # First, and not merely early: the excludes have to be on disk before the
-    # window that starts the walk.
-    _merge_into(kubectl, seat, f"{base}/settings.json", merge_folder_settings, report)
+    # settings.json first, and not merely early: the excludes have to be on
+    # disk before the window that starts the walk.
+    settings = f"{base}/settings.json"
+    merged = [_merge_into(kubectl, seat, settings, merge_folder_settings, report)]
     if configurations:
-        _merge_into(
-            kubectl,
-            seat,
-            f"{base}/launch.json",
-            lambda existing: merge_launch_configs(existing, configurations),
-            report,
+        merged.append(
+            _merge_into(
+                kubectl,
+                seat,
+                f"{base}/launch.json",
+                lambda existing: merge_launch_configs(existing, configurations),
+                report,
+            )
         )
     if extensions:
-        _merge_into(
-            kubectl,
-            seat,
-            f"{base}/extensions.json",
-            lambda existing: merge_extensions_json(existing, extensions),
-            report,
+        merged.append(
+            _merge_into(
+                kubectl,
+                seat,
+                f"{base}/extensions.json",
+                lambda existing: merge_extensions_json(existing, extensions),
+                report,
+            )
         )
+    # Two lines at most for three files, and the directory said once. Both are
+    # worth saying: "wrote" is what this run did, and "already said" is what a
+    # reconnect into a configured seat looks like - which is not nothing, since
+    # it is the answer to "why did my edits survive".
+    for names, said in (
+        ([name for name, changed in filter(None, merged) if changed], "wrote"),
+        (
+            [name for name, changed in filter(None, merged) if not changed],
+            "already said everything podbench would in",
+        ),
+    ):
+        if names:
+            report(f"{OK} {said} {', '.join(names)} in {base}")
 
     authority = remote_authority(alias)
     if extensions:
         report(
-            f"installing {', '.join(extensions)} in SSH: {alias}; the first "
+            f"{OK} installing {', '.join(extensions)} in the seat; the first "
             f"bootstraps vscode-server, so this is a download ({_STORAGE_NOTE})"
         )
     # Whether anything actually landed, not whether anything was asked for: the
@@ -585,7 +648,7 @@ def open_seat(
             timeout=UNBOUNDED,
         )
         if result.returncode != 0:
-            report(f"could not install {extension}: {_detail(result.stderr)}")
+            report(f"{FAIL} could not install {extension}: {_detail(result.stderr)}")
             continue
         attempted = True
     missing: list[str] = []
@@ -609,7 +672,7 @@ def open_seat(
             "extension (ms-vscode-remote.remote-ssh) in the local VS Code; the "
             "alias itself was proven above."
         )
-    report(f"asked VS Code to open {folder} over Remote-SSH ({alias})")
+    report(f"{OK} asked VS Code to open {folder} over Remote-SSH")
     # Only now, and this ordering is the fix: the seat's own vscode-server does
     # not exist until a window has connected and bootstrapped it, so the
     # fallback cannot run before the line above. What it must never move ahead
@@ -623,17 +686,27 @@ def open_seat(
         if len(missing) < len(wanted):
             report(_SEAT_INSTALL_RELOAD_NOTE)
     if missing:
-        report(_MISSING_REMEDY.format(missing=", ".join(missing), alias=alias))
-    # The exit code still is not evidence - `code` hands the argv to a window
-    # and returns, and the connection is made in that window afterwards - but
-    # the preflight has already removed every cause that lives outside VS Code,
-    # so what is left to say is small and specific.
-    report(
-        "if it says 'could not establish connection', the local VS Code has no "
-        "Remote-SSH extension (ms-vscode-remote.remote-ssh); ssh itself reached "
-        f"{alias} a moment ago with the same config."
-    )
+        report(
+            f"{WARN} " + _MISSING_REMEDY.format(missing=", ".join(missing), alias=alias)
+        )
 
+
+CONNECTION_HINT = (
+    "if the window says 'could not establish connection', the local VS Code "
+    "has no Remote-SSH extension (ms-vscode-remote.remote-ssh); ssh itself "
+    "reached the seat a moment ago with the same config."
+)
+"""What to do if the window fails, which is a thing to do and not a step taken.
+
+It sat at the bottom of the progress block, in the past tense of everything
+around it, saying what to check about something that had not happened yet. It
+belongs under ``next`` with the other two lines a reader might act on.
+
+Still worth saying at all for the reason it always was: ``code`` hands the argv
+to a window and returns, so its exit code is not evidence of a connection - but
+the preflight has already removed every cause that lives outside VS Code, so
+what is left to name is one extension.
+"""
 
 EXTENSIONS_DIR = "~/.vscode-server/extensions"
 """Where vscode-server unpacks an extension, under the *ssh login's* home.
@@ -695,11 +768,8 @@ yet and the wait is the normal case rather than the failure.
 
 _MISSING_REMEDY = (
     "{missing} did not land in the seat, whatever `code` said: nothing matching "
-    "is unpacked under {dir}. Install it from the Extensions view of the window "
-    "below - the button must read 'Install in SSH: {alias}', because a local "
-    "install runs the debug adapter on this machine, where the /proc/<pid>/root "
-    "paths in launch.json do not exist and the failure reads as a bad "
-    "configuration ('program path is missing or invalid')."
+    "is unpacked under {dir}. Install from the Extensions view - the button "
+    "must read 'Install in SSH: {alias}', never the plain one."
 ).replace("{dir}", EXTENSIONS_DIR)
 """Said when the seat disagrees with ``code``'s exit code. The local-install
 trap is spelled out because it is where somebody sent to the Extensions view by
@@ -763,9 +833,8 @@ def _verify_installed(
         # The alias worked minutes ago, so this is a transient rather than a
         # verdict: say what is unproven and claim nothing either way.
         report(
-            f"could not list {EXTENSIONS_DIR} in the seat, so whether "
-            f"{', '.join(extensions)} landed is unverified. If the debugger is "
-            "not in the Run and Debug list, check the Extensions view"
+            f"{WARN} could not list {EXTENSIONS_DIR} in the seat, so whether "
+            f"{', '.join(extensions)} landed is unverified"
         )
         return [], []
     installed: list[str] = []
@@ -774,10 +843,15 @@ def _verify_installed(
         # Prefix match: the directory carries a version and a platform triple,
         # and an exact comparison would report every installed extension missing.
         if any(name.startswith(f"{extension.lower()}-") for name in unpacked):
-            report(f"{extension} is unpacked in SSH: {alias}")
             installed.append(extension)
         else:
             missing.append(extension)
+    if installed:
+        # One line for all of them. It still says *unpacked* rather than
+        # "installed": this reports presence in the seat, not that this run put
+        # it there, and on a warm seat the difference is the whole defect the
+        # check was added for.
+        report(f"{OK} {', '.join(installed)} unpacked in the seat")
     return installed, missing
 
 
@@ -839,15 +913,14 @@ def _install_through_the_seat(
     binary = _server_cli(alias, ssh=ssh, runner=runner, sleep=sleep)
     if binary is None:
         report(
-            f"{', '.join(missing)}: no vscode-server has started in the seat, "
-            "so there is nothing to install through. The window above has not "
-            "connected - its own error is the diagnosis"
+            f"{WARN} no vscode-server has started in the seat, so "
+            f"{', '.join(missing)} has nothing to install through; the window "
+            "above has not connected, and its own error is the diagnosis"
         )
         return list(missing)
     report(
-        f"installing {', '.join(missing)} through the seat's own vscode-server, "
-        "because `code --install-extension` answers from this machine's "
-        "install list and never reaches the seat"
+        f"{OK} installing {', '.join(missing)} through the seat's own "
+        "vscode-server, which is the only path that reaches it"
     )
     for extension in missing:
         result = runner(
@@ -863,7 +936,8 @@ def _install_through_the_seat(
         )
         if result.returncode != 0:
             report(
-                f"could not install {extension} in the seat: {_detail(result.stderr)}"
+                f"{FAIL} could not install {extension} in the seat: "
+                f"{_detail(result.stderr)}"
             )
     # Asked again rather than believed: this CLI reports "already installed"
     # too, and the whole defect above was an exit code that meant nothing.
@@ -985,19 +1059,19 @@ def _author(
         # image does not resolve exits 127 with sh's message and no narration,
         # and that message is the whole diagnosis.
         report(
-            "no launch.json: nothing above could be turned into one"
+            f"{WARN} no launch.json: nothing above could be turned into one"
             if relayed
-            else f"no launch.json: {_detail(result.stderr)}"
+            else f"{WARN} no launch.json: {_detail(result.stderr)}"
         )
         return [], wants_provisioning
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
-        report(f"no launch.json: debug-config printed no JSON ({error})")
+        report(f"{WARN} no launch.json: debug-config printed no JSON ({error})")
         return [], False
     if not isinstance(document, dict):
-        report("no launch.json: debug-config printed no JSON object")
+        report(f"{WARN} no launch.json: debug-config printed no JSON object")
         return [], False
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
@@ -1012,24 +1086,29 @@ def _merge_into(
     path: str,
     merge: Callable[[str | None], str | None],
     report: Callable[[str], None],
-) -> None:
+) -> tuple[str, bool] | None:
     """Apply ``merge`` to the seat's copy of ``path``, adding never replacing.
 
     A refusal to parse is reported and the file left alone, which is
     :func:`podbench.vscode.merge_machine_settings`'s rule and for its reason:
     VS Code permits comments in these files and :mod:`json` does not, so
     rewriting one would discard whatever this parser could not see.
+
+    Returns the file's own name and whether it changed, rather than reporting
+    a line per file: three consecutive ``wrote …/.vscode/<name>.json`` lines,
+    each carrying the same directory, is three lines of one fact. The caller
+    says it once. Only the refusal is reported from here, because a file left
+    exactly as it is is the one outcome the reader has to act on.
     """
     try:
         text = merge(_read(kubectl, seat, path))
     except ValueError as error:
-        report(f"{path} left exactly as it is: {error}")
-        return
+        report(f"{WARN} {path} left exactly as it is: {error}")
+        return None
     if text is None:
-        report(f"{path} already says everything podbench would")
-        return
+        return path.rsplit("/", 1)[-1], False
     _write(kubectl, seat, path, text)
-    report(f"wrote {path}")
+    return path.rsplit("/", 1)[-1], True
 
 
 def _read(kubectl: Kubectl, seat: ContainerRef, path: str) -> str | None:

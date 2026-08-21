@@ -3919,6 +3919,63 @@ def test_open_configures_the_seats_home_and_opens_that(
     assert "open /root over Remote-SSH" in capsys.readouterr().out
 
 
+def test_open_separates_what_it_did_from_what_to_do_next(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The block was a wall because both were in it, interleaved.
+
+    Everything under `editor` is the past tense and every line carries a tick;
+    everything under `next` is a thing the reader might act on, including the
+    two lines that exist to be pasted. They used to arrive in the other order,
+    with the offers above thirteen sentences of progress.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    assert main(vscode_argv(tmp_path), runner=cluster, which=lambda n: f"/bin/{n}") == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    steps = lines[lines.index("editor") + 1 : lines.index("next")]
+    offers = lines[lines.index("next") + 1 :]
+
+    assert [line for line in steps if line.strip()], "the checklist is not empty"
+    for line in (line.strip() for line in steps if line.strip()):
+        # A step, or a continuation of one, or the seat's own relayed stderr -
+        # never one of the offers, which is what the split is for.
+        assert not line.startswith(("add this to", "or let podbench", "reconnect"))
+    assert any(line.lstrip().startswith("[ok]") for line in steps)
+
+    flowed = " ".join(" ".join(offers).split())
+    assert "add this to ~/.ssh/config once:" in flowed
+    assert "or let podbench check and add it:  podbench doctor --fix" in " ".join(
+        offers
+    )
+    assert "reconnect later with:  ssh podbench-demo-target-1" in " ".join(offers)
+    # `then:` points forward, and by here the window has already been opened.
+    assert "then:  ssh" not in flowed
+
+
+def test_the_offers_survive_an_editor_step_that_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The seat is real whether or not an editor could be pointed at it.
+
+    A run that ends at "ssh does not reach the seat" still has a stanza, an
+    alias and the `kubectl exec` helpers, so withholding how to use them from
+    that reader in particular is backwards.
+    """
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        ssh_probe_rc=255,
+        ssh_probe_err="/tmp/podbench-home/.podbench/sshd_config: No such file\n",
+    )
+    assert main(vscode_argv(tmp_path), runner=cluster, which=lambda n: f"/bin/{n}") == 2
+
+    captured = capsys.readouterr()
+    assert "next" in captured.out
+    assert "add this to ~/.ssh/config once:" in captured.out
+    # ...but not a remedy for a window that was never opened.
+    assert "could not establish connection" not in captured.out
+
+
 def test_open_refuses_a_seat_ssh_cannot_reach_and_says_why(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

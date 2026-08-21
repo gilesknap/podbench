@@ -21,11 +21,14 @@ from typing import Any
 import pytest
 
 from podbench.editor import (
+    CONNECTION_HINT,
+    OK,
     PROVISION_FLAG,
     SERVER_CLI_ATTEMPTS,
     SERVER_CLI_INTERVAL,
     EditorError,
     Provision,
+    is_step,
     open_seat,
     resolve_editor,
 )
@@ -316,7 +319,7 @@ def test_the_alias_is_proven_before_the_first_thing_that_needs_it() -> None:
 
     assert seat.calls[0][0] == "ssh", f"the probe must come first: {seat.calls}"
     assert seat.calls[0][-1] == "true", "the probe has to run a command in the seat"
-    assert any(f"`ssh {ALIAS}` reaches the seat" in note for note in notes)
+    assert any("ssh reaches the seat" in note for note in notes)
 
 
 # -- the OOM guard -----------------------------------------------------------
@@ -507,9 +510,13 @@ def test_a_refusal_naming_the_flag_is_answered_rather_than_reported() -> None:
     # that can see the target, so its account of why debugpy is the blocker is
     # the diagnosis. A run that hid it would be asserting the need for the
     # install rather than showing it.
-    relayed = notes.index("no launch.json: nothing above could be turned into one")
-    answered = next(i for i, note in enumerate(notes) if "provisioning it now" in note)
-    ran = next(i for i, note in enumerate(notes) if note.startswith("--provision"))
+    relayed = next(
+        i for i, note in enumerate(notes) if "nothing above could be turned" in note
+    )
+    answered = next(
+        i for i, note in enumerate(notes) if "provisioning debugpy now" in note
+    )
+    ran = next(i for i, note in enumerate(notes) if "--provision is mutating" in note)
     assert relayed < answered < ran
     assert not any("without `--no-provision`" in note for note in notes)
 
@@ -541,8 +548,10 @@ def test_a_configuration_pointing_at_a_closed_port_is_provisioned() -> None:
     # Relayed, then answered, then run - the same order a refusal takes, since
     # the seat's own account of what is missing is the diagnosis either way.
     said = next(i for i, note in enumerate(notes) if "nothing is listening" in note)
-    answered = next(i for i, note in enumerate(notes) if "provisioning it now" in note)
-    ran = next(i for i, note in enumerate(notes) if note.startswith("--provision"))
+    answered = next(
+        i for i, note in enumerate(notes) if "provisioning debugpy now" in note
+    )
+    ran = next(i for i, note in enumerate(notes) if "--provision is mutating" in note)
     assert said < answered < ran
 
 
@@ -641,10 +650,17 @@ def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
         runner=seat,
     )
     notice, announced = next(
-        (note, calls) for note, calls in timeline if note.startswith("--provision")
+        (note, calls) for note, calls in timeline if "--provision" in note
     )
     assert announced == 0
-    assert "egress" in notice and "restart" in notice and "15 MB" in notice
+    # The mutation and the flag, which is what a one-line warning owes the
+    # reader. The three specific costs - egress, no restart survives it, ~15 MB
+    # of shared ephemeral storage - are `provision.CAVEATS`, printed by the
+    # seat that is spending them and relayed here verbatim, and written out in
+    # docs/how-to/vscode-remote-ssh.md for anyone who wants them beforehand.
+    # Saying them a third time on the laptop is what made this block unreadable.
+    assert "mutating the workload" in notice
+    assert "debugpy" in notice and "ptraces" in notice
 
 
 def test_nothing_is_provisioned_unless_it_is_asked_for() -> None:
@@ -712,7 +728,7 @@ def test_the_install_is_announced_before_it_runs() -> None:
         runner=seat,
     )
     announced = next(
-        calls for note, calls in timeline if note.startswith("installing ms-python")
+        calls for note, calls in timeline if "installing ms-python" in note
     )
     assert not any("--install-extension" in call for call in seat.calls[:announced])
 
@@ -752,14 +768,19 @@ def test_the_open_step_does_not_claim_the_window_connected() -> None:
     and a failure arrives there as a dialog and here as a zero.
 
     What is left to warn about is now one thing rather than a list, because the
-    preflight has already proven every cause that lives outside VS Code.
+    preflight has already proven every cause that lives outside VS Code - and
+    it is said under `next` rather than here, because it is a thing to do if
+    the window fails and not a step this run took. `open_seat` therefore ends
+    on what it did, and claims nothing about what happened afterwards.
     """
     seat = FakeSeat()
     notes = run_open(seat)
 
-    assert any("could not establish connection" in note for note in notes)
-    assert any("ms-vscode-remote.remote-ssh" in note for note in notes)
-    assert not any("podbench doctor --fix" in note for note in notes), (
+    assert notes[-1].endswith("asked VS Code to open /root over Remote-SSH")
+    assert not any("could not establish connection" in note for note in notes)
+
+    assert "ms-vscode-remote.remote-ssh" in CONNECTION_HINT
+    assert "podbench doctor --fix" not in CONNECTION_HINT, (
         "the Include line cannot be the cause: ssh read it a moment ago"
     )
 
@@ -774,7 +795,9 @@ def test_an_extension_is_claimed_only_once_the_seat_has_it() -> None:
     seat = FakeSeat()
     notes = run_open(seat)
 
-    assert any("ms-python.python is unpacked in SSH" in note for note in notes)
+    # One line for all of them, so the claim is per-extension inside it.
+    (unpacked,) = [note for note in notes if "unpacked in the seat" in note]
+    assert "ms-python.python" in unpacked
     assert any(
         "ls -1 ~/.vscode-server/extensions" in call[-1]
         for call in seat.calls
@@ -816,7 +839,8 @@ def test_a_local_short_circuit_is_answered_by_installing_through_the_seat() -> N
 
     assert seat.seat_installed == ["ms-python.python", "ms-python.debugpy"]
     assert any("through the seat's own vscode-server" in note for note in notes)
-    assert any("ms-python.debugpy is unpacked in SSH" in note for note in notes)
+    (unpacked,) = [note for note in notes if "unpacked in the seat" in note]
+    assert "ms-python.debugpy" in unpacked
     # It landed, so the remedy that sends somebody to do it by hand must not.
     assert not any("did not land in the seat" in note for note in notes)
 
@@ -1060,3 +1084,39 @@ def test_nothing_here_shells_out_to_a_second_assessment() -> None:
     assessments = [call for call in seat.calls if "debug-config" in call]
     assert len(assessments) == 1
     assert assessments[0][-1] == "--print-config"
+
+
+def test_every_step_carries_a_tick_and_the_seats_own_words_do_not() -> None:
+    """The two shapes `report` emits, and the reason they are laid out apart.
+
+    A step is this module's own claim and wraps under its tick. Relayed stderr
+    is somebody else's text: it is printed exactly as it arrived, because one
+    of those lines ends in a continuation `\\` that means nothing once anything
+    follows it, and because a `debug-config:` at the head of one is a label to
+    `console`'s eye and is not one.
+    """
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    ours = [note for note in notes if is_step(note)]
+    relayed = [note for note in notes if not is_step(note)]
+    assert ours and relayed
+    # Verbatim, indent and all: the seat wraps its own narration, and this
+    # line is the continuation of the one above it. Anything on this side that
+    # reflowed or stripped it would run the two together.
+    assert "  `podbench debug-config --provision` runs" in relayed
+    for note in ours:
+        # One line each. The mechanism lives in docs/how-to/vscode-remote-ssh.md,
+        # because the reliably-skipped part of a report is the prose in it.
+        assert "\n" not in note
+        assert len(note.split(". ")) <= 2, note
+
+
+def test_the_three_files_are_one_line_and_the_directory_is_said_once() -> None:
+    """Three `wrote <base>/<name>.json` lines are three lines of one fact."""
+    notes = run_open(FakeSeat())
+
+    (wrote,) = [note for note in notes if note.startswith(f"{OK} wrote")]
+    assert wrote == (
+        f"{OK} wrote settings.json, launch.json, extensions.json in {HOME}/.vscode"
+    )

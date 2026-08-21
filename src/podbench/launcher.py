@@ -40,13 +40,21 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import typer
+from rich.text import Text
 
 from . import __version__
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV, SEAT_NSS_PATH
 from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
 from .console import WARNING_LEAD, emit, paragraph
-from .editor import EditorError, Provision, open_seat, resolve_editor
+from .editor import (
+    CONNECTION_HINT,
+    EditorError,
+    Provision,
+    is_step,
+    open_seat,
+    resolve_editor,
+)
 from .kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
     DEFAULT_CALL_TIMEOUT,
@@ -4294,7 +4302,17 @@ def emit_ssh_config(
                 # any Host * block, where ssh will read it first.
                 f"add this to ~/.ssh/config once:  {ssh_include_line(directory)}",
                 "or let podbench check and add it:  podbench doctor --fix",
-                f"then:  ssh {alias}   (or Remote-SSH: Connect to Host -> {alias})",
+                # `then:` for an attach, which is what happens next; but
+                # `vscode` prints this block *after* opening the window, so
+                # there the alias is what a later reconnect needs rather than
+                # what to do now, and a "then:" pointing backwards is a step
+                # the reader has already had done for them.
+                (
+                    f"reconnect later with:  ssh {alias}"
+                    if opening
+                    else f"then:  ssh {alias}   "
+                    f"(or Remote-SSH: Connect to Host -> {alias})"
+                ),
                 # The VS Code debugger needs a launch.json whose pid,
                 # sysroot-prefixed program and setup ordering are all things
                 # this launcher already knows and a human cannot guess; every
@@ -5857,6 +5875,36 @@ def _editor_memory(
     )
 
 
+def _editor_step(note: str) -> None:
+    """One line of :func:`podbench.editor.open_seat`'s progress, laid out.
+
+    Two shapes, and they must not be laid out alike.
+
+    A **step** opens with ``[ok]``/``[warn]``/``[FAIL]``
+    (:func:`podbench.editor.is_step`) and wraps under its own tick, so a
+    continuation cannot be read as the next step. Hung under the tick rather
+    than bulleted because several of these notes carry a ` - ` of their own,
+    and a wrapped line beginning with one under a bulleted list reads as a new
+    item; the indent cannot be forged that way.
+
+    Anything else is the **seat's own stderr**, relayed by
+    :func:`podbench.editor._relay`, and it is printed exactly as it arrived.
+    It used to go through the same wrap, which collapses whitespace and breaks
+    on spaces - and one of those relayed lines is the two-line injection
+    command whose first line ends in a continuation ``\\`` that means nothing
+    once something follows it.
+    """
+    if not is_step(note):
+        # As a `Text`, so none of the line rules run over it. This is somebody
+        # else's output: `debug-config:` followed by an indent is a label by
+        # `console._LABEL`'s reckoning, and drawing it as one would have this
+        # report claiming a heading in the middle of a relayed sentence.
+        emit([Text(f"      {note}")])
+        return
+    tick, _, rest = note.partition(" ")
+    emit("\n".join(paragraph(rest, first=f"  {tick} ", indent=" " * (3 + len(tick)))))
+
+
 def _open_editor(
     kubectl: Kubectl,
     session: Session,
@@ -5884,18 +5932,13 @@ def _open_editor(
             "to connect to. The block above names the mechanism and the ways "
             "out; the kubectl exec helpers work now regardless."
         )
+    emit("editor")
     open_seat(
         kubectl,
         session.seat,
         alias=wiring.alias,
         folder=seat_layout(session).home,
-        # Wrapped like every other block this verb prints: two of these notes
-        # are paragraphs rather than lines.
-        # Hung two further columns rather than bulleted: these notes are a
-        # list of steps, but several of them carry a ` - ` of their own, and a
-        # wrapped line that begins with one under a bulleted list reads as the
-        # next step. The indent cannot be forged that way.
-        report=lambda note: emit("\n".join(paragraph(note, first="  ", indent="    "))),
+        report=_editor_step,
         editor=editor,
         provision=provision,
         runner=runner,
@@ -6093,8 +6136,6 @@ def _build_app(
             print_config=False,
             opening=True,
         )
-        emit(wiring.note)
-        print()
         # Iterate mode is provisioned by construction, not by exec: the seat
         # launches the application itself, so debugpy is installed where the
         # launch configuration needs it and there is no live process in the
@@ -6109,16 +6150,43 @@ def _build_app(
                 )
             )
             print()
-        _open_editor(
-            kube,
-            session,
-            wiring,
-            editor=editor,
-            provision=(
-                Provision.NEVER if no_provision or in_dev_pod else Provision.IF_NEEDED
-            ),
-            runner=runner,
-        )
+        opened = False
+        try:
+            _open_editor(
+                kube,
+                session,
+                wiring,
+                editor=editor,
+                provision=(
+                    Provision.NEVER
+                    if no_provision or in_dev_pod
+                    else Provision.IF_NEEDED
+                ),
+                runner=runner,
+            )
+            opened = True
+        finally:
+            # After the steps, not before them, and this is the whole of the
+            # fix for what that block had become. Everything above is the past
+            # tense - what was written, installed, opened - and everything here
+            # is a thing the reader might do. They used to be interleaved, so
+            # the two lines worth pasting sat in the middle of thirteen that
+            # were not.
+            #
+            # In a `finally` because the seat is real whether or not an editor
+            # could be pointed at it: a run that ends at "ssh does not reach
+            # the seat" still has a stanza, an alias and the exec helpers, and
+            # printing how to use them only on success would withhold them from
+            # exactly the reader who has to fall back to them.
+            print()
+            emit("next")
+            emit("\n".join(f"  {line}" for line in wiring.note.split("\n")))
+            # Only where a window was actually asked for. On a failed run there
+            # is nothing to say "if it says ..." about, and offering a remedy
+            # for a symptom that cannot arise is how a report loses its
+            # authority for the ones that can.
+            if opened:
+                emit("\n".join(paragraph(CONNECTION_HINT, first="  ", indent="  ")))
         if session.probes:
             # Last, because it is the thing they need at the instant their
             # attention moves to the GUI, and the report that carries the
