@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.4.0b4.dev4+g17cc16cd6 documentation</title>
+    <title>What attach does &#8212; podbench 0.4.0b4.dev5+gcef072064 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=ddad9c02"></script>
+    <script src="../_static/documentation_options.js?v=61eeae99"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -629,8 +629,12 @@ this codebase.</p>
 │        BEFORE the window: the walk starts when it opens          │
 │   write &lt;home&gt;/.vscode/launch.json, extensions.json              │
 │   code --remote ssh-remote+&lt;alias&gt; --install-extension …         │
-│        the &quot;Install in SSH:&quot; button, and only this flavour&#39;s     │
+│        only this flavour&#39;s, and attempted rather than believed:  │
+│        it answers from THIS machine&#39;s install list               │
 │   code --remote ssh-remote+&lt;alias&gt; &lt;home&gt;       never /          │
+│   ssh &lt;alias&gt; &lt;server&gt;/bin/code-server --install-extension …     │
+│        whatever did not land, through the server the window      │
+│        uses, so it goes live with no reload                      │
 └──────────────────────────────────────────────────────────────────┘
 </pre></div>
 </div>

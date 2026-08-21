@@ -123,8 +123,12 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
 │        BEFORE the window: the walk starts when it opens          │
 │   write <home>/.vscode/launch.json, extensions.json              │
 │   code --remote ssh-remote+<alias> --install-extension …         │
-│        the "Install in SSH:" button, and only this flavour's     │
+│        only this flavour's, and attempted rather than believed:  │
+│        it answers from THIS machine's install list               │
 │   code --remote ssh-remote+<alias> <home>       never /          │
+│   ssh <alias> <server>/bin/code-server --install-extension …     │
+│        whatever did not land, through the server the window      │
+│        uses, so it goes live with no reload                      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
