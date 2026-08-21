@@ -65,6 +65,7 @@ class FakeRunner:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
         key = "listeners" if "-lntpe" in argv else "time_wait"
@@ -86,7 +87,11 @@ def fixed_spawner(pid: int) -> dev.Spawner:
 
 
 def null_runner(
-    argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    argv: Sequence[str],
+    *,
+    stdin: str | None = None,
+    capture: bool = True,
+    timeout: float | None = None,
 ) -> CommandResult:
     """A runner that must never be reached."""
     raise AssertionError(f"nothing should have run: {list(argv)}")
@@ -615,7 +620,11 @@ def test_bootstrap_runs_every_command_and_stops_on_failure():
     calls: list[tuple[str, ...]] = []
 
     def runner(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         calls.append(tuple(argv))
         code = 1 if "sync" in argv else 0
@@ -779,9 +788,12 @@ class FakeKubectl(Kubectl):
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.commands.append(tuple(argv))
-        args = list(argv)
+        # Without the bound issue #118 added to every call, so that the fixed
+        # offsets below keep meaning what they meant.
+        args = [word for word in argv if not word.startswith("--request-timeout=")]
         stdout = ""
         if args[3:5] == ["get", "pods"]:
             # The namespace listing `resolve_pod` searches when the reference is
@@ -819,6 +831,13 @@ class FakeKubectl(Kubectl):
         if "--print-host-key" in argv:
             return CommandResult(argv, 0, (self.host_key or "") + "\n", "")
         return CommandResult(argv, 0, "", "")
+
+    def subcommands(self) -> list[str]:
+        """The kubectl verb of every call made, in order."""
+        return [
+            [word for word in argv if not word.startswith("--request-timeout=")][3]
+            for argv in self.commands
+        ]
 
     def patches(self) -> list[list[dict[str, Any]]]:
         """Every JSON patch body sent, decoded."""
@@ -970,7 +989,7 @@ def test_teardown_restores_the_original_selector_exactly_then_deletes():
     ]
     # Restore first, delete second: otherwise the Service selects nothing for
     # the window in between.
-    order = [argv[3] for argv in kube.commands if argv[3] in ("patch", "delete")]
+    order = [verb for verb in kube.subcommands() if verb in ("patch", "delete")]
     assert order == ["patch", "delete"]
     assert actions[-1] == "deleted pod/demo-podbench"
 

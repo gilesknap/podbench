@@ -49,6 +49,7 @@ from .console import WARNING_LEAD, emit, paragraph
 from .editor import EditorError, Provision, open_seat, resolve_editor
 from .kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
+    DEFAULT_CALL_TIMEOUT,
     DEFAULT_POLL_INTERVAL,
     EphemeralContainerError,
     Kubectl,
@@ -61,7 +62,9 @@ from .model import (
     DEFAULT_IMAGE,
     HOST_NETWORK_ENV,
     IMAGE_ENV,
+    NOT_MEASURED,
     NOT_PROBED,
+    OWNER_ENV,
     POD_CONTAINERS_ENV,
     SEAT_GROUP_KEY,
     SEAT_HOME_PATH,
@@ -75,6 +78,7 @@ from .model import (
     Lsm,
     PodRef,
     Rung,
+    SeatReport,
     Verdict,
     and_list,
     as_dict,
@@ -87,6 +91,7 @@ from .resize import (
     CPU,
     EDITOR_HEADROOM,
     MEMORY,
+    QOS_REFUSAL,
     SEAT_FOOTPRINT,
     SEAT_HEADROOM,
     Headroom,
@@ -102,6 +107,7 @@ from .resize import (
     parse_want,
     plan_resize,
     pod_memory_limit,
+    qos_preserving_flags,
 )
 from .spec import (
     AGENT_COMMAND,
@@ -158,6 +164,8 @@ __all__ = [
     "SEAT_IDENTITY_MOUNTS",
     "SEAT_STATUS_ARGV",
     "UNKNOWN_SEAT_VERSION",
+    "OTHER_OWNER_WARNING",
+    "UNKNOWN_OWNER",
     "VERSION_ARGV",
     "VERSION_SKEW_WARNING",
     "Feature",
@@ -198,6 +206,7 @@ __all__ = [
     "match_pod_choices",
     "match_pod_names",
     "other_containers",
+    "other_owners_seat",
     "parse_mount",
     "plan_ladder",
     "pod_choices",
@@ -213,6 +222,7 @@ __all__ = [
     "resolve_pod_name",
     "run_capreport",
     "same_build",
+    "superseded_seats",
     "ssh_unavailable_note",
     "running_seat",
     "seat_identity_mounts",
@@ -879,6 +889,15 @@ class SeatInfo:
     ephemeral container's mounts are fixed at creation, so a reconnect has to
     read this rather than re-derive it from what the pod declares *now*."""
 
+    owner: str | None = None
+    """The cluster identity that landed it, from :data:`OWNER_ENV`, or ``None``.
+
+    ``None`` is **unknown** and never "yours": every seat landed before the
+    variable existed carries none, and so does one landed where ``kubectl auth
+    whoami`` would not answer. Read back from the spec for the same reason the
+    ids are - a listing routinely runs on a machine that never saw the attach,
+    and on this question it is routinely a *different* machine (issue #113)."""
+
     @property
     def running(self) -> bool:
         """Whether this container can still take an ssh session."""
@@ -920,6 +939,7 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
                 target=_as_str(container.get("targetContainerName")),
                 home=spec_env(container).get("HOME"),
                 identity_mounted=_mounts_volume(container, SEAT_IDENTITY_VOLUME),
+                owner=spec_env(container).get(OWNER_ENV),
             )
         )
     return found
@@ -930,6 +950,7 @@ def running_seat(
     *,
     base: str = CONTAINER_BASE,
     ids: tuple[int, int] | None = None,
+    owner: str | None = None,
 ) -> SeatInfo | None:
     """The podbench container a reconnect should reuse, if there is one.
 
@@ -947,6 +968,25 @@ def running_seat(
     corrected ids, and *finds the corrected seat already running* here instead of
     landing a third.
 
+    A seat a later one **superseded** is never the answer, whether or not any
+    ids were named. The gid correction leaves two live containers with the same
+    target and the same uid, the earlier of which cannot trace and whose agent
+    wrote its sshd config somewhere the corrected seat's did not; the earlier
+    one is also the one reached first, because ephemeral containers are listed
+    in the order they were appended. ``ssh-config`` asked with no ids at all and
+    got it, and emitted a stanza whose ``ProxyCommand`` named the wrong config
+    path (issue #117). :func:`superseded_seats` decides, from the seats alone,
+    so this holds on a machine that never saw the attach.
+
+    ``owner`` is the caller's own cluster identity, and a seat recording a
+    **different** one is never the answer either: its ``authorized_keys`` was
+    written for another key when it started and cannot be added to from here,
+    so reconnecting would hand a stanza that gets ``Permission denied
+    (publickey)`` and nothing to read it against (issue #113). A seat recording
+    *no* owner is still reused - that is every seat landed before the stamp
+    existed, and refusing them would spend a permanent container name on each
+    one - but the report says ``unknown owner`` rather than claiming it.
+
     >>> spec = {"spec": {"ephemeralContainers": [
     ...     {"name": "podbench-1", "securityContext": {"runAsUser": 1000}},
     ...     {"name": "podbench-2",
@@ -955,16 +995,156 @@ def running_seat(
     ...     {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
     ...     {"name": "podbench-2", "state": {"running": {"startedAt": "t"}}}]}}
     >>> running_seat(spec).name
-    'podbench-1'
+    'podbench-2'
     >>> running_seat(spec, ids=(1000, 1000)).name
     'podbench-2'
+
+    Last, and only as a tie-break between seats already found reusable: a seat
+    whose uid **cannot** match its target's is not offered ahead of one whose
+    can. :func:`superseded_seats` reaches only a pair pinned to the same uid, so
+    it does not reach the pairs an older podbench left behind - a full-rung seat
+    at uid 0 corrected to the target's ids, which is six p47 pods
+    (``bl47p-mo-ioc-01-0``, ``p47-epics-pvcs-...``). There ``ssh-config`` was
+    emitting a stanza for the seat whose verdict reads "launch-only ... no
+    read-only inspection" in preference to the one that reads "live attach
+    available", purely because ephemeral containers are listed in the order they
+    were appended.
+
+    >>> legacy = {"spec": {
+    ...     "containers": [{"name": "app",
+    ...                     "securityContext": {"runAsUser": 37887}}],
+    ...     "ephemeralContainers": [
+    ...         {"name": "podbench-1", "targetContainerName": "app",
+    ...          "securityContext": {"runAsUser": 0}},
+    ...         {"name": "podbench-2", "targetContainerName": "app",
+    ...          "securityContext": {"runAsUser": 37887,
+    ...                              "runAsGroup": 37887}}]},
+    ...  "status": {"ephemeralContainerStatuses": [
+    ...     {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
+    ...     {"name": "podbench-2", "state": {"running": {"startedAt": "t"}}}]}}
+    >>> running_seat(legacy).name
+    'podbench-2'
+
+    **Not "prefer the later seat", which would be wrong on the same beamline.**
+    ``p47-epics-opis`` carries a root seat beside a later one at uid 101 against
+    a target the manifest says nothing about and the node reports as root, and
+    there the *earlier* seat is the one that can inspect. The rule is the
+    credential match and never the order:
+
+    >>> opis = {"spec": {
+    ...     "containers": [{"name": "server"}],
+    ...     "ephemeralContainers": [
+    ...         {"name": "podbench-1", "targetContainerName": "server",
+    ...          "securityContext": {"runAsUser": 101}},
+    ...         {"name": "podbench-3", "targetContainerName": "server",
+    ...          "securityContext": {"runAsUser": 0}}]},
+    ...  "status": {
+    ...     "containerStatuses": [{"name": "server",
+    ...                            "user": {"linux": {"uid": 0}}}],
+    ...     "ephemeralContainerStatuses": [
+    ...        {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
+    ...        {"name": "podbench-3",
+    ...         "state": {"running": {"startedAt": "t"}}}]}}
+    >>> running_seat(opis).name
+    'podbench-3'
     """
-    for seat in seats(pod_json, base=base):
-        if not seat.running:
-            continue
-        if ids is not None and (seat.uid, seat.gid) != ids:
-            continue
-        return seat
+    present = seats(pod_json, base=base)
+    replaced = superseded_seats(present)
+    candidates = [
+        seat
+        for seat in present
+        if seat.running
+        and seat.name not in replaced
+        and (ids is None or (seat.uid, seat.gid) == ids)
+        and not _owned_by_another(seat.owner, owner)
+    ]
+    if not candidates:
+        return None
+    # A preference and never a filter: the demoted seat is still returned when
+    # it is the only one, because it is a working editor and shell and this
+    # function's job is to find a seat rather than to grade one.
+    return next(
+        (seat for seat in candidates if not _cannot_reach_its_target(seat, pod_json)),
+        candidates[0],
+    )
+
+
+def _cannot_reach_its_target(seat: SeatInfo, pod_json: Mapping[str, Any]) -> bool:
+    """Whether this seat's own spec rules out the credential check.
+
+    Deliberately **not** a claim that some other seat replaced it. Relaxing
+    :func:`superseded_seats` to pair seats pinned to different uids would reach
+    the legacy pairs, and would also pair two *people's* seats - the correction
+    signature and "a colleague attached after me" are the same shape once the
+    uid is allowed to move, and legacy seats carry no :data:`OWNER_ENV` for
+    ``_owned_by_another`` to tell them apart with. So nothing here is paired,
+    nothing is skipped, and no seat is described as anybody's: this only breaks
+    a tie between candidates every other rule already found reusable, and
+    breaking it towards the seat that can inspect is right whoever landed them.
+
+    ``True`` needs three things, and the absence of any one of them is
+    *unknown* rather than a verdict:
+
+    * a seat below the **full** rung. A stored ``SYS_PTRACE`` may have been
+      stripped, but it may equally be effective, and a capability is exempt from
+      the credential check entirely - so a seat carrying one is never demoted for
+      a uid it does not need. The same reasoning as :func:`above_ceiling`'s.
+    * a **pinned** uid. A seat that pins none runs as the image's user, which is
+      not in the spec (report §3.10).
+    * a **known** target uid. The manifest's, or - where it states none, which
+      is every pod on argus - the uid the kubelet resolved and reports on the
+      container status.
+
+    The gid is not asked for. A differing uid is already the whole answer, and
+    the gid half of the same comparison is what
+    :func:`superseded_seats` covers.
+    """
+    if seat.rung is Rung.FULL or seat.uid is None or seat.target is None:
+        return False
+    stated, _ = target_uid_gid(pod_json, seat.target)
+    target = (
+        stated if stated is not None else reported_target_uid(pod_json, seat.target)
+    )
+    return target is not None and seat.uid != target
+
+
+def _owned_by_another(recorded: str | None, asking: str | None) -> bool:
+    """Whether a seat is provably somebody else's.
+
+    Both halves have to be known for the answer to be yes. Either one missing
+    is *unknown*, and unknown is not a verdict: a seat landed before the stamp
+    existed records nothing, and a cluster that would not answer ``auth
+    whoami`` leaves the asker nameless. Deciding either way on one name is how
+    an anonymous seat would come to be reported as somebody's.
+
+    >>> _owned_by_another("alice", "bob")
+    True
+    >>> _owned_by_another(None, "bob"), _owned_by_another("alice", None)
+    (False, False)
+    """
+    return recorded is not None and asking is not None and recorded != asking
+
+
+def other_owners_seat(
+    present: Sequence[SeatInfo], owner: str | None
+) -> SeatInfo | None:
+    """The first live seat that provably belongs to somebody else, if any.
+
+    Asked only to explain why a fresh seat is being landed beside a running
+    one, which is a surprise worth a line: the pod already carries a working
+    seat and the user is spending a permanent container name anyway.
+
+    >>> mine = SeatInfo("podbench-2", Rung.DEGRADED, "running", "", owner="bob")
+    >>> theirs = SeatInfo("podbench-1", Rung.DEGRADED, "running", "",
+    ...                   owner="alice")
+    >>> other_owners_seat([theirs, mine], "bob").name
+    'podbench-1'
+    >>> other_owners_seat([mine], "bob") is None
+    True
+    """
+    for seat in present:
+        if seat.running and _owned_by_another(seat.owner, owner):
+            return seat
     return None
 
 
@@ -995,6 +1175,17 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
     ...                       uid=1000, gid=None, target="app")
     >>> superseded_seats([first, deliberate])
     {}
+
+    Two *people* on one pod produce the same signature and mean nothing by it:
+    a colleague attaching after you lands a corrected seat beside your
+    uncorrected one, and calling that a supersession would tell you your own
+    seat had been replaced and send the next attach off to land a third
+    (issue #113). So a pairing needs the owners not to disagree.
+
+    >>> theirs = SeatInfo("podbench-2", Rung.DEGRADED, "running", "",
+    ...                   uid=1000, gid=1000, target="app", owner="alice")
+    >>> superseded_seats([replace(first, owner="bob"), theirs])
+    {}
     """
     replaced: dict[str, str] = {}
     live = [seat for seat in present if seat.running]
@@ -1004,16 +1195,40 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
         for later in live[index + 1 :]:
             if (later.target, later.uid) != (earlier.target, earlier.uid):
                 continue
+            if _owned_by_another(later.owner, earlier.owner):
+                continue
             if later.gid is not None and later.gid != earlier.gid:
                 replaced[earlier.name] = later.name
     return replaced
 
 
+OTHER_OWNER_WARNING = (
+    "{seat} is running but was not reused because {owner} landed it: an "
+    "ephemeral container's authorized_keys is written when it starts and "
+    "cannot be added to from here, so a new container is being landed - and "
+    "its name is spent whether or not it works out"
+)
+"""Why a running seat was passed over for a fresh one (issue #113).
+
+A warning and not a note, unlike :data:`SUPERSEDED_NOTE`: it is said on the
+attach that spends the name, to the person spending it, and the fact it carries
+- somebody else is working in this pod - is one they did not have.
+"""
+
+UNKNOWN_OWNER = "unknown - this seat records none"
+"""What a listing says about a seat with no :data:`OWNER_ENV`.
+
+Every seat that existed before the stamp did, which on the beamline is six pods'
+worth. Reported as unknown rather than left blank, and never attributed to the
+reader: the same rule the memory row is held to, in the one place where guessing
+would tell somebody a colleague's seat was theirs.
+"""
+
 SUPERSEDED_NOTE = (
     "superseded by {later}, which corrected this seat's group id - an "
     "ephemeral container's securityContext is fixed for its lifetime, so the "
     "correction cost a second name and this one cannot be removed. "
-    "--target-gid <gid> pins the group up front and costs one name instead"
+    "`--target-gid <gid>` pins the group up front and costs one name instead"
 )
 """What a listing says about a seat a later one replaced.
 
@@ -1373,11 +1588,24 @@ class Session:
     Not what the walk asked admission for, which is on the :class:`LadderStep`
     that landed and belongs there: a rung is a claim about a running container
     and the two come apart in both directions (issue #94). It falls back to the
-    authored rung only where the seat could not be read at all, and
-    :func:`format_session` says so on the line rather than quietly.
+    authored rung only where the measurement could not be made - the seat would
+    not say what it is running as, or the target's own ids were never read -
+    and :attr:`rung_measured` is what :func:`format_session` says that with,
+    on the line rather than quietly.
     """
 
     reused: bool
+    rung_measured: bool = False
+    """Whether :attr:`rung` is the seat's own measurement or the walk's request.
+
+    Its own field because the two are indistinguishable once reduced to a
+    label, and the report has to say which it is printing. False covers both
+    ways the measurement is unavailable: a seat that would not report its
+    ``/proc/self/status``, and a target whose ids were never read - the second
+    of which is the ordinary case under ``--no-probe`` against a workload
+    pinning ``runAsUser`` and no ``runAsGroup``.
+    """
+
     siblings: tuple[str, ...] = ()
     """The pod's other workload containers, which this seat did not enter.
 
@@ -1408,6 +1636,13 @@ class Session:
     home: str | None = None
     """``$HOME`` as pinned in the container's env, ``None`` for the image's own.
     :func:`seat_layout` derives every path the ProxyCommand names from it."""
+
+    owner: str | None = None
+    """The cluster identity recorded on the seat, ``None`` when it records none.
+
+    The seat's, not the caller's: on a reconnect this is what the container was
+    stamped with, which is the fact the report has to state rather than the
+    name of whoever is reading it."""
 
     identity_mounted: bool = False
     """Whether the seat mounts :data:`podbench.model.SEAT_IDENTITY_VOLUME`.
@@ -1584,8 +1819,13 @@ def attach(
         volume_mounts = _merge_mounts(volume_mounts, convention)
     identity_declared = SEAT_IDENTITY_VOLUME in declared_volumes(pod_json)
 
-    manifest_uid, _ = target_uid_gid(pod_json, workload)
+    manifest_uid, manifest_gid = target_uid_gid(pod_json, workload)
     wanted_uid = target_uid if target_uid is not None else manifest_uid
+    # The gid the rung is measured against, which is a different question from
+    # the gid to *pin*: `wanted_ids` below deliberately ignores the manifest,
+    # because pinning off it would reject a running full-rung seat, while a
+    # comparison has to use every number there is.
+    wanted_gid = target_gid if target_gid is not None else manifest_gid
     # Only when a *gid was asked for* - by flag, or by the correction below -
     # and never off the manifest alone. A pod stating both ids would otherwise
     # make this reject a running full-rung seat, which pins uid 0 and no group
@@ -1599,15 +1839,20 @@ def attach(
     wanted_ids = (
         (wanted_uid, target_gid) if target_gid is not None and wanted_uid else None
     )
-    existing = running_seat(pod_json, ids=wanted_ids)
+    # One call per run, cached on the Kubectl: it decides which seat is offered
+    # and it is stamped on whatever gets landed, so both halves have to be the
+    # same answer.
+    owner = kubectl.whoami()
+    existing = running_seat(pod_json, ids=wanted_ids, owner=owner)
+    declined: str | None = None
     if existing is None and wanted_ids is not None and correct_ids:
         # Said only on the path a human asked for: the correction below runs
         # with `correct_ids=False` and carries its own one-line account of the
         # name it is spending, and two warnings for one event is how a report
         # becomes mostly warnings.
-        stale = running_seat(pod_json)
+        stale = running_seat(pod_json, owner=owner)
         if stale is not None:
-            warnings.append(
+            declined = (
                 f"{stale.name} is running but was not reused because it is "
                 f"pinned to {_ids(stale.uid, stale.gid)}, not the "
                 f"{_ids(wanted_uid, target_gid)} asked for: an ephemeral "
@@ -1615,6 +1860,15 @@ def attach(
                 "so a new container is being landed - and its name is spent "
                 "whether or not it works out"
             )
+    if existing is None and declined is None:
+        # The other reason a running seat is passed over. One line and one
+        # only, which is why it shares `declined` with the ids case: a user who
+        # is landing a second seat needs the reason, not both candidate reasons.
+        theirs = other_owners_seat(seats(pod_json), owner)
+        if theirs is not None:
+            declined = OTHER_OWNER_WARNING.format(seat=theirs.name, owner=theirs.owner)
+    if declined is not None:
+        warnings.append(declined)
     if existing is not None and max_rung is not None:
         above = above_ceiling(existing, max_rung, target_uid=wanted_uid)
         if above is not None:
@@ -1648,6 +1902,7 @@ def attach(
             gid=existing.gid,
             home=existing.home,
             identity_mounted=existing.identity_mounted,
+            owner=existing.owner,
             steps=(
                 LadderStep(
                     existing.rung,
@@ -1686,6 +1941,7 @@ def attach(
             workload=workload,
             image=image,
             public_key=public_key,
+            owner=owner,
             target_uid=target_uid,
             target_gid=target_gid,
             max_rung=max_rung,
@@ -1702,11 +1958,16 @@ def attach(
     # and a reconnect stops inheriting a spec's answer to a question only the
     # kernel can settle.
     credentials = probe_seat_credentials(kubectl, session.seat)
+    measured = _measured_rung_of(
+        credentials, target_uid=wanted_uid, target_gid=wanted_gid
+    )
     session = replace(
         session,
         credentials=credentials,
-        rung=_measured_or_asked(session.rung, credentials, target_uid=wanted_uid),
+        rung=measured or session.rung,
+        rung_measured=measured is not None,
     )
+    session = replace(session, steps=_relabel_reconnect(session))
 
     # Before the OOM warning, because it is about which *code* is running and
     # every other line in the report is only true of the version that is.
@@ -1760,6 +2021,28 @@ def attach(
         report, probe_warnings = run_capreport(kubectl, session.seat)
         session = replace(session, report=report)
         warnings.extend(probe_warnings)
+        # The target's ids as the seat *measured* them, in place of the
+        # manifest's. The rung below full turns on whether the seat's uid and
+        # gid match the target's, and a manifest that pins no `runAsUser` -
+        # which is every pod on argus - leaves `wanted_uid` None, so a root seat
+        # beside a root target was named `seat` here while the seat's own
+        # start-up report, which reads the target's `/proc/<pid>/status`, makes
+        # it `degraded`. The gid half is the same reading of the same file, and
+        # it is the only place the group lives when the manifest states
+        # `runAsUser` and no `runAsGroup` (p47-blueapi-0). One seat, one label
+        # (issue #94).
+        if report is not None and report.target_uid is not None:
+            # Only where it measured something. A capreport too old to report
+            # the target's gid answers `None` here, and taking that over the
+            # manifest's answer would replace a measurement with an absence.
+            remeasured = _measured_rung_of(
+                credentials,
+                target_uid=report.target_uid,
+                target_gid=report.target_gid,
+            )
+            if remeasured is not None:
+                session = replace(session, rung=remeasured, rung_measured=True)
+                session = replace(session, steps=_relabel_reconnect(session))
         correction = (
             id_correction(report, pinned_uid=target_uid, pinned_gid=target_gid)
             if correct_ids
@@ -1800,6 +2083,11 @@ def attach(
                 ),
             )
 
+    # Last, because it is the one read that wants the seat to have finished
+    # starting: the agent writes its report after `ensure_all`, and everything
+    # above has just spent several round trips in the container. A report that
+    # is not there yet costs the same nothing it cost before it existed.
+    warnings.extend(startup_warnings(kubectl, session.seat))
     return replace(session, warnings=(*session.warnings, *warnings))
 
 
@@ -1808,8 +2096,8 @@ ID_CORRECTION_WARNING = (
     "__ptrace_may_access compares the group ids as well as the user ids, so a "
     "corrected seat was landed at {now} - {first}'s name is spent, because an "
     "ephemeral container's securityContext is fixed for the pod's lifetime. "
-    "--no-correct-ids keeps the first seat; --target-gid <gid> pins the group "
-    "up front and costs one name instead of two"
+    "--no-correct-ids keeps the first seat; `--target-gid <gid>` pins the "
+    "group up front and costs one name instead of two"
 )
 """One line, and the only one this event gets.
 
@@ -1901,6 +2189,7 @@ def _walk_ladder(
     workload: str,
     image: str,
     public_key: str | None,
+    owner: str | None,
     target_uid: int | None,
     target_gid: int | None,
     max_rung: Rung | None,
@@ -1951,6 +2240,7 @@ def _walk_ladder(
                     rung,
                     workload=workload,
                     home=_seat_home(volume_mounts, rung),
+                    owner=owner,
                 ),
                 volume_mounts=volume_mounts,
                 # The target's own, never RuntimeDefault by default: a filter
@@ -2058,6 +2348,7 @@ def _walk_ladder(
             gid=_as_int(as_dict(spec.get("securityContext")).get("runAsGroup")),
             home=spec_env(spec).get("HOME"),
             identity_mounted=_mounts_volume(spec, SEAT_IDENTITY_VOLUME),
+            owner=spec_env(spec).get(OWNER_ENV),
             steps=tuple(steps),
             warnings=tuple(warnings),
         )
@@ -2313,8 +2604,16 @@ def _container_env(
     *,
     workload: str,
     home: str | None,
+    owner: str | None = None,
 ) -> dict[str, str]:
     env: dict[str, str] = {}
+    if owner is not None:
+        # Who landed this seat, so that the next person on this pod is offered
+        # their own rather than handed one whose authorized_keys was written
+        # for somebody else's key (issue #113). Written only when the cluster
+        # named the user: absence has to keep meaning "unknown", and a locally
+        # invented name would be a claim nothing measured.
+        env[OWNER_ENV] = owner
     # Which container this seat is in, and what else is in the pod. Both are
     # laptop-side facts - the seat sees namespaces, never the pod object - and
     # `pids` needs them to head its listing with the container whose processes
@@ -2428,28 +2727,94 @@ def probe_seat_credentials(kubectl: Kubectl, seat: ContainerRef) -> Credentials 
     return Credentials.from_status(result.stdout)
 
 
-def _measured_or_asked(
-    asked: Rung, credentials: Credentials | None, *, target_uid: int | None
-) -> Rung:
-    """The measured rung, falling back to the one that was asked for.
+def _measured_rung_of(
+    credentials: Credentials | None,
+    *,
+    target_uid: int | None,
+    target_gid: int | None,
+) -> Rung | None:
+    """The rung these credentials put the seat on, or ``None`` for unmeasured.
 
-    ``target_uid`` is the pod spec's, or the flag's - what the walk pinned the
-    seat to - because it has to be available on an attach that probed nothing.
-    That is enough for the comparison the rung turns on: the degraded rung
-    exists only where the manifest or the caller named a uid, since
-    :func:`podbench.spec.ephemeral_container_spec` refuses to author it without
-    one.
+    ``None`` is every way the comparison could not be made - the seat would not
+    say what it is running as, or the target's own ids are not in hand - and it
+    is the caller's cue to name the rung that was *asked* for and say so. It is
+    never a rung: a label that outran its evidence is issue #94, and one that
+    outran half of its evidence is the same defect with a smaller margin.
+
+    The target ids are the pod spec's, or the flag's - what the walk pinned the
+    seat to - because they have to be available on an attach that probed
+    nothing. ``target_gid`` is routinely ``None`` there: ``runAsUser`` with no
+    ``runAsGroup`` is what a hardened workload declares, and the group then
+    comes from the image, so it lives only in the target's own ``/proc``
+    (:func:`podbench.spec.target_uid_gid`). Where a capreport ran, its measured
+    pair replaces both.
+
+    An unknown target *uid* is unmeasured here, which is not what
+    :func:`podbench.model.measured_rung` answers on its own.  That function
+    names the floor for it "because its caller has the manifest to fall back on
+    and says which it used" - and this caller *is* the manifest: ``None`` means
+    the pod states no ``runAsUser``, which is every pod on argus, so there is
+    nothing behind it to fall back to. Passing the floor off as measured made
+    ``ssh-config`` and a ``--no-probe`` attach call a root seat beside a root
+    target ``seat``, while a capreport on the same two containers reads
+    ``degraded`` - one seat, two labels, which is issue #94 itself.
+    :attr:`podbench.model.SeatReport.rung` guards its own reading in these
+    words and for this reason, and the capability is exempt in both: it is the
+    whole of the full rung and is compared against no target at all.
     """
     if credentials is None:
-        return asked
-    return (
-        measured_rung(
-            credentials.uid,
-            sys_ptrace=credentials.capabilities.sys_ptrace_effective,
-            target_uid=target_uid,
-        )
-        or asked
+        return None
+    if target_uid is None and not credentials.capabilities.sys_ptrace_effective:
+        return None
+    return measured_rung(
+        credentials.uid,
+        sys_ptrace=credentials.capabilities.sys_ptrace_effective,
+        target_uid=target_uid,
+        gid=credentials.gid,
+        target_gid=target_gid,
     )
+
+
+def startup_warnings(kubectl: Kubectl, seat: ContainerRef) -> list[str]:
+    """What the seat's start-up could not do, said to the person attaching.
+
+    Issue #99. ``ensure_all`` records a refused step rather than raising - the
+    caller is PID 1 of a container that cannot be restarted - and the record
+    went to the container log, which is the place the issue was filed about.
+    A refused ``SetEnv`` costs the ssh transport a variable and nothing said
+    so: ``c354c90`` made that failure loud *in the log* and no louder anywhere
+    else.
+
+    One warning per failure, each already a line, because that is what a
+    warning is here. A log that cannot be read is silence, exactly as it was
+    before this existed: there is nothing to report and nothing was measured.
+    """
+    text = kubectl.logs(seat.pod.name, seat.container)
+    if text is None:
+        return []
+    report = SeatReport.from_log(text)
+    if report is None:
+        return []
+    return [f"{seat.container} start-up: {failure}" for failure in report.failures]
+
+
+def _relabel_reconnect(session: Session) -> tuple[LadderStep, ...]:
+    """A reconnect's one ladder line, carrying the rung that was measured.
+
+    The ladder says what the walk *asked* admission for, and on a reconnect the
+    walk did not run: the single step is synthesised from the container that
+    was found, so its rung was :func:`rung_of_spec`'s reading of a
+    securityContext. That is the third of the three labels one seat wore in
+    issue #94 - the header said one thing, this line said another, and neither
+    was wrong about the question it was answering. A reconnect has only one
+    question, so it gets one answer.
+
+    A first attach is left alone: its steps are refusals and a landing, and the
+    rung each names is the rung that was submitted.
+    """
+    if not session.reused or len(session.steps) != 1:
+        return session.steps
+    return (replace(session.steps[0], rung=session.rung),)
 
 
 def run_capreport(
@@ -2941,7 +3306,15 @@ def format_session(session: Session) -> str:
             first="version     ",
             indent=" " * 12,
         ),
-        f"rung        {session.rung.value} - {_rung_evidence(session)}",
+        *paragraph(_owner_fact(session), first="owner       ", indent=" " * 12),
+        # Wrapped like the rows above it: the evidence is a sentence's worth of
+        # numbers and it now has a second clause, so a hanging indent is what
+        # keeps it a row rather than an overrun.
+        *paragraph(
+            f"{session.rung.value} - {_rung_evidence(session)}",
+            first="rung        ",
+            indent=" " * 12,
+        ),
         "ladder",
     ]
     for step in session.steps:
@@ -3015,6 +3388,25 @@ def format_session(session: Session) -> str:
     return "\n".join(lines)
 
 
+def _owner_fact(session: Session) -> str:
+    """Whose seat this is, or why the report cannot say.
+
+    The two ways an owner comes back unknown have different causes and one of
+    them is about *this* run, so they are not merged: a reconnect into an
+    unstamped container is history, while a seat landed without a stamp means
+    the cluster would not name the kubeconfig's user and the seat this run just
+    created will be anonymous to the next person too.
+    """
+    if session.owner is not None:
+        return session.owner
+    if session.reused:
+        return "unknown - this container was landed before seats recorded one"
+    return (
+        "unknown - `kubectl auth whoami` did not name this kubeconfig's user, "
+        "so this seat records none either"
+    )
+
+
 def _rung_evidence(session: Session) -> str:
     """What the rung on this line is a reading of.
 
@@ -3025,15 +3417,23 @@ def _rung_evidence(session: Session) -> str:
     also the only place a ``--no-probe`` attach reports any measurement at all.
     """
     credentials = session.credentials
-    if credentials is None:
+    if credentials is None or credentials.uid is None:
         # Named as unmeasured rather than passed off as measured. The seat is
         # running - the attach returned - so this is an exec that was refused
         # or an answer this launcher could not parse, and the rung reverts to
         # being the walk's own claim about what it asked for.
         return "as asked for; the seat's own /proc/self/status could not be read"
-    return describe_credentials(
+    described = describe_credentials(
         credentials.uid, credentials.gid, credentials.capabilities.effective_hex
     )
+    if session.rung_measured:
+        return described
+    # The seat was read and the target was not, so the comparison the rung
+    # below full *is* was never made. Said rather than left to look measured:
+    # `__ptrace_may_access()` wants both pairs, and a target that pins
+    # `runAsUser` and no `runAsGroup` keeps its group only in its own /proc -
+    # which is the shape `--no-probe` meets on every hardened workload.
+    return f"as asked for; the seat is {described}, the target unread"
 
 
 def _yama(scope: int | None) -> str:
@@ -3705,14 +4105,32 @@ def try_resize(
         if cpu is not None:
             wants[CPU] = parse_want(cpu, resource=CPU)
         document = pod_json if pod_json is not None else kubectl.get_pod(pod)
+        current = _container_resources(document, container)
         plan = plan_resize(
             container,
-            current=_container_resources(document, container),
+            current=current,
             wants=wants,
             limits=namespace_limits(kubectl.list_limit_ranges()),
         )
     except ResizeError as error:
         return f"no resize was attempted: {error}"
+
+    # The one refusal that is knowable before it happens. A Guaranteed pod has
+    # request == limit everywhere by definition, so raising a limit on its own
+    # must change its QoS class, and the API server refuses every resize that
+    # does - at any number, so there is nothing to retry (#124). podbench does
+    # not pin the request itself: a request is a *reservation* on the node, not
+    # a cap, and choosing to take one is a bigger decision than this flag's, so
+    # what the user gets is the command that works rather than a mutation that
+    # cannot.
+    remedy = qos_preserving_flags(current, plan)
+    if remedy is not None and _qos_class(document) == "Guaranteed":
+        return (
+            "no resize was attempted: this pod is Guaranteed, so every request "
+            "equals its limit, and a resize may not change a pod's QoS class - "
+            "raising the limit alone is refused whatever the number. Ask for "
+            f"both halves instead: `{remedy}`."
+        )
 
     asked = ", ".join(
         f"{resource} {value}" for resource, value in sorted(_asked(plan).items())
@@ -3726,9 +4144,15 @@ def try_resize(
         # The API server answers a claim-bearing container with a sentence about
         # cpu and memory, which sends the reader after the numbers they just
         # asked for. See resize.explain_claim_refusal.
-        explanation = explain_claim_refusal(
-            _container_resources(document, container), refusal
-        )
+        explanation = explain_claim_refusal(current, refusal)
+        if not explanation and QOS_REFUSAL in refusal and remedy is not None:
+            # The backstop for a pod whose `status` did not say Guaranteed -
+            # a caller-supplied document without one, or a class the API server
+            # recomputed under us. The remedy is the same either way.
+            explanation = (
+                "a resize may not change a pod's QoS class, and this one would."
+                f" Ask for both halves instead: `{remedy}`."
+            )
         return (
             f"in-place resize ({asked}) was refused, so podbench is sharing "
             "the pod's existing limits"
@@ -3776,6 +4200,18 @@ def _asked(plan: ResizePlan) -> dict[str, str]:
     return stated
 
 
+def _qos_class(pod_json: Mapping[str, Any]) -> str:
+    """The class the kubelet computed for this pod, or the empty string.
+
+    Read rather than derived: the rule is "every container's every request
+    equals its limit", but which containers count and what an unset request
+    means are the kubelet's business, and a pod object always carries its own
+    answer. An absent one is a document that was not fetched whole, and is
+    never treated as evidence either way.
+    """
+    return str(as_dict(pod_json.get("status")).get("qosClass") or "")
+
+
 def _container_resources(
     pod_json: Mapping[str, Any], container: str
 ) -> Mapping[str, Any]:
@@ -3812,7 +4248,11 @@ def current_namespace(
     if context is not None:
         argv += ["--context", context]
     argv += ["config", "view", "--minify", "-o", "jsonpath={..namespace}"]
-    result = run(argv)
+    # Bounded like every other kubectl call, though this one reads a file and
+    # contacts nothing: it is the first call every verb makes, and a kubeconfig
+    # on a mount that has stopped answering would hang before anything is
+    # printed at all.
+    result = run(argv, timeout=DEFAULT_CALL_TIMEOUT)
     namespace = result.stdout.strip()
     if result.returncode != 0 or not namespace:
         return "default"
@@ -4098,6 +4538,67 @@ def _seat_verdict(measured: CapabilityReport | str | None) -> str:
     return f"{NOT_PROBED} - {measured}" if measured else NOT_PROBED
 
 
+MEASURED_RUNG_HEADING = "RUNG (measured)"
+"""What the third column of a listing is a reading of.
+
+The measurement is the seat's own, taken at start-up from ``/proc`` and read
+back out of the container log - so the word means here exactly what it means on
+``attach``'s ``rung`` row. A seat that could not be read holds
+:data:`~podbench.model.NOT_MEASURED` instead, and its authored rung goes in a
+row of its own where no measured label can be mistaken for it."""
+
+REQUESTED_RUNG_FOOTNOTE = (
+    "request: read from the seat's securityContext, which is what admission "
+    "stored and not what the kernel gave the container - the two differ in "
+    "both directions. It is what a listing has left when the seat's own "
+    "start-up report was not read: a seat that is no longer running, one "
+    "older than that report, a log the kubelet has rotated, or RBAC without "
+    "`pods/log`"
+)
+"""Said once per pod block, and only where a seat in it went unmeasured.
+
+The heading has room for the word and not for the reason, and the reason is the
+whole of why the word is there. Backticked runs so `wrap` cannot break a flag or
+a path across the margin (issue #120)."""
+
+
+def recover_seat_reports(
+    kubectl: Kubectl, pod: PodRef, present: Sequence[SeatInfo]
+) -> dict[str, SeatReport]:
+    """Each running seat's own start-up report, read out of the container log.
+
+    One ``kubectl logs`` per live seat, and deliberately not one ``kubectl
+    exec``. The rung a seat *is* can only be measured inside it, and ``list``
+    and ``status`` read pod JSON and run nothing - so the choice was between a
+    column that restates a securityContext and a verb that spawns a process per
+    seat across a whole namespace. The agent writes the measurement once, at
+    start-up, and this reads it (issues #94b and #99).
+
+    A seat missing from the result is a seat that went **unmeasured**, and
+    every way that happens is ordinary: an image older than the report, a
+    rotated log, or RBAC that grants ``get pods`` and not ``pods/log``. None of
+    them is an error and none is reported as one.
+
+    A seat that is no longer running is not asked either, though its log
+    usually survives it. A burnt name is listed so that a reader of
+    ``podbench-4`` can see why 1-3 are not reusable, and a pod accumulates them
+    for its whole lifetime; spending a call per dead seat to recover what one
+    of them measured before it exited would make the listing cost grow with
+    the pod's history rather than with what is running in it.
+    """
+    found: dict[str, SeatReport] = {}
+    for seat in present:
+        if not seat.running:
+            continue
+        text = kubectl.logs(pod.name, seat.name)
+        if text is None:
+            continue
+        report = SeatReport.from_log(text)
+        if report is not None:
+            found[seat.name] = report
+    return found
+
+
 def format_seats(
     pod: PodRef,
     present: Sequence[SeatInfo],
@@ -4105,6 +4606,7 @@ def format_seats(
     directory: Path,
     measured: Mapping[str, CapabilityReport | str] | None = None,
     versions: Mapping[str, str | None] | None = None,
+    reports: Mapping[str, SeatReport] | None = None,
 ) -> str:
     """One pod's podbench containers, for ``status`` and ``list``.
 
@@ -4134,6 +4636,14 @@ def format_seats(
     spec asked for and a node serving a cached layer of a tag that moves gives
     a seat built from something else.
 
+    ``reports`` carries each seat's own start-up measurement, from
+    :func:`recover_seat_reports`. It decides the RUNG column, and a seat missing
+    from it holds :data:`~podbench.model.NOT_MEASURED` with its *requested*
+    rung on a row of its own - never the authored rung wearing a measured
+    label, which is the whole of issue #94 in a column. The same report carries
+    what start-up could not do, which until now explained itself only to the
+    container log (issue #99).
+
     The alias is offered only where a seat is *running*. A stanza outlives the
     container it was written for — nothing deletes it, and an ephemeral
     container's name is burnt for the pod's lifetime once it exits — so a pod
@@ -4142,18 +4652,38 @@ def format_seats(
     """
     probes = measured or {}
     builds = versions or {}
+    startup = reports or {}
     replaced = superseded_seats(present)
     # Headed, as `format_pod_choices` is, because the third cell now stops at
     # the rung's name: `degraded` under nothing at all is the very reading this
     # verb has to stop making, and a header is cheaper than a word per row.
-    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} RUNG"]
+    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} {MEASURED_RUNG_HEADING}"]
+    unmeasured = False
     for seat in present:
-        lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
+        report = startup.get(seat.name)
+        rung = None if report is None else report.rung
+        lines.append(
+            f"  {seat.name:<12} {seat.phase:<11} "
+            f"{NOT_MEASURED if rung is None else rung.value}"
+        )
         lines.extend(_fact("state", seat.detail))
+        if rung is None:
+            unmeasured = True
+            lines.extend(_fact("request", seat.rung.value))
+        # The seat's own account of a start-up step that gave up. It was
+        # already written down - `ensure_all` records rather than raises,
+        # because the caller is PID 1 of an unrestartable container - and until
+        # this row the only copy was in a log nobody opens (issue #99).
+        for failure in () if report is None else report.failures:
+            lines.extend(_fact("startup", failure))
         if seat.name in replaced:
             lines.extend(
                 _fact("note", SUPERSEDED_NOTE.format(later=replaced[seat.name]))
             )
+        # The question a second person on a shared pod actually has, and the
+        # one `podbench-1` beside `podbench-2` could not answer at all before
+        # seats carried a stamp (issue #113).
+        lines.extend(_fact("owner", seat.owner or UNKNOWN_OWNER))
         # Per seat and not per pod: two seats on one pod may target different
         # containers, and a listing that says only which pod they are in leaves
         # the reader of a multi-container pod to guess which of them either seat
@@ -4172,6 +4702,8 @@ def format_seats(
         # seats has two of them, and a single line would have to pick.
         if seat.running:
             lines.append(ssh_connect_line(directory, pod, seat.name))
+    if unmeasured:
+        lines.extend(paragraph(REQUESTED_RUNG_FOOTNOTE, first="  ", indent="  "))
     if not any(seat.running for seat in present):
         # The command ends the line, as it does on `ssh_connect_line`'s two
         # missing-stanza answers: this line is never wrapped - the right-hand
@@ -4811,7 +5343,13 @@ _ResizeCpu = Annotated[
 
 _Timeout = Annotated[
     float,
-    typer.Option("--timeout", metavar="SECONDS", help="seconds to wait for the seat"),
+    typer.Option(
+        "--timeout",
+        metavar="SECONDS",
+        help="seconds to wait for the seat to start. It bounds that wait and "
+        "nothing else: one kubectl call is bounded separately, at "
+        f"{DEFAULT_CALL_TIMEOUT:g}s",
+    ),
 ]
 
 
@@ -5258,7 +5796,12 @@ def _build_app(
         key_path, _ = read_public_key(identity)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         pod_json = kube.get_pod(name)
-        seat = running_seat(pod_json)
+        # The owner is the id this verb has to select on. It writes a stanza
+        # naming *this* kubeconfig's IdentityFile, so a colleague's seat is the
+        # one seat that cannot work - its authorized_keys holds another key -
+        # and picking it would emit a stanza whose only failure is `Permission
+        # denied (publickey)` (issue #113, on top of #117's superseded seat).
+        seat = running_seat(pod_json, owner=kube.whoami())
         if seat is None:
             raise LauncherError(
                 f"no running podbench container in {kube.namespace}/{name}; "
@@ -5272,17 +5815,21 @@ def _build_app(
         # uid the seat runs as - not by the rung its securityContext reads back
         # as, which is what got that path wrong at DLS (2026-08-16).
         credentials = probe_seat_credentials(kube, reference)
+        stated_uid, stated_gid = target_uid_gid(pod_json, workload)
+        measured = _measured_rung_of(
+            credentials, target_uid=stated_uid, target_gid=stated_gid
+        )
         session = Session(
             seat=reference,
             workload=workload,
             siblings=other_containers(pod_json, workload),
-            rung=_measured_or_asked(
-                seat.rung, credentials, target_uid=target_uid_gid(pod_json, workload)[0]
-            ),
+            rung=measured or seat.rung,
+            rung_measured=measured is not None,
             reused=True,
             uid=seat.uid,
             home=seat.home,
             identity_mounted=seat.identity_mounted,
+            owner=seat.owner,
             credentials=credentials,
             # Asked again rather than assumed: this command exists to regenerate
             # a stanza from another machine, where nothing of the original
@@ -5326,7 +5873,8 @@ def _build_app(
                 help="wait this long for a seat that is still starting before "
                 "reporting. The default reports what is there now; pass the "
                 "same number `attach --timeout` needed on a cluster whose "
-                "image pull is slow",
+                "image pull is slow. It bounds that wait and nothing else: one "
+                f"kubectl call is bounded separately, at {DEFAULT_CALL_TIMEOUT:g}s",
             ),
         ] = 0.0,
         config_dir: _ConfigDir = None,
@@ -5350,6 +5898,11 @@ def _build_app(
         # that moves serves whatever the node cached, so the spec cannot answer
         # this and neither can the launcher's own version.
         versions = {} if no_probe else probe_seat_versions(kube, reference, present)
+        # Not behind `--no-probe`: that flag is for a listing that must *touch*
+        # nothing, and `kubectl logs` runs nothing in the seat. It is the only
+        # measurement this verb can still report with the flag on, and the
+        # column would otherwise fall back to a securityContext.
+        reports = recover_seat_reports(kube, reference, present)
         # Read-only: the config dir is where the ssh alias for these seats is
         # recorded, and reporting one podbench cannot back up would be worse
         # than reporting none. Nothing here writes a stanza.
@@ -5360,6 +5913,7 @@ def _build_app(
                 directory=client_dir(config_dir),
                 measured=measured,
                 versions=versions,
+                reports=reports,
             )
         )
         raise typer.Exit(0)
@@ -5388,7 +5942,12 @@ def _build_app(
         # of its own and back-to-back they read as one pod with too many seats.
         emit(
             "\n\n".join(
-                format_seats(pod, present, directory=directory)
+                format_seats(
+                    pod,
+                    present,
+                    directory=directory,
+                    reports=recover_seat_reports(kube, pod, present),
+                )
                 for pod, present in found
             )
         )

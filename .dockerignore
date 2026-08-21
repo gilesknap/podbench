@@ -23,3 +23,15 @@ cov.xml
 # Editor and container tooling that never reaches the runtime image
 .devcontainer/
 .vscode/
+
+# Generated kubeconfigs, which `k8s/.gitignore` keeps out of the history for the
+# same reason. Gitignoring them is not enough here: the build context is the
+# working tree, not `git ls-files`, so `COPY . /app` picks them up on any machine
+# where they exist. The multi-stage build keeps them out of the shipped image -
+# only `/app/.venv` crosses over - but they still land in every build-stage layer
+# the daemon caches. Measured 2026-08-21 on the k3s bed: two live DLS
+# service-account kubeconfigs, in 30 files across 16 cached layers.
+k8s/*.kubeconfig
+
+# Session scratch. Never wanted in an image, and `tmp/` can hold anything.
+tmp/

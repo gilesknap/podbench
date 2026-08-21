@@ -53,6 +53,7 @@ __all__ = [
     "GI",
     "MEMORY",
     "MUTABLE_RESOURCES_REFUSAL",
+    "QOS_REFUSAL",
     "SEAT_FOOTPRINT",
     "SEAT_HEADROOM",
     "Headroom",
@@ -69,10 +70,24 @@ __all__ = [
     "parse_want",
     "plan_resize",
     "pod_memory_limit",
+    "qos_preserving_flags",
 ]
 
 MEMORY = "memory"
 CPU = "cpu"
+
+QOS_REFUSAL = "QOS Class may not change as a result of resizing"
+"""The API server's refusal of a resize that would move a pod between classes.
+
+Matched on the clause rather than the whole sentence, which names the class it
+would have become and the field path it was found on::
+
+    Invalid value: "Guaranteed": Pod QOS Class may not change as a result of
+    resizing
+
+`Guaranteed` is the one that cannot be worked around by choosing a better
+number - see :func:`qos_preserving_flags`.
+"""
 
 MUTABLE_RESOURCES_REFUSAL = "only cpu and memory resources are mutable"
 """The API server's whole vocabulary for "your resize changed something else".
@@ -451,6 +466,68 @@ def _ratio(value: Fraction) -> str:
     if value.denominator == 1:
         return str(value.numerator)
     return f"{float(value):g}"
+
+
+_FLAG = {MEMORY: "--resize", CPU: "--resize-cpu"}
+"""The flag that spells one resource's ``REQUEST:LIMIT``."""
+
+
+def qos_preserving_flags(current: Mapping[str, Any], plan: ResizePlan) -> str | None:
+    """How to ask for ``plan`` without changing a Guaranteed pod's QoS class.
+
+    A Guaranteed pod is one whose every request equals its limit, so a patch
+    that moves a limit and leaves the request behind *must* change the class,
+    and the API server refuses every resize that does (:data:`QOS_REFUSAL`).
+    There is no value of the limit for which that patch succeeds — measured on
+    the k3s bed, 2026-08-21, issue #124 — so the only useful thing to say about
+    it is the spelling that does work.
+
+    Returns the flags that pin each patched resource's request to its own new
+    limit:
+
+    >>> both = {"limits": {"memory": "256Mi"}, "requests": {"memory": "256Mi"}}
+    >>> want = {MEMORY: parse_want("2Gi", resource=MEMORY)}
+    >>> plan = plan_resize("app", current=both, wants=want,
+    ...                    limits=namespace_limits([]))
+    >>> qos_preserving_flags(both, plan)
+    '--resize 2Gi:2Gi'
+
+    and ``None`` when the plan already pins them — asked for as
+    ``REQUEST:LIMIT``, or moved there by a ``LimitRange`` ratio of one — because
+    that patch keeps the class and has nothing to be remedied:
+
+    >>> pinned = plan_resize("app", current=both,
+    ...                      wants={MEMORY: parse_want("2Gi:2Gi", resource=MEMORY)},
+    ...                      limits=namespace_limits([]))
+    >>> qos_preserving_flags(both, pinned) is None
+    True
+
+    ``None`` also for a quantity neither side can parse, which is not knowledge
+    that the class would change and must not be reported as if it were: the
+    patch goes to the API server, which answers for itself.
+    """
+    resources = as_dict(as_dict(plan.body["spec"]["containers"][0]).get("resources"))
+    limits = as_dict(resources.get("limits"))
+    requests = {
+        **as_dict(current.get("requests")),
+        **as_dict(resources.get("requests")),
+    }
+    flags: list[str] = []
+    pinned = True
+    for resource in (MEMORY, CPU):
+        limit = limits.get(resource)
+        if limit is None:
+            continue
+        request = requests.get(resource)
+        try:
+            same = request is not None and parse_quantity(
+                str(request)
+            ) == parse_quantity(str(limit))
+        except ResizeError:
+            return None
+        pinned = pinned and same
+        flags.append(f"{_FLAG[resource]} {limit}:{limit}")
+    return None if pinned or not flags else " ".join(flags)
 
 
 # -- headroom ---------------------------------------------------------------

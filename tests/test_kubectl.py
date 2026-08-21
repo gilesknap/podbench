@@ -8,6 +8,7 @@ rejection channels the spikes found (phase0 report 3.18).
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -15,11 +16,16 @@ from typing import Any
 import pytest
 
 from podbench.kubectl import (
+    DEFAULT_CALL_TIMEOUT,
     PSA_SYS_PTRACE_DENIAL,
+    REQUEST_TIMEOUT_HEADROOM,
+    TIMED_OUT_RETURNCODE,
+    WAIT_GRACE,
     CommandResult,
     EphemeralContainerError,
     Kubectl,
     KubectlError,
+    KubectlTimeoutError,
     next_container_name,
 )
 from podbench.sshcfg import KubectlInvocation
@@ -31,6 +37,9 @@ class FakeRunner:
     def __init__(self, *results: CommandResult) -> None:
         self.queued: list[CommandResult] = list(results)
         self.calls: list[tuple[tuple[str, ...], str | None, bool]] = []
+        self.timeouts: list[float | None] = []
+        """The bound each call was given. ``None`` is an exemption, and issue
+        #118 is the reason it is recorded rather than ignored."""
 
     def __call__(
         self,
@@ -38,8 +47,10 @@ class FakeRunner:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append((tuple(argv), stdin, capture))
+        self.timeouts.append(timeout)
         queued = self.queued.pop(0) if self.queued else CommandResult((), 0, "", "")
         return CommandResult(
             argv=tuple(argv),
@@ -70,7 +81,15 @@ def pod_json(**status: Any) -> str:
 def test_base_argv_carries_context_and_namespace() -> None:
     runner = FakeRunner(ok("{}"))
     Kubectl("demo", context="prod", binary="kubectl.bin", runner=runner).run("version")
-    assert runner.argv == ("kubectl.bin", "--context", "prod", "-n", "demo", "version")
+    assert runner.argv == (
+        "kubectl.bin",
+        "--context",
+        "prod",
+        "-n",
+        "demo",
+        "--request-timeout=25s",
+        "version",
+    )
 
 
 def test_base_argv_carries_a_kubeconfig() -> None:
@@ -92,7 +111,7 @@ def test_base_argv_carries_a_kubeconfig() -> None:
 def test_base_argv_omits_an_unset_context() -> None:
     runner = FakeRunner(ok("{}"))
     Kubectl("demo", runner=runner).run("version")
-    assert runner.argv == ("kubectl", "-n", "demo", "version")
+    assert runner.argv == ("kubectl", "-n", "demo", "--request-timeout=25s", "version")
 
 
 def test_the_two_kubectl_types_agree_on_their_auth_arguments() -> None:
@@ -152,6 +171,8 @@ def test_exec_passes_stdin_and_never_requests_a_tty() -> None:
     result = Kubectl("demo", runner=runner).exec_(
         "target", ["sh", "-c", "cat"], container="podbench-1", stdin="hello\n"
     )
+    # No `--request-timeout` on an exec: it would bound the upgraded
+    # connection itself. The subprocess bound is what stops a wedged one.
     assert runner.argv == (
         "kubectl",
         "-n",
@@ -244,6 +265,20 @@ def test_wait_for_builds_a_condition() -> None:
     assert runner.argv[-3:] == ("pod/devpod", "--for=condition=Ready", "--timeout=30s")
 
 
+def test_wait_for_keeps_a_fractional_deadline() -> None:
+    """``--timeout`` is a ``float`` on every verb that reaches here.
+
+    ``int(timeout)`` made ``0.5`` into ``--timeout=0s``, and zero is the one
+    value ``kubectl wait`` reads as something else: check once, do not wait.
+    Go's ``ParseDuration`` takes the decimal, so pass it through.
+    """
+    runner = FakeRunner(ok(""))
+    Kubectl("demo", runner=runner).wait_for(
+        "pod/devpod", "condition=Ready", timeout=0.5
+    )
+    assert "--timeout=0.5s" in runner.argv
+
+
 def test_add_ephemeral_container_uses_the_subresource() -> None:
     existing = json.dumps(
         {
@@ -260,7 +295,7 @@ def test_add_ephemeral_container_uses_the_subresource() -> None:
     assert "--subresource=ephemeralcontainers" in get_argv
 
     put_argv, stdin, _ = runner.calls[1]
-    assert put_argv[3:] == (
+    assert put_argv[4:] == (
         "replace",
         "--raw",
         "/api/v1/namespaces/demo/pods/target/ephemeralcontainers",
@@ -315,7 +350,7 @@ def test_a_dry_run_asks_the_api_server_to_store_nothing() -> None:
     )
 
     put_argv = runner.calls[1][0]
-    assert put_argv[3:] == (
+    assert put_argv[4:] == (
         "replace",
         "--raw",
         "/api/v1/namespaces/demo/pods/target/ephemeralcontainers?dryRun=All",
@@ -326,6 +361,37 @@ def test_a_dry_run_asks_the_api_server_to_store_nothing() -> None:
     # admission would have stored is the entire signal.
     containers = preview["spec"]["ephemeralContainers"]
     assert containers[0]["securityContext"]["capabilities"]["add"] == ["CHOWN"]
+
+
+def test_whoami_reads_the_username_the_api_server_answered_with() -> None:
+    runner = FakeRunner(ok('{"status": {"userInfo": {"username": "system:admin"}}}'))
+    assert Kubectl("demo", runner=runner).whoami() == "system:admin"
+    assert runner.argv[-4:] == ("auth", "whoami", "-o", "json")
+
+
+def test_whoami_is_asked_once_per_run() -> None:
+    """Cached, including the failure: every verb that picks a seat wants it.
+
+    A cluster whose API server has no ``SelfSubjectReview`` would otherwise pay
+    a subprocess per pod, on a listing, to be told the same nothing each time.
+    """
+    runner = FakeRunner(fail("the server doesn't have that resource"))
+    kube = Kubectl("demo", runner=runner)
+
+    assert kube.whoami() is None
+    assert kube.whoami() is None
+    assert len(runner.calls) == 1
+
+
+def test_a_cluster_that_answers_with_no_username_is_unknown_not_empty() -> None:
+    """``None`` rather than ``""``: the caller compares owners for equality."""
+    runner = FakeRunner(ok(json.dumps({"status": {"userInfo": {"username": " "}}})))
+    assert Kubectl("demo", runner=runner).whoami() is None
+
+
+def test_whoami_that_answers_with_nonsense_is_unknown_rather_than_fatal() -> None:
+    runner = FakeRunner(ok("<html>gateway timeout</html>"))
+    assert Kubectl("demo", runner=runner).whoami() is None
 
 
 def test_a_create_that_answers_with_nothing_parseable_is_not_an_error() -> None:
@@ -445,7 +511,14 @@ def test_the_default_runner_really_executes(tmp_path: Path) -> None:
 
     result = kubectl.run("get", "pod", "target")
     assert result.returncode == 0
-    assert result.stdout.split() == ["-n", "demo", "get", "pod", "target"]
+    assert result.stdout.split() == [
+        "-n",
+        "demo",
+        "--request-timeout=25s",
+        "get",
+        "pod",
+        "target",
+    ]
 
     with pytest.raises(KubectlError) as caught:
         kubectl.run("--boom")
@@ -467,3 +540,73 @@ def test_top_pod_returns_the_columns_and_treats_no_metrics_api_as_no_answer() ->
 
     refused = FakeRunner(fail("error: Metrics API not available"))
     assert Kubectl("demo", runner=refused).top_pod("target") is None
+
+
+# -- issue #118: one call may not hang the verb -----------------------------
+
+
+def test_the_default_runner_kills_a_call_that_never_returns(tmp_path: Path) -> None:
+    """The reproduction that produced the 75-second field reading, in miniature.
+
+    A stub ``kubectl`` that sleeps for ever is the whole rig: before this,
+    ``run_subprocess`` passed no ``timeout`` to :mod:`subprocess`, so the call
+    ran until the user gave up. ``exec`` rather than a plain ``sleep`` so the
+    stub is one process and the kill takes the thing that is sleeping.
+    """
+    fake = tmp_path / "kubectl"
+    fake.write_text("#!/bin/sh\nexec sleep 300\n")
+    fake.chmod(0o755)
+
+    started = time.monotonic()
+    with pytest.raises(KubectlTimeoutError) as caught:
+        Kubectl("demo", binary=str(fake)).run("get", "pod", "target", timeout=0.25)
+    elapsed = time.monotonic() - started
+
+    # Generous by two orders of magnitude: what is asserted is that it returned
+    # at all, not how fast this machine schedules a kill.
+    assert elapsed < 30
+    assert caught.value.returncode == TIMED_OUT_RETURNCODE
+    assert "did not answer within 0.25s" in str(caught.value)
+
+
+def test_every_call_carries_a_bound_unless_it_says_otherwise() -> None:
+    runner = FakeRunner(ok(json.dumps({"metadata": {"name": "target"}})))
+    Kubectl("demo", runner=runner).get_pod("target")
+    assert runner.timeouts == [DEFAULT_CALL_TIMEOUT]
+    assert (
+        f"--request-timeout={DEFAULT_CALL_TIMEOUT - REQUEST_TIMEOUT_HEADROOM:g}s"
+        in runner.argv
+    )
+
+
+def test_a_streamed_exec_is_exempt_from_the_bound() -> None:
+    """The ssh transport is an ``exec`` that is *supposed* to block for ever.
+
+    Both halves of the bound have to be off: a subprocess timeout would drop the
+    connection mid-session, and a ``--request-timeout`` would have the API
+    server drop it instead.
+    """
+    runner = FakeRunner(ok(""))
+    Kubectl("demo", runner=runner).exec_stream(
+        "target", ["/usr/sbin/sshd", "-i", "-e"], container="podbench-1"
+    )
+    assert runner.timeouts == [None]
+    assert not [word for word in runner.argv if word.startswith("--request-timeout")]
+
+
+def test_a_captured_exec_takes_the_bound_the_caller_names() -> None:
+    # hotfix's git and the editor's provisioning run are minutes of honest work
+    # over one exec, so they name their own bound rather than inherit the
+    # default sized for a probe.
+    runner = FakeRunner(ok(""))
+    Kubectl("demo", runner=runner).exec_("target", ["git", "clone", "x"], timeout=900.0)
+    assert runner.timeouts == [900.0]
+
+
+def test_a_wait_outlives_its_own_deadline_and_asks_for_no_request_timeout() -> None:
+    """``kubectl wait`` holds a watch open, so neither bound may cut it short."""
+    runner = FakeRunner(ok(""))
+    Kubectl("demo", runner=runner).wait_for("pod/target", "condition=Ready", timeout=5)
+    assert "--timeout=5s" in runner.argv
+    assert not [word for word in runner.argv if word.startswith("--request-timeout")]
+    assert runner.timeouts == [5 + WAIT_GRACE]

@@ -41,7 +41,12 @@ class FakeUv:
         self.argv: list[str] = []
 
     def __call__(
-        self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        self,
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.argv = list(argv)
         return CommandResult(tuple(argv), self.returncode, "", self.stderr)
@@ -185,7 +190,12 @@ class FakeShell:
         self.argv: list[str] = []
 
     def __call__(
-        self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        self,
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.argv = list(argv)
         return CommandResult(tuple(argv), self.returncode, "", self.stderr)
@@ -228,7 +238,11 @@ def test_a_missing_timeout_binary_is_reported_rather_than_raised() -> None:
     workload was never touched here, and the message has to say so."""
 
     def missing(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         raise FileNotFoundError(2, "No such file or directory", argv[0])
 

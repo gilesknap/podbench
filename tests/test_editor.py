@@ -94,6 +94,7 @@ class FakeSeat:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
         if argv[0] == "code":

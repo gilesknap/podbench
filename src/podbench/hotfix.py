@@ -59,7 +59,14 @@ import typer
 
 from .cli import new_app, require_subcommand, run
 from .console import emit, paragraph
-from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
+from .kubectl import (
+    DEFAULT_CALL_TIMEOUT,
+    CommandResult,
+    Kubectl,
+    KubectlError,
+    Runner,
+    run_subprocess,
+)
 from .launcher import CONTAINER_BASE, kubectl_for, running_seat
 from .model import (
     SEAT_HOME_PATH,
@@ -189,6 +196,18 @@ Measured rather than guessed: vscode-server unpacks to roughly 700 MiB and a
 realistic session — extensions, a language server's index, build output — sits
 at 1.1-1.3 GB. An emptyDir with no limit draws silently on the node's ephemeral
 storage, and blowing the pod's budget evicts the *pod*, application included.
+"""
+
+POD_WORK_TIMEOUT = 900.0
+"""How long a single ``exec`` into the pod may take before it is killed.
+
+Well past :data:`podbench.kubectl.DEFAULT_CALL_TIMEOUT`, because the commands
+this verb sends are not questions: a ``git clone`` of somebody's application
+repo and an editable install both run over one ``exec``, against whatever
+network and index the cluster has, and a bound sized for a pod read would abort
+the work rather than a wedge. Fifteen minutes is still a bound — issue #118's
+point is that *no* number is the one wrong answer — and a clone that has not
+finished by then has failed at something the user needs told about.
 """
 
 LOG_SEPARATOR = "\x1f"
@@ -471,11 +490,25 @@ class PodStore:
     pod: str
     container: str
 
+    def _exec(
+        self, argv: Sequence[str], *, check: bool, timeout: float
+    ) -> CommandResult:
+        return self.kube.exec_(
+            self.pod, argv, container=self.container, check=check, timeout=timeout
+        )
+
     def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
-        return self.kube.exec_(self.pod, argv, container=self.container, check=check)
+        # Every git command this verb issues comes through here, clone included,
+        # so the bound is the pod-work one rather than the per-call default.
+        return self._exec(argv, check=check, timeout=POD_WORK_TIMEOUT)
 
     def read_text(self, path: str) -> str | None:
-        result = self.run(["cat", path], check=False)
+        # A `cat` is a question, not work, so it keeps issue #118's bound rather
+        # than the clone's: reaching it through `run` would let a wedged exec on
+        # a manifest read sit for fifteen minutes, which is the failure that
+        # bound exists to stop. `write_text` below passes no timeout for the
+        # same reason.
+        result = self._exec(["cat", path], check=False, timeout=DEFAULT_CALL_TIMEOUT)
         return result.stdout if result.returncode == 0 else None
 
     def write_text(self, path: str, text: str) -> None:
@@ -489,7 +522,12 @@ class PodStore:
         )
 
     def exists(self, path: str) -> bool:
-        return self.run(["test", "-e", path], check=False).returncode == 0
+        return (
+            self._exec(
+                ["test", "-e", path], check=False, timeout=DEFAULT_CALL_TIMEOUT
+            ).returncode
+            == 0
+        )
 
 
 def read_manifest(store: HotfixStore, venv: str) -> HotfixManifest | None:
@@ -1348,7 +1386,14 @@ def init(
 
 def _install(kube: Kubectl, target: HotfixTarget, venv: str, checkout: str) -> str:
     argv = install_argv(venv, checkout)
-    result = kube.exec_(target.pod.name, argv, container=target.container, check=False)
+    # A resolve and a build against the cluster's index, so the pod-work bound.
+    result = kube.exec_(
+        target.pod.name,
+        argv,
+        container=target.container,
+        check=False,
+        timeout=POD_WORK_TIMEOUT,
+    )
     if result.returncode != 0:
         raise HotfixError(
             f"editable install failed in container {target.container}: "

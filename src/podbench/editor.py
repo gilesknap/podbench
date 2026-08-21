@@ -56,7 +56,13 @@ from collections.abc import Callable, Sequence
 from shlex import quote
 from typing import Any, cast
 
-from .kubectl import Kubectl, Runner, run_subprocess
+from .kubectl import (
+    DEFAULT_CALL_TIMEOUT,
+    UNBOUNDED,
+    Kubectl,
+    Runner,
+    run_subprocess,
+)
 from .model import SEAT_HOME_VOLUME, ContainerRef, as_dict
 from .provision import CAVEATS
 from .vscode import (
@@ -167,6 +173,17 @@ _ABSENT = 3
 Not 1: that is what ``cat`` itself exits with when it *found* the file and could
 not read it, which is the case this whole arrangement exists to tell apart. 2
 and 127 belong to ``sh``.
+"""
+
+PROVISION_TIMEOUT = 600.0
+"""How long a provisioning ``debug-config`` may take before it is killed.
+
+Twenty times :data:`podbench.kubectl.DEFAULT_CALL_TIMEOUT`, because this one
+``exec`` contains a uv resolve, a download and a gdb injection — work whose
+honest duration is minutes on a cold index, and which
+:data:`_PROVISION_NOTICE` announces for exactly that reason. The bound is here
+so that a resolve against an index with *no route* ends in a sentence instead of
+in the hang the notice was written to make bearable.
 """
 
 _PROVISION_NOTICE = (
@@ -364,7 +381,12 @@ def check_reachable(
             f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
             alias,
             _PROBE_COMMAND,
-        ]
+        ],
+        # Unbounded on purpose, and for the same reason BatchMode is off above:
+        # a passphrase-protected key with no agent prompts *here*, and a bound
+        # would kill the prompt while the user was typing into it. ssh's own
+        # ConnectTimeout covers the failure a number can cover.
+        timeout=UNBOUNDED,
     )
     if result.returncode == 0:
         return
@@ -485,7 +507,13 @@ def open_seat(
     # the lines above have just said is not there.
     attempted = False
     for extension in extensions:
-        result = run([editor, "--remote", authority, "--install-extension", extension])
+        # Unbounded: the first of these bootstraps vscode-server, a 214 MiB
+        # download into the seat over whatever link the cluster has, and a bound
+        # that fired would leave the seat with a half-unpacked server.
+        result = run(
+            [editor, "--remote", authority, "--install-extension", extension],
+            timeout=UNBOUNDED,
+        )
         if result.returncode != 0:
             report(f"could not install {extension}: {_detail(result.stderr)}")
             continue
@@ -502,7 +530,9 @@ def open_seat(
         if missing:
             report(_MISSING_REMEDY.format(missing=", ".join(missing), alias=alias))
 
-    result = run([editor, "--remote", authority, folder])
+    # Unbounded: this hands the argv to a window and returns, and on a cold
+    # start it is waiting for the user's editor to exist.
+    result = run([editor, "--remote", authority, folder], timeout=UNBOUNDED)
     if result.returncode != 0:
         raise EditorError(
             f"`{editor} --remote {authority} {folder}` failed: "
@@ -578,7 +608,10 @@ def unpacked_extensions(
             # an empty answer rather than an unknown one. `ls` alone exits 2 for
             # that, which is indistinguishable here from ssh's own failures.
             f"ls -1 {EXTENSIONS_DIR} 2>/dev/null || true",
-        ]
+        ],
+        # Same exemption as the preflight: this is a second ssh to the same
+        # alias, so it can prompt for the same passphrase.
+        timeout=UNBOUNDED,
     )
     if result.returncode != 0:
         return None
@@ -693,7 +726,14 @@ def _author(
     argv = [*DEBUG_CONFIG_ARGV, *([PROVISION_FLAG] if provision else [])]
     if provision:
         report(_PROVISION_NOTICE)
-    result = kubectl.exec_(seat.pod.name, argv, container=seat.container, check=False)
+    result = kubectl.exec_(
+        seat.pod.name,
+        argv,
+        container=seat.container,
+        check=False,
+        # An assessment answers in a moment; a provisioning run installs.
+        timeout=PROVISION_TIMEOUT if provision else DEFAULT_CALL_TIMEOUT,
+    )
     relayed = _relay(result.stderr, report)
     if result.returncode != 0:
         # The last line only when there was nothing to relay - a `podbench` the

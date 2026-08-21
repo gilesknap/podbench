@@ -65,6 +65,33 @@ surviving, and both break silently:
   line in that report that exists to be pasted, the ssh `Include`, into two that
   could not be.
 
+## Backticks mark a value that may not be broken
+
+Inside a wrapped paragraph, backticks are not decoration. `console._TOKEN` reads
+a run between a matched pair — ``` `--resize MEMORY` ```, ``` `podbench doctor
+--fix` ``` — as **one token**, so `wrap` keeps it on one line and lets it overrun
+the margin rather than break it. That is the whole of issue #120: a wrap through
+a remedy is correct as layout and wrong as purpose, because the half of the line
+the reader was going to select and paste comes back as two lines with the
+hanging indent through the middle.
+
+So a command or a flag-and-its-argument in prose **gets backticks**, and a bare
+one is a latent defect that shows itself only at the width where it happens to
+land on a break. A single unbroken token (`--no-correct-ids`) never needs them.
+Prose is untouched: it still wraps, and whitespace inside a backticked run is
+still collapsed, so a value cannot smuggle in the two spaces that make a cell a
+label. Text with an *odd* number of backticks — GNU-style relayed stderr, which
+opens a quote with one and closes it with an apostrophe — pairs with nothing and
+wraps as words, exactly as it did before.
+
+The doctests on `console.wrap` pin all four of those cases, and
+`tests/test_console.py::test_a_backticked_remedy_stays_on_one_line_at_every_width`
+checks it at 80 columns and at 60.
+
+A caller that owns the whole line has the older answer available and should
+prefer it where the line is a row: author it finished, as `launcher.target_row`
+and `launcher.ssh_connect_line` do.
+
 A label is also only a label when a value follows it. A wrapped sentence
 regularly ends on a single word, and an indented lone word is a continuation,
 not a heading — `SYS_PTRACE` on the last line of a wrapped note was being drawn

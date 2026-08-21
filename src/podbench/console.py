@@ -91,6 +91,29 @@ was intended and one means an ordinary sentence, so colouring the word a
 sentence happens to open with would say "heading" about a line that is not one.
 """
 
+_TOKEN = re.compile(r"[^\s`]*`[^`\n]*`[^\s`]*|\S+")
+"""One unit :func:`wrap` may put on a line: a backticked run, or a bare word.
+
+Backticks are what these reports already put round a command or a flag, and a
+run between a matched pair is a *value*, not prose. So it is kept whole, and allowed to
+overrun the margin rather than be broken: the wrap is correct as layout and
+wrong as purpose, because the half of the line the reader was going to select
+and paste comes back as two lines with an indent through the middle of it. A
+flag parted from its argument is the same defect one token earlier —
+:func:`podbench.launcher.target_row` had it against ``--target`` on a beamline's
+pod names, and fixed it there by authoring the line finished, which only works
+for a caller that owns the whole line.
+
+The surrounding non-space is taken with the run so that ``, `podbench dev`.``
+keeps its punctuation attached, exactly as ``str.split`` would have.
+
+Matches are found left to right and do not overlap, so a paragraph with several
+commands in it pairs each opening backtick with its own closing one. Text with
+an *odd* number - GNU-style relayed stderr, which opens a quote with a backtick
+and closes it with an apostrophe - has nothing to pair, and the second branch
+splits it into words as before.
+"""
+
 _DIVIDER = re.compile(r"^([=\-_~])\1{2,}")
 """A line :func:`rule` drew, recognised by what it is made of.
 
@@ -207,13 +230,32 @@ def wrap(text: str, width: int | None = None) -> list[str]:
     window, and a report built at import time would be wrapped for whatever the
     terminal was when the process started.
 
+    Prose breaks on any space:
+
     >>> wrap("one two three four", width=9)
     ['one two', 'three', 'four']
+
+    A backticked run does not, however narrow the window, because it is there
+    to be pasted (:data:`_TOKEN`). It takes a line of its own and overruns:
+
+    >>> wrap("run `podbench doctor --fix` now", width=12)
+    ['run', '`podbench doctor --fix`', 'now']
+
+    Whitespace inside one is still collapsed, so a value cannot smuggle in the
+    two spaces that make a row's first cell a label:
+
+    >>> wrap("`podbench  dbg`", width=40)
+    ['`podbench dbg`']
+
+    An unmatched backtick has nothing to pair with and wraps as words:
+
+    >>> wrap("no rule to make target `foo'", width=16)
+    ['no rule to make', "target `foo'"]
     """
     limit = wrap_width() if width is None else width
     lines: list[str] = []
     current = ""
-    for word in text.split():
+    for word in (" ".join(token.split()) for token in _TOKEN.findall(text)):
         candidate = f"{current} {word}".strip()
         if len(candidate) > limit and current:
             lines.append(current)

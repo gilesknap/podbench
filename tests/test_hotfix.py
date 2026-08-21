@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 from podbench import hotfix, model
-from podbench.kubectl import CommandResult, Kubectl
+from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
 
 VENV = "/opt/venv"
 CHECKOUT = "/opt/venv/src"
@@ -102,9 +102,14 @@ class FakeRunner:
         self.failures: dict[str, str] = {}
         self.calls: list[tuple[str, ...]] = []
         self.stdins: list[str | None] = []
+        self.timeouts: list[float | None] = []
 
     def key(self, argv: Sequence[str]) -> str:
-        return " ".join(argv[3:])
+        # The bound issue #118 added rides in the global flags, so it is dropped
+        # here rather than counted: this key is what every canned response is
+        # matched on, and an offset that moved would match none of them.
+        rest = [word for word in argv if not word.startswith("--request-timeout=")]
+        return " ".join(rest[3:])
 
     def __call__(
         self,
@@ -112,9 +117,11 @@ class FakeRunner:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
         self.stdins.append(stdin)
+        self.timeouts.append(timeout)
         key = self.key(argv)
         for prefix, message in self.failures.items():
             if key.startswith(prefix):
@@ -524,6 +531,34 @@ def test_other_kinds_are_refused() -> None:
 
 def test_replica_count_reads_the_spec() -> None:
     assert hotfix.replica_count(workload_json(replicas=2)) == 2
+
+
+# -- the store's two deadlines ---------------------------------------------
+
+
+def test_a_pod_read_keeps_the_bound_the_clone_is_exempt_from() -> None:
+    """`read_text` and `exists` are questions, and questions keep #118's bound.
+
+    Every git command Hotfix mode sends goes through `PodStore.run`, which is
+    why that one carries `POD_WORK_TIMEOUT`: a `git clone` of somebody's
+    application repo honestly takes minutes. A `cat` of the manifest does not,
+    and routing it through the same method would let a wedged exec sit for
+    fifteen minutes - which is the failure #118's bound exists to stop.
+    """
+    runner = FakeRunner()
+    store = hotfix.PodStore(kube(runner), "api-7f9-abc", "podbench")
+
+    store.read_text(hotfix.manifest_path(VENV))
+    store.exists(CHECKOUT)
+    store.write_text(hotfix.manifest_path(VENV), "{}")
+    store.run(["git", "clone", "https://example.invalid/acme/api.git", CHECKOUT])
+
+    assert runner.timeouts == [
+        DEFAULT_CALL_TIMEOUT,
+        DEFAULT_CALL_TIMEOUT,
+        DEFAULT_CALL_TIMEOUT,
+        hotfix.POD_WORK_TIMEOUT,
+    ]
 
 
 # -- annotation ------------------------------------------------------------

@@ -9,6 +9,7 @@ agreements live here so that neither half owns them.
 from __future__ import annotations
 
 import enum
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -21,7 +22,11 @@ __all__ = [
     "DEFAULT_IMAGE",
     "FLOATING_TAG",
     "IMAGE_REPOSITORY",
+    "NOT_MEASURED",
     "NOT_PROBED",
+    "SEAT_REPORT_MARKER",
+    "SEAT_REPORT_VERSION",
+    "SeatReport",
     "PTRACE_READ_PATHS",
     "WORLD_READ_PATHS",
     "ATTACH_PROBE",
@@ -33,6 +38,7 @@ __all__ = [
     "SEAT_PASSWD_KEY",
     "IMAGE_ENV",
     "HOST_NETWORK_ENV",
+    "OWNER_ENV",
     "POD_CONTAINERS_ENV",
     "TARGET_CID_ENV",
     "TARGET_NAME_ENV",
@@ -221,6 +227,35 @@ nothing of the pod object - and without it ``pids`` can name the container it is
 showing but not the ones it is not, which is half of the answer a reader of a
 multi-container pod needs. Absent means **unknown**, never "this pod has one
 container": a seat landed by an older launcher carries no such variable.
+"""
+
+OWNER_ENV = "PODBENCH_OWNER"
+"""Env var carrying the cluster identity that landed this seat.
+
+A seat is otherwise anonymous, so ``podbench-1`` beside ``podbench-2`` gives a
+second person no way to tell which one is theirs — and reconnecting into
+somebody else's is a login refused by an ``authorized_keys`` written for another
+key (issue #113).
+
+It lives in the container's ``env`` because that is the only place on an
+ephemeral container that survives both of the things ownership has to outlive.
+A container **name** is burnt the moment the container exits, so an owner keyed
+on the name goes stale on the next OOM; the ``env`` is a property of the
+container spec, which the API server keeps for the pod's lifetime and hands back
+verbatim to any later ``kubectl get pod -o json``. And a securityContext is
+fixed for that same lifetime, so a seat whose gid the correction could only
+mend by landing a *second* container (#103) has two names and one owner — which
+is what an owner recorded per container, at the moment it is authored, gets
+right and a mapping keyed on either id does not.
+
+A pod annotation would do neither better and costs an RBAC grant podbench
+deliberately does not ask for: it writes the ``ephemeralcontainers``
+subresource, never the pod object.
+
+Absent means **unknown**, never "mine": every seat landed before this variable
+existed carries none, as does one landed where ``kubectl auth whoami`` would not
+name the kubeconfig's user. Reporting it as unknown is the same rule the memory
+row and the rung label are held to — never assert what was not measured.
 """
 
 TARGET_CID_ENV = "PODBENCH_TARGET_CID"
@@ -716,15 +751,36 @@ class Rung(enum.Enum):
     """root plus CAP_SYS_PTRACE. Live attach to the workload."""
 
     DEGRADED = "degraded"
-    """The target's own UID, no added capabilities, everything dropped. Admitted
-    under the restricted Pod Security Standard."""
+    """The seat's uid *and gid* match the target's, with no added capabilities.
+
+    What the seat *can do*, not what admitted it. The credential match is the
+    whole of the rung — it is what ``__ptrace_may_access()`` checks and what
+    buys all six ``PTRACE_MODE_READ`` paths — and the kernel applies it at uid
+    0 exactly as it does at uid 1000. That check compares the three group ids
+    as peers of the three user ids, so the match is both numbers: a seat at
+    1000:0 beside a target at 1000:1000 is denied on the group half alone
+    (#103) and belongs on :attr:`SEAT`. Naming the uid and forgetting the gid
+    is what let one p47 seat be labelled ``degraded`` beside its own verdict of
+    "launch-only ... no read-only inspection".
+
+    The sentence this used to end with, "admitted under the restricted Pod
+    Security Standard", is a fact about the *authored* non-root context and now
+    lives with the authoring: see ``podbench.spec._rung_security_context``. A
+    root seat against a root target is this rung and could never have been
+    admitted under restricted, which is how one seat came to be labelled three
+    different ways (issue #94)."""
 
     SEAT = "seat"
     """Whatever the cluster will admit. Editor, shell and git only."""
 
 
 def measured_rung(
-    uid: int | None, *, sys_ptrace: bool, target_uid: int | None
+    uid: int | None,
+    *,
+    sys_ptrace: bool,
+    target_uid: int | None,
+    gid: int | None,
+    target_gid: int | None,
 ) -> Rung | None:
     """Which rung a seat's own ``/proc/self/status`` puts it on, or ``None``.
 
@@ -735,42 +791,282 @@ def measured_rung(
     §3.10). Both directions were measured at DLS on 2026-08-19 — podbench asks
     for ``capabilities: {drop: [ALL]}`` and admission stores thirteen added
     capabilities, while the seat carrying them reports ``CapEff:
-    0000000000000000`` at uid 37887. So the label comes from the two numbers
+    0000000000000000`` at uid 37887. So the label comes from the four numbers
     the kernel will actually check.
 
     The capability decides first, because it is the whole of the full rung and
-    it is exempt from the credential check:
+    it is exempt from the credential check — so neither group id is asked for:
 
-    >>> measured_rung(0, sys_ptrace=True, target_uid=1000).name
+    >>> measured_rung(0, sys_ptrace=True, target_uid=1000,
+    ...               gid=0, target_gid=1000).name
     'FULL'
 
-    Below it, the rung is the uid *match*, not the pin: matching the target is
-    what buys the ``PTRACE_MODE_READ`` paths, and root without the capability
-    reads three of the six where the target's own uid reads all six (report
-    §3.11). So a stripped full rung — root, no capability — is named for what
-    it can do rather than for the securityContext it now resembles:
+    Below it, the rung is the credential *match*, not the pin: matching the
+    target is what buys the ``PTRACE_MODE_READ`` paths, and root without the
+    capability reads three of the six where the target's own ids read all six
+    (report §3.11). So a stripped full rung — root, no capability — is named
+    for what it can do rather than for the securityContext it now resembles:
 
-    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000).name
+    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000,
+    ...               gid=1000, target_gid=1000).name
     'DEGRADED'
-    >>> measured_rung(0, sys_ptrace=False, target_uid=1000).name
+    >>> measured_rung(0, sys_ptrace=False, target_uid=1000,
+    ...               gid=0, target_gid=1000).name
     'SEAT'
-    >>> measured_rung(65532, sys_ptrace=False, target_uid=1000).name
+    >>> measured_rung(65532, sys_ptrace=False, target_uid=1000,
+    ...               gid=65532, target_gid=1000).name
+    'SEAT'
+
+    **The match is four numbers and not two.** ``__ptrace_may_access()`` compares
+    ``gid``, ``egid`` and ``sgid`` as peers of ``uid``, ``euid`` and ``suid``,
+    and returns before Yama is consulted if any one pair differs - which is why
+    :attr:`Blocker.GID_MISMATCH` sits between the uid arm and Yama, and why
+    podbench lands a gid-corrected seat at all (#103). A seat whose uid matches
+    and whose gid does not can no more inspect the target than one that matches
+    neither, so it is the bottom rung. Measured on p47-blueapi-0 (2026-08-21): a
+    1000:0 seat against a 1000:1000 target was labelled ``degraded`` beside a
+    verdict of its own reading "launch-only ... no read-only inspection".
+
+    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000,
+    ...               gid=0, target_gid=1000).name
+    'SEAT'
+
+    The uid match is tested as a match and not as a truthy uid. Root matching
+    root is the commonest shape there is on a cluster that pins no
+    ``runAsUser``, and reading uid 0 as "nothing pinned" put every argus seat
+    one rung below what it measurably was, while the same seat read all six
+    ``/proc`` paths and ran gdb to a symbolised backtrace (issue #94,
+    2026-08-19):
+
+    >>> measured_rung(0, sys_ptrace=False, target_uid=0,
+    ...               gid=0, target_gid=0).name
+    'DEGRADED'
+
+    An unknown target uid is not a match, however: nothing was compared.
+
+    >>> measured_rung(0, sys_ptrace=False, target_uid=None,
+    ...               gid=0, target_gid=None).name
     'SEAT'
 
     ``None`` means the seat could not be read at all, which is not a rung and
     must not be reported as one — the caller falls back to naming what was
     asked for, and says so.
 
-    >>> measured_rung(None, sys_ptrace=False, target_uid=1000) is None
+    >>> measured_rung(None, sys_ptrace=False, target_uid=1000,
+    ...               gid=None, target_gid=1000) is None
     True
+
+    A gid that could not be read is the same answer for the same reason. The
+    uids matching is half of a comparison, and half of a comparison is not a
+    rung: reporting ``degraded`` there would be the overclaim this function
+    exists to stop, one pair of numbers further along.
+
+    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000,
+    ...               gid=1000, target_gid=None) is None
+    True
+    >>> measured_rung(1000, sys_ptrace=False, target_uid=1000,
+    ...               gid=None, target_gid=1000) is None
+    True
+
+    A uid that provably differs needs no gid, though: one differing pair is
+    already the whole answer, so nothing is left unmeasured.
+
+    >>> measured_rung(0, sys_ptrace=False, target_uid=1000,
+    ...               gid=None, target_gid=None).name
+    'SEAT'
     """
     if uid is None:
         return None
     if sys_ptrace:
         return Rung.FULL
-    if uid and uid == target_uid:
-        return Rung.DEGRADED
-    return Rung.SEAT
+    if target_uid is None or uid != target_uid:
+        return Rung.SEAT
+    if gid is None or target_gid is None:
+        return None
+    return Rung.DEGRADED if gid == target_gid else Rung.SEAT
+
+
+NOT_MEASURED = "not measured"
+"""What a rung column holds when the seat's own measurement could not be read.
+
+The other half of :data:`NOT_PROBED`'s rule, applied to the rung rather than to
+the verdict: a listing that cannot reach a seat's start-up report says so, and
+never dresses :func:`podbench.launcher.rung_of_spec`'s reading of a
+securityContext in a measured label."""
+
+SEAT_REPORT_MARKER = "podbench-report:"
+"""How a seat's start-up report is found again in the container log.
+
+The channel is the log because ``list`` and ``status`` read pod JSON and exec
+nothing, and a verb that ran one ``kubectl exec`` per seat to name a rung would
+be paying an exec per seat against a whole namespace. ``kubectl logs`` is a
+*read*. The marker is matched anywhere in a line, so a prefix - the agent's own
+``agent: ``, or ``kubectl logs --timestamps`` - does not hide it."""
+
+SEAT_REPORT_VERSION = 1
+"""The schema of the line under :data:`SEAT_REPORT_MARKER`.
+
+Carried so a reader can tell a shape it has been taught from one it has not.
+Nothing is *rejected* on it: unknown keys are ignored and absent ones default,
+because the seat and the launcher are separately versioned by construction - a
+node serving a cached layer of a tag that moves runs whichever build it has -
+and the failure that matters is a newer launcher against an older seat, which
+must degrade to "not measured" rather than raise."""
+
+
+@dataclass(frozen=True)
+class SeatReport:
+    """What a seat measured about itself at start-up, and what it could not do.
+
+    Emitted once, by the agent, into the container's log. Two questions are
+    answered by one line because they have the same problem: the rung a seat
+    *is* can only be read from inside it (:func:`measured_rung` reads
+    ``/proc/self/status``), and a start-up step that gave up explains itself to
+    a log nobody opens (issue #99). Both are now recoverable from a laptop
+    without an exec.
+
+    The numbers are the ones the kernel checks and nothing derived from them,
+    so an older report stays readable by a launcher that has learned to label
+    them differently - which is exactly what happened to the degraded rung in
+    issue #94.
+
+    >>> report = SeatReport(uid=0, gid=0, effective_hex="0000000000000000",
+    ...                     sys_ptrace=False, target_uid=0, target_gid=0)
+    >>> report.rung.name
+    'DEGRADED'
+    >>> SeatReport.from_log("agent: " + report.to_line()) == report
+    True
+
+    A log with no report in it is not a report, and neither is one this build
+    cannot parse:
+
+    >>> SeatReport.from_log("agent: prepared /root") is None
+    True
+    >>> SeatReport.from_log("podbench-report: {not json") is None
+    True
+
+    An older seat's line, missing everything this build has since learned to
+    ask for, still yields what it does say:
+
+    >>> older = SeatReport.from_log('podbench-report: {"uid": 1000}')
+    >>> older.uid, older.target_uid, older.rung is None
+    (1000, None, True)
+    """
+
+    uid: int | None = None
+    gid: int | None = None
+    effective_hex: str = "unreadable"
+    sys_ptrace: bool = False
+    target_uid: int | None = None
+    target_gid: int | None = None
+    target_pid: int | None = None
+    failures: tuple[str, ...] = ()
+    """Start-up steps that gave up, each already formatted as the seat said it.
+
+    ``ensure_all`` records rather than raises - the caller is PID 1 of an
+    unrestartable container - so this is the whole of what a refused step ever
+    produced. #99 is that it produced it into the container log."""
+
+    version: int = SEAT_REPORT_VERSION
+
+    @property
+    def rung(self) -> Rung | None:
+        """The rung these numbers put the seat on, or ``None`` for unreadable.
+
+        Derived on the *reading* side rather than stored, deliberately: a seat
+        already running when this launcher was installed emitted its numbers
+        under the previous definition of :attr:`Rung.DEGRADED`, and a stored
+        label would make that seat argue with the one the launcher would give
+        it. The numbers do not go out of date.
+
+        A target uid the seat could not discover is ``None`` and not a rung.
+        :func:`measured_rung` answers ``SEAT`` for an unknown target, because
+        its caller has the manifest to fall back on and says which it used;
+        this one has nothing else, and "cannot match the target" is a claim
+        about a comparison that was never made. An unread *gid* on either side
+        is the same claim about the same comparison, and :func:`measured_rung`
+        answers ``None`` for it here and everywhere.
+
+        >>> SeatReport(uid=1000, gid=0, sys_ptrace=False,
+        ...            target_uid=1000, target_gid=1000).rung.name
+        'SEAT'
+        >>> SeatReport(uid=1000, gid=1000, sys_ptrace=False,
+        ...            target_uid=1000).rung is None
+        True
+        """
+        if self.uid is None:
+            return None
+        if not self.sys_ptrace and self.target_uid is None:
+            return None
+        return measured_rung(
+            self.uid,
+            sys_ptrace=self.sys_ptrace,
+            target_uid=self.target_uid,
+            gid=self.gid,
+            target_gid=self.target_gid,
+        )
+
+    def to_line(self) -> str:
+        """The single log line a seat writes at start-up."""
+        payload = {
+            "version": self.version,
+            "uid": self.uid,
+            "gid": self.gid,
+            "effective_hex": self.effective_hex,
+            "sys_ptrace": self.sys_ptrace,
+            "target_uid": self.target_uid,
+            "target_gid": self.target_gid,
+            "target_pid": self.target_pid,
+            "failures": list(self.failures),
+        }
+        return f"{SEAT_REPORT_MARKER} {json.dumps(payload, sort_keys=True)}"
+
+    @classmethod
+    def from_log(cls, text: str) -> SeatReport | None:
+        """The last report in a container log, or ``None`` if there is none.
+
+        The *last*, because a container restarted by nothing can still have run
+        the agent twice - ``--ensure-only`` is a supported way in - and the
+        newest reading is the one that describes the seat now.
+        """
+        for line in reversed(text.splitlines()):
+            marker = line.find(SEAT_REPORT_MARKER)
+            if marker < 0:
+                continue
+            try:
+                payload = json.loads(line[marker + len(SEAT_REPORT_MARKER) :])
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            fields = cast(Mapping[str, Any], payload)
+            return cls(
+                uid=_optional_int(fields.get("uid")),
+                gid=_optional_int(fields.get("gid")),
+                effective_hex=str(fields.get("effective_hex", "unreadable")),
+                sys_ptrace=bool(fields.get("sys_ptrace", False)),
+                target_uid=_optional_int(fields.get("target_uid")),
+                target_gid=_optional_int(fields.get("target_gid")),
+                target_pid=_optional_int(fields.get("target_pid")),
+                failures=tuple(
+                    str(entry) for entry in _as_sequence(fields.get("failures"))
+                ),
+                version=_optional_int(fields.get("version")) or 0,
+            )
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    """An int from a JSON field, and ``None`` for anything that is not one.
+
+    ``bool`` is excluded because it is an ``int`` in Python and a uid of
+    ``True`` is a defect wearing a plausible type.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _as_sequence(value: Any) -> Sequence[Any]:
+    return cast(Sequence[Any], value) if isinstance(value, list) else ()
 
 
 def describe_pause(method: str | None, attach_ok: bool | None) -> str:

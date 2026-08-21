@@ -1,6 +1,6 @@
 ---
 name: k3s-test-bed
-description: The persistent single-node k3s box podbench is developed against, the edit-sync-run loop it imposes, and the six ways a run on it silently tests the wrong thing. Read before reproducing a field defect, running the e2e suite outside CI, or testing anything that needs a real kernel.
+description: The persistent single-node k3s box podbench is developed against, the edit-sync-run loop it imposes, and the seven ways a run on it silently tests the wrong thing. Read before reproducing a field defect, running the e2e suite outside CI, or testing anything that needs a real kernel.
 ---
 
 # The k3s test bed
@@ -45,9 +45,17 @@ not own:
 
 ```sh
 tar -C <checkout> --exclude=.git --exclude=.venv --exclude=__pycache__ \
-    --exclude=.pytest_cache -cf - . \
+    --exclude=.pytest_cache --exclude=k8s --exclude=tmp -cf - . \
   | ssh podbench-bed 'tar -C /root/podbench --overwrite -xf -'
 ```
+
+**`--exclude=k8s` is not tidiness.** `k8s/*.kubeconfig` holds live DLS service-account
+tokens. They are gitignored, which is exactly why they are easy to forget: gitignored files
+are invisible to `git status` and to a review, but `tar . ` copies them like anything else.
+Without that exclusion every sync ships beamline credentials to a VPS and leaves them
+there. Measured 2026-08-21 — it happened, and they were deleted afterwards.
+`--exclude=tmp` is the same argument with lower stakes: session logs and scratch working
+files have no business on the bed either.
 
 Then run on the bed. `KUBECONFIG` has to be spelt out: it is exported from
 `/etc/profile.d` and `.bashrc`, and a non-login `ssh podbench-bed '<cmd>'` sources
@@ -65,7 +73,7 @@ ssh podbench-bed 'cd /root/podbench && KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
 Only the *launcher* half of podbench lives in `src/` and is picked up by a sync alone.
 The other half ships inside the image.
 
-## Six ways a run here silently tests the wrong thing
+## Seven ways a run here silently tests the wrong thing
 
 ### 1. A stale side-loaded image
 
@@ -221,6 +229,74 @@ prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY);    /* take Yama out — see 2 */
 With those two in place the credential matrix is clean: uid **and** gid matching succeeds,
 and a gid mismatch alone denies in either direction (measured 2026-08-17). Without them
 every case denies and the matrix reads as though the kernel ignores credentials entirely.
+
+### 7. A synced tree with a stale git HEAD
+
+**A build can be genuinely fresh while `podbench --version` inside the image reports the
+version of whatever the bed's own clone last had checked out.** The sync excludes `.git`,
+so setuptools-scm on the bed derives the version from the bed clone's stale HEAD, not from
+the files the tar just overwrote — and it does so silently, because the exclusion is
+otherwise exactly right (`.git` has no business travelling with source).
+
+Measured 2026-08-21 01:00: a freshly built image reported `0.2.0b3.dev4+g99a3312b1` — the
+tip of PR #86, the bed clone's stale HEAD — while every module inside that image was 36
+commits newer. This defeats the exact check `.claude/plans/attach-endgame.md` §7 tells you
+to run to prove freshness: on the bed, after a plain sync, `podbench --version` certifies a
+stale build as fresh. It is not the moving-tag trap in `tests/e2e/README.md` and this repo's
+own CLAUDE.md — that one serves a stale *image layer*; this one serves a fresh layer under a
+stale *version string*, so the two traps fail in opposite directions.
+
+Prove freshness with content, not the version string: md5 a module inside the image against
+the laptop's copy (`/app/.venv/lib/python3.11/site-packages/podbench/<module>.py` in the
+image), or grep the image for a symbol that cannot exist in the old tree. Tonight
+`STREAMED_SUBCOMMANDS` and `KubectlTimeoutError` both grepped 0 on the bed before the sync
+and non-zero inside the new image.
+
+Fix for the branch in front of you: `git fetch origin <branch> && git reset <sha>` on the
+bed, leaving the working tree untouched — the sync just wrote it. That repairs `--version`
+for that branch only; a later sync from a different branch reintroduces the mismatch.
+
+## Reproducing argus: a policy that *strips* rather than refuses
+
+The bed can produce the cluster shape most rung defects live in, and needs nothing
+installed. k3s v1.36.3 serves `admissionregistration.k8s.io/v1`
+`MutatingAdmissionPolicy`, and the repo already carries one:
+
+```sh
+kubectl create ns podbench-<item>
+kubectl label ns podbench-<item> podbench.dev/strip-sys-ptrace=enforce
+kubectl apply -f tests/e2e/apps/strip-sys-ptrace.yaml   # cluster-scoped, delete after
+```
+
+Point it at a target that pins **no** `runAsUser` at all — not `dls-ioc.yaml`, which
+states `runAsUser: 0` explicitly — and the full rung lands stripped: a seat at uid 0
+with `CapEff` carrying no `SYS_PTRACE`, beside a target at uid 0. That is argus
+(`hgv27681`), where no pod in the namespace sets `runAsUser` and every target is root,
+and it is the shape issue #94 was filed from. Measured 2026-08-21.
+
+The pod pinning nothing is the load-bearing half. A manifest that states `runAsUser: 0`
+hands the launcher a target uid, so every question about "what does podbench do when the
+uid is only discoverable from `/proc`" is answered by the fixture rather than by the
+code.
+
+**A superseded pair needs an image, not a flag.** `--target-gid <n>` will make two seats,
+but the second is then pinned to a gid the target does not have and is *worse* than the
+one it replaced, so anything reasoning about which seat to prefer reads backwards. The
+honest fixture is an image whose `USER` line sets a non-zero uid **and** gid, under a
+manifest that states only `runAsUser` — five lines of Dockerfile — which makes podbench's
+own gid correction fire:
+
+```dockerfile
+FROM docker.io/library/python:3.12-slim
+RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
+USER 1000:1000
+CMD ["sleep", "infinity"]
+```
+
+**A read-only `podbench-home` induces real start-up failures.** Declare the volume as a
+`configMap` rather than an `emptyDir` and every `ensure_all` step that writes under
+`$HOME` fails for real — five of them — which is the only cheap way to exercise what a
+laptop verb says about a seat that came up half-working.
 
 ## What the bed does not model
 

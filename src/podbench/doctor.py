@@ -15,6 +15,18 @@ developer's own kubeconfig. The only thing ``doctor`` ever writes is what
 even then it will not mint an ssh key: a key podbench generated would be a
 credential the user never chose, authorised inside a container by a command they
 ran to get a *diagnosis*.
+
+Every direct ``runner`` call here passes :data:`~podbench.kubectl.UNBOUNDED`,
+which is a decision rather than an oversight. Issue #118 bounds the ``kubectl``
+calls podbench makes, and the ones in this module that reach a cluster go
+through :class:`~podbench.kubectl.Kubectl` — the ``auth can-i`` reviews — where
+that bound applies. What is left is local: a client version, a current context,
+``ssh -G`` against a file, a fingerprint. This verb also has no ``except``
+clause of its own, so a timeout raised here would replace a report of a dozen
+rows with a traceback. The one call that could genuinely wedge is ``ssh-add -l``
+against a dead agent socket, and it is left unbounded knowingly — the answer is
+a WARN row about that socket, and a cut-off call would report the wrong thing
+about it.
 """
 
 from __future__ import annotations
@@ -36,7 +48,7 @@ import typer
 from . import __version__
 from .cli import new_app, run
 from .console import emit, paragraph, rule
-from .kubectl import CommandResult, Kubectl, Runner, run_subprocess
+from .kubectl import UNBOUNDED, CommandResult, Kubectl, Runner, run_subprocess
 from .launcher import (
     CONFIG_D,
     DEFAULT_CLIENT_DIR,
@@ -466,7 +478,7 @@ def check_kubectl(binary: str, path: str | None, *, runner: Runner) -> Check:
             "credential plugin are the only credential in play. Install "
             f"kubectl {_spelled(MIN_KUBECTL)} or later",
         )
-    result = runner([binary, "version", "--client", "-o", "json"])
+    result = runner([binary, "version", "--client", "-o", "json"], timeout=UNBOUNDED)
     version = client_version(result.stdout)
     if version is None:
         return Check(
@@ -496,7 +508,7 @@ def kubeconfig_context(
     """The context this run will use, or ``None`` when the kubeconfig names none."""
     if context is not None:
         return context
-    result = runner([binary, "config", "current-context"])
+    result = runner([binary, "config", "current-context"], timeout=UNBOUNDED)
     name = result.stdout.strip()
     return name if result.returncode == 0 and name else None
 
@@ -651,7 +663,9 @@ def effective_identity_agent(alias: str, *, runner: Runner, which: Which) -> str
     # -o on the command line outranks the file, and CanonicalizeHostname would
     # otherwise send -G to DNS: doctor must not block on the network to answer a
     # question about a local file.
-    result = runner(["ssh", "-G", "-o", "CanonicalizeHostname=no", alias])
+    result = runner(
+        ["ssh", "-G", "-o", "CanonicalizeHostname=no", alias], timeout=UNBOUNDED
+    )
     if result.returncode != 0:
         return None
     found = _IDENTITY_AGENT.search(result.stdout)
@@ -704,7 +718,7 @@ def check_ssh_agent(
             Status.WARN,
             "not measured: ssh-add or ssh-keygen is not on PATH",
         )
-    printed = runner(["ssh-keygen", "-lf", str(public)])
+    printed = runner(["ssh-keygen", "-lf", str(public)], timeout=UNBOUNDED)
     fingerprinted = key_fingerprint(printed.stdout)
     if fingerprinted is None:
         return Check(
@@ -714,7 +728,7 @@ def check_ssh_agent(
             f"{public}{_said(printed)}",
         )
     fingerprint, algorithm = fingerprinted
-    listed = runner(["ssh-add", "-l"])
+    listed = runner(["ssh-add", "-l"], timeout=UNBOUNDED)
     if listed.returncode == SSH_ADD_NO_AGENT:
         return Check(
             "ssh agent",
@@ -843,7 +857,7 @@ def check_config_dir(directory: Path, *, fix: bool) -> Check:
             Status.WARN,
             f"{config_d} does not exist yet",
             "attach creates it when it writes the first stanza; "
-            "podbench doctor --fix creates it now",
+            "`podbench doctor --fix` creates it now",
         )
     return Check("config dir", Status.OK, str(config_d), fixed=fixed)
 
@@ -872,7 +886,7 @@ def check_include(config: Path, directory: Path, *, fix: bool) -> Check:
             f"{config} includes it below a Host or Match block",
             "ssh takes the first value it sees for each keyword and Host * "
             "matches everything, so those keywords win over podbench's. "
-            "podbench doctor --fix adds the line at the top",
+            "`podbench doctor --fix` adds the line at the top",
             fixed=fixed,
         )
     return Check(
