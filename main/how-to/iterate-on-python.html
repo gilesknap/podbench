@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iterate on Python &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
+    <title>Iterate on Python &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=20767d06"></script>
+    <script src="../_static/documentation_options.js?v=c99f609e"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -782,9 +782,17 @@ environment variable so it is inert in production:</p>
         <span class="n">debugpy</span><span class="o">.</span><span class="n">wait_for_client</span><span class="p">()</span>
 </pre></div>
 </div>
-<p>Bind to <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>, never <code class="docutils literal notranslate"><span class="pre">0.0.0.0</span></code>: the pod’s network namespace is shared with
-the debug container, so loopback is exactly the reach you want and nothing more.
-A debug port on the pod IP is an unauthenticated code-execution endpoint.</p>
+<p>Bind to <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>, never <code class="docutils literal notranslate"><span class="pre">0.0.0.0</span></code>: on the pod IP the port is an
+unauthenticated code-execution endpoint for anything that can route to it. How
+much less loopback exposes depends on the target’s own spec. On an ordinary pod
+the network namespace is the pod’s, shared with the debug container and nothing
+else, so <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code> is exactly the reach you want. On a <code class="docutils literal notranslate"><span class="pre">hostNetwork:</span> <span class="pre">true</span></code>
+pod — the usual shape for an EPICS IOC, because Channel Access needs UDP
+broadcast — that namespace is the node’s, so <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code> is the node’s
+loopback, shared with every other hostNetwork pod and every node daemon on it.
+Binding narrowly is still right, but on such a pod treat the listener as
+node-wide and stop it when you are done; see the
+<a class="reference internal" href="../explanations/security.html"><span class="std std-doc">Security model</span></a>.</p>
 <p>Run the app with the variable set:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">root</span><span class="o">@...</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span><span class="c1"># DEBUGPY_LISTEN=1 podbench run --port 8080 -- python -m api</span>
 </pre></div>

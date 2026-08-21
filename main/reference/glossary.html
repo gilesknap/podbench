@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.4.0b2.dev47+gda381ff01 documentation</title>
+    <title>Glossary &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=20767d06"></script>
+    <script src="../_static/documentation_options.js?v=c99f609e"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -570,11 +570,30 @@ target’s own uid with all capabilities dropped. <strong>Seat</strong> is whate
 will admit. There is no rung between full and degraded, because a capability added
 to a non-root container is a silent no-op.</p>
 <p><code class="docutils literal notranslate"><span class="pre">attach</span></code> reports the rung it <em>measured</em>, from the seat’s own <code class="docutils literal notranslate"><span class="pre">/proc/self/status</span></code>:
-the uid the kernel gave the container and its <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>. The rung it asked for is
-on the ladder lines, and the two can differ in both directions — a mutating
+the uid and gid the kernel gave the container and its <code class="docutils literal notranslate"><span class="pre">CapEff</span></code>. The rung it
+asked for is on the ladder lines, and the two can differ in both directions — a mutating
 webhook that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root seat whose spec is
 indistinguishable from the degraded rung, and a stored spec carrying thirteen
 capabilities can belong to a container with none effective.</p>
+<p>A <em>measured</em> degraded rung is the credential match and nothing else: the seat’s
+uid <strong>and gid</strong> equal the target’s, with no capability effective. Both numbers,
+because <code class="docutils literal notranslate"><span class="pre">__ptrace_may_access()</span></code> compares the three group ids as peers of the
+three user ids and denies on any one differing pair — which is why a 1000:0
+seat beside a 1000:1000 target is the <em>seat</em> rung however well its uid matches,
+and why podbench lands a gid-corrected seat at all. The match includes a root
+seat beside a root target, which no <a class="reference internal" href="#term-PSS"><span class="xref std std-term">PSS</span></a> <em>restricted</em> namespace would
+have admitted — the label says what the seat can do, not what let it in. The
+authored contexts are the other half of the story and are described under
+<a class="reference internal" href="#term-PSS"><span class="xref std std-term">PSS</span></a>.</p>
+<p>Where either gid could not be read, the rung is <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">measured</span></code> rather than a
+rung: half a comparison earns no label, and the report names what was
+<em>requested</em> instead and says which of the two numbers was missing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">list</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> report a measured rung too, and take it without an exec:
+the <a class="reference internal" href="#term-agent"><span class="xref std std-term">agent</span></a> writes the four numbers into the container log once, at
+start-up, and those verbs recover them with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span></code> — a read, so the
+cost does not scale with the number of seats in a namespace. A seat whose log
+cannot be read, or one older than that report, is <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">measured</span></code>, with its
+<em>requested</em> rung on a row of its own.</p>
 <p>A rung is still not a verdict. What a seat can <em>do</em> is measured by
 <a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a>, and <code class="docutils literal notranslate"><span class="pre">status</span></code> reports that measurement — or <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>,
 never the rung — beside each seat it lists.</p>
@@ -723,7 +742,10 @@ so podbench matches only the one stable fragment of the message.</p>
 <em>Privileged</em> is unrestricted; <em>baseline</em> blocks known escalations; <em>restricted</em>
 additionally requires non-root, <code class="docutils literal notranslate"><span class="pre">drop:</span> <span class="pre">[&quot;ALL&quot;]</span></code>, <code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code>
 and a <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp profile. Podbench’s degraded and seat
-<a class="reference internal" href="#term-rung"><span class="xref std std-term">rung</span></a>s are authored to be admissible under <em>restricted</em>.</p>
+<a class="reference internal" href="#term-rung"><span class="xref std std-term">rung</span></a>s are authored to be admissible under <em>restricted</em>. That is a fact
+about the context podbench writes, not about the seat that lands: a <em>measured</em>
+degraded rung is a uid <em>and gid</em> match with no capability, and a root seat
+matching a root target wears it having been admitted under nothing of the kind.</p>
 </dd>
 <dt id="term-readiness-probe">readiness probe<a class="headerlink" href="#term-readiness-probe" title="Link to this term">#</a></dt><dd><p>A periodic check the <a class="reference internal" href="#term-kubelet"><span class="xref std std-term">kubelet</span></a> uses to decide whether a pod should receive
 <a class="reference internal" href="#term-Service"><span class="xref std std-term">Service</span></a> traffic. Failing one removes the pod’s address from service quietly
