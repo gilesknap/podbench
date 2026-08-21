@@ -98,21 +98,29 @@ rung
   to a non-root container is a silent no-op.
 
   `attach` reports the rung it *measured*, from the seat's own `/proc/self/status`:
-  the uid the kernel gave the container and its `CapEff`. The rung it asked for is
-  on the ladder lines, and the two can differ in both directions — a mutating
+  the uid and gid the kernel gave the container and its `CapEff`. The rung it
+  asked for is on the ladder lines, and the two can differ in both directions — a mutating
   webhook that strips `capabilities.add` leaves a root seat whose spec is
   indistinguishable from the degraded rung, and a stored spec carrying thirteen
   capabilities can belong to a container with none effective.
 
   A *measured* degraded rung is the credential match and nothing else: the seat's
-  uid equals the target's, with no capability effective. That includes a root seat
-  beside a root target, which no {term}`PSS` *restricted* namespace would have
-  admitted — the label says what the seat can do, not what let it in. The
+  uid **and gid** equal the target's, with no capability effective. Both numbers,
+  because `__ptrace_may_access()` compares the three group ids as peers of the
+  three user ids and denies on any one differing pair — which is why a 1000:0
+  seat beside a 1000:1000 target is the *seat* rung however well its uid matches,
+  and why podbench lands a gid-corrected seat at all. The match includes a root
+  seat beside a root target, which no {term}`PSS` *restricted* namespace would
+  have admitted — the label says what the seat can do, not what let it in. The
   authored contexts are the other half of the story and are described under
   {term}`PSS`.
 
+  Where either gid could not be read, the rung is `not measured` rather than a
+  rung: half a comparison earns no label, and the report names what was
+  *requested* instead and says which of the two numbers was missing.
+
   `list` and `status` report a measured rung too, and take it without an exec:
-  the {term}`agent` writes the two numbers into the container log once, at
+  the {term}`agent` writes the four numbers into the container log once, at
   start-up, and those verbs recover them with `kubectl logs` — a read, so the
   cost does not scale with the number of seats in a namespace. A seat whose log
   cannot be read, or one older than that report, is `not measured`, with its
@@ -297,8 +305,8 @@ Pod Security Standards
   and a `RuntimeDefault` seccomp profile. Podbench's degraded and seat
   {term}`rung`s are authored to be admissible under *restricted*. That is a fact
   about the context podbench writes, not about the seat that lands: a *measured*
-  degraded rung is a uid match with no capability, and a root seat matching a
-  root target wears it having been admitted under nothing of the kind.
+  degraded rung is a uid *and gid* match with no capability, and a root seat
+  matching a root target wears it having been admitted under nothing of the kind.
 
 readiness probe
   A periodic check the {term}`kubelet` uses to decide whether a pod should receive

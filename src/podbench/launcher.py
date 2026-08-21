@@ -1492,11 +1492,24 @@ class Session:
     Not what the walk asked admission for, which is on the :class:`LadderStep`
     that landed and belongs there: a rung is a claim about a running container
     and the two come apart in both directions (issue #94). It falls back to the
-    authored rung only where the seat could not be read at all, and
-    :func:`format_session` says so on the line rather than quietly.
+    authored rung only where the measurement could not be made - the seat would
+    not say what it is running as, or the target's own ids were never read -
+    and :attr:`rung_measured` is what :func:`format_session` says that with,
+    on the line rather than quietly.
     """
 
     reused: bool
+    rung_measured: bool = False
+    """Whether :attr:`rung` is the seat's own measurement or the walk's request.
+
+    Its own field because the two are indistinguishable once reduced to a
+    label, and the report has to say which it is printing. False covers both
+    ways the measurement is unavailable: a seat that would not report its
+    ``/proc/self/status``, and a target whose ids were never read - the second
+    of which is the ordinary case under ``--no-probe`` against a workload
+    pinning ``runAsUser`` and no ``runAsGroup``.
+    """
+
     siblings: tuple[str, ...] = ()
     """The pod's other workload containers, which this seat did not enter.
 
@@ -1710,8 +1723,13 @@ def attach(
         volume_mounts = _merge_mounts(volume_mounts, convention)
     identity_declared = SEAT_IDENTITY_VOLUME in declared_volumes(pod_json)
 
-    manifest_uid, _ = target_uid_gid(pod_json, workload)
+    manifest_uid, manifest_gid = target_uid_gid(pod_json, workload)
     wanted_uid = target_uid if target_uid is not None else manifest_uid
+    # The gid the rung is measured against, which is a different question from
+    # the gid to *pin*: `wanted_ids` below deliberately ignores the manifest,
+    # because pinning off it would reject a running full-rung seat, while a
+    # comparison has to use every number there is.
+    wanted_gid = target_gid if target_gid is not None else manifest_gid
     # Only when a *gid was asked for* - by flag, or by the correction below -
     # and never off the manifest alone. A pod stating both ids would otherwise
     # make this reject a running full-rung seat, which pins uid 0 and no group
@@ -1844,10 +1862,14 @@ def attach(
     # and a reconnect stops inheriting a spec's answer to a question only the
     # kernel can settle.
     credentials = probe_seat_credentials(kubectl, session.seat)
+    measured = _measured_rung_of(
+        credentials, target_uid=wanted_uid, target_gid=wanted_gid
+    )
     session = replace(
         session,
         credentials=credentials,
-        rung=_measured_or_asked(session.rung, credentials, target_uid=wanted_uid),
+        rung=measured or session.rung,
+        rung_measured=measured is not None,
     )
     session = replace(session, steps=_relabel_reconnect(session))
 
@@ -1903,21 +1925,28 @@ def attach(
         report, probe_warnings = run_capreport(kubectl, session.seat)
         session = replace(session, report=report)
         warnings.extend(probe_warnings)
-        # The target's uid as the seat *measured* it, in place of the manifest's.
-        # The rung below full turns on whether the seat's uid matches the
-        # target's, and a manifest that pins no `runAsUser` - which is every pod
-        # on argus - leaves `wanted_uid` None, so a root seat beside a root
-        # target was named `seat` here while the seat's own start-up report,
-        # which reads the target's `/proc/<pid>/status`, makes it `degraded`.
-        # One seat, one label (issue #94).
+        # The target's ids as the seat *measured* them, in place of the
+        # manifest's. The rung below full turns on whether the seat's uid and
+        # gid match the target's, and a manifest that pins no `runAsUser` -
+        # which is every pod on argus - leaves `wanted_uid` None, so a root seat
+        # beside a root target was named `seat` here while the seat's own
+        # start-up report, which reads the target's `/proc/<pid>/status`, makes
+        # it `degraded`. The gid half is the same reading of the same file, and
+        # it is the only place the group lives when the manifest states
+        # `runAsUser` and no `runAsGroup` (p47-blueapi-0). One seat, one label
+        # (issue #94).
         if report is not None and report.target_uid is not None:
-            session = replace(
-                session,
-                rung=_measured_or_asked(
-                    session.rung, credentials, target_uid=report.target_uid
-                ),
+            # Only where it measured something. A capreport too old to report
+            # the target's gid answers `None` here, and taking that over the
+            # manifest's answer would replace a measurement with an absence.
+            remeasured = _measured_rung_of(
+                credentials,
+                target_uid=report.target_uid,
+                target_gid=report.target_gid,
             )
-            session = replace(session, steps=_relabel_reconnect(session))
+            if remeasured is not None:
+                session = replace(session, rung=remeasured, rung_measured=True)
+                session = replace(session, steps=_relabel_reconnect(session))
         correction = (
             id_correction(report, pinned_uid=target_uid, pinned_gid=target_gid)
             if correct_ids
@@ -2602,27 +2631,36 @@ def probe_seat_credentials(kubectl: Kubectl, seat: ContainerRef) -> Credentials 
     return Credentials.from_status(result.stdout)
 
 
-def _measured_or_asked(
-    asked: Rung, credentials: Credentials | None, *, target_uid: int | None
-) -> Rung:
-    """The measured rung, falling back to the one that was asked for.
+def _measured_rung_of(
+    credentials: Credentials | None,
+    *,
+    target_uid: int | None,
+    target_gid: int | None,
+) -> Rung | None:
+    """The rung these credentials put the seat on, or ``None`` for unmeasured.
 
-    ``target_uid`` is the pod spec's, or the flag's - what the walk pinned the
-    seat to - because it has to be available on an attach that probed nothing.
-    That is enough for the comparison the rung turns on: the degraded rung
-    exists only where the manifest or the caller named a uid, since
-    :func:`podbench.spec.ephemeral_container_spec` refuses to author it without
-    one.
+    ``None`` is every way the comparison could not be made - the seat would not
+    say what it is running as, or the target's own ids are not in hand - and it
+    is the caller's cue to name the rung that was *asked* for and say so. It is
+    never a rung: a label that outran its evidence is issue #94, and one that
+    outran half of its evidence is the same defect with a smaller margin.
+
+    The target ids are the pod spec's, or the flag's - what the walk pinned the
+    seat to - because they have to be available on an attach that probed
+    nothing. ``target_gid`` is routinely ``None`` there: ``runAsUser`` with no
+    ``runAsGroup`` is what a hardened workload declares, and the group then
+    comes from the image, so it lives only in the target's own ``/proc``
+    (:func:`podbench.spec.target_uid_gid`). Where a capreport ran, its measured
+    pair replaces both.
     """
     if credentials is None:
-        return asked
-    return (
-        measured_rung(
-            credentials.uid,
-            sys_ptrace=credentials.capabilities.sys_ptrace_effective,
-            target_uid=target_uid,
-        )
-        or asked
+        return None
+    return measured_rung(
+        credentials.uid,
+        sys_ptrace=credentials.capabilities.sys_ptrace_effective,
+        target_uid=target_uid,
+        gid=credentials.gid,
+        target_gid=target_gid,
     )
 
 
@@ -3158,7 +3196,14 @@ def format_session(session: Session) -> str:
             indent=" " * 12,
         ),
         *paragraph(_owner_fact(session), first="owner       ", indent=" " * 12),
-        f"rung        {session.rung.value} - {_rung_evidence(session)}",
+        # Wrapped like the rows above it: the evidence is a sentence's worth of
+        # numbers and it now has a second clause, so a hanging indent is what
+        # keeps it a row rather than an overrun.
+        *paragraph(
+            f"{session.rung.value} - {_rung_evidence(session)}",
+            first="rung        ",
+            indent=" " * 12,
+        ),
         "ladder",
     ]
     for step in session.steps:
@@ -3261,15 +3306,23 @@ def _rung_evidence(session: Session) -> str:
     also the only place a ``--no-probe`` attach reports any measurement at all.
     """
     credentials = session.credentials
-    if credentials is None:
+    if credentials is None or credentials.uid is None:
         # Named as unmeasured rather than passed off as measured. The seat is
         # running - the attach returned - so this is an exec that was refused
         # or an answer this launcher could not parse, and the rung reverts to
         # being the walk's own claim about what it asked for.
         return "as asked for; the seat's own /proc/self/status could not be read"
-    return describe_credentials(
+    described = describe_credentials(
         credentials.uid, credentials.gid, credentials.capabilities.effective_hex
     )
+    if session.rung_measured:
+        return described
+    # The seat was read and the target was not, so the comparison the rung
+    # below full *is* was never made. Said rather than left to look measured:
+    # `__ptrace_may_access()` wants both pairs, and a target that pins
+    # `runAsUser` and no `runAsGroup` keeps its group only in its own /proc -
+    # which is the shape `--no-probe` meets on every hardened workload.
+    return f"as asked for; the seat is {described}, the target unread"
 
 
 def _yama(scope: int | None) -> str:
@@ -5615,13 +5668,16 @@ def _build_app(
         # uid the seat runs as - not by the rung its securityContext reads back
         # as, which is what got that path wrong at DLS (2026-08-16).
         credentials = probe_seat_credentials(kube, reference)
+        stated_uid, stated_gid = target_uid_gid(pod_json, workload)
+        measured = _measured_rung_of(
+            credentials, target_uid=stated_uid, target_gid=stated_gid
+        )
         session = Session(
             seat=reference,
             workload=workload,
             siblings=other_containers(pod_json, workload),
-            rung=_measured_or_asked(
-                seat.rung, credentials, target_uid=target_uid_gid(pod_json, workload)[0]
-            ),
+            rung=measured or seat.rung,
+            rung_measured=measured is not None,
             reused=True,
             uid=seat.uid,
             home=seat.home,

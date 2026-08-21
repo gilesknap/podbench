@@ -59,6 +59,7 @@ from podbench.launcher import (
     pod_choices,
     probe_seat_credentials,
     probe_seat_versions,
+    recover_seat_reports,
     resolve_pod,
     resolve_pod_name,
     running_seat,
@@ -765,6 +766,20 @@ def security_contexts(cluster: FakeCluster) -> list[dict[str, Any]]:
     ]
 
 
+def landed_rung(session: Session) -> Rung | None:
+    """Which rung of the ladder admission actually took, or ``None`` for none.
+
+    Not ``session.rung``, which since issue #94 is what the seat *measures* as -
+    a different question, and on the fixture pod the two genuinely differ. A
+    manifest stating ``runAsUser: 1000`` and no ``runAsGroup`` is p47-blueapi-0's
+    shape: the degraded rung lands, pinning the uid it can see, and the seat it
+    lands sits in the debug image's group 0 against a target in group 1000,
+    which ``__ptrace_may_access()`` denies on the group half alone. So a test
+    about the *walk* asks the walk.
+    """
+    return next((step.rung for step in session.steps if step.admitted), None)
+
+
 def limited_pod(memory: str, *, name: str = "target") -> dict[str, Any]:
     """A pod whose cgroup has a ceiling, which is what makes headroom a number.
 
@@ -961,7 +976,7 @@ def test_psa_refusal_falls_to_the_degraded_rung_without_burning_a_name() -> None
     cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
     session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     # A synchronous refusal means the container was never created, so the name
     # it was submitted under is still free (report 3.18/4.2).
     assert session.seat.container == "podbench-1"
@@ -1015,7 +1030,7 @@ def test_kubelet_refusal_falls_through_and_takes_a_fresh_name() -> None:
         talking_to(cluster), "target", poll_interval=0.0, max_rung=Rung.FULL
     )
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     # The rejected container exists and is unrestartable, so its name is gone.
     assert session.seat.container == "podbench-2"
     steps = {step.rung: step for step in session.steps}
@@ -1028,7 +1043,7 @@ def test_run_as_non_root_pre_empts_the_full_rung_entirely() -> None:
     cluster = FakeCluster(pod_document(uid=1000, non_root=True))
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert session.seat.container == "podbench-1"
     # Nothing carrying SYS_PTRACE was ever submitted: the refusal was read out
     # of the target's securityContext instead of provoked.
@@ -1110,7 +1125,7 @@ def test_target_uid_override_re_enables_the_degraded_rung() -> None:
     cluster = FakeCluster(pod_document(), psa_denies_ptrace=True)
     session = attach(talking_to(cluster), "target", target_uid=1000)
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     # And is where the walk starts: a uid the launcher was handed is a uid the
     # degraded rung can match, so nothing is spent on the rung above it.
     assert security_contexts(cluster)[0]["runAsUser"] == 1000
@@ -1172,7 +1187,7 @@ def test_a_ceiling_submits_no_capability_where_one_would_be_admitted() -> None:
     cluster = FakeCluster(pod_document(uid=1000))
     session = attach(talking_to(cluster), "target", max_rung=Rung.DEGRADED)
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert session.uid == 1000
     # The whole value of the flag on a mutating cluster: the full rung is never
     # submitted, so no permanent name is spent finding out it lands neutered.
@@ -1523,7 +1538,7 @@ def test_a_volume_the_application_does_not_mount_needs_an_explicit_path() -> Non
         attach(talking_to(cluster), "target", mounts=["myapp-venv"])
 
     session = attach(talking_to(cluster), "target", mounts=["myapp-venv:/opt/venv"])
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert cluster.added[0]["volumeMounts"] == [
         {"name": "podbench-patch-venv", "mountPath": "/opt/venv"}
     ]
@@ -1644,7 +1659,7 @@ def test_the_home_volume_is_mounted_by_convention_not_by_flag() -> None:
     cluster = FakeCluster(identity_pod())
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert cluster.added[0]["volumeMounts"] == EXPECTED_SEAT_MOUNTS
     env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
     # The home volume is only worth mounting if the seat is pointed at it: it is
@@ -1682,7 +1697,7 @@ def test_a_pod_that_declares_neither_volume_still_attaches() -> None:
     assert "volumeMounts" not in cluster.added[0]
     assert not session.identity_mounted
     assert not session.identity_declared
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
 
 
 def test_no_seat_identity_opts_out(tmp_path: Path) -> None:
@@ -2809,7 +2824,7 @@ def test_a_webhook_denial_drops_a_rung_rather_than_ending_the_walk() -> None:
     cluster = FakeCluster(pod_document(uid=1000), admission_error=KYVERNO_REFUSAL)
     session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     # Nothing was stored, so the name the refused rung was submitted under is
     # still free — the same accounting as a PSA refusal.
     assert session.seat.container == "podbench-1"
@@ -2858,7 +2873,7 @@ def test_a_validating_admission_policy_is_not_reported_as_a_webhook() -> None:
     cluster = FakeCluster(pod_document(uid=1000), admission_error=VAP_REFUSAL)
     session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
     assert "a ValidatingAdmissionPolicy refused" in detail
     assert "webhook" not in detail
@@ -2881,7 +2896,7 @@ def test_a_stripped_capability_is_seen_before_the_rung_is_spent() -> None:
     cluster = FakeCluster(pod_document(uid=1000), mutate=strip)
     session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert [entry["name"] for entry in stored(cluster)] == ["podbench-1"]
     detail = {step.rung: step for step in session.steps}[Rung.FULL].detail
     assert "remove SYS_PTRACE" in detail
@@ -2988,7 +3003,7 @@ def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() ->
     cluster = FakeCluster(pod_document(uid=1000), mutate=add_baseline)
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     rewrite = [
         warning for warning in session.warnings if "admission rewrote" in warning
     ]
@@ -3031,7 +3046,7 @@ def test_a_target_at_a_known_uid_starts_at_the_rung_that_matches_it() -> None:
     cluster = FakeCluster(pod_document(uid=1000))
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert security_contexts(cluster) == [
         {
             "capabilities": {"drop": ["ALL"]},
@@ -3179,6 +3194,71 @@ def test_no_correct_ids_leaves_the_first_seat_alone() -> None:
     # prints it - so the user is told what they are keeping.
     assert session.report is not None
     assert session.report.blocker is Blocker.GID_MISMATCH
+
+
+def test_a_gid_mismatched_seat_is_not_labelled_the_degraded_rung() -> None:
+    """The label and the verdict on one report have to be the same seat.
+
+    Measured on p47-blueapi-0 (2026-08-21): a 1000:0 seat against a 1000:1000
+    target read ``degraded`` in the RUNG column while the verdict beside it said
+    "launch-only ... no read-only inspection". ``Rung.DEGRADED`` is grounded in
+    what ``__ptrace_may_access()`` checks, and that call compares ``gid``,
+    ``egid`` and ``sgid`` as peers of the user ids - which is the entire reason
+    podbench lands a gid-corrected seat - so a rung that read the uid alone
+    claimed a kernel check the kernel had already failed. The bottom rung is
+    what this seat is, and the ``GID_MISMATCH`` arm says why in the same words.
+    """
+    cluster = FakeCluster(pod_document(uid=1000, non_root=True), capreport=MISMATCHED)
+    session = attach(talking_to(cluster), "target", correct_ids=False)
+
+    assert session.report is not None
+    assert session.report.blocker is Blocker.GID_MISMATCH
+    assert session.rung is Rung.SEAT
+    # And the walk is not what changed: the degraded rung is still the one that
+    # landed. The two answers differ because they are answers to two questions.
+    assert landed_rung(session) is Rung.DEGRADED
+    assert "rung        seat - uid 1000, gid 0" in format_session(session)
+
+
+def test_a_listing_labels_a_gid_mismatched_seat_by_what_it_can_do() -> None:
+    """The same seat, at the two verbs that never exec anything.
+
+    ``list`` and ``status`` read the rung out of the seat's own start-up report
+    (issue #99), and that report stores the four numbers rather than a label
+    precisely so the launcher may change its mind about them - which is what
+    happened here.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    reports = recover_seat_reports(
+        talking_to(cluster), PodRef("demo", "target"), seats(cluster.pod)
+    )
+
+    report = reports["podbench-1"]
+    assert (report.uid, report.gid) == (1000, 0)
+    assert (report.target_uid, report.target_gid) == (1000, 1000)
+    assert report.rung is Rung.SEAT
+
+
+def test_an_unread_target_gid_is_not_a_rung_either() -> None:
+    """``--no-probe`` against the manifest shape that hides the group.
+
+    ``runAsUser`` with no ``runAsGroup`` is what a hardened workload declares,
+    so the target's group lives only in its own ``/proc`` and nothing
+    laptop-side has it. The uids matching is half of the comparison, and half a
+    comparison is not a rung: the report names the rung that was *asked* for and
+    says which of the two numbers it never read.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert not session.rung_measured
+    assert "the target unread" in format_session(session)
 
 
 def test_a_pinned_gid_is_not_overridden_by_the_measurement() -> None:
@@ -4062,7 +4142,7 @@ def test_a_seat_that_cannot_be_asked_its_version_still_attaches() -> None:
     cluster = FakeCluster(pod_document(uid=1000), seat_version=None)
     session = attach(talking_to(cluster), "target")
 
-    assert session.rung is Rung.DEGRADED
+    assert landed_rung(session) is Rung.DEGRADED
     assert session.seat_version is None
     assert VERSION_SKEW_WARNING not in session.warnings
     assert UNKNOWN_SEAT_VERSION in format_session(session)
@@ -4628,7 +4708,11 @@ def test_status_lists_every_container_live_or_burnt(
     )
     out = capsys.readouterr().out
     assert "podbench-1" in out
-    assert "degraded" in out
+    # The measured rung, and `seat` is the honest one here: this seat pins the
+    # target's uid and no group, so it runs in the image's group 0 against a
+    # target in group 1000 and the credential check denies it (p47-blueapi-0's
+    # shape). `rung_of_spec` reads the same securityContext as `degraded`.
+    assert "podbench-1   running     seat" in out
     assert "other-sidecar" not in out
 
 
@@ -5297,13 +5381,24 @@ def test_an_older_seat_against_a_newer_launcher_lists_rather_than_raises(
 
     newer = argus_shaped_pod()
     newer.seat_logs["podbench-1"] = (
-        'agent: podbench-report: {"uid": 0, "target_uid": 0, "sys_ptrace": false, '
-        '"version": 99, "something_new": {"nested": true}}'
+        'agent: podbench-report: {"uid": 0, "gid": 0, "target_uid": 0, '
+        '"target_gid": 0, "sys_ptrace": false, "version": 99, '
+        '"something_new": {"nested": true}}'
     )
     assert (
         main(["list", "-n", "demo", "--config-dir", str(tmp_path)], runner=newer) == 0
     )
     assert "podbench-1   running     degraded" in capsys.readouterr().out
+
+    # And a report carrying only half of the credential check is *not measured*
+    # either. The uids matching is half a comparison, and half a comparison is
+    # not a rung - `__ptrace_may_access()` wants the group ids too.
+    half = argus_shaped_pod()
+    half.seat_logs["podbench-1"] = (
+        'agent: podbench-report: {"uid": 0, "target_uid": 0, "sys_ptrace": false}'
+    )
+    assert main(["list", "-n", "demo", "--config-dir", str(tmp_path)], runner=half) == 0
+    assert "podbench-1   running     not measured" in capsys.readouterr().out
 
 
 def test_a_refused_startup_step_reaches_a_laptop_verb(
