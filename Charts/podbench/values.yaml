@@ -49,7 +49,13 @@ rbac:
   # get and patch, not patch alone: kubectl reads the subresource back before
   # it writes it, so `patch` on its own is Forbidden on the GET and never
   # reaches the resize (measured on a Diamond cluster, 2026-08-20).
-  resize: false # get+patch pods/resize, to make memory headroom before attaching
+  #
+  # `attach` spends this only when told to, with `--resize`. `podbench vscode`
+  # spends it on *every* run unless `--no-resize`: sizing the pod for the editor
+  # is the reason that verb exists. Leaving this false does not disable the
+  # resize, it makes it fail — the raise is attempted and refused, and the user
+  # gets a warning instead of the headroom.
+  resize: false # get+patch pods/resize, for `attach --resize` and every `vscode`
   # Hotfix mode: read Deployments/StatefulSets/ReplicaSets to find the pod
   # template and refuse a multi-replica target, then patch that template with the
   # provenance annotations — which is also what rolls the workload. That makes it
