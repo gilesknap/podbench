@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iterate on Python &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Iterate on Python &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -498,9 +498,7 @@ per cycle, measured.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Commands here are written <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — the only spelling there is. If you
-have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, or, before
-the first PyPI release, as
-<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
+have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
 <a class="reference internal" href="../tutorials/setup.html"><span class="std std-doc">Setup</span></a>.</p>
 </div>
 <p>It is also the mode with no footguns about resources. A dev pod is authored by
@@ -578,7 +576,7 @@ prints nothing at all on success.</p>
 <p>A dev pod’s sidecar is an <strong>ordinary</strong> container, so — unlike an <code class="docutils literal notranslate"><span class="pre">attach</span></code> seat —
 it may mount a file with <code class="docutils literal notranslate"><span class="pre">subPath</span></code>. Where the origin pod declares the
 <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code> volume (the ConfigMap the podbench chart emits; see
-<a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a>), the clone carries it and the sidecar is
+<a class="reference internal" href="../explanations/dev-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</span></a>), the clone carries it and the sidecar is
 authored differently:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">passwd</span></code> is mounted read-only over <code class="docutils literal notranslate"><span class="pre">/etc/passwd</span></code> and <code class="docutils literal notranslate"><span class="pre">group</span></code> over <code class="docutils literal notranslate"><span class="pre">/etc/group</span></code>;</p></li>
@@ -597,9 +595,9 @@ origin sets none — an <code class="docutils literal notranslate"><span class="
 sidecar has just stopped being root.</p></li>
 </ul>
 <p>The line is printed when the pod comes up:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="n">seat</span> <span class="n">identity</span>    <span class="p">:</span> <span class="n">podbench</span><span class="o">-</span><span class="n">identity</span> <span class="n">projected</span> <span class="n">over</span> <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">passwd</span> <span class="ow">and</span>
-                     <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">group</span><span class="p">,</span> <span class="n">so</span> <span class="n">the</span> <span class="n">sidecar</span> <span class="n">runs</span> <span class="k">as</span> <span class="mi">1000</span><span class="p">:</span><span class="mi">1000</span> <span class="p">(</span><span class="n">the</span> <span class="n">app</span><span class="s1">&#39;s</span>
-                     <span class="n">own</span><span class="p">)</span> <span class="k">with</span> <span class="n">no</span> <span class="n">SYS_PTRACE</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="n">identity</span>    <span class="n">seat</span> <span class="n">identity</span> <span class="kn">from</span><span class="w"> </span><span class="nn">podbench</span><span class="o">-</span><span class="n">identity</span><span class="p">,</span> <span class="n">projected</span> <span class="n">over</span>
+              <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">passwd</span> <span class="ow">and</span> <span class="o">/</span><span class="n">etc</span><span class="o">/</span><span class="n">group</span><span class="p">,</span> <span class="n">so</span> <span class="n">the</span> <span class="n">sidecar</span> <span class="n">runs</span> <span class="k">as</span>
+              <span class="mi">1000</span><span class="p">:</span><span class="mi">1000</span> <span class="p">(</span><span class="n">the</span> <span class="n">app</span><span class="s1">&#39;s own) with no SYS_PTRACE</span>
 </pre></div>
 </div>
 <p>This is also what makes a dev pod admissible in a namespace enforcing the

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What hotfix does &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>What hotfix does &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -527,7 +527,7 @@ containers, at the same path</em>.</p>
   │  initContainer podbench-seed-venv    (the application&#39;s own image) │
   │     mounts the claim at /podbench-seed — a *staging* path, because │
   │     this is the only moment the image&#39;s own venv is still visible  │
-  │     cp -a /opt/venv/. /podbench-seed/                              │
+  │     test -e /podbench-seed/pyvenv.cfg || cp -a /opt/venv/. …       │
   │                                                                    │
   │  ┌──────────────────────┐         ┌──────────────────────────────┐ │
   │  │ application          │         │ podbench seat                │ │
@@ -551,7 +551,9 @@ containers, at the same path</em>.</p>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span> <span class="pre">--app</span> <span class="pre">NAME</span> <span class="pre">--venv-path</span> <span class="pre">/opt/venv</span></code> emits exactly that:
 the claim, the seeding initContainer, the <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>
-volumes, and the <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> without which the seat’s home is present and unwritable.</p>
+volumes, and the <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> without which the seat’s home is present and unwritable.
+The guard is what stops a restart copying the image’s venv back over the hotfixed
+claim.</p>
 <p>Two things about the seed are easy to get wrong and both fail silently:</p>
 <ul class="simple">
 <li><p>it <strong>must</strong> run as an initContainer, because once the claim is mounted over the venv

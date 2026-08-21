@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Architecture &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Architecture &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -712,7 +712,8 @@ is no kubectl plugin: a plugin has to be an executable on <code class="docutils 
 exactly the thing that outlives the command.</p></li>
 <li><p>In the pod: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code> is PID 1, and the same spelling reaches every
 other in-pod verb — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>,
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>. One file,
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>,
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>. One file,
 <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/podbench</span></code>, is what puts them within reach of an ssh session
 that sources no profile — sshd leaks none of the image’s environment, so the
 agent’s generated config carries <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (and <code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code>, and the
@@ -798,7 +799,7 @@ worked yesterday” is explicable.</p>
 <td><p>none; the origin pod is untouched</p></td>
 </tr>
 <tr class="row-odd"><td><p>Debugging</p></td>
-<td><p>attach to the live process, or read-only inspection</p></td>
+<td><p>attach to the live process, read-only inspection, or debugpy where <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> provisions it into the target</p></td>
 <td><p>gdb-launch, debugpy, the relaunch loop</p></td>
 </tr>
 </tbody>
@@ -811,8 +812,21 @@ spec at creation: pod volumes are immutable and a container’s rootfs is reset 
 every restart. The workflow ships as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span></code>
 (<code class="docutils literal notranslate"><span class="pre">init</span></code>/<code class="docutils literal notranslate"><span class="pre">apply</span></code>/<code class="docutils literal notranslate"><span class="pre">status</span></code>/<code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, plus <code class="docutils literal notranslate"><span class="pre">--print-values</span></code> for the chart
 snippet), but it has only ever been exercised against unit tests: no cluster has
-run it, and <code class="docutils literal notranslate"><span class="pre">attach</span></code> cannot yet mount the claim into the seat, so the seat must
-be authored by hand or <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> run inside it with <code class="docutils literal notranslate"><span class="pre">--local</span></code>.</p>
+run it. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--mount</span> <span class="pre">CLAIM</span></code> now puts the claim into the seat at the
+application’s own mountPath, so the workflow is reachable end to end — but
+reachable is not demonstrated. See <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
+</section>
+<section id="see-also">
+<h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../reference/glossary.html"><span class="std std-doc">Glossary</span></a> — every term this page uses without
+explanation.</p></li>
+<li><p><a class="reference internal" href="ways-in.html"><span class="std std-doc">Ways in</span></a> — which mode a given problem belongs in.</p></li>
+<li><p><a class="reference internal" href="attach-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</span></a>, <a class="reference internal" href="dev-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</span></a> and
+<a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a> — each mode’s flow, call by call.</p></li>
+<li><p><a class="reference internal" href="spikes/phase0-report.html"><span class="std std-doc">Phase 0 gate report</span></a> — the measurements the shapes
+on this page were chosen against.</p></li>
+</ul>
 </section>
 </section>
 
@@ -872,6 +886,7 @@ be authored by hand or <code class="docutils literal notranslate"><span class="p
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-mount-namespace-rule">The mount-namespace rule</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-probe-is-for">What the probe is for</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-the-modes-diverge">Where the modes diverge</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See also</a></li>
 </ul>
   </nav></div>
 

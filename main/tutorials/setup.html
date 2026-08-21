@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Setup &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Setup &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -531,8 +531,10 @@ $ helm version --short
 $ ls ~/.ssh/id_ed25519 || ssh-keygen -t ed25519
 </pre></div>
 </div>
-<p>Or let podbench check them, along with everything else on this page, once you
-have <code class="docutils literal notranslate"><span class="pre">uv</span></code>: <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span></code>. See <em>Check the machine</em>, below.</p>
+<p>Or let podbench check most of them once you have <code class="docutils literal notranslate"><span class="pre">uv</span></code>: <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span></code>
+measures kubectl and its version, the context and namespace, the ssh client,
+both halves of your key, the ssh agent, the config directory and the <code class="docutils literal notranslate"><span class="pre">Include</span></code>,
+plus RBAC. It does not check <code class="docutils literal notranslate"><span class="pre">uv</span></code> or <code class="docutils literal notranslate"><span class="pre">helm</span></code>. See <em>Check the machine</em>, below.</p>
 </section>
 <section id="run-the-launcher">
 <h2>Run the launcher<a class="headerlink" href="#run-the-launcher" title="Link to this heading">#</a></h2>
@@ -543,18 +545,16 @@ $ uvx podbench list
 no podbench containers in namespace default
 </pre></div>
 </div>
-<div class="admonition important">
-<p class="admonition-title">Important</p>
-<p><strong>Before the first PyPI release, <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> cannot resolve anything</strong> — the
-name is not published yet, and <code class="docutils literal notranslate"><span class="pre">uvx</span></code> will tell you so. Until it is, put
-<code class="docutils literal notranslate"><span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span></code> in front of every
-<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> on this site:</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Only prereleases are published so far, so <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> resolves the newest
+beta today. To run an unreleased checkout instead, put
+<code class="docutils literal notranslate"><span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span></code> in front of the verb:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx --from git+https://github.com/gilesknap/podbench podbench --version
-$ uvx --from git+https://github.com/gilesknap/podbench podbench list
 </pre></div>
 </div>
-<p>That builds the launcher from the repository head, so it is a dev build — see
-<em>The image</em>, below, for which image such a launcher asks for.</p>
+<p>That builds from repository head, so it is a dev build — see <em>The image</em>, below,
+for which image such a launcher asks for.</p>
 </div>
 <p>That is the whole setup. <code class="docutils literal notranslate"><span class="pre">uvx</span></code> resolves the wheel from PyPI and runs it;
 podbench declares one runtime dependency — its CLI, typer — so that is four
@@ -565,23 +565,27 @@ installed — no environment you have to manage, and nothing on your <code class
 consequence worth knowing — an unpinned <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> keeps using the cached
 version rather than checking PyPI for a newer one. Ask for <code class="docutils literal notranslate"><span class="pre">podbench&#64;latest</span></code>, or
 pass <code class="docutils literal notranslate"><span class="pre">--refresh</span></code>, when you want the newest release.</p>
-<p>Pin it as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench&#64;1.0.0</span> <span class="pre">&lt;verb&gt;</span></code> in anything that has to be reproducible —
+<p>Pin it as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench&#64;0.4.0b1</span> <span class="pre">&lt;verb&gt;</span></code> in anything that has to be reproducible —
 a script, a runbook, a shared incident channel.</p>
 <p>If you would rather have <code class="docutils literal notranslate"><span class="pre">podbench</span></code> on your <code class="docutils literal notranslate"><span class="pre">PATH</span></code> and manage upgrades yourself,
 <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">tool</span> <span class="pre">install</span> <span class="pre">podbench</span></code> does that, as do <code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">podbench</span></code> and a plain
 <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">podbench</span></code> into a virtualenv you keep activated. They all run the
-same program and all read the same name from PyPI, so they wait on the first
-release too. Only the <code class="docutils literal notranslate"><span class="pre">pip</span></code> route does not fetch its own interpreter, so build
+same program and all read the same name from PyPI. Until a final release
+exists, each needs the prerelease asked for explicitly —
+<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">--pre</span> <span class="pre">podbench</span></code>, <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">tool</span> <span class="pre">install</span> <span class="pre">podbench</span> <span class="pre">--prerelease</span> <span class="pre">allow</span></code>.
+Only the <code class="docutils literal notranslate"><span class="pre">pip</span></code> route does not fetch its own interpreter, so build
 that venv with <strong>3.11 or later</strong> — pip refuses the wheel otherwise.</p>
 <p>A release carries two spellings of its version: the wheel is PEP 440
 (<code class="docutils literal notranslate"><span class="pre">1.0.0b1</span></code>), while the git tag and the chart are SemVer (<code class="docutils literal notranslate"><span class="pre">1.0.0-beta.1</span></code>). The
 <strong>image carries both</strong>, pushed onto one digest, which is what lets the launcher
-ask for its own version verbatim. A bare <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> will not select a
-prerelease, which is the behaviour you want — so testing a beta means asking for
-it by its wheel spelling, <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench&#64;1.0.0b1</span> <span class="pre">attach</span> <span class="pre">...</span></code>.</p>
+ask for its own version verbatim. uv prefers a stable release and falls back to
+a prerelease only when no stable one exists — which is the case today, so a bare
+<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> currently gets <code class="docutils literal notranslate"><span class="pre">0.4.0b1</span></code>. Once a stable release ships, testing a
+beta will mean asking for it by its wheel spelling,
+<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench&#64;1.0.0b1</span> <span class="pre">attach</span> <span class="pre">...</span></code>.</p>
 <p>The current release string is on the
 <a class="reference external" href="https://github.com/gilesknap/podbench/releases">releases page</a>; you need it
-below for <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">--version</span></code>.</p>
+below for the <code class="docutils literal notranslate"><span class="pre">--version</span></code> flag on <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">show</span> <span class="pre">chart</span></code> and <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">upgrade</span> <span class="pre">--install</span></code>.</p>
 </section>
 <section id="check-the-machine-and-add-the-ssh-include">
 <h2>Check the machine, and add the ssh include<a class="headerlink" href="#check-the-machine-and-add-the-ssh-include" title="Link to this heading">#</a></h2>
@@ -594,7 +598,8 @@ can attach at all, and names whatever cannot.</p>
 <p>It checks <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> and its version, the context and namespace in play, the ssh
 client and both halves of your key, the <code class="docutils literal notranslate"><span class="pre">Include</span></code> below, and — one
 <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time — the RBAC each podbench feature needs, reported
-as <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">OK</span> <span class="pre">/</span> <span class="pre">iterate</span> <span class="pre">missing</span> <span class="pre">/</span> <span class="pre">resize</span> <span class="pre">missing</span></code>. It exits <code class="docutils literal notranslate"><span class="pre">0</span></code> only when
+per feature — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">iterate</span></code>, <code class="docutils literal notranslate"><span class="pre">resize</span></code> and <code class="docutils literal notranslate"><span class="pre">hotfix</span></code>, each as <code class="docutils literal notranslate"><span class="pre">[ok]</span></code>,
+<code class="docutils literal notranslate"><span class="pre">[warn]</span></code> or <code class="docutils literal notranslate"><span class="pre">[FAIL]</span></code>. Only <code class="docutils literal notranslate"><span class="pre">attach</span></code> can fail; the rest warn. It exits <code class="docutils literal notranslate"><span class="pre">0</span></code> only when
 nothing blocks an attach. See the
 <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">command-line reference</span></a> for the full list.</p>
 <p>One of those checks is the only setup step that outlives the command. podbench
@@ -605,9 +610,10 @@ once. <code class="docutils literal notranslate"><span class="pre">--fix</span><
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx podbench doctor --fix
 </pre></div>
 </div>
-<p>That creates <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code> and adds one line at the <strong>top</strong> of
-<code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
+<p>That creates <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d</span></code> and prepends a comment and the <code class="docutils literal notranslate"><span class="pre">Include</span></code>
+line at the <strong>top</strong> of <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code>, with the path expanded:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Added by podbench doctor --fix.</span>
+<span class="n">Include</span> <span class="o">/</span><span class="n">home</span><span class="o">/</span><span class="n">you</span><span class="o">/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
 </pre></div>
 </div>
 <p>At the top because the <code class="docutils literal notranslate"><span class="pre">Include</span></code> must come <strong>before</strong> any <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">*</span></code> block:
@@ -677,7 +683,23 @@ Read the whole list, with the reasoning for each, in
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods/resize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> only</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code>, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> unless <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">persistentvolumeclaims</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code></p></td>
+<td><p>Iterate mode, optional scratch claim</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code>, <code class="docutils literal notranslate"><span class="pre">replicasets</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
+<td><p>Hotfix mode</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
+<td><p>Hotfix mode — writes the provenance annotations, and that same edit rolls the workload</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code>, <code class="docutils literal notranslate"><span class="pre">delete</span></code></p></td>
+<td><p>Hotfix mode</p></td>
 </tr>
 </tbody>
 </table>

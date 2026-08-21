@@ -23,7 +23,7 @@ containers, at the same path*.
   │  initContainer podbench-seed-venv    (the application's own image) │
   │     mounts the claim at /podbench-seed — a *staging* path, because │
   │     this is the only moment the image's own venv is still visible  │
-  │     cp -a /opt/venv/. /podbench-seed/                              │
+  │     test -e /podbench-seed/pyvenv.cfg || cp -a /opt/venv/. …       │
   │                                                                    │
   │  ┌──────────────────────┐         ┌──────────────────────────────┐ │
   │  │ application          │         │ podbench seat                │ │
@@ -48,6 +48,8 @@ containers, at the same path*.
 `podbench hotfix --print-values --app NAME --venv-path /opt/venv` emits exactly that:
 the claim, the seeding initContainer, the `podbench-home` and `podbench-identity`
 volumes, and the `fsGroup` without which the seat's home is present and unwritable.
+The guard is what stops a restart copying the image's venv back over the hotfixed
+claim.
 
 Two things about the seed are easy to get wrong and both fail silently:
 

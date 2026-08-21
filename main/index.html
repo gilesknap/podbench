@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>podbench &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>podbench &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="_static/documentation_options.js?v=c99f609e"></script>
+    <script src="_static/documentation_options.js?v=502ab942"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
@@ -556,9 +556,9 @@ cycle. When the fix has to survive the pod, <code class="docutils literal notran
 onto a claim so a restart no longer restores the image’s code, and records
 where the change came from.</p>
 <blockquote>
-<div><p><strong>The PyPI name is not published yet</strong>, so <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> will not resolve
-until the first release. Until then, run every command as
-<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>.</p>
+<div><p>Only prereleases are published so far, so <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> resolves the newest
+beta today. To run an unreleased checkout instead, put
+<code class="docutils literal notranslate"><span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span></code> in front of the verb.</p>
 </div></blockquote>
 </section>
 <section id="read-this-before-you-attach-to-a-live-pod">
@@ -595,8 +595,8 @@ origin’s selector labels unless you pass <code class="docutils literal notrans
 records the original selector for an exact restore.</p></li>
 </ul>
 <p>The docs carry the reasoning and the measurements behind all four, and <em>What is
-proven, and what is not</em> is candid about the gaps — no real VS Code GUI client
-has connected yet, and Hotfix mode has never been run against a cluster.</p>
+proven, and what is not</em> is candid about the gaps — every memory figure is still a lower
+bound, and Hotfix mode has never been run against a cluster.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-center"><p>What</p></th>
@@ -608,7 +608,7 @@ has connected yet, and Hotfix mode has never been run against a cluster.</p>
 <td class="text-center"><p><a class="github reference external" href="https://github.com/gilesknap/podbench">gilesknap/podbench</a></p></td>
 </tr>
 <tr class="row-odd"><td class="text-center"><p>Launcher</p></td>
-<td class="text-center"><p><a class="reference external" href="https://pypi.org/project/podbench">https://pypi.org/project/podbench</a> (not published yet)</p></td>
+<td class="text-center"><p><a class="reference external" href="https://pypi.org/project/podbench">https://pypi.org/project/podbench</a> (prereleases only)</p></td>
 </tr>
 <tr class="row-even"><td class="text-center"><p>Image</p></td>
 <td class="text-center"><p><code class="docutils literal notranslate"><span class="pre">ghcr.io/gilesknap/podbench</span></code></p></td>
@@ -631,6 +631,7 @@ has connected yet, and Hotfix mode has never been run against a cluster.</p>
 <ul class="simple">
 <li><p>Never used it — <a class="reference internal" href="tutorials/setup.html"><span class="std std-doc">Setup</span></a>, then
 <a class="reference internal" href="tutorials/first-session.html"><span class="std std-doc">Your first session</span></a>.</p></li>
+<li><p>Here to open an editor on a live pod — <a class="reference internal" href="how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a>.</p></li>
 <li><p>Here to debug a crash — <a class="reference internal" href="how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p></li>
 <li><p>Here to change code in the cluster — <a class="reference internal" href="how-to/iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>.</p></li>
 <li><p>Here to decide whether to allow it — <a class="reference internal" href="explanations/security.html"><span class="std std-doc">Security model</span></a>.</p></li>

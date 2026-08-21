@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -497,17 +497,18 @@ need to size a pod <strong>before</strong> you attach.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Commands here are written <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — the only spelling there is. If you
-have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, or, before
-the first PyPI release, as
-<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
+have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
 <a class="reference internal" href="../tutorials/setup.html"><span class="std std-doc">Setup</span></a>.</p>
 </div>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>No real VS Code GUI client has been driven against podbench yet. The transport
-was verified at the protocol level — a real vscode-server completed an HTTP
-<code class="docutils literal notranslate"><span class="pre">200</span></code> plus a WebSocket <code class="docutils literal notranslate"><span class="pre">101</span> <span class="pre">Switching</span> <span class="pre">Protocols</span></code> handshake through <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code>,
-with no port-forward and no pod IP — and the server was driven headlessly. Every
+<p>A real VS Code GUI client has now connected — and the numbers still have not
+been taken. On 2026-08-17 a Remote-SSH client reached a seat, started an
+extension host, unpacked <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> and drove gdb through the C++
+adapter into a live IOC. The transport was verified at the protocol level
+besides — a real vscode-server completed an HTTP <code class="docutils literal notranslate"><span class="pre">200</span></code> plus a WebSocket
+<code class="docutils literal notranslate"><span class="pre">101</span> <span class="pre">Switching</span> <span class="pre">Protocols</span></code> handshake through <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-L</span></code>, with no port-forward and
+no pod IP — and the server was driven headlessly. Every
 memory figure below is therefore a <strong>lower bound</strong>: no extension host and no
 language server has been measured. Treat this page as the best available
 guidance, not as a proven result.</p>
@@ -595,6 +596,23 @@ short; read the caveats on <a class="reference internal" href="attach-to-a-pod.h
 rely on it. Ephemeral storage cannot be raised in place at all — that one
 needs a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume in the chart.</p></li>
 </ul>
+<section id="declaring-the-volume">
+<h3>Declaring the volume<a class="headerlink" href="#declaring-the-volume" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable, so this is a chart change and not something <code class="docutils literal notranslate"><span class="pre">attach</span></code>
+can do:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">securityContext</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">fsGroup</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span><span class="w">          </span><span class="c1"># without this the volume arrives root-owned</span>
+<span class="w">  </span><span class="nt">volumes</span><span class="p">:</span><span class="w">                 </span><span class="c1"># and unwritable, and the seat can chown nothing</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">podbench-home</span>
+<span class="w">      </span><span class="nt">emptyDir</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{}</span><span class="w">         </span><span class="c1"># or a claim, to survive a restart</span>
+</pre></div>
+</div>
+<p>No <code class="docutils literal notranslate"><span class="pre">volumeMount</span></code> on the application container: only the seat mounts it. One
+caveat (#42): a <strong>root</strong> seat takes <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> from its passwd record and ignores
+the volume, so the storage is bought with <code class="docutils literal notranslate"><span class="pre">--max-rung</span> <span class="pre">degraded</span></code> — which is also
+what gives up the live attach.</p>
+</section>
 </section>
 <section id="client-setup">
 <h2>Client setup<a class="headerlink" href="#client-setup" title="Link to this heading">#</a></h2>
@@ -744,7 +762,8 @@ vscode-server on the pod’s disk budget, and a container name burnt for the
 pod’s lifetime. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> gives its own sidecar the seat.</p>
 <p>If Remote-SSH does not offer the alias, it is reading a different config file.
 Set <code class="docutils literal notranslate"><span class="pre">remote.SSH.configFile</span></code> to the file that has the <code class="docutils literal notranslate"><span class="pre">Include</span></code>, or point it
-straight at <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/&lt;namespace&gt;-&lt;pod&gt;.conf</span></code>.</p>
+straight at <code class="docutils literal notranslate"><span class="pre">~/.podbench/config.d/&lt;namespace&gt;-&lt;pod&gt;-&lt;n&gt;.conf</span></code>, where <code class="docutils literal notranslate"><span class="pre">&lt;n&gt;</span></code> is the
+seat’s number (a <code class="docutils literal notranslate"><span class="pre">dev</span></code> sidecar, named exactly <code class="docutils literal notranslate"><span class="pre">podbench</span></code>, gets no suffix).</p>
 </section>
 </section>
 <section id="the-generated-stanza-and-why-each-line-is-there">
@@ -880,7 +899,7 @@ control in Observe mode.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># after the server extracts</span>
 <span class="n">rm</span> <span class="o">-</span><span class="n">rf</span> <span class="o">~/.</span><span class="n">vscode</span><span class="o">-</span><span class="n">server</span><span class="o">/</span><span class="nb">bin</span><span class="o">/*/</span><span class="n">extensions</span><span class="o">/</span><span class="p">{</span><span class="n">copilot</span><span class="p">,</span><span class="n">copilot</span><span class="o">-</span><span class="n">chat</span><span class="p">,</span><span class="n">mermaid</span><span class="o">-</span><span class="n">markdown</span><span class="o">-</span><span class="n">features</span><span class="p">}</span>
 <span class="c1"># once extensions are installed</span>
-<span class="n">rm</span> <span class="o">-</span><span class="n">rf</span> <span class="o">~/.</span><span class="n">vscode</span><span class="o">-</span><span class="n">server</span><span class="o">/</span><span class="n">data</span><span class="o">/</span><span class="n">CachedExtensionVSIXs</span>
+<span class="n">rm</span> <span class="o">-</span><span class="n">rf</span> <span class="o">~/.</span><span class="n">vscode</span><span class="o">-</span><span class="n">server</span><span class="o">/</span><span class="n">data</span><span class="o">/</span><span class="n">data</span><span class="o">/</span><span class="n">CachedExtensionVSIXs</span>
 </pre></div>
 </div>
 <p>The first takes the server from 646 MiB to <strong>428 MiB (−34 %)</strong>. It was verified
@@ -923,7 +942,8 @@ path in the debug container. Templates for gdb, CodeLLDB and debugpy are in
 <a class="reference internal" href="iterate-on-python.html"><span class="std std-doc">Iterate on Python</span></a>.</p></li>
 <li><p>Terminals are ordinary ssh sessions with the container’s <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, so every
 in-pod verb is there as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>,
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>.</p></li>
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev-bootstrap</span></code>,
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">stop</span></code>.</p></li>
 </ul>
 </section>
 <section id="what-the-seat-configures-for-you">
@@ -1085,7 +1105,10 @@ behaviour when the pod is deleted mid-session.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#size-the-pod-first">Size the pod first</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#size-the-pod-first">Size the pod first</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#declaring-the-volume">Declaring the volume</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#client-setup">Client setup</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#or-let-podbench-vscode-do-all-four">Or let <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> do all four</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it">A stock Python workload needs debugpy, and this is where it gets it</a></li>

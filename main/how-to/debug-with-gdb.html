@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -496,9 +496,7 @@ minutes, most of it image pulls.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Commands here are written <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code> — the only spelling there is. If you
-have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>, or, before
-the first PyPI release, as
-<code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">--from</span> <span class="pre">git+https://github.com/gilesknap/podbench</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
+have not installed the launcher, run each as <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">&lt;verb&gt;</span></code>. See
 <a class="reference internal" href="../tutorials/setup.html"><span class="std std-doc">Setup</span></a>.</p>
 </div>
 <div class="admonition warning">
@@ -506,8 +504,9 @@ the first PyPI release, as
 <p><strong>A breakpoint on a probed pod is on a timer.</strong> A process stopped in a debugger
 does not answer its probes, and the kubelet cannot tell that from a hang. Two
 deadlines follow, and the quiet one is the one that will catch you out. Both are
-<code class="docutils literal notranslate"><span class="pre">(failureThreshold</span> <span class="pre">-</span> <span class="pre">1)</span> <span class="pre">x</span> <span class="pre">periodSeconds</span> <span class="pre">+</span> <span class="pre">timeoutSeconds</span></code> after the pause
-begins, plus up to one more period depending on where in the cycle it began:</p>
+<code class="docutils literal notranslate"><span class="pre">(failureThreshold</span> <span class="pre">-</span> <span class="pre">1)</span> <span class="pre">x</span> <span class="pre">max(periodSeconds,</span> <span class="pre">timeoutSeconds)</span> <span class="pre">+</span> <span class="pre">timeoutSeconds</span></code>
+after the pause begins, plus up to one more period depending on where in the
+cycle it began:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>deadline</p></th>
@@ -650,12 +649,12 @@ debugging, just not of the already-running process.</p>
 </section>
 <section id="find-the-process">
 <h2>3. Find the process<a class="headerlink" href="#find-the-process" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-gdb-victim
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-gdb-victim-1
 root@victim:~# podbench pids
 container victim: the processes in its PID namespace
 PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
 1    0    yes     S   3    ok      87d20e23a1b4   victim  /app/victim
-38   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
+38   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> is not <code class="docutils literal notranslate"><span class="pre">ps</span></code>. Under a shared PID namespace every process in the
@@ -668,8 +667,8 @@ matching mount namespaces breaks there too.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ST</span></code>, <code class="docutils literal notranslate"><span class="pre">THR</span></code> and <code class="docutils literal notranslate"><span class="pre">PTRACE</span></code> are the columns to read when you disagree with the pid
 <code class="docutils literal notranslate"><span class="pre">dbg</span></code> or <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> chose, because they are what it chose on. <code class="docutils literal notranslate"><span class="pre">ST</span></code> is the
 kernel’s process state: a <code class="docutils literal notranslate"><span class="pre">Z</span></code> there is a zombie, which no seat can attach to
-however good its credentials — it is the entry <code class="docutils literal notranslate"><span class="pre">--pid</span></code> should never be pointed
-at. <code class="docutils literal notranslate"><span class="pre">PTRACE</span></code> says whether <em>this</em> seat may read that process at all; a <code class="docutils literal notranslate"><span class="pre">DENIED</span></code>
+however good its credentials — it is the entry you should never pass as
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">&lt;pid&gt;</span></code>. <code class="docutils literal notranslate"><span class="pre">PTRACE</span></code> says whether <em>this</em> seat may read that process at all; a <code class="docutils literal notranslate"><span class="pre">DENIED</span></code>
 beside a live process is usually a uid the seat does not share (see
 <a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> for the rung that fixes it). <code class="docutils literal notranslate"><span class="pre">THR</span></code> is the
 thread count, which is what separates a workload from the short-lived helper it
@@ -1110,8 +1109,10 @@ before it claims the rung. Three things take it away with everything else, none
 of which cares whose descendant the inferior is: a seccomp filter that rejects
 <code class="docutils literal notranslate"><span class="pre">ptrace(2)</span></code> outright, <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code> <strong>2 or 3</strong> — scope 2 is the one Yama setting
 with no descendant exemption, and it demands <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> of
-<code class="docutils literal notranslate"><span class="pre">PTRACE_TRACEME</span></code> too — and an AppArmor profile that denies <code class="docutils literal notranslate"><span class="pre">ptrace</span></code>.
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> names whichever of the three it finds.</p>
+<code class="docutils literal notranslate"><span class="pre">PTRACE_TRACEME</span></code> too — and an LSM policy that denies <code class="docutils literal notranslate"><span class="pre">ptrace</span></code> — differing
+AppArmor profiles, or differing SELinux MCS categories, which <code class="docutils literal notranslate"><span class="pre">capreport</span></code>
+reports as <code class="docutils literal notranslate"><span class="pre">lsm-mismatch</span></code>. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">capreport</span></code> names whichever of the three it
+finds.</p>
 <p>The offer is conditional for that reason: where the scratch attach was measured
 and failed, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> says so instead of pointing at <code class="docutils literal notranslate"><span class="pre">--launch</span></code>, because a
 second identical denial is what costs the afternoon.</p>

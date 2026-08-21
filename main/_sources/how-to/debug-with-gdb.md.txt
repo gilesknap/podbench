@@ -6,9 +6,7 @@ minutes, most of it image pulls.
 
 :::{note}
 Commands here are written `podbench <verb>` — the only spelling there is. If you
-have not installed the launcher, run each as `uvx podbench <verb>`, or, before
-the first PyPI release, as
-`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+have not installed the launcher, run each as `uvx podbench <verb>`. See
 [Setup](../tutorials/setup.md).
 :::
 
@@ -16,8 +14,9 @@ the first PyPI release, as
 **A breakpoint on a probed pod is on a timer.** A process stopped in a debugger
 does not answer its probes, and the kubelet cannot tell that from a hang. Two
 deadlines follow, and the quiet one is the one that will catch you out. Both are
-`(failureThreshold - 1) x periodSeconds + timeoutSeconds` after the pause
-begins, plus up to one more period depending on where in the cycle it began:
+`(failureThreshold - 1) x max(periodSeconds, timeoutSeconds) + timeoutSeconds`
+after the pause begins, plus up to one more period depending on where in the
+cycle it began:
 
 | deadline | what happens | how visible |
 |---|---|---|
@@ -158,12 +157,12 @@ Then ssh in with the alias it printed.
 ## 3. Find the process
 
 ```
-$ ssh podbench-podbench-gdb-victim
+$ ssh podbench-podbench-gdb-victim-1
 root@victim:~# podbench pids
 container victim: the processes in its PID namespace
 PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
 1    0    yes     S   3    ok      87d20e23a1b4   victim  /app/victim
-38   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
+38   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
 ```
 
 `podbench pids` is not `ps`. Under a shared PID namespace every process in the
@@ -178,8 +177,8 @@ If the `TARGET` column is a guess rather than a fact, `podbench pids` says so.
 `ST`, `THR` and `PTRACE` are the columns to read when you disagree with the pid
 `dbg` or `debug-config` chose, because they are what it chose on. `ST` is the
 kernel's process state: a `Z` there is a zombie, which no seat can attach to
-however good its credentials — it is the entry `--pid` should never be pointed
-at. `PTRACE` says whether *this* seat may read that process at all; a `DENIED`
+however good its credentials — it is the entry you should never pass as
+`podbench dbg <pid>`. `PTRACE` says whether *this* seat may read that process at all; a `DENIED`
 beside a live process is usually a uid the seat does not share (see
 [Attach to a pod](attach-to-a-pod.md) for the rung that fixes it). `THR` is the
 thread count, which is what separates a workload from the short-lived helper it
@@ -647,8 +646,10 @@ before it claims the rung. Three things take it away with everything else, none
 of which cares whose descendant the inferior is: a seccomp filter that rejects
 `ptrace(2)` outright, `ptrace_scope` **2 or 3** — scope 2 is the one Yama setting
 with no descendant exemption, and it demands `CAP_SYS_PTRACE` of
-`PTRACE_TRACEME` too — and an AppArmor profile that denies `ptrace`.
-`podbench capreport` names whichever of the three it finds.
+`PTRACE_TRACEME` too — and an LSM policy that denies `ptrace` — differing
+AppArmor profiles, or differing SELinux MCS categories, which `capreport`
+reports as `lsm-mismatch`. `podbench capreport` names whichever of the three it
+finds.
 
 The offer is conditional for that reason: where the scratch attach was measured
 and failed, `podbench dbg` says so instead of pointing at `--launch`, because a

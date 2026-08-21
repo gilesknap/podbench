@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Security model &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -562,7 +562,7 @@ without it. Everything else runs with capabilities dropped, non-root, under the
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pods/resize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">get</span></code>, <code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
 <td><p>raise a running workload’s memory limit before attaching</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> only</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> / <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code>, and every <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> unless <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code>, <code class="docutils literal notranslate"><span class="pre">replicasets</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
@@ -583,8 +583,11 @@ without it. Everything else runs with capabilities dropped, non-root, under the
 </table>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code> asks the cluster for these one <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">can-i</span></code> at a time,
-as your own kubeconfig, and reports them per feature — <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">OK</span></code>,
-<code class="docutils literal notranslate"><span class="pre">iterate</span> <span class="pre">missing</span></code>. It is the same list: <code class="docutils literal notranslate"><span class="pre">podbench.doctor.FEATURES</span></code> names the
+as your own kubeconfig, and reports them per feature —
+<code class="docutils literal notranslate"><span class="pre">[ok]</span> <span class="pre">attach</span>&#160;&#160; <span class="pre">all</span> <span class="pre">5</span> <span class="pre">verbs</span> <span class="pre">allowed</span></code>,
+<code class="docutils literal notranslate"><span class="pre">[warn]</span> <span class="pre">iterate</span>&#160; <span class="pre">missing:</span> <span class="pre">create</span> <span class="pre">pods,</span> <span class="pre">delete</span> <span class="pre">pods</span></code>. Only the <code class="docutils literal notranslate"><span class="pre">attach</span></code> row
+blocks; the rest are warnings and do not change the exit code. It is the same
+list: <code class="docutils literal notranslate"><span class="pre">podbench.doctor.FEATURES</span></code> names the
 chart flag that grants each feature, and <code class="docutils literal notranslate"><span class="pre">tests/test_chart_contract.py</span></code> renders
 the chart to assert the two cannot drift. Without it an RBAC denial arrives
 mid-attach, after a container name has been burnt for the life of the pod.</p>
@@ -646,7 +649,7 @@ first-class mode rather than an error state.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><strong>full</strong></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>, <code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>, <code class="docutils literal notranslate"><span class="pre">capabilities.add:</span> <span class="pre">[SYS_PTRACE]</span></code>, <code class="docutils literal notranslate"><span class="pre">privileged:</span> <span class="pre">false</span></code>, <code class="docutils literal notranslate"><span class="pre">allowPrivilegeEscalation:</span> <span class="pre">false</span></code></p></td>
 <td><p>privileged / exempted namespaces, or a targeted policy</p></td>
 <td><p>attach to the workload’s live processes</p></td>
 </tr>
@@ -815,9 +818,12 @@ own children, and debugging your own descendants is always permitted; Yama and
 the capability check both exempt them.</p></li>
 <li><p><strong>gdb-launch survives.</strong> <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span> <span class="pre">--launch</span> <span class="pre">./prog</span></code> gives breakpoints,
 <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">continue</span></code>, backtraces, arguments and locals at uid 1000 with
-<code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>, under <code class="docutils literal notranslate"><span class="pre">restricted</span></code> with <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> seccomp.
-Document the inner loop as gdb-<strong>launch</strong>; attach is the privileged special
-case.</p></li>
+<code class="docutils literal notranslate"><span class="pre">CapEff:</span> <span class="pre">0000000000000000</span></code>, under <code class="docutils literal notranslate"><span class="pre">restricted</span></code> on every runtime the spikes
+measured. <code class="docutils literal notranslate"><span class="pre">RuntimeDefault</span></code> is a name, not a filter: a DLS node’s own denied
+<code class="docutils literal notranslate"><span class="pre">ptrace</span></code> even on a self-forked child (2026-08-18, above), which is why the
+seat now mirrors the target’s profile and why <code class="docutils literal notranslate"><span class="pre">capreport</span></code> <strong>measures</strong> this
+rung rather than claiming it. Document the inner loop as gdb-<strong>launch</strong>;
+attach is the privileged special case.</p></li>
 <li><p><strong>In-process debug servers are the ptrace-free live attach.</strong> debugpy, Node’s
 inspector, JDWP: the app listens on loopback, the editor attaches through the
 shared network namespace and the ssh tunnel. For Python this means the live
@@ -891,7 +897,7 @@ arbitrary-code-execution endpoint for anything on the node until you stop it.</p
 <li><p><strong>The <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> bridge is one-directional.</strong> The debug container can
 read the app’s rootfs; the app cannot see the debug container’s. A compromised
 application container cannot reach the debug toolchain.</p></li>
-<li><p><strong>The target’s filesystem is never written.</strong> <code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem</span></code> is
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">attach</span></code> never writes the target’s filesystem.</strong> <code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem</span></code> is
 common in production and podbench does not depend on writing into the target.
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a read path in every standard workflow.</p></li>
 <li><p><strong>An ssh-able seat on a live pod runs as the target’s own uid and gid</strong>, and
@@ -918,11 +924,20 @@ four host groups, listed in
 <a class="reference internal" href="../how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a>. Air-gapped operation is
 unspiked.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--resize</span></code> changes a running workload’s memory limit.</strong> It is a separate
-RBAC grant for that reason, and it is opt-in.</p></li>
+RBAC grant for that reason. It is opt-in on <code class="docutils literal notranslate"><span class="pre">attach</span></code>; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> spends
+it by default, sized from the measured headroom, with <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">MEMORY</span></code> to
+choose the number and <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> to decline. The raise lands on the pod and
+not on its controller, so a rollout reverts it.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> installs debugpy into the target, by default.</strong> ~15 MB into
+the workload’s writable layer through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, needing egress from
+the pod, and it ptraces the app for a few seconds to start the server.
+<code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> declines; a read-only target rootfs gets <code class="docutils literal notranslate"><span class="pre">EROFS</span></code>. See
+<em>Provisioning</em> in the <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">command-line reference</span></a>.</p></li>
 <li><p><strong>Availability, not confidentiality, is the real risk in Observe mode.</strong>
 podbench cannot reserve resources on a live pod, so the plausible incident is
-an OOM-killed or evicted workload, not a data breach. See the footgun section
-on the front page.</p></li>
+an OOM-killed or evicted workload, not a data breach. See
+<em>Read this before you attach to a live pod</em> on the
+<a class="reference internal" href="../index.html"><span class="std std-doc">front page</span></a>.</p></li>
 </ul>
 <section id="the-seat-s-login-and-the-world-writable-file-that-provides-it">
 <h3>The seat’s login, and the world-writable file that provides it<a class="headerlink" href="#the-seat-s-login-and-the-world-writable-file-that-provides-it" title="Link to this heading">#</a></h3>

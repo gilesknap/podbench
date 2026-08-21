@@ -8,9 +8,7 @@ per cycle, measured.
 
 :::{note}
 Commands here are written `podbench <verb>` — the only spelling there is. If you
-have not installed the launcher, run each as `uvx podbench <verb>`, or, before
-the first PyPI release, as
-`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+have not installed the launcher, run each as `uvx podbench <verb>`. See
 [Setup](../tutorials/setup.md).
 :::
 
@@ -98,7 +96,7 @@ prints nothing at all on success.
 A dev pod's sidecar is an **ordinary** container, so — unlike an `attach` seat —
 it may mount a file with `subPath`. Where the origin pod declares the
 `podbench-identity` volume (the ConfigMap the podbench chart emits; see
-[Attach to a pod](attach-to-a-pod.md)), the clone carries it and the sidecar is
+[What `dev` does](../explanations/dev-flow.md)), the clone carries it and the sidecar is
 authored differently:
 
 * `passwd` is mounted read-only over `/etc/passwd` and `group` over `/etc/group`;
@@ -119,9 +117,9 @@ authored differently:
 The line is printed when the pod comes up:
 
 ```
-  seat identity    : podbench-identity projected over /etc/passwd and
-                     /etc/group, so the sidecar runs as 1000:1000 (the app's
-                     own) with no SYS_PTRACE
+  identity    seat identity from podbench-identity, projected over
+              /etc/passwd and /etc/group, so the sidecar runs as
+              1000:1000 (the app's own) with no SYS_PTRACE
 ```
 
 This is also what makes a dev pod admissible in a namespace enforcing the

@@ -48,8 +48,11 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
 │                                                                  │
 │   Requests move with limits: a ratio cap bounds limit/request,   │
 │   so raising a limit alone only ever widens it (96 against a     │
-│   cap of 10, measured at Diamond).  Never to equal its limit,    │
-│   which would change the pod's QoS class and be refused.         │
+│   cap of 10, measured at Diamond).  Never to equal its limit     │
+│   on a Burstable container — that would change the pod's QoS     │
+│   class and be refused.  On one already Guaranteed the request   │
+│   moves with the limit, and --resize REQUEST:LIMIT is the        │
+│   spelling to use (#124).                                        │
 │                                                                  │
 │   Before the seat, not after: vscode-server starts allocating    │
 │   into a limit podbench cannot reserve.  Success and failure     │
@@ -78,9 +81,9 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
                    │ RECONNECT       │  │ WALK THE LADDER       │
                    │ no cluster      │  │ (next diagram)        │
                    │ writes at all;  │  │ appends one ephemeral │
-                   │ rung/uid/$HOME  │  │ container to the pod  │
-                   │ read back from  │  │ spec, permanently     │
-                   │ the spec        │  │                       │
+                   │ uid/$HOME read  │  │ container to the pod  │
+                   │ from the spec,  │  │ spec, permanently     │
+                   │ rung measured   │  │                       │
                    └────────┬────────┘  └───────────┬───────────┘
                             └─────────┬─────────────┘
                                       ▼
@@ -104,11 +107,11 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
 │   get pod POD -o json    → metadata.uid, for the HostKeyAlias    │
 │   exec -c SEAT -- podbench agent --print-host-key --no-self-check│
 │   write ~/.podbench/known_hosts                                  │
-│   write ~/.podbench/config.d/<ns>-<pod>.conf                     │
+│   write ~/.podbench/config.d/<ns>-<pod>-<N>.conf                 │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ├─ seat has no NSS login ──▶ print why, no stanza
                                   ▼
-        ssh podbench-<ns>-<pod>   ·   Remote-SSH: Connect to Host      exit 0
+        ssh podbench-<ns>-<pod>-<N>   ·   Remote-SSH: Connect to Host  exit 0
                                   │
                                   ▼   (only for `podbench vscode`)
 ┌──────────────────────────────────────────────────────────────────┐
@@ -168,8 +171,11 @@ read before a seat exists.
                                   │
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ rung 2 · DEGRADED  runAsUser = the target's own uid,             │
-│                    drop ALL, runAsNonRoot: true                  │
+│ rung 2 · DEGRADED  runAsUser/runAsGroup = the target's own,      │
+│                    drop ALL, runAsNonRoot: true,                 │
+│                    privileged + allowPrivilegeEscalation false,  │
+│                    and the target's own seccompProfile where it  │
+│                    has one                                       │
 │                    → read-only: /proc/<pid>/root, maps, environ  │
 └─────────────────────────────────┬────────────────────────────────┘
                                   │
@@ -253,11 +259,13 @@ their own cluster reaches for. Measured at DLS, 2026-08-18.
 ## Every cluster call, in order
 
 ```text
+ 0  kubectl auth whoami -o json                          # once per run, cached
  1  kubectl [--context C] config view --minify -o jsonpath={..namespace}
                                                         # only when -n is absent
  2  kubectl -n NS get pod POD -o name                    # exact-name fast path
  2' kubectl -n NS get pods -o json                       # substring, listing, prompt
  3  kubectl -n NS get pod POD -o json                    # --resize only
+ 3' kubectl -n NS get limitranges -o json                # --resize only
  4  kubectl -n NS patch pod POD --type=strategic \
         -p '{"spec":{"containers":[{"name":C,"resources":…}]}}' \
         --subresource=resize                             # --resize only
@@ -278,6 +286,8 @@ their own cluster reaches for. Measured at DLS, 2026-08-18.
                                                         # uid and CapEff the
                                                         # kernel gave the seat
  8" kubectl -n NS exec -c SEAT POD -- podbench --version # which build answered
+ 8‴ kubectl -n NS top pod POD --no-headers               # the `memory` row; absent
+                                                        #   metrics API ⇒ *unmeasured*
  9  kubectl -n NS exec -c SEAT POD -- podbench agent --print-login-user
 10  kubectl -n NS exec -c SEAT POD -- podbench capreport --json
                                                         # unless --no-probe
@@ -286,7 +296,7 @@ their own cluster reaches for. Measured at DLS, 2026-08-18.
 ```
 
 The RBAC that adds up to — `rbac.observe` in the chart — is `get`/`list`/`watch` on
-`pods`, `get`/`patch`/`update` on `pods/ephemeralcontainers` (`update` is the one that
+`pods` and `pods/log`, `get`/`patch`/`update` on `pods/ephemeralcontainers` (`update` is the one that
 matters: the container is added by PUTting the subresource), and `create` on
 `pods/exec`. `--resize` needs `get` and `patch` on `pods/resize` — kubectl reads the
 subresource before writing it — granted separately because it changes a running
@@ -325,13 +335,16 @@ completely fresh rootfs and nothing may live only in the writable layer:
         ├─ ensure $HOME                (/root, or the mounted home volume,
         │                               or /tmp/podbench-home for a non-root seat)
         ├─ ensure /run/sshd            (root layout only — sshd's privsep dir)
+        ├─ ensure the NSS database's mode  (root layout only — takes group
+        │                                   and other write off it)
         ├─ ensure an NSS record for its own uid
         │      before the host key, because ssh-keygen calls getpwuid()
         │      whatever it is asked to do, and fails on a uid NSS cannot
         │      resolve.  It goes to /var/lib/extrausers/passwd, which the
         │      image ships world-writable, so a seat running as the
         │      target's uid *and gid* can append it with no flag and no
-        │      privilege.  That database ignores a uid or gid below 500;
+        │      privilege.  That database ignores a uid below 500, or a gid
+        │      below 500 other than gid 100 (`users`, exempted);
         │      the image pre-seeds /etc/passwd with a static record for
         │      every free uid under 500, so those seats resolve without
         │      writing anything at all
@@ -358,7 +371,7 @@ inetd mode:
 
    ssh podbench-<ns>-<pod>
         │
-        │  ssh reads ~/.podbench/config.d/<ns>-<pod>.conf and runs the
+        │  ssh reads ~/.podbench/config.d/<ns>-<pod>-<N>.conf and runs the
         │  ProxyCommand podbench generated into it:
         │
         └──▶ kubectl -n NS exec -i POD -c podbench-1 -- \
@@ -439,3 +452,5 @@ anything.
 * [Phase 0 gate report](spikes/phase0-report.md) — the measurements behind every
   "silently" on this page.
 * [Attach to a pod](../how-to/attach-to-a-pod.md) — the same thing as instructions.
+* [VS Code over Remote-SSH](../how-to/vscode-remote-ssh.md) — what `podbench vscode`
+  drives, and the four host groups the seat needs egress to.

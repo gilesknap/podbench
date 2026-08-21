@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Your first session &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -497,14 +497,6 @@ pods in. A local <a class="reference external" href="https://kind.sigs.k8s.io">k
 itself is not installed — <code class="docutils literal notranslate"><span class="pre">uvx</span></code> fetches and runs it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">--fix</span></code> checks all of that and adds the <code class="docutils literal notranslate"><span class="pre">Include</span></code> for you;
 it exits <code class="docutils literal notranslate"><span class="pre">0</span></code> when nothing is in the way.</p>
-<div class="admonition important">
-<p class="admonition-title">Important</p>
-<p><strong>Before the first PyPI release</strong> there is nothing for <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> to
-resolve. Until then, run every <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span></code> on this page as:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ uvx --from git+https://github.com/gilesknap/podbench podbench &lt;verb&gt;
-</pre></div>
-</div>
-</div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>The measurements quoted throughout these docs were taken on a 6-node k3s
@@ -600,9 +592,10 @@ the spec podbench asked for:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">seat</span>        <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">/</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="p">[</span><span class="n">podbench</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>  <span class="p">(</span><span class="n">new</span><span class="p">)</span>
 <span class="n">target</span>      <span class="n">web</span>
 <span class="n">version</span>     <span class="mf">0.4.0</span><span class="n">b1</span><span class="p">,</span> <span class="n">the</span> <span class="n">same</span> <span class="n">build</span> <span class="k">as</span> <span class="n">this</span> <span class="n">launcher</span>
+<span class="n">owner</span>       <span class="n">kubernetes</span><span class="o">-</span><span class="n">admin</span>
 <span class="n">rung</span>        <span class="n">full</span> <span class="o">-</span> <span class="n">uid</span> <span class="mi">0</span><span class="p">,</span> <span class="n">gid</span> <span class="mi">0</span><span class="p">,</span> <span class="n">CapEff</span> <span class="mi">00000000</span><span class="n">a80c25fb</span>
 <span class="n">ladder</span>
-  <span class="n">full</span>      <span class="n">landed</span>   <span class="n">admitted</span> <span class="n">by</span> <span class="n">the</span> <span class="n">API</span> <span class="n">server</span> <span class="ow">and</span> <span class="n">the</span> <span class="n">kubelet</span>
+  <span class="n">full</span>      <span class="n">landed</span>   <span class="n">running</span> <span class="n">since</span> <span class="mi">2026</span><span class="o">-</span><span class="mi">08</span><span class="o">-</span><span class="mi">21</span><span class="n">T09</span><span class="p">:</span><span class="mi">14</span><span class="p">:</span><span class="mi">02</span><span class="n">Z</span>
 <span class="n">supports</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">live</span> <span class="n">attach</span> <span class="p">(</span><span class="n">gdb</span> <span class="o">-</span><span class="n">p</span> <span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="p">)</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">read</span><span class="o">-</span><span class="n">only</span> <span class="n">inspect</span> <span class="p">(</span><span class="o">/</span><span class="n">proc</span><span class="o">/&lt;</span><span class="n">pid</span><span class="o">&gt;/</span><span class="n">root</span><span class="p">,</span> <span class="n">maps</span><span class="p">,</span> <span class="n">environ</span><span class="p">)</span>
@@ -611,12 +604,14 @@ the spec podbench asked for:</p>
   <span class="p">[</span> <span class="p">]</span> <span class="n">iterate</span> <span class="p">(</span><span class="n">edit</span><span class="p">,</span> <span class="n">relaunch</span><span class="p">,</span> <span class="n">verify</span> <span class="n">through</span> <span class="n">the</span> <span class="n">Service</span><span class="p">)</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">ssh</span> <span class="n">seat</span> <span class="p">(</span><span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span><span class="p">:</span> <span class="n">editor</span><span class="p">,</span> <span class="n">shell</span><span class="p">,</span> <span class="n">git</span><span class="p">,</span> <span class="n">sftp</span><span class="p">)</span>
   <span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="n">exec</span> <span class="n">seat</span> <span class="p">(</span><span class="n">kubectl</span> <span class="n">exec</span> <span class="o">--</span> <span class="n">podbench</span> <span class="n">capreport</span><span class="p">,</span> <span class="n">pids</span><span class="p">,</span> <span class="n">dbg</span><span class="p">)</span>
-<span class="n">measured</span>
+<span class="n">measured</span>    <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">probe</span> <span class="n">skips</span> <span class="n">this</span> <span class="n">block</span>
   <span class="n">verdict</span>     <span class="n">live</span> <span class="n">attach</span> <span class="n">available</span>
   <span class="n">blocker</span>     <span class="n">none</span>
   <span class="n">node</span>        <span class="n">kind</span><span class="o">-</span><span class="n">worker</span>
   <span class="n">yama</span>        <span class="mi">1</span>
   <span class="n">ids</span>         <span class="n">seat</span> <span class="mi">0</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span> <span class="n">target</span> <span class="mi">0</span><span class="p">:</span><span class="mi">0</span>
+  <span class="n">pause</span>       <span class="n">none</span> <span class="o">-</span> <span class="n">PTRACE_SEIZE</span> <span class="n">does</span> <span class="ow">not</span> <span class="n">stop</span> <span class="n">the</span> <span class="n">tracee</span>
+  <span class="n">memory</span>      <span class="mi">2986</span><span class="n">Mi</span> <span class="n">free</span> <span class="n">of</span> <span class="mi">3</span><span class="n">Gi</span> <span class="p">(</span><span class="mi">86</span><span class="n">Mi</span> <span class="ow">in</span> <span class="n">use</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Four lines are worth learning to read:</p>
@@ -633,12 +628,17 @@ the target’s own UID with nothing effective — a normal outcome, not a failur
 and the command still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>. What podbench asked admission for is on the
 <code class="docutils literal notranslate"><span class="pre">ladder</span></code> lines below, and the two can differ: a policy that rewrites a request
 rather than refusing it leaves a container the spec no longer describes.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">blocker</span></code></strong> — what actually stops ptrace, if anything. Four unrelated
-subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
-<code class="docutils literal notranslate"><span class="pre">EPERM</span></code>; this line names which.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">blocker</span></code></strong> — what actually stops ptrace, if anything. Several unrelated
+mechanisms refuse with the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code> — a missing capability, Yama, seccomp,
+an LSM label mismatch (SELinux or AppArmor), or a uid/gid mismatch; this line
+names which.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">yama</span></code> and <code class="docutils literal notranslate"><span class="pre">node</span></code></strong> — both are per-node. Attach working on one pod and being
 denied on the next, in the same cluster, is expected: kernel flavours differ.
 podbench never caches a cluster-wide answer.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">memory</span></code></strong> — the headroom in <strong>this</strong> pod, read with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">top</span> <span class="pre">pod</span></code>. An
+ample margin is a number and not a caution. Where there is no metrics API the
+row reads <code class="docutils literal notranslate"><span class="pre">in</span> <span class="pre">use</span> <span class="pre">not</span> <span class="pre">measured</span> <span class="pre">(no</span> <span class="pre">metrics</span> <span class="pre">API</span> <span class="pre">here)</span></code>, which says
+<strong>unmeasured</strong> and not <em>fine</em>.</p></li>
 </ul>
 <p>The indented line under a tick is the measurement the tick was taken from — here,
 which of the target’s <code class="docutils literal notranslate"><span class="pre">/proc</span></code> paths actually opened. Read it rather than the box:
@@ -648,10 +648,11 @@ which of the target’s <code class="docutils literal notranslate"><span class="
 <section id="connect-with-ssh">
 <h2>5. Connect with ssh<a class="headerlink" href="#connect-with-ssh" title="Link to this heading">#</a></h2>
 <p>The last lines of the attach output tell you the alias:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ssh</span> <span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="o">-</span><span class="mf">1.</span><span class="n">conf</span>
-<span class="n">add</span> <span class="n">this</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">ssh</span><span class="o">/</span><span class="n">config</span> <span class="n">once</span><span class="p">:</span>  <span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
-<span class="ow">or</span> <span class="n">let</span> <span class="n">podbench</span> <span class="n">check</span> <span class="ow">and</span> <span class="n">add</span> <span class="n">it</span><span class="p">:</span>  <span class="n">podbench</span> <span class="n">doctor</span> <span class="o">--</span><span class="n">fix</span>
-<span class="n">then</span><span class="p">:</span>  <span class="n">ssh</span> <span class="n">podbench</span><span class="o">-</span><span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">web</span><span class="o">-</span><span class="mi">6</span><span class="n">c9d7f4b8b</span><span class="o">-</span><span class="n">hq2vn</span><span class="o">-</span><span class="mi">1</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>ssh config written to /home/you/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
+add this to ~/.ssh/config once:  Include /home/you/.podbench/config.d/*.conf
+or let podbench check and add it:  podbench doctor --fix
+then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1   (or Remote-SSH: Connect to Host -&gt; podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1)
+to debug in VS Code, run `podbench debug-config` in the seat (writes .vscode/launch.json)
 </pre></div>
 </div>
 <p>If you have not added the <code class="docutils literal notranslate"><span class="pre">Include</span></code> line yet, run <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">doctor</span> <span class="pre">--fix</span></code>
@@ -662,7 +663,7 @@ root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 container web: the processes in its PID namespace
 PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
 1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
-42   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
+42   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
 </pre></div>
 </div>
 <p>There is no listening socket in that pod, no port-forward and no pod IP
@@ -685,13 +686,19 @@ On first connect the server downloads and extracts itself into the container
 (about 2 s to download, 6 s to extract, ~680 MiB on disk).</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>No real VS Code GUI client has been driven against podbench yet. The transport
-was verified at the protocol level and the server was driven headlessly, so the
-memory figures in these docs are <strong>lower bounds</strong> — no extension host or
-language server has been measured. Expect the connection to work and the
-footprint to be larger than quoted.</p>
+<p>A real VS Code GUI client has now connected — and the numbers still have not
+been taken. On 2026-08-17 a Remote-SSH client reached a seat, started an
+extension host, unpacked <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> and drove gdb through the C++
+adapter into a live IOC. The transport was verified at the protocol level
+besides, and the server was driven headlessly, so the memory figures in these
+docs are <strong>lower bounds</strong> — no extension host or language server has been
+measured. Expect the connection to work and the footprint to be larger than
+quoted.</p>
 </div>
-<p>Open <code class="docutils literal notranslate"><span class="pre">/</span></code> in the remote window and you are editing inside the cluster. See
+<p>Open the seat’s home in the remote window — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a
+<code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume — and you are editing inside the cluster. Do <strong>not</strong> open
+<code class="docutils literal notranslate"><span class="pre">/</span></code>: it points the file watcher and the search indexer at <code class="docutils literal notranslate"><span class="pre">/proc</span></code>, where the
+walk has no bottom. See
 <a class="reference internal" href="../how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a> for sizing, extensions and
 the settings that matter.</p>
 </section>

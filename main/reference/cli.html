@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -567,15 +567,15 @@ choice, and all three run the same code:</p>
 </table>
 </div>
 <p>See <a class="reference internal" href="../tutorials/setup.html"><span class="std std-doc">Setup</span></a> for the details, including how
-to run it before the first PyPI release.</p>
+to pin a version and how to run an unreleased checkout.</p>
 <p>The in-pod verbs are spelled the same way from a terminal in the seat:
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code>, and so on. There are no shorter aliases on
 <code class="docutils literal notranslate"><span class="pre">PATH</span></code> — the image once shipped one file per subcommand and no longer does
 (<code class="docutils literal notranslate"><span class="pre">image/README.md</span></code>, deviation 6).</p>
 <section id="common-options">
 <h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
-<p>The four launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> — take these,
-and so does <code class="docutils literal notranslate"><span class="pre">doctor</span></code>:</p>
+<p>The five launcher verbs — <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">vscode</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">list</span></code> —
+take these, and so does <code class="docutils literal notranslate"><span class="pre">doctor</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">namespace</span>  <span class="o">-</span><span class="n">n</span>  <span class="n">NAMESPACE</span>  <span class="n">namespace</span> <span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">the</span> <span class="n">kubeconfig</span> <span class="n">context</span><span class="s1">&#39;s own)</span>
 <span class="o">--</span><span class="n">context</span>        <span class="n">NAME</span>       <span class="n">kubeconfig</span> <span class="n">context</span>
 <span class="o">--</span><span class="n">kubectl</span>        <span class="n">BIN</span>        <span class="n">kubectl</span> <span class="n">binary</span> <span class="n">to</span> <span class="n">use</span> <span class="p">[</span><span class="n">default</span><span class="p">:</span> <span class="n">kubectl</span><span class="p">]</span>
@@ -593,11 +593,18 @@ it takes <code class="docutils literal notranslate"><span class="pre">--config-d
 <p>podbench shells out to <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
 credential and no client library.</p>
+<p>A verb’s <code class="docutils literal notranslate"><span class="pre">--timeout</span></code> and the bound on a kubectl call are different timers. The
+first bounds a polling wait — for a seat to start, or a dev pod to reach
+Running. The second bounds one <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> invocation, at 30 s
+(<code class="docutils literal notranslate"><span class="pre">kubectl.DEFAULT_CALL_TIMEOUT</span></code>); kubectl is told to give up 5 s earlier so that
+its own message names the server rather than podbench’s kill. Three calls are
+deliberately exempt: the exec that <em>is</em> your ssh session, the <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span></code>
+bootstraps, and the git clone under <code class="docutils literal notranslate"><span class="pre">hotfix</span></code>.</p>
 </section>
 <section id="naming-the-pod">
 <span id="id1"></span><h2>Naming the pod<a class="headerlink" href="#naming-the-pod" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> take a <code class="docutils literal notranslate"><span class="pre">POD</span></code>, and none of them needs the
-whole name. Resolution is the same in all three:</p>
+<p><code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">vscode</span></code>, <code class="docutils literal notranslate"><span class="pre">ssh-config</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> take a <code class="docutils literal notranslate"><span class="pre">POD</span></code>, and none of them
+needs the whole name. Resolution is the same in all four:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>you type</p></th>
@@ -903,7 +910,10 @@ what that seat can actually do.</p>
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
-│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
+│                                              that wait and nothing else: one kubectl call is     │
+│                                              bounded separately, at 30s                          │
+│                                              [default: 120.0]                                    │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
 │                                              implied when stdin is not a tty                     │
@@ -1153,7 +1163,10 @@ all, and two of these steps change it.</p>
 │                                              [default: ~/.ssh/id_ed25519]                        │
 │ --ssh-user                  NAME             login name to put in the stanza                     │
 │ --host-alias                NAME             ssh Host name for the seat                          │
-│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
+│                                              that wait and nothing else: one kubectl call is     │
+│                                              bounded separately, at 30s                          │
+│                                              [default: 120.0]                                    │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
 │                                              implied when stdin is not a tty                     │
@@ -1166,8 +1179,9 @@ all, and two of these steps change it.</p>
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">POD</span></code> and every option <code class="docutils literal notranslate"><span class="pre">attach</span></code> takes mean the same thing here; only the four
-below are its own.</p>
+<p><code class="docutils literal notranslate"><span class="pre">POD</span></code> and every option <code class="docutils literal notranslate"><span class="pre">attach</span></code> takes mean the same thing here; only the two
+below are its own. (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--print-config</span></code> is the one option <code class="docutils literal notranslate"><span class="pre">vscode</span></code> does
+<em>not</em> take — see below.)</p>
 <section id="sizing-the-pod">
 <h4>Sizing the pod<a class="headerlink" href="#sizing-the-pod" title="Link to this heading">#</a></h4>
 <p>vscode-server measured <strong>1215 MiB</strong> live with a single extension, which does not
@@ -1382,7 +1396,8 @@ burnt.</p>
 │ --timeout             SECONDS    wait this long for a seat that is still starting before         │
 │                                  reporting. The default reports what is there now; pass the same │
 │                                  number `attach --timeout` needed on a cluster whose image pull  │
-│                                  is slow                                                         │
+│                                  is slow. It bounds that wait and nothing else: one kubectl call │
+│                                  is bounded separately, at 30s                                   │
 │                                  [default: 0.0]                                                  │
 │ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
 │                                  ~/.podbench)                                                    │
@@ -1449,7 +1464,11 @@ verb that writes the missing half. Neither verb writes anything.</p>
 │                                    ~/.podbench)                                                  │
 │ --host-alias            NAME       ssh Host name for the sidecar                                 │
 │ --delete                           tear the dev pod down                                         │
-│ --timeout               SECONDS    seconds to wait [default: 120.0]                              │
+│ --timeout               SECONDS    seconds to wait for the dev pod to reach Running. It bounds   │
+│                                    that wait and nothing else: it is `kubectl wait`&#39;s own        │
+│                                    deadline, backed by a kill 15s later, and every other kubectl │
+│                                    call is bounded separately, at 30s                            │
+│                                    [default: 120.0]                                              │
 │ --dry-run                          print the authored pod instead of creating it                 │
 │ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
 │                                    with the candidates instead. Already implied when stdin is    │
@@ -2091,7 +2110,10 @@ the port.</p>
 │ *  --port             PORT     the port it must serve [required]                                 │
 │    --workspace        DIR      workspace root [default: /workspace]                              │
 │    --dir              DIR      working directory (default: workspace)                            │
-│    --timeout          SECONDS  seconds to verify [default: 15.0]                                 │
+│    --timeout          SECONDS  seconds to wait for the command to bind its port before reporting │
+│                                that it did not. It bounds this process&#39;s own poll loop and       │
+│                                nothing else: no kubectl call is involved                         │
+│                                [default: 15.0]                                                   │
 │    --help                      Show this message and exit.                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
@@ -2193,7 +2215,7 @@ stream.</p>
 <td><p>where the ssh config and <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> go; <code class="docutils literal notranslate"><span class="pre">--config-dir</span></code> overrides. Default <code class="docutils literal notranslate"><span class="pre">~/.podbench</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET_CID</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pids</span></code>, <code class="docutils literal notranslate"><span class="pre">dbg</span></code>, <code class="docutils literal notranslate"><span class="pre">capreport</span></code>, <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code></p></td>
 <td><p>the target container’s runtime ID, injected at attach time</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_TARGET</span></code></p></td>
@@ -2227,6 +2249,18 @@ stream.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">DEBUGINFOD_TIMEOUT</span></code></p></td>
 <td><p>gdb, <code class="docutils literal notranslate"><span class="pre">dbg</span></code></p></td>
 <td><p>seconds gdb will wait on that server, per file. The image sets <code class="docutils literal notranslate"><span class="pre">2</span></code>; gdb’s own default is 90</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_OWNER</span></code></p></td>
+<td><p>launcher, <code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
+<td><p>the cluster identity <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">auth</span> <span class="pre">whoami</span></code> named, stamped into the seat’s spec so a reconnect reaches only your own seat (#113)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_HOST_NETWORK</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">debug-config</span></code></p></td>
+<td><p>carries <code class="docutils literal notranslate"><span class="pre">spec.hostNetwork</span></code> into the seat, because absent means <em>unknown</em> and a loopback debug port on such a pod is the node’s (#87)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">PODBENCH_NODE_NAME</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">capreport</span></code></p></td>
+<td><p>the node the report names, since Yama differs per node</p></td>
 </tr>
 </tbody>
 </table>

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.4.0b2.dev71+gab8119f57 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.4.0b2.dev81+ge99d704ff documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c99f609e"></script>
+    <script src="../_static/documentation_options.js?v=502ab942"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -515,10 +515,12 @@ reasoned. This page says which parts those are, and — more usefully — which
 parts they are not.</p>
 <section id="the-evidence">
 <h2>The evidence<a class="headerlink" href="#the-evidence" title="Link to this heading">#</a></h2>
-<p>Five spikes ran against a real 6-node k3s cluster and all five passed. They are
-kept verbatim in <a class="reference internal" href="spikes.html"><span class="std std-doc">Spikes</span></a>, along with the
-<a class="reference internal" href="spikes/phase0-report.html"><span class="std std-doc">Phase 0 gate report</span></a> that consolidates them. The
-report is the empirical basis for most of the non-obvious behaviour in the tool:
+<p>Five Phase 0 spikes ran against a real 6-node k3s cluster and all five passed.
+They are kept verbatim in <a class="reference internal" href="spikes.html"><span class="std std-doc">Spikes</span></a>, along with the
+<a class="reference internal" href="spikes/phase0-report.html"><span class="std std-doc">Phase 0 gate report</span></a> that consolidates them — and with
+the later notes, S6 among them, recorded whether or not the answer was the
+hoped-for one. The report is the empirical basis for most of the non-obvious
+behaviour in the tool:
 it falsified five of the <a class="reference internal" href="design-brief.html"><span class="std std-doc">design brief</span></a>’s load-bearing
 assumptions, and <strong>where the brief and the report disagree, the report wins</strong>.</p>
 <p>Section 3 is the evidence, section 4 the constraint checklist that shaped the
@@ -526,11 +528,11 @@ implementation, section 5 the residual risk — as it stood at the gate, and wit
 a dated paragraph on each row that a later session has settled or added to.
 Several of those constraints look arbitrary and are not; the failure modes they
 avoid are silent.</p>
-<p>The spikes ran on a cluster this project owns. A field session on 2026-08-17 did
-not: an EPICS IOC at Diamond, in a namespace where the user is not an admin,
-under someone else’s Kyverno policies and against a RHEL-family target image. It
-closed the largest item below and opened two others, and most of what it found
-was invisible from this side of the cluster boundary.</p>
+<p>The spikes ran on a cluster this project owns. Field sessions on 2026-08-17, -18
+and -19 did not: an EPICS IOC at Diamond, in a namespace where the user is not an
+admin, under someone else’s Kyverno policies and against a RHEL-family target
+image. They closed the largest item below and opened two others, and most of what
+they found was invisible from this side of the cluster boundary.</p>
 </section>
 <section id="known-unproven-stated-plainly">
 <h2>Known-unproven, stated plainly<a class="headerlink" href="#known-unproven-stated-plainly" title="Link to this heading">#</a></h2>
@@ -563,10 +565,10 @@ set — a <code class="docutils literal notranslate"><span class="pre">validate.
 treated that as fatal instead of dropping a rung. Both are fixed, and the ladder
 now degrades through any webhook denial while still raising a webhook that
 failed to <em>answer</em>. <strong>Gatekeeper is untested.</strong> An engine that <strong>mutates</strong>
-rather than refuses now is: one that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code> leaves a root
-seat that reads back as the degraded rung and attaches perfectly well, which is
-the opposite way round from the worry recorded here, and it was reporting rather
-than debugging that it broke (issue #89). <code class="docutils literal notranslate"><span class="pre">status</span></code> no longer describes a seat
+rather than refuses now is (2026-08-18): one that strips <code class="docutils literal notranslate"><span class="pre">capabilities.add</span></code>
+leaves a root seat that reads back as the degraded rung and attaches perfectly
+well, which is the opposite way round from the worry recorded here, and it was
+reporting rather than debugging that it broke (issue #89). <code class="docutils literal notranslate"><span class="pre">status</span></code> no longer describes a seat
 from the rung it landed on; it reports what <code class="docutils literal notranslate"><span class="pre">capreport</span></code> measured in it, or
 <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">probed</span></code>.</p>
 <p><strong>Source provisioning for Observe mode is an open design problem.</strong> Debian’s
@@ -576,14 +578,23 @@ and Ubuntu targets need one of the other routes. See
 <a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a> for where sources actually come
 from today.</p>
 <p><strong>In-place pod resize is partly proven, and it diverges a pod from its
-controller.</strong> <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> was measured on three pods, two of them
-Deployment-managed — but on one Kubernetes version, and the raised limit lives
-on the <em>pod</em>, not on its controller, so a rollout regenerates the pod from an
-unchanged template and silently reverts it. A <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> bounding
+controller.</strong> It is reached two ways: <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code>, which is opt-in, and
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code>, which spends it on every run unless <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code>. It was
+measured on three pods, two of them Deployment-managed — but on one Kubernetes
+version, and the raised limit lives on the <em>pod</em>, not on its controller, so a
+rollout regenerates the pod from an unchanged template and silently reverts it. A <code class="docutils literal notranslate"><span class="pre">LimitRange</span></code> bounding
 <code class="docutils literal notranslate"><span class="pre">maxLimitRequestRatio</span></code> is now handled — the request moves with the limit, by an
 amount read from the namespace — after it made <code class="docutils literal notranslate"><span class="pre">--resize</span></code> unusable across a
 whole namespace at Diamond on 2026-08-16. A <strong><code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> is still
 untested</strong>, as is a second Kubernetes version.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> has never been driven end to end against a GUI client.</strong> The
+verb probes the alias, sizes the pod, provisions debugpy, writes the three
+<code class="docutils literal notranslate"><span class="pre">.vscode</span></code> files, installs the remote extensions and opens the seat’s home. That
+sequence has unit tests and was verified flag by flag by hand on 2026-08-16; it
+has no live proof. Two of its steps mutate the workload <strong>by default</strong> —
+<code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> opt out — and both carry the caveats already
+recorded under resize and provisioning. The headroom it sizes from is read with
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">top</span> <span class="pre">pod</span></code>, and reports <strong>unmeasured</strong> where there is no metrics API.</p>
 <p><strong>Hotfix mode has never been run against a cluster.</strong> The workflow exists —
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">init|apply|status|consolidate</span></code>, plus <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">--print-values</span></code>
 for the chart snippet — and is unit-tested, but every one of those tests drives
