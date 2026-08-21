@@ -83,9 +83,10 @@ jobs:
       # whose `podbench --version` said 0.4.0b2.dev0+g01d9ac8f8.d20260818, which
       # is how this check came to exist.
       #
-      # Only a tag build is held to it. A branch prerelease is legitimately a
-      # `.dev`/`+g<sha>` version — that is what makes it unmistakably not a
-      # release — so failing those would fail every branch push.
+      # Only a tag build is held to the `.dev`/`+g<sha>` half. A branch
+      # prerelease is legitimately such a version — that is what makes it
+      # unmistakably not a release — so failing those would fail every branch
+      # push. The `.dYYYYMMDD` dirty marker is held on every ref; see below.
       - name: Test the cli runs and reports a publishable version
         env:
           REF_TYPE: ${{ github.ref_type }}
@@ -93,6 +94,19 @@ jobs:
           set -euo pipefail
           version=$(docker run --rm tag_for_testing --version)
           echo "the image reports podbench $version"
+          # The `.dYYYYMMDD` half is checked on every ref, not just a tag.
+          # actions/checkout materialises exactly the tracked tree, so nothing
+          # here can be legitimately dirty - a dirty context means the *build
+          # context* dropped a tracked file, which is what a .dockerignore entry
+          # matching a tracked path does. Held only at tag time it would go on
+          # being a release-day surprise, which is how it was found.
+          if [[ $version == *+*.d20[0-9][0-9][0-9][0-9][0-9][0-9] ]]; then
+            echo "::error::the image reports $version, so the build context was" \
+                 "dirty. actions/checkout materialises only tracked files, so" \
+                 "something removed one: check .dockerignore for an entry that" \
+                 "matches a tracked path."
+            exit 1
+          fi
           if [[ $REF_TYPE == tag && ( $version == *.dev* || $version == *+* ) ]]; then
             echo "::error::$GITHUB_REF_NAME is a release tag, but the image was" \
                  "built from a post-tag or dirty tree and reports $version." \
