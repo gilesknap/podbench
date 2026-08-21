@@ -17,9 +17,17 @@ from pathlib import Path
 import pytest
 
 from podbench import agent
-from podbench.model import SEAT_IDENTITY_VOLUME
+from podbench.model import (
+    SEAT_IDENTITY_VOLUME,
+    TARGET_CID_ENV,
+    Rung,
+    SeatReport,
+)
 from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config
 from podbench.vscode import MACHINE_SETTINGS_PATH
+
+TARGET_CID = "abc123def456"
+"""The container id the synthetic tree attributes the target's processes to."""
 
 PUBKEY = "ssh-ed25519 AAAAC3NzaC1FIRST dev@laptop"
 SECOND_PUBKEY = "ssh-ed25519 AAAAC3NzaC1SECOND colleague@laptop"
@@ -1452,3 +1460,74 @@ def test_the_settings_home_falls_back_when_nss_resolves_nothing(
     monkeypatch.setattr(agent, "_home_for_uid", no_record)
     layout = make_layout(tmp_path)
     assert agent.session_home(layout) == layout.home
+
+
+def _seat_proc_tree(
+    root: Path, *, seat: tuple[int, int], target: tuple[int, int]
+) -> Path:
+    """A `/proc` with this seat and one attributed target process in it.
+
+    Enough for `seat_report` and no more: the credentials of both sides, and a
+    cgroup line carrying the target container id, which is the only attribution
+    that stays correct under a shared PID namespace.
+    """
+
+    def status(pid: str, uid: int, gid: int, comm: str) -> None:
+        entry = root / pid
+        entry.mkdir(parents=True, exist_ok=True)
+        (entry / "comm").write_text(f"{comm}\n")
+        (entry / "cmdline").write_text(f"{comm}\x00")
+        (entry / "status").write_text(
+            f"Name:\t{comm}\nState:\tS (sleeping)\nPPid:\t0\n"
+            f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+            f"Gid:\t{gid}\t{gid}\t{gid}\t{gid}\n"
+            "Threads:\t1\nCapEff:\t0000000000000000\n"
+            "CapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\n"
+        )
+
+    status("self", *seat, "podbench")
+    (root / "self" / "cgroup").write_text("0::/\n")
+    status("17", *target, "python3")
+    (root / "17" / "cgroup").write_text(f"0::/../cri-containerd-{TARGET_CID}.scope\n")
+    (root / "17" / "root").symlink_to(root)
+    return root
+
+
+def test_the_seat_measures_itself_at_startup_and_writes_it_where_a_verb_reads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issues #94b and #99, over one line.
+
+    `list` and `status` read pod JSON and exec nothing, so the rung they could
+    name was a securityContext. The seat can measure the real thing for free -
+    two `/proc` reads and no ptrace - and the container log carries it back.
+    """
+    monkeypatch.setenv(TARGET_CID_ENV, TARGET_CID)
+    proc = _seat_proc_tree(tmp_path / "proc", seat=(1000, 1000), target=(1000, 1000))
+    refusal = agent.CheckResult("ensure-sshd-config", False, "SetEnv refused PATH")
+
+    report = agent.seat_report(agent.EnsureReport(failures=(refusal,)), proc=proc)
+
+    assert (report.uid, report.gid) == (1000, 1000)
+    assert (report.target_uid, report.target_gid, report.target_pid) == (1000, 1000, 17)
+    assert report.rung is Rung.DEGRADED
+    assert report.failures == (str(refusal),)
+    # The line is the contract, not the object: a launcher recovers it from a
+    # log written by a build it has never met.
+    assert SeatReport.from_log(f"agent: {report.to_line()}") == report
+
+
+def test_a_seat_that_cannot_identify_its_target_reports_no_rung(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PID 1 is not the target under `shareProcessNamespace`, so a seat with no
+    container id refuses to guess - and a comparison that was never made is not
+    the bottom rung, it is no measurement."""
+    monkeypatch.delenv(TARGET_CID_ENV, raising=False)
+    proc = _seat_proc_tree(tmp_path / "proc", seat=(1000, 1000), target=(1000, 1000))
+
+    report = agent.seat_report(proc=proc)
+
+    assert report.uid == 1000
+    assert report.target_uid is None
+    assert report.rung is None

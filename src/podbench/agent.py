@@ -40,7 +40,15 @@ from urllib.parse import urlsplit
 import typer
 
 from .cli import new_app, run
-from .model import SEAT_HOME_VOLUME, SEAT_IDENTITY_VOLUME, ContainerRef, PodRef
+from .model import (
+    SEAT_HOME_VOLUME,
+    SEAT_IDENTITY_VOLUME,
+    ContainerRef,
+    PodRef,
+    SeatReport,
+)
+from .probe import discover_target
+from .proc import DEFAULT_PROC, read_gid, read_uid, self_capabilities
 from .sshcfg import (
     SEAT_USER,
     SshdLayout,
@@ -81,6 +89,7 @@ __all__ = [
     "check_debuginfod",
     "debuginfod_reachable",
     "ensure_all",
+    "seat_report",
     "ensure_authorized_keys",
     "ensure_home_dir",
     "ensure_host_key",
@@ -1259,6 +1268,56 @@ def ensure_all(
     return EnsureReport(tuple(changes), tuple(failures))
 
 
+def seat_report(
+    ensure: EnsureReport | None = None, *, proc: Path = DEFAULT_PROC
+) -> SeatReport:
+    """What this seat is, and what start-up could not do, in one line's worth.
+
+    Every number comes from ``/proc``: this seat's ``status`` for its own
+    credentials, and the target's world-readable ``status`` for its. **Nothing
+    here ptraces anything.** It runs at start-up, on every seat, before anybody
+    has asked for a measurement - so it may not stop the workload, and a
+    ``PTRACE_ATTACH`` would (:func:`podbench.model.describe_pause`). What it
+    measures is the credential comparison, which is what the rung below full
+    turns on, and that needs no permission at all.
+
+    A target this seat cannot identify leaves the target ids ``None``, which
+    :attr:`podbench.model.SeatReport.rung` reports as no rung rather than as
+    the bottom one.
+    """
+    caps = self_capabilities(proc=proc)
+    target_pid, _ = discover_target(proc=proc)
+    return SeatReport(
+        uid=read_uid("self", proc=proc),
+        gid=read_gid("self", proc=proc),
+        effective_hex=caps.effective_hex,
+        sys_ptrace=caps.sys_ptrace_effective,
+        target_uid=None if target_pid is None else read_uid(target_pid, proc=proc),
+        target_gid=None if target_pid is None else read_gid(target_pid, proc=proc),
+        target_pid=target_pid,
+        failures=() if ensure is None else tuple(str(f) for f in ensure.failures),
+    )
+
+
+def _emit_seat_report(ensure: EnsureReport | None) -> None:
+    """Put the start-up report where a laptop verb can read it back.
+
+    On stderr, with everything else the agent says, for the reason ``-e``
+    exists: stdout is what ``--print-host-key`` and ``--print-login-user``
+    hand back over an exec, and a line the launcher did not expect there is a
+    parse it did not expect either. ``kubectl logs`` returns both streams.
+
+    Swallowed rather than raised, like every ``ensure_all`` step and for the
+    same reason: this is PID 1 of a container that cannot be restarted, and a
+    seat that died writing a report about itself would be the worst trade in
+    the product.
+    """
+    try:
+        _say(seat_report(ensure).to_line())
+    except Exception as error:  # pragma: no cover - defence for PID 1
+        _say(f"could not write the start-up report: {type(error).__name__}: {error}")
+
+
 def fd2_check() -> CheckResult:
     """Whether our own stderr is a real, open file descriptor.
 
@@ -1615,6 +1674,12 @@ def _run(
             _say(change)
         for failure in ensure.failures:
             _say(str(failure))
+        # Not on `--print-host-key`, which runs this same start-up over an exec
+        # against a container that is already up: a second report in the log
+        # would be a second answer to "what is this seat", timestamped later
+        # and taken from the same two files.
+        if not print_host_key:
+            _emit_seat_report(ensure)
 
     failures = 0
     if self_check_only or not no_self_check:

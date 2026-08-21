@@ -80,9 +80,11 @@ from podbench.model import (
     Lsm,
     PodRef,
     Rung,
+    SeatReport,
     Verdict,
     describe_pause,
 )
+from podbench.proc import Credentials
 from podbench.resize import Headroom
 from podbench.sshcfg import SEAT_USER
 
@@ -356,6 +358,13 @@ class FakeCluster:
         ]
         self.seat_files: dict[str, str] = {}
         self.unwritable: set[str] = set()
+        # What `kubectl logs` answers per container, and the seam issues #94b
+        # and #99 travel over. Absent means "derived from the landed spec";
+        # `None` means a log that could not be read at all.
+        self.seat_logs: dict[str, str | None] = {}
+        # Start-up steps that gave up, carried in the seat's own report. #99 is
+        # that these used to reach nothing but the container log.
+        self.startup_failures: list[str] = []
         # Whether `debug-config` refuses for want of debugpy in the *target*.
         # Off by default, because the interesting default is a target that
         # already has a debugger: a fake that always needed provisioning would
@@ -446,6 +455,8 @@ class FakeCluster:
             # and a name spent, so the fake keeps it: a dry run runs admission
             # and stores nothing, which is the property the launcher relies on.
             return self._add_ephemeral(stdin, dry_run=rest[2].endswith("?dryRun=All"))
+        if rest[:1] == ["logs"]:
+            return self._logs(rest)
         if rest[:1] == ["exec"]:
             return self._exec(rest, stdin)
         if rest[:1] == ["patch"]:
@@ -601,6 +612,46 @@ class FakeCluster:
         )
         effective = 1 << 19 if uid == 0 and "SYS_PTRACE" in added else 0
         return status_text(uid, gid, effective)
+
+    def _logs(self, rest: list[str]) -> CommandResult:
+        """The container log a seat's start-up report is recovered from.
+
+        Derived from the same landed spec `_seat_status` reads, so the fake's
+        two answers about one seat agree by construction. `seat_logs` overrides
+        it per container - `None` for a log that cannot be read at all, which
+        is RBAC without `pods/log`, a rotated log, or a seat older than the
+        report and is what a listing has to render as *not measured*.
+        """
+        container = rest[rest.index("-c") + 1]
+        if container in self.seat_logs:
+            text = self.seat_logs[container]
+            return _fail("Error from server: not found") if text is None else _ok(text)
+        credentials = Credentials.from_status(self._seat_status(container))
+        if credentials is None:
+            # A seat whose own `/proc/self/status` says nothing has nothing to
+            # report about itself either, so its log carries no report line.
+            return _ok("agent: prepared /root\n")
+        target = cast(
+            dict[str, Any],
+            cast(dict[str, Any], self.pod["spec"])["containers"][0].get(
+                "securityContext", {}
+            ),
+        )
+        report = SeatReport(
+            uid=credentials.uid,
+            gid=credentials.gid,
+            effective_hex=credentials.capabilities.effective_hex,
+            sys_ptrace=credentials.capabilities.sys_ptrace_effective,
+            # The target's own ids as the seat reads them from
+            # `/proc/<pid>/status` - defaulted to root, because a manifest that
+            # pins no uid leaves the container running as its image's user and
+            # podbench's fixtures have no `USER`.
+            target_uid=cast(int, target.get("runAsUser", 0)),
+            target_gid=cast(int, target.get("runAsGroup", target.get("runAsUser", 0))),
+            target_pid=17,
+            failures=tuple(self.startup_failures),
+        )
+        return _ok(f"agent: prepared /root\nagent: {report.to_line()}\n")
 
     def _exec(self, rest: list[str], stdin: str | None = None) -> CommandResult:
         command = rest[rest.index("--") + 1 :]
@@ -4914,6 +4965,122 @@ def test_list_still_writes_no_ssh_config(tmp_path: Path) -> None:
         == 0
     )
     assert not directory.exists()
+
+
+def test_list_and_status_recover_the_rung_without_an_exec(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole reason the start-up report travels over `kubectl logs`.
+
+    The rung a seat *is* can only be measured inside it, and these two verbs
+    read pod JSON. An exec per seat is the thing the shape was chosen to avoid:
+    `list` runs against a whole namespace, and `status --no-probe` exists for a
+    listing that must touch nothing at all.
+    """
+    for argv in (
+        ["list", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+        [
+            "status",
+            "target",
+            "-n",
+            "demo",
+            "--no-probe",
+            "--config-dir",
+            str(tmp_path / "cfg"),
+        ],
+    ):
+        cluster = argus_shaped_pod()
+        assert main(argv, runner=cluster) == 0
+        assert [call for call in cluster.calls if "exec" in call] == []
+        assert "podbench-1   running     degraded" in capsys.readouterr().out
+
+
+def test_a_seat_whose_log_cannot_be_read_is_not_measured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A seat older than the report, a rotated log, RBAC without `pods/log`.
+
+    Each of them is a listing with no measurement, and the one answer that is
+    not available is the authored rung wearing a measured label - which is the
+    column issue #94 was filed about.
+    """
+    cluster = argus_shaped_pod()
+    cluster.seat_logs["podbench-1"] = None
+    assert (
+        main(
+            ["status", "target", "-n", "demo", "--config-dir", str(tmp_path / "cfg")],
+            runner=cluster,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+
+    assert "podbench-1   running     not measured" in out
+    assert "request   degraded" in out
+    assert "read from the seat's securityContext" in out
+
+
+def test_an_older_seat_against_a_newer_launcher_lists_rather_than_raises(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An image built before the report existed writes a log with no report in
+    it, and one built after this launcher may write keys it has never heard of.
+    Neither may cost the listing: the first is *not measured*, and the second is
+    read for the fields it does carry."""
+    cluster = argus_shaped_pod()
+    cluster.seat_logs["podbench-1"] = "agent: prepared /root\nagent: idling\n"
+    assert (
+        main(["list", "-n", "demo", "--config-dir", str(tmp_path)], runner=cluster) == 0
+    )
+    out = capsys.readouterr().out
+    assert "not measured" in out
+
+    newer = argus_shaped_pod()
+    newer.seat_logs["podbench-1"] = (
+        'agent: podbench-report: {"uid": 0, "target_uid": 0, "sys_ptrace": false, '
+        '"version": 99, "something_new": {"nested": true}}'
+    )
+    assert (
+        main(["list", "-n", "demo", "--config-dir", str(tmp_path)], runner=newer) == 0
+    )
+    assert "podbench-1   running     degraded" in capsys.readouterr().out
+
+
+def test_a_refused_startup_step_reaches_a_laptop_verb(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #99. `ensure_all` records a refused step rather than raising, and
+    the record went to the container log - which is the place the issue is about.
+    A refused `SetEnv` costs the ssh transport a variable, and the seat is up and
+    looks fine."""
+    refusal = (
+        "[FAIL] ensure-sshd-config: PATH contains whitespace, so SetEnv would "
+        "end the pair early"
+    )
+    cluster = argus_shaped_pod()
+    cluster.startup_failures = [refusal]
+
+    session = attach(talking_to(cluster), "target")
+    assert any(refusal in warning for warning in session.warnings)
+
+    assert (
+        main(
+            [
+                "status",
+                "target",
+                "-n",
+                "demo",
+                "--no-probe",
+                "--config-dir",
+                str(tmp_path / "cfg"),
+            ],
+            runner=cluster,
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert refusal in out
+    assert [call for call in cluster.calls[-3:] if "exec" in call] == []
 
 
 def test_the_host_line_is_read_however_it_was_spelled() -> None:

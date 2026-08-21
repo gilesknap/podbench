@@ -653,6 +653,28 @@ class Kubectl:
             if isinstance(item, dict)
         ]
 
+    def logs(self, pod: str, container: str, *, tail: int = 500) -> str | None:
+        """A container's log, or ``None`` if it cannot be read.
+
+        A **read**, and that is the whole point of it: the seat's own start-up
+        report is recovered from here rather than over an exec, so ``list`` and
+        ``status`` stay one API call per pod against a namespace instead of one
+        exec per seat (issue #99, #94b).
+
+        ``check=False`` because every way this fails is a normal answer for the
+        caller: RBAC granting ``get pods`` and not ``pods/log``, a container
+        that has not started, a log the kubelet has already rotated. Each of
+        them means "no measurement", which the caller reports as *not measured*
+        - never as the rung the securityContext asked for.
+
+        ``tail`` bounds what a wedged workload can make this cost. The agent
+        writes its report at start-up and says almost nothing afterwards, so
+        the bound is generous rather than tight; a report that has scrolled
+        past it is simply not there, which is the same "no measurement".
+        """
+        result = self.run("logs", pod, "-c", container, f"--tail={tail}", check=False)
+        return None if result.returncode != 0 else result.stdout
+
     def list_limit_ranges(self) -> list[dict[str, Any]]:
         """Every ``LimitRange`` in the namespace, or none if they cannot be read.
 

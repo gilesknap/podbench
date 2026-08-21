@@ -9,6 +9,7 @@ agreements live here so that neither half owns them.
 from __future__ import annotations
 
 import enum
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -21,7 +22,11 @@ __all__ = [
     "DEFAULT_IMAGE",
     "FLOATING_TAG",
     "IMAGE_REPOSITORY",
+    "NOT_MEASURED",
     "NOT_PROBED",
+    "SEAT_REPORT_MARKER",
+    "SEAT_REPORT_VERSION",
+    "SeatReport",
     "PTRACE_READ_PATHS",
     "WORLD_READ_PATHS",
     "ATTACH_PROBE",
@@ -794,6 +799,176 @@ def measured_rung(
     if target_uid is not None and uid == target_uid:
         return Rung.DEGRADED
     return Rung.SEAT
+
+
+NOT_MEASURED = "not measured"
+"""What a rung column holds when the seat's own measurement could not be read.
+
+The other half of :data:`NOT_PROBED`'s rule, applied to the rung rather than to
+the verdict: a listing that cannot reach a seat's start-up report says so, and
+never dresses :func:`podbench.launcher.rung_of_spec`'s reading of a
+securityContext in a measured label."""
+
+SEAT_REPORT_MARKER = "podbench-report:"
+"""How a seat's start-up report is found again in the container log.
+
+The channel is the log because ``list`` and ``status`` read pod JSON and exec
+nothing, and a verb that ran one ``kubectl exec`` per seat to name a rung would
+be paying an exec per seat against a whole namespace. ``kubectl logs`` is a
+*read*. The marker is matched anywhere in a line, so a prefix - the agent's own
+``agent: ``, or ``kubectl logs --timestamps`` - does not hide it."""
+
+SEAT_REPORT_VERSION = 1
+"""The schema of the line under :data:`SEAT_REPORT_MARKER`.
+
+Carried so a reader can tell a shape it has been taught from one it has not.
+Nothing is *rejected* on it: unknown keys are ignored and absent ones default,
+because the seat and the launcher are separately versioned by construction - a
+node serving a cached layer of a tag that moves runs whichever build it has -
+and the failure that matters is a newer launcher against an older seat, which
+must degrade to "not measured" rather than raise."""
+
+
+@dataclass(frozen=True)
+class SeatReport:
+    """What a seat measured about itself at start-up, and what it could not do.
+
+    Emitted once, by the agent, into the container's log. Two questions are
+    answered by one line because they have the same problem: the rung a seat
+    *is* can only be read from inside it (:func:`measured_rung` reads
+    ``/proc/self/status``), and a start-up step that gave up explains itself to
+    a log nobody opens (issue #99). Both are now recoverable from a laptop
+    without an exec.
+
+    The numbers are the ones the kernel checks and nothing derived from them,
+    so an older report stays readable by a launcher that has learned to label
+    them differently - which is exactly what happened to the degraded rung in
+    issue #94.
+
+    >>> report = SeatReport(uid=0, gid=0, effective_hex="0000000000000000",
+    ...                     sys_ptrace=False, target_uid=0, target_gid=0)
+    >>> report.rung.name
+    'DEGRADED'
+    >>> SeatReport.from_log("agent: " + report.to_line()) == report
+    True
+
+    A log with no report in it is not a report, and neither is one this build
+    cannot parse:
+
+    >>> SeatReport.from_log("agent: prepared /root") is None
+    True
+    >>> SeatReport.from_log("podbench-report: {not json") is None
+    True
+
+    An older seat's line, missing everything this build has since learned to
+    ask for, still yields what it does say:
+
+    >>> older = SeatReport.from_log('podbench-report: {"uid": 1000}')
+    >>> older.uid, older.target_uid, older.rung is None
+    (1000, None, True)
+    """
+
+    uid: int | None = None
+    gid: int | None = None
+    effective_hex: str = "unreadable"
+    sys_ptrace: bool = False
+    target_uid: int | None = None
+    target_gid: int | None = None
+    target_pid: int | None = None
+    failures: tuple[str, ...] = ()
+    """Start-up steps that gave up, each already formatted as the seat said it.
+
+    ``ensure_all`` records rather than raises - the caller is PID 1 of an
+    unrestartable container - so this is the whole of what a refused step ever
+    produced. #99 is that it produced it into the container log."""
+
+    version: int = SEAT_REPORT_VERSION
+
+    @property
+    def rung(self) -> Rung | None:
+        """The rung these numbers put the seat on, or ``None`` for unreadable.
+
+        Derived on the *reading* side rather than stored, deliberately: a seat
+        already running when this launcher was installed emitted its numbers
+        under the previous definition of :attr:`Rung.DEGRADED`, and a stored
+        label would make that seat argue with the one the launcher would give
+        it. The numbers do not go out of date.
+
+        A target uid the seat could not discover is ``None`` and not a rung.
+        :func:`measured_rung` answers ``SEAT`` for an unknown target, because
+        its caller has the manifest to fall back on and says which it used;
+        this one has nothing else, and "cannot match the target" is a claim
+        about a comparison that was never made.
+        """
+        if self.uid is None:
+            return None
+        if not self.sys_ptrace and self.target_uid is None:
+            return None
+        return measured_rung(
+            self.uid, sys_ptrace=self.sys_ptrace, target_uid=self.target_uid
+        )
+
+    def to_line(self) -> str:
+        """The single log line a seat writes at start-up."""
+        payload = {
+            "version": self.version,
+            "uid": self.uid,
+            "gid": self.gid,
+            "effective_hex": self.effective_hex,
+            "sys_ptrace": self.sys_ptrace,
+            "target_uid": self.target_uid,
+            "target_gid": self.target_gid,
+            "target_pid": self.target_pid,
+            "failures": list(self.failures),
+        }
+        return f"{SEAT_REPORT_MARKER} {json.dumps(payload, sort_keys=True)}"
+
+    @classmethod
+    def from_log(cls, text: str) -> SeatReport | None:
+        """The last report in a container log, or ``None`` if there is none.
+
+        The *last*, because a container restarted by nothing can still have run
+        the agent twice - ``--ensure-only`` is a supported way in - and the
+        newest reading is the one that describes the seat now.
+        """
+        for line in reversed(text.splitlines()):
+            marker = line.find(SEAT_REPORT_MARKER)
+            if marker < 0:
+                continue
+            try:
+                payload = json.loads(line[marker + len(SEAT_REPORT_MARKER) :])
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            fields = cast(Mapping[str, Any], payload)
+            return cls(
+                uid=_optional_int(fields.get("uid")),
+                gid=_optional_int(fields.get("gid")),
+                effective_hex=str(fields.get("effective_hex", "unreadable")),
+                sys_ptrace=bool(fields.get("sys_ptrace", False)),
+                target_uid=_optional_int(fields.get("target_uid")),
+                target_gid=_optional_int(fields.get("target_gid")),
+                target_pid=_optional_int(fields.get("target_pid")),
+                failures=tuple(
+                    str(entry) for entry in _as_sequence(fields.get("failures"))
+                ),
+                version=_optional_int(fields.get("version")) or 0,
+            )
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    """An int from a JSON field, and ``None`` for anything that is not one.
+
+    ``bool`` is excluded because it is an ``int`` in Python and a uid of
+    ``True`` is a defect wearing a plausible type.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _as_sequence(value: Any) -> Sequence[Any]:
+    return cast(Sequence[Any], value) if isinstance(value, list) else ()
 
 
 def describe_pause(method: str | None, attach_ok: bool | None) -> str:

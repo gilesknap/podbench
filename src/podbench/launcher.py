@@ -62,6 +62,7 @@ from .model import (
     DEFAULT_IMAGE,
     HOST_NETWORK_ENV,
     IMAGE_ENV,
+    NOT_MEASURED,
     NOT_PROBED,
     POD_CONTAINERS_ENV,
     SEAT_GROUP_KEY,
@@ -76,6 +77,7 @@ from .model import (
     Lsm,
     PodRef,
     Rung,
+    SeatReport,
     Verdict,
     and_list,
     as_dict,
@@ -1831,6 +1833,11 @@ def attach(
                 ),
             )
 
+    # Last, because it is the one read that wants the seat to have finished
+    # starting: the agent writes its report after `ensure_all`, and everything
+    # above has just spent several round trips in the container. A report that
+    # is not there yet costs the same nothing it cost before it existed.
+    warnings.extend(startup_warnings(kubectl, session.seat))
     return replace(session, warnings=(*session.warnings, *warnings))
 
 
@@ -2481,6 +2488,29 @@ def _measured_or_asked(
         )
         or asked
     )
+
+
+def startup_warnings(kubectl: Kubectl, seat: ContainerRef) -> list[str]:
+    """What the seat's start-up could not do, said to the person attaching.
+
+    Issue #99. ``ensure_all`` records a refused step rather than raising - the
+    caller is PID 1 of a container that cannot be restarted - and the record
+    went to the container log, which is the place the issue was filed about.
+    A refused ``SetEnv`` costs the ssh transport a variable and nothing said
+    so: ``c354c90`` made that failure loud *in the log* and no louder anywhere
+    else.
+
+    One warning per failure, each already a line, because that is what a
+    warning is here. A log that cannot be read is silence, exactly as it was
+    before this existed: there is nothing to report and nothing was measured.
+    """
+    text = kubectl.logs(seat.pod.name, seat.container)
+    if text is None:
+        return []
+    report = SeatReport.from_log(text)
+    if report is None:
+        return []
+    return [f"{seat.container} start-up: {failure}" for failure in report.failures]
 
 
 def _relabel_reconnect(session: Session) -> tuple[LadderStep, ...]:
@@ -4152,26 +4182,65 @@ def _seat_verdict(measured: CapabilityReport | str | None) -> str:
     return f"{NOT_PROBED} - {measured}" if measured else NOT_PROBED
 
 
-REQUESTED_RUNG_HEADING = "RUNG (requested)"
+MEASURED_RUNG_HEADING = "RUNG (measured)"
 """What the third column of a listing is a reading of.
 
-Two words on the heading rather than a word per row: what these verbs have in
-hand is a securityContext, which is what admission agreed to store, and calling
-that column ``RUNG`` claimed the measurement ``attach`` takes and these do not.
-The plain heading comes back when the value under it is measured."""
+The measurement is the seat's own, taken at start-up from ``/proc`` and read
+back out of the container log - so the word means here exactly what it means on
+``attach``'s ``rung`` row. A seat that could not be read holds
+:data:`~podbench.model.NOT_MEASURED` instead, and its authored rung goes in a
+row of its own where no measured label can be mistaken for it."""
 
 REQUESTED_RUNG_FOOTNOTE = (
-    "requested: this column reads each seat's securityContext, which is what "
-    "admission stored and not what the kernel gave the container. The two "
-    "differ in both directions - a policy that strips `capabilities.add` "
-    "leaves a root seat reading `degraded` while it traces perfectly well. "
-    "`podbench attach` reports the rung it measured"
+    "request: read from the seat's securityContext, which is what admission "
+    "stored and not what the kernel gave the container - the two differ in "
+    "both directions. It is what a listing has left when the seat's own "
+    "start-up report was not read: a seat that is no longer running, one "
+    "older than that report, a log the kubelet has rotated, or RBAC without "
+    "`pods/log`"
 )
-"""Said once per pod block, under the seats rather than over them.
+"""Said once per pod block, and only where a seat in it went unmeasured.
 
 The heading has room for the word and not for the reason, and the reason is the
 whole of why the word is there. Backticked runs so `wrap` cannot break a flag or
-a verb across the margin (issue #120)."""
+a path across the margin (issue #120)."""
+
+
+def recover_seat_reports(
+    kubectl: Kubectl, pod: PodRef, present: Sequence[SeatInfo]
+) -> dict[str, SeatReport]:
+    """Each running seat's own start-up report, read out of the container log.
+
+    One ``kubectl logs`` per live seat, and deliberately not one ``kubectl
+    exec``. The rung a seat *is* can only be measured inside it, and ``list``
+    and ``status`` read pod JSON and run nothing - so the choice was between a
+    column that restates a securityContext and a verb that spawns a process per
+    seat across a whole namespace. The agent writes the measurement once, at
+    start-up, and this reads it (issues #94b and #99).
+
+    A seat missing from the result is a seat that went **unmeasured**, and
+    every way that happens is ordinary: an image older than the report, a
+    rotated log, or RBAC that grants ``get pods`` and not ``pods/log``. None of
+    them is an error and none is reported as one.
+
+    A seat that is no longer running is not asked either, though its log
+    usually survives it. A burnt name is listed so that a reader of
+    ``podbench-4`` can see why 1-3 are not reusable, and a pod accumulates them
+    for its whole lifetime; spending a call per dead seat to recover what one
+    of them measured before it exited would make the listing cost grow with
+    the pod's history rather than with what is running in it.
+    """
+    found: dict[str, SeatReport] = {}
+    for seat in present:
+        if not seat.running:
+            continue
+        text = kubectl.logs(pod.name, seat.name)
+        if text is None:
+            continue
+        report = SeatReport.from_log(text)
+        if report is not None:
+            found[seat.name] = report
+    return found
 
 
 def format_seats(
@@ -4181,6 +4250,7 @@ def format_seats(
     directory: Path,
     measured: Mapping[str, CapabilityReport | str] | None = None,
     versions: Mapping[str, str | None] | None = None,
+    reports: Mapping[str, SeatReport] | None = None,
 ) -> str:
     """One pod's podbench containers, for ``status`` and ``list``.
 
@@ -4210,6 +4280,14 @@ def format_seats(
     spec asked for and a node serving a cached layer of a tag that moves gives
     a seat built from something else.
 
+    ``reports`` carries each seat's own start-up measurement, from
+    :func:`recover_seat_reports`. It decides the RUNG column, and a seat missing
+    from it holds :data:`~podbench.model.NOT_MEASURED` with its *requested*
+    rung on a row of its own - never the authored rung wearing a measured
+    label, which is the whole of issue #94 in a column. The same report carries
+    what start-up could not do, which until now explained itself only to the
+    container log (issue #99).
+
     The alias is offered only where a seat is *running*. A stanza outlives the
     container it was written for — nothing deletes it, and an ephemeral
     container's name is burnt for the pod's lifetime once it exits — so a pod
@@ -4218,14 +4296,30 @@ def format_seats(
     """
     probes = measured or {}
     builds = versions or {}
+    startup = reports or {}
     replaced = superseded_seats(present)
     # Headed, as `format_pod_choices` is, because the third cell now stops at
     # the rung's name: `degraded` under nothing at all is the very reading this
     # verb has to stop making, and a header is cheaper than a word per row.
-    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} {REQUESTED_RUNG_HEADING}"]
+    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} {MEASURED_RUNG_HEADING}"]
+    unmeasured = False
     for seat in present:
-        lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
+        report = startup.get(seat.name)
+        rung = None if report is None else report.rung
+        lines.append(
+            f"  {seat.name:<12} {seat.phase:<11} "
+            f"{NOT_MEASURED if rung is None else rung.value}"
+        )
         lines.extend(_fact("state", seat.detail))
+        if rung is None:
+            unmeasured = True
+            lines.extend(_fact("request", seat.rung.value))
+        # The seat's own account of a start-up step that gave up. It was
+        # already written down - `ensure_all` records rather than raises,
+        # because the caller is PID 1 of an unrestartable container - and until
+        # this row the only copy was in a log nobody opens (issue #99).
+        for failure in () if report is None else report.failures:
+            lines.extend(_fact("startup", failure))
         if seat.name in replaced:
             lines.extend(
                 _fact("note", SUPERSEDED_NOTE.format(later=replaced[seat.name]))
@@ -4248,7 +4342,8 @@ def format_seats(
         # seats has two of them, and a single line would have to pick.
         if seat.running:
             lines.append(ssh_connect_line(directory, pod, seat.name))
-    lines.extend(paragraph(REQUESTED_RUNG_FOOTNOTE, first="  ", indent="  "))
+    if unmeasured:
+        lines.extend(paragraph(REQUESTED_RUNG_FOOTNOTE, first="  ", indent="  "))
     if not any(seat.running for seat in present):
         # The command ends the line, as it does on `ssh_connect_line`'s two
         # missing-stanza answers: this line is never wrapped - the right-hand
@@ -5434,6 +5529,11 @@ def _build_app(
         # that moves serves whatever the node cached, so the spec cannot answer
         # this and neither can the launcher's own version.
         versions = {} if no_probe else probe_seat_versions(kube, reference, present)
+        # Not behind `--no-probe`: that flag is for a listing that must *touch*
+        # nothing, and `kubectl logs` runs nothing in the seat. It is the only
+        # measurement this verb can still report with the flag on, and the
+        # column would otherwise fall back to a securityContext.
+        reports = recover_seat_reports(kube, reference, present)
         # Read-only: the config dir is where the ssh alias for these seats is
         # recorded, and reporting one podbench cannot back up would be worse
         # than reporting none. Nothing here writes a stanza.
@@ -5444,6 +5544,7 @@ def _build_app(
                 directory=client_dir(config_dir),
                 measured=measured,
                 versions=versions,
+                reports=reports,
             )
         )
         raise typer.Exit(0)
@@ -5472,7 +5573,12 @@ def _build_app(
         # of its own and back-to-back they read as one pod with too many seats.
         emit(
             "\n\n".join(
-                format_seats(pod, present, directory=directory)
+                format_seats(
+                    pod,
+                    present,
+                    directory=directory,
+                    reports=recover_seat_reports(kube, pod, present),
+                )
                 for pod, present in found
             )
         )

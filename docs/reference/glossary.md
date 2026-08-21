@@ -111,6 +111,13 @@ rung
   authored contexts are the other half of the story and are described under
   {term}`PSS`.
 
+  `list` and `status` report a measured rung too, and take it without an exec:
+  the {term}`agent` writes the two numbers into the container log once, at
+  start-up, and those verbs recover them with `kubectl logs` — a read, so the
+  cost does not scale with the number of seats in a namespace. A seat whose log
+  cannot be read, or one older than that report, is `not measured`, with its
+  *requested* rung on a row of its own.
+
   A rung is still not a verdict. What a seat can *do* is measured by
   {term}`capreport`, and `status` reports that measurement — or `not probed`,
   never the rung — beside each seat it lists.

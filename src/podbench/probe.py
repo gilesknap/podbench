@@ -79,6 +79,7 @@ __all__ = [
     "CtypesAttacher",
     "SkippedAttacher",
     "default_attacher",
+    "discover_target",
     "derive_verdict",
     "format_report",
     "main",
@@ -1151,7 +1152,7 @@ def _run(
 ) -> int:
     notes: list[str] = []
     if pid is None:
-        pid, discovery_notes = _discover_target(container_id, proc=proc)
+        pid, discovery_notes = discover_target(container_id, proc=proc)
         notes.extend(discovery_notes)
 
     report = probe(pid, proc=proc, sysfs=sysfs, attacher=attacher, extra_notes=notes)
@@ -1159,8 +1160,8 @@ def _run(
     return report.verdict.value
 
 
-def _discover_target(
-    container_id: str | None, *, proc: Path
+def discover_target(
+    container_id: str | None = None, *, proc: Path = DEFAULT_PROC
 ) -> tuple[int | None, list[str]]:
     """Find the target pid from the container id, saying how sure we are.
 
