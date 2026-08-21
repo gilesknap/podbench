@@ -59,7 +59,14 @@ from . import spec
 from .agent import PUBKEY_ENV
 from .cli import new_app, require_subcommand, run
 from .console import emit, paragraph
-from .kubectl import Kubectl, KubectlError, Runner, run_subprocess
+from .kubectl import (
+    DEFAULT_CALL_TIMEOUT,
+    WAIT_GRACE,
+    Kubectl,
+    KubectlError,
+    Runner,
+    run_subprocess,
+)
 from .launcher import (
     DEFAULT_CLIENT_DIR,
     DEFAULT_IDENTITY,
@@ -1861,7 +1868,16 @@ def _build_app() -> typer.Typer:
             bool, typer.Option("--delete", help="tear the dev pod down")
         ] = False,
         timeout: Annotated[
-            float, typer.Option("--timeout", metavar="SECONDS", help="seconds to wait")
+            float,
+            typer.Option(
+                "--timeout",
+                metavar="SECONDS",
+                help="seconds to wait for the dev pod to reach Running. It "
+                "bounds that wait and nothing else: it is `kubectl wait`'s own "
+                f"deadline, backed by a kill {WAIT_GRACE:g}s later, and every "
+                "other kubectl call is bounded separately, at "
+                f"{DEFAULT_CALL_TIMEOUT:g}s",
+            ),
         ] = 120.0,
         dry_run: Annotated[
             bool,
@@ -1997,7 +2013,13 @@ def _build_app() -> typer.Typer:
         ] = None,
         timeout: Annotated[
             float,
-            typer.Option("--timeout", metavar="SECONDS", help="seconds to verify"),
+            typer.Option(
+                "--timeout",
+                metavar="SECONDS",
+                help="seconds to wait for the command to bind its port before "
+                "reporting that it did not. It bounds this process's own poll "
+                "loop and nothing else: no kubectl call is involved",
+            ),
         ] = 15.0,
         command: Annotated[
             list[str] | None,

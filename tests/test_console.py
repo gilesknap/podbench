@@ -16,6 +16,7 @@ from podbench.console import (
     MIN_WIDTH,
     WARNING_LEAD,
     emit,
+    paragraph,
     rule,
     wrap_width,
 )
@@ -59,6 +60,29 @@ def test_an_indent_comes_out_of_the_width_it_is_spent_on(
 ) -> None:
     monkeypatch.setenv("COLUMNS", "80")
     assert wrap_width(9) == wrap_width() - 9
+
+
+def test_a_backticked_remedy_stays_on_one_line_at_every_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half of a warning that exists to be pasted, at 80 and at 60.
+
+    A remedy that wraps pastes as two lines with the hanging indent through the
+    middle of it, which is the whole of issue #120. The prose around it still
+    wraps — the fix tells the two apart rather than turning wrapping off — so
+    the same text is asserted to be more than one line.
+    """
+    remedy = "`podbench attach <pod> --new --target-gid <gid>`"
+    for columns in ("80", "60"):
+        monkeypatch.setenv("COLUMNS", columns)
+        lines = paragraph(
+            f"the seat's gid differs from the target's and nothing corrects it "
+            f"here: {remedy} pins it by hand.",
+            first=f"{WARNING_LEAD}  ",
+            indent=" " * (len(WARNING_LEAD) + 2),
+        )
+        assert len(lines) > 1, columns
+        assert any(remedy in line for line in lines), columns
 
 
 @pytest.mark.usefixtures("coloured")

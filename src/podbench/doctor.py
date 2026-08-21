@@ -857,7 +857,7 @@ def check_config_dir(directory: Path, *, fix: bool) -> Check:
             Status.WARN,
             f"{config_d} does not exist yet",
             "attach creates it when it writes the first stanza; "
-            "podbench doctor --fix creates it now",
+            "`podbench doctor --fix` creates it now",
         )
     return Check("config dir", Status.OK, str(config_d), fixed=fixed)
 
@@ -886,7 +886,7 @@ def check_include(config: Path, directory: Path, *, fix: bool) -> Check:
             f"{config} includes it below a Host or Match block",
             "ssh takes the first value it sees for each keyword and Host * "
             "matches everything, so those keywords win over podbench's. "
-            "podbench doctor --fix adds the line at the top",
+            "`podbench doctor --fix` adds the line at the top",
             fixed=fixed,
         )
     return Check(

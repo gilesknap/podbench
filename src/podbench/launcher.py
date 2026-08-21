@@ -1014,7 +1014,7 @@ SUPERSEDED_NOTE = (
     "superseded by {later}, which corrected this seat's group id - an "
     "ephemeral container's securityContext is fixed for its lifetime, so the "
     "correction cost a second name and this one cannot be removed. "
-    "--target-gid <gid> pins the group up front and costs one name instead"
+    "`--target-gid <gid>` pins the group up front and costs one name instead"
 )
 """What a listing says about a seat a later one replaced.
 
@@ -1809,8 +1809,8 @@ ID_CORRECTION_WARNING = (
     "__ptrace_may_access compares the group ids as well as the user ids, so a "
     "corrected seat was landed at {now} - {first}'s name is spent, because an "
     "ephemeral container's securityContext is fixed for the pod's lifetime. "
-    "--no-correct-ids keeps the first seat; --target-gid <gid> pins the group "
-    "up front and costs one name instead of two"
+    "--no-correct-ids keeps the first seat; `--target-gid <gid>` pins the "
+    "group up front and costs one name instead of two"
 )
 """One line, and the only one this event gets.
 
