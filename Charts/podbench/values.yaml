@@ -46,7 +46,10 @@ rbac:
   # being able to create and delete pods in the namespace.
   observe: true # read pods, add an ephemeral container, exec into it
   iterate: false # create and delete dev pods, patch a Service selector
-  resize: false # patch pods/resize, to make memory headroom before attaching
+  # get and patch, not patch alone: kubectl reads the subresource back before
+  # it writes it, so `patch` on its own is Forbidden on the GET and never
+  # reaches the resize (measured on a Diamond cluster, 2026-08-20).
+  resize: false # get+patch pods/resize, to make memory headroom before attaching
   # Hotfix mode: read Deployments/StatefulSets/ReplicaSets to find the pod
   # template and refuse a multi-replica target, then patch that template with the
   # provenance annotations — which is also what rolls the workload. That makes it

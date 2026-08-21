@@ -12,7 +12,7 @@
 # --podbench grants the verbs podbench needs, in the same tiers the chart uses:
 #   observe  attach: ephemeral container + exec           (the default tier)
 #   iterate  `podbench dev`: create/delete pods, patch a Service selector
-#   resize   `--memory`: patch pods/resize
+#   resize   `--resize`: get+patch pods/resize
 #   hotfix   `podbench hotfix`: patch a pod template, which DEPLOYS CODE
 # `--podbench` alone is observe; `--podbench=iterate,resize` adds to it;
 # `--podbench-all` is every tier. Nothing here can run the e2e suite: that
@@ -165,10 +165,17 @@ if [ "$TIER_RESIZE" = 1 ]; then
   # A seat shares the workload'"'"'s memory limit and cannot reserve its own, so an
   # editor session can get the workload OOM-killed. In-place resize is the
   # mitigation, and it changes a running workload'"'"'s limits.
+  #
+  # `get` as well as `patch`. kubectl reads the subresource back before it
+  # writes it, so `patch` alone gets a Forbidden on that GET and no PATCH is
+  # ever sent - measured with `--v=8` on hgv27681, 2026-08-20. Both Diamond
+  # clusters were provisioned by this script while it granted `patch` alone,
+  # and `get pods/resize` is Forbidden on both: the tier they hold cannot
+  # actuate a resize at all.
   RULES="${RULES}"'
   - apiGroups: [""]
     resources: ["pods/resize"]
-    verbs: ["patch"]'
+    verbs: ["get", "patch"]'
 fi
 
 if [ "$TIER_HOTFIX" = 1 ]; then
@@ -336,6 +343,14 @@ expect no  "read secrets"                    get secrets -n "$NS"
 # "no" by a Role that grants the exec subresource perfectly well. It reads as
 # correct because a cluster-admin gets "yes" to both readings; only a
 # narrowly-scoped account like this one can tell them apart.
+#
+# The same misreading also answers "yes" to a permission nobody has, which is
+# the direction that hides a broken resize tier: `can-i get pods/resize` is
+# "may I read a pod named resize", so it inherits `get pods` and says yes.
+# Measured on the k3s bed 2026-08-21, against an account holding
+# `pods/resize: [patch]`: `can-i get pods/resize` yes, `can-i get pods
+# --subresource=resize` no, and a real resize Forbidden on the GET. Only the
+# --subresource form asks the API server the question kubectl will ask.
 expect "$(tier "$TIER_OBSERVE")" "exec into pods" \
                                              create pods --subresource=exec -n "$NS"
 expect "$(tier "$TIER_OBSERVE")" "add ephemeral container" \
@@ -346,8 +361,13 @@ expect "$(tier "$TIER_ITERATE")" "patch services (iterate)" \
                                              patch services -n "$NS"
 expect "$(tier "$DELETE_PODS")"  "delete pods" \
                                              delete pods -n "$NS"
-expect "$(tier "$TIER_RESIZE")"  "resize pods in place" \
+expect "$(tier "$TIER_RESIZE")"  "write pods/resize (resize in place)" \
                                              patch pods --subresource=resize -n "$NS"
+# Checked separately from the patch because it fails separately: kubectl GETs
+# the subresource before it writes it, so an account holding `patch` alone gets
+# as far as the read and stops. This check is what the tier is worth.
+expect "$(tier "$TIER_RESIZE")"  "read pods/resize (kubectl GETs it first)" \
+                                             get pods --subresource=resize -n "$NS"
 expect "$(tier "$TIER_HOTFIX")"  "patch pods (hotfix)" \
                                              patch pods -n "$NS"
 expect "$(tier "$TIER_HOTFIX")"  "patch deployments (hotfix: deploys code)" \
@@ -374,6 +394,30 @@ if $K get pods --all-namespaces >/dev/null 2>&1; then
   printf '[FAIL] live cluster-wide pod list succeeded\n'; FAILED=1
 else
   printf '[ok]   live cluster-wide pod list refused\n'
+fi
+
+# The resize tier, exercised rather than asked about. Everything above is a
+# SelfSubjectAccessReview; this is the actual first request `kubectl patch
+# --subresource=resize` makes, against a real pod, and it is the request that
+# is Forbidden on both Diamond clusters while the tier's own checks say yes.
+# Reading a subresource mutates nothing, so it is safe on a live namespace -
+# and there is no honest way to exercise the write half without resizing
+# somebody's workload, which this script will not do.
+if [ "$TIER_RESIZE" = 1 ]; then
+  VICTIM=$($K get pods -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  printf '  '
+  if [ -z "$VICTIM" ]; then
+    printf '[info] no pod in %s to exercise pods/resize against\n' "$NS"
+  elif ERR=$($K get "pod/${VICTIM}" --subresource=resize 2>&1 >/dev/null); then
+    printf '[ok]   live read of pods/resize on %s\n' "$VICTIM"
+  elif printf '%s' "$ERR" | grep -qi forbidden; then
+    printf '[FAIL] live read of pods/resize on %s: %s\n' "$VICTIM" "$ERR"; FAILED=1
+  else
+    # An older kubectl rejects --subresource=resize itself, and a pod that went
+    # away between the two calls is not a permission problem either. Neither is
+    # evidence about the grant, so neither fails the script.
+    printf '[info] pods/resize not exercised: %s\n' "$ERR"
+  fi
 fi
 
 # --- inherited cluster-scoped reads ----------------------------------------
