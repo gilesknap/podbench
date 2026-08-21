@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b3.dev3+g2e1a69c8d documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.4.0b4.dev2+g3db490276 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c0173ede"></script>
+    <script src="../_static/documentation_options.js?v=e1ba331b"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -766,6 +766,61 @@ straight at <code class="docutils literal notranslate"><span class="pre">~/.podb
 seat’s number (a <code class="docutils literal notranslate"><span class="pre">dev</span></code> sidecar, named exactly <code class="docutils literal notranslate"><span class="pre">podbench</span></code>, gets no suffix).</p>
 </section>
 </section>
+<section id="from-home-over-a-vpn-that-only-forwards-ssh">
+<h2>From home, over a VPN that only forwards ssh<a class="headerlink" href="#from-home-over-a-vpn-that-only-forwards-ssh" title="Link to this heading">#</a></h2>
+<p>podbench needs no port-forward, no pod IP and no Service — the seat is reached
+through <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> — so <strong>a reachable API server is the whole requirement</strong>.
+One ssh tunnel supplies it, and <code class="docutils literal notranslate"><span class="pre">k8s/vpn-api-tunnel.sh</span></code> builds both halves:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>./k8s/vpn-api-tunnel.sh<span class="w"> </span>you@ws001.example.ac.uk:beamline-claude-you.kubeconfig
+<span class="go">==&gt; read you@ws001.example.ac.uk:beamline-claude-you.kubeconfig over ssh (not kept here)</span>
+<span class="go">    --ssh-host defaults to you@ws001.example.ac.uk, the host it came from</span>
+<span class="go">==&gt; you@ws001.example.ac.uk:beamline-claude-you.kubeconfig -&gt; k8s/beamline-claude-you-tunnel.kubeconfig</span>
+<span class="go">    context   claude-you  (namespace beamline)</span>
+<span class="go">    API       k8s-api.example.ac.uk:6443  -&gt;  127.0.0.1:6443</span>
+<span class="go">    TLS       verified as k8s-api.example.ac.uk, through the source&#39;s own CA</span>
+</pre></div>
+</div>
+<p>It copies the kubeconfig, points the copy at a local port, and forwards that
+port to the API server. The token, the CA and the namespace are carried over
+untouched; <code class="docutils literal notranslate"><span class="pre">tls-server-name</span></code> is what keeps the certificate valid once the
+address is <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>, so the CA the file already carries stays usable and
+there is no reason to reach for <code class="docutils literal notranslate"><span class="pre">insecure-skip-tls-verify</span></code>.</p>
+<p><strong>Name the source scp-style and it never lands here.</strong> The kubeconfig is only
+ever <em>input</em> to the copy the script writes, and it holds a live bearer token —
+so <code class="docutils literal notranslate"><span class="pre">[user&#64;]host:path</span></code> reads it over ssh into a temporary file that is removed on
+exit, rather than leaving a credential on your laptop to go stale. A local path
+works exactly as before; the rule for telling them apart is scp’s own, a colon
+before the first slash.</p>
+<p>That host is also the default <code class="docutils literal notranslate"><span class="pre">--ssh-host</span></code>, since a machine holding a cluster’s
+kubeconfig is usually a machine that can reach the API server it names. Pass
+<code class="docutils literal notranslate"><span class="pre">--ssh-host</span></code> explicitly to exit somewhere else.</p>
+<p>Two things about it are worth knowing before you rely on it.</p>
+<p><strong>Run podbench on the machine your VS Code runs on.</strong> <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> refuses
+a <code class="docutils literal notranslate"><span class="pre">code</span></code> that resolves under <code class="docutils literal notranslate"><span class="pre">/remote-cli/</span></code> or <code class="docutils literal notranslate"><span class="pre">/.vscode-server/</span></code>, which is what
+you get from the integrated terminal of a Remote-SSH window or a devcontainer.
+<code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> there installs into the machine you are already on, and
+the seat ends up with <code class="docutils literal notranslate"><span class="pre">.vscode</span></code> files, no extensions and breakpoints that never
+bind. The tunnel is what makes running it locally possible.</p>
+<p><strong>The generated <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> does not carry <code class="docutils literal notranslate"><span class="pre">--kubeconfig</span></code>.</strong> It runs
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, and it resolves its kubeconfig from the environment of whatever
+spawns it. The VS Code that podbench launches inherits your <code class="docutils literal notranslate"><span class="pre">export</span> <span class="pre">KUBECONFIG</span></code>,
+so the first session works; a VS Code started later from a desktop icon does not,
+and its <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> reads <code class="docutils literal notranslate"><span class="pre">~/.kube/config</span></code> instead. For a setup that survives
+that, merge the tunnelled config in and select it by name:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span><span class="nv">KUBECONFIG</span><span class="o">=</span>~/.kube/config:k8s/beamline-claude-you-tunnel.kubeconfig<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>kubectl<span class="w"> </span>config<span class="w"> </span>view<span class="w"> </span>--flatten<span class="w"> </span>&gt;<span class="w"> </span>~/.kube/config.new
+<span class="gp">$ </span>mv<span class="w"> </span>~/.kube/config.new<span class="w"> </span>~/.kube/config
+<span class="gp">$ </span>uvx<span class="w"> </span>podbench<span class="w"> </span>vscode<span class="w"> </span>&lt;pod&gt;<span class="w"> </span>-n<span class="w"> </span>beamline<span class="w"> </span>--context<span class="w"> </span>claude-you
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">--context</span></code> is embedded in the stanza, so it then resolves with no
+environment at all.</p>
+<p>The tunnel exits from <code class="docutils literal notranslate"><span class="pre">--ssh-host</span></code>, so that machine’s address is what the API
+server sees. Where API access is allow-listed by source IP, it is that address
+that has to be allowed and not your VPN one.</p>
+<p>Close it with <code class="docutils literal notranslate"><span class="pre">--stop</span></code>, and pass <code class="docutils literal notranslate"><span class="pre">--config-only</span></code> if you run the forward yourself
+from autossh or a systemd unit.</p>
+</section>
 <section id="the-generated-stanza-and-why-each-line-is-there">
 <h2>The generated stanza, and why each line is there<a class="headerlink" href="#the-generated-stanza-and-why-each-line-is-there" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Generated by podbench. Regenerated on every attach; do not edit.</span>
@@ -1115,6 +1170,7 @@ behaviour when the pod is deleted mid-session.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#re-running-it-on-a-window-that-is-already-connected-reload-it">Re-running it on a window that is already connected? Reload it</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#from-home-over-a-vpn-that-only-forwards-ssh">From home, over a VPN that only forwards ssh</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-generated-stanza-and-why-each-line-is-there">The generated stanza, and why each line is there</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first-connect">First connect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#extensions-and-staying-slim">Extensions, and staying slim</a></li>
