@@ -45,9 +45,17 @@ not own:
 
 ```sh
 tar -C <checkout> --exclude=.git --exclude=.venv --exclude=__pycache__ \
-    --exclude=.pytest_cache -cf - . \
+    --exclude=.pytest_cache --exclude=k8s --exclude=tmp -cf - . \
   | ssh podbench-bed 'tar -C /root/podbench --overwrite -xf -'
 ```
+
+**`--exclude=k8s` is not tidiness.** `k8s/*.kubeconfig` holds live DLS service-account
+tokens. They are gitignored, which is exactly why they are easy to forget: gitignored files
+are invisible to `git status` and to a review, but `tar . ` copies them like anything else.
+Without that exclusion every sync ships beamline credentials to a VPS and leaves them
+there. Measured 2026-08-21 — it happened, and they were deleted afterwards.
+`--exclude=tmp` is the same argument with lower stakes: session logs and scratch working
+files have no business on the bed either.
 
 Then run on the bed. `KUBECONFIG` has to be spelt out: it is exported from
 `/etc/profile.d` and `.bashrc`, and a non-login `ssh podbench-bed '<cmd>'` sources
