@@ -253,6 +253,72 @@ If Remote-SSH does not offer the alias, it is reading a different config file.
 Set `remote.SSH.configFile` to the file that has the `Include`, or point it
 straight at `~/.podbench/config.d/<namespace>-<pod>.conf`.
 
+## From home, over a VPN that only forwards ssh
+
+podbench needs no port-forward, no pod IP and no Service — the seat is reached
+through `kubectl exec` — so **a reachable API server is the whole requirement**.
+One ssh tunnel supplies it, and `k8s/vpn-api-tunnel.sh` builds both halves:
+
+```console
+$ ./k8s/vpn-api-tunnel.sh you@ws001.example.ac.uk:beamline-claude-you.kubeconfig
+==> read you@ws001.example.ac.uk:beamline-claude-you.kubeconfig over ssh (not kept here)
+    --ssh-host defaults to you@ws001.example.ac.uk, the host it came from
+==> you@ws001.example.ac.uk:beamline-claude-you.kubeconfig -> k8s/beamline-claude-you-tunnel.kubeconfig
+    context   claude-you  (namespace beamline)
+    API       k8s-api.example.ac.uk:6443  ->  127.0.0.1:6443
+    TLS       verified as k8s-api.example.ac.uk, through the source's own CA
+```
+
+It copies the kubeconfig, points the copy at a local port, and forwards that
+port to the API server. The token, the CA and the namespace are carried over
+untouched; `tls-server-name` is what keeps the certificate valid once the
+address is `127.0.0.1`, so the CA the file already carries stays usable and
+there is no reason to reach for `insecure-skip-tls-verify`.
+
+**Name the source scp-style and it never lands here.** The kubeconfig is only
+ever *input* to the copy the script writes, and it holds a live bearer token —
+so `[user@]host:path` reads it over ssh into a temporary file that is removed on
+exit, rather than leaving a credential on your laptop to go stale. A local path
+works exactly as before; the rule for telling them apart is scp's own, a colon
+before the first slash.
+
+That host is also the default `--ssh-host`, since a machine holding a cluster's
+kubeconfig is usually a machine that can reach the API server it names. Pass
+`--ssh-host` explicitly to exit somewhere else.
+
+Two things about it are worth knowing before you rely on it.
+
+**Run podbench on the machine your VS Code runs on.** `podbench vscode` refuses
+a `code` that resolves under `/remote-cli/` or `/.vscode-server/`, which is what
+you get from the integrated terminal of a Remote-SSH window or a devcontainer.
+`--install-extension` there installs into the machine you are already on, and
+the seat ends up with `.vscode` files, no extensions and breakpoints that never
+bind. The tunnel is what makes running it locally possible.
+
+**The generated `ProxyCommand` does not carry `--kubeconfig`.** It runs
+`kubectl exec`, and it resolves its kubeconfig from the environment of whatever
+spawns it. The VS Code that podbench launches inherits your `export KUBECONFIG`,
+so the first session works; a VS Code started later from a desktop icon does not,
+and its `ProxyCommand` reads `~/.kube/config` instead. For a setup that survives
+that, merge the tunnelled config in and select it by name:
+
+```console
+$ KUBECONFIG=~/.kube/config:k8s/beamline-claude-you-tunnel.kubeconfig \
+    kubectl config view --flatten > ~/.kube/config.new
+$ mv ~/.kube/config.new ~/.kube/config
+$ uvx podbench vscode <pod> -n beamline --context claude-you
+```
+
+The `--context` is embedded in the stanza, so it then resolves with no
+environment at all.
+
+The tunnel exits from `--ssh-host`, so that machine's address is what the API
+server sees. Where API access is allow-listed by source IP, it is that address
+that has to be allowed and not your VPN one.
+
+Close it with `--stop`, and pass `--config-only` if you run the forward yourself
+from autossh or a systemd unit.
+
 ## The generated stanza, and why each line is there
 
 ```
