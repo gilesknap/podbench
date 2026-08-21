@@ -5,11 +5,14 @@ description: How podbench's laptop-side verbs lay out and colour what they print
 
 # Terminal reports
 
-Everything the laptop-side verbs print — `doctor`, `attach`, `ssh-config`,
-`status`, `list`, `dev`, `hotfix status` — is authored as **plain text** and laid
-out by `src/podbench/console.py`. The in-pod verbs (`capreport`, `pids`, `dbg`,
-`debug-config`) do not go through it; they print for a log as much as for a
-person.
+Everything the laptop-side verbs print — `doctor`, `attach`, `vscode`,
+`ssh-config`, `status`, `list`, `dev`, `hotfix status` — is authored as **plain
+text** and laid out by `src/podbench/console.py`. Two in-pod verbs go through it
+as well: `capreport` (authored as text, printed through `emit`) and `pids`
+(built with `console.table`, which is styled from its data and never sniffed).
+`dbg` and `debug-config` do not — `dbg` writes a gdb command file and
+`debug-config` writes JSON that the launcher parses, and both must stay byte
+exact.
 
 Nothing here is enforced by a type. Every rule below has a failure mode that
 looks fine in the source and is wrong on the terminal.
@@ -92,6 +95,16 @@ A caller that owns the whole line has the older answer available and should
 prefer it where the line is a row: author it finished, as `launcher.target_row`
 and `launcher.ssh_connect_line` do.
 
+A key may be **several words** — `CAP_SYS_PTRACE (eff)`, `scratch attach (own
+child)` — and `_LABEL` matches non-greedily, so it still ends at the first run
+of two spaces. That is safe for the reason the rule works at all: `wrap` splits
+on `str.split`, so a paragraph it laid out cannot contain an internal double
+space, and a line that has one was authored as a row. What is *not* safe is a
+key padded to exactly its column width: it then leaves one space, the rule does
+not fire, and the block comes out with half its keys bold and half plain —
+which reads as broken rather than as a distinction. `capreport` pads to 28
+because one of its keys is 26 characters long.
+
 A label is also only a label when a value follows it. A wrapped sentence
 regularly ends on a single word, and an indented lone word is a continuation,
 not a heading — `SYS_PTRACE` on the last line of a wrapped note was being drawn
@@ -108,10 +121,36 @@ instead of running to an edge the report never reaches.
 An 80-column terminal yields 72, which is what the old hardcoded default was, so
 a test that pins `COLUMNS=80` sees the pre-`console` wrap.
 
+## A table is styled from its data, never sniffed
+
+The line rules below (`_LABEL`, `_SHOUT`, `_COLUMN_WORD`) infer meaning from a
+rendered line's *shape*, which is all that is available when thirty callers
+author prose. **A dense table is the case they misread**: every pid matches
+`_LABEL` and comes out as a section heading, every single-letter process state
+matches the all-caps test in `_COLUMN_WORD` and comes out as a column heading.
+
+So `console.table(columns, rows)` returns `Text` with its spans already applied
+and `emit` prints those untouched. A `Column` carries a `verdicts` map —
+per column, because `ok` under `PTRACE` is a measurement and `ok` somewhere else
+is a word — and `fill=True` marks the one column that absorbs the leftover
+width and is cut to it with `…`. Exactly one column should fill, and it should
+be the one with no bound on its content: an unbounded cell does not cost the
+tail of its own row, it costs the *alignment of every row below*, because the
+terminal wraps it and puts the next row's first cell under this one's third.
+
+`table_width()` is the window, not `wrap_width()`. The 96-column cap is a fact
+about reading a sentence; a table is scanned down a column, so a wide terminal
+buys it real information instead of a longer journey back to the margin.
+
+Colour is never the only place a fact lives. `pids` dims the rows outside the
+target container **and** keeps the `TARGET` column, because these listings are
+read from a pasted log as often as from a terminal.
+
 ## One status vocabulary
 
-`[x]`/`[ ]` (attach), `[ok]`/`[warn]`/`[FAIL]` (doctor) and `[ok]`/`[!]`
-(hotfix) are all read by one rule in `console._STATUSES`. A new verb uses one of
+`[x]`/`[ ]` (attach), `[ok]`/`[warn]`/`[FAIL]` (doctor and `vscode`'s `editor`
+block) and `[ok]`/`[!]` (hotfix) are all read by one rule in
+`console._STATUSES`. A new verb uses one of
 those tokens rather than inventing a spelling; the bracket is what makes it
 colourable without the verb knowing what a colour is. Tokens are bounded at six
 characters so relayed `[Errno 2]`-style stderr stays prose.
@@ -121,6 +160,29 @@ position** (preceded by two spaces): `running` and `refused` are ordinary
 English and these reports are mostly prose. An unrecognised value is left
 uncoloured on purpose — a token this module has not been taught must not borrow
 the authority of one it has.
+
+## What `vscode` prints is a checklist and a `next` block
+
+`editor` is the past tense, one line per step, each opening with a status token
+(`podbench.editor.OK`/`WARN`/`FAIL`). `next` is what the reader might do, and it
+holds the pasteables. They were interleaved once, which is what made that block
+a wall: the two lines worth pasting were in the middle of thirteen that were
+not.
+
+Three rules there, all of which fail quietly:
+
+- **A step is one line.** The mechanism goes in
+  `docs/how-to/vscode-remote-ssh.md`, said once. A step that explains itself in
+  a paragraph buries the step that failed.
+- **Relayed seat stderr is printed as a bare `Text`, never through `_styled`.**
+  It is somebody else's output — `debug-config:` at the head of one is a label
+  to `_LABEL`'s eye and is not one — and one of those lines ends in a
+  continuation `\` that means nothing once anything follows it. It must not be
+  wrapped, reflowed or re-indented. `launcher._editor_step` keeps the two
+  shapes apart on `editor.is_step`.
+- **`next` prints from a `finally`.** A run that ends at "ssh does not reach
+  the seat" still landed a seat, and that reader is the one who most needs the
+  alias and the stanza's path.
 
 ## Testing a report
 
