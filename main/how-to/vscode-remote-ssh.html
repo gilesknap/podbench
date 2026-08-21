@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.4.1.dev9+g586f73c11 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.4.1.dev18+gc7e37eb55 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=f859df82"></script>
+    <script src="../_static/documentation_options.js?v=0749cf7e"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -711,6 +711,71 @@ without which <code class="docutils literal notranslate"><span class="pre">--rem
 and a flatpak VS Code cannot put <code class="docutils literal notranslate"><span class="pre">code</span></code> on the host PATH at all.</p>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> is still there and unchanged, for a seat with no editor in it.</p>
 </section>
+<section id="what-it-prints-and-where-the-detail-went">
+<h3>What it prints, and where the detail went<a class="headerlink" href="#what-it-prints-and-where-the-detail-went" title="Link to this heading">#</a></h3>
+<p>Two blocks: a checklist of what it did, and a short list of what you might do
+next.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">editor</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">ssh</span> <span class="n">reaches</span> <span class="n">the</span> <span class="n">seat</span><span class="p">,</span> <span class="n">so</span> <span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span> <span class="n">will</span> <span class="n">too</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">wrote</span> <span class="n">settings</span><span class="o">.</span><span class="n">json</span><span class="p">,</span> <span class="n">launch</span><span class="o">.</span><span class="n">json</span><span class="p">,</span> <span class="n">extensions</span><span class="o">.</span><span class="n">json</span> <span class="ow">in</span> <span class="o">/</span><span class="n">root</span><span class="o">/.</span><span class="n">vscode</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">installing</span> <span class="n">ms</span><span class="o">-</span><span class="n">python</span><span class="o">.</span><span class="n">python</span><span class="p">,</span> <span class="n">ms</span><span class="o">-</span><span class="n">python</span><span class="o">.</span><span class="n">debugpy</span> <span class="ow">in</span> <span class="n">the</span> <span class="n">seat</span><span class="p">;</span> <span class="n">the</span> <span class="n">first</span>
+       <span class="n">bootstraps</span> <span class="n">vscode</span><span class="o">-</span><span class="n">server</span><span class="p">,</span> <span class="n">so</span> <span class="n">this</span> <span class="ow">is</span> <span class="n">a</span> <span class="n">download</span> <span class="p">(</span><span class="mi">1215</span> <span class="n">MiB</span> <span class="n">measured</span><span class="p">,</span> <span class="n">on</span>
+       <span class="n">the</span> <span class="n">workload</span><span class="s1">&#39;s ephemeral-storage budget in Observe mode)</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">ms</span><span class="o">-</span><span class="n">python</span><span class="o">.</span><span class="n">python</span><span class="p">,</span> <span class="n">ms</span><span class="o">-</span><span class="n">python</span><span class="o">.</span><span class="n">debugpy</span> <span class="n">unpacked</span> <span class="ow">in</span> <span class="n">the</span> <span class="n">seat</span>
+  <span class="p">[</span><span class="n">warn</span><span class="p">]</span> <span class="n">a</span> <span class="n">window</span> <span class="n">already</span> <span class="n">connected</span> <span class="n">to</span> <span class="n">this</span> <span class="n">seat</span> <span class="n">needs</span> <span class="n">Command</span> <span class="n">Palette</span> <span class="o">-&gt;</span>
+         <span class="n">Developer</span><span class="p">:</span> <span class="n">Reload</span> <span class="n">Window</span><span class="p">,</span> <span class="ow">or</span> <span class="n">the</span> <span class="n">debug</span> <span class="n">adapter</span> <span class="n">stays</span> <span class="n">unregistered</span><span class="o">.</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">asked</span> <span class="n">VS</span> <span class="n">Code</span> <span class="n">to</span> <span class="nb">open</span> <span class="o">/</span><span class="n">root</span> <span class="n">over</span> <span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span>
+
+<span class="nb">next</span>
+  <span class="n">ssh</span> <span class="n">config</span> <span class="n">written</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">demo</span><span class="o">-</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span><span class="o">-</span><span class="mf">1.</span><span class="n">conf</span>
+  <span class="n">add</span> <span class="n">this</span> <span class="n">to</span> <span class="o">~/.</span><span class="n">ssh</span><span class="o">/</span><span class="n">config</span> <span class="n">once</span><span class="p">:</span>  <span class="n">Include</span> <span class="o">~/.</span><span class="n">podbench</span><span class="o">/</span><span class="n">config</span><span class="o">.</span><span class="n">d</span><span class="o">/*.</span><span class="n">conf</span>
+  <span class="ow">or</span> <span class="n">let</span> <span class="n">podbench</span> <span class="n">check</span> <span class="ow">and</span> <span class="n">add</span> <span class="n">it</span><span class="p">:</span>  <span class="n">podbench</span> <span class="n">doctor</span> <span class="o">--</span><span class="n">fix</span>
+  <span class="n">reconnect</span> <span class="n">later</span> <span class="k">with</span><span class="p">:</span>  <span class="n">ssh</span> <span class="n">podbench</span><span class="o">-</span><span class="n">demo</span><span class="o">-</span><span class="n">api</span><span class="o">-</span><span class="mi">5</span><span class="n">f6c9b7d8</span><span class="o">-</span><span class="n">qz4tn</span><span class="o">-</span><span class="mi">1</span>
+  <span class="k">if</span> <span class="n">the</span> <span class="n">window</span> <span class="n">says</span> <span class="s1">&#39;could not establish connection&#39;</span><span class="p">,</span> <span class="n">the</span> <span class="n">local</span> <span class="n">VS</span> <span class="n">Code</span> <span class="n">has</span>
+  <span class="n">no</span> <span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span> <span class="n">extension</span> <span class="p">(</span><span class="n">ms</span><span class="o">-</span><span class="n">vscode</span><span class="o">-</span><span class="n">remote</span><span class="o">.</span><span class="n">remote</span><span class="o">-</span><span class="n">ssh</span><span class="p">);</span> <span class="n">ssh</span> <span class="n">itself</span> <span class="n">reached</span>
+  <span class="n">the</span> <span class="n">seat</span> <span class="n">a</span> <span class="n">moment</span> <span class="n">ago</span> <span class="k">with</span> <span class="n">the</span> <span class="n">same</span> <span class="n">config</span><span class="o">.</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">[ok]</span></code> is a step that happened, <code class="docutils literal notranslate"><span class="pre">[warn]</span></code> one that wants something from you, and
+<code class="docutils literal notranslate"><span class="pre">[FAIL]</span></code> one that did not happen at all. <strong>Every step is one line</strong>, and the
+mechanism behind each of them is on this page rather than in the terminal —
+this block used to say all of it inline, and the reliably-skipped part of a
+report is the part written as prose.</p>
+<p>Lines with no tick are the <strong>seat’s own stderr</strong>, relayed exactly as it
+arrived. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> is the only thing that can see the target, so its
+account of what is missing <em>is</em> the diagnosis; it also carries the injection
+command, whose first line ends in a <code class="docutils literal notranslate"><span class="pre">\</span></code> that means nothing once anything
+follows it, which is why nothing on this side rewraps or reflows it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">next</span></code> is printed whether or not the editor step succeeded. A run that ends at
+“ssh does not reach the seat” still landed a seat, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> and
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> reach it over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> regardless — so the alias, the
+<code class="docutils literal notranslate"><span class="pre">Include</span></code> and the stanza’s path are exactly what that reader needs.</p>
+</section>
+<section id="unpacked-in-the-seat-is-a-claim-about-the-seat-not-about-code">
+<h3>“unpacked in the seat” is a claim about the seat, not about <code class="docutils literal notranslate"><span class="pre">code</span></code><a class="headerlink" href="#unpacked-in-the-seat-is-a-claim-about-the-seat-not-about-code" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span> <span class="pre">--install-extension</span></code> exits 0 for “installed”,
+for “already installed” <strong>and</strong> for “never reached the remote” — and it answers
+from the <em>laptop’s</em> install list, so an extension you hold locally is reported
+already installed and the seat is never contacted, with or without <code class="docutils literal notranslate"><span class="pre">--force</span></code>.
+Measured at Diamond on 2026-08-21, against a seat holding no matching path
+anywhere on its filesystem. It fails worst for the people most likely to be
+here: anyone who debugs Python already has the Python extension locally.</p>
+<p>So podbench asks the seat — <code class="docutils literal notranslate"><span class="pre">ls</span> <span class="pre">-1</span> <span class="pre">~/.vscode-server/extensions</span></code>, matched by id
+prefix, since the directory carries a version and a platform triple — and only
+then says <code class="docutils literal notranslate"><span class="pre">unpacked</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">seat</span></code>. <em>Unpacked</em>, not <em>installed</em>, because the
+listing proves presence and not that this run put it there.</p>
+<p>Whatever is still missing is installed a second time through the <strong>seat’s own</strong>
+<code class="docutils literal notranslate"><span class="pre">code-server</span></code>, which is the code path the “Install in SSH: <code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code>” button
+takes; that one goes via the extension service the window is connected to, so
+the adapter is live with no reload. It can only run after the window has opened,
+because until then there is no server to install through.</p>
+<p>If a <code class="docutils literal notranslate"><span class="pre">[warn]</span></code> says an extension did not land, install it from the Extensions
+view of the remote window — and check the button reads <strong>Install in SSH:
+<code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code></strong>, never the plain one. A local install runs the debug adapter on your
+laptop, where none of the <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> paths in <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> exist, and
+the failure reads as a bad configuration (<code class="docutils literal notranslate"><span class="pre">program</span> <span class="pre">path</span> <span class="pre">is</span> <span class="pre">missing</span> <span class="pre">or</span> <span class="pre">invalid</span></code>)
+rather than as a wrong machine.</p>
+</section>
 <section id="a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it">
 <h3>A stock Python workload needs debugpy, and this is where it gets it<a class="headerlink" href="#a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> does not compute the debug configuration itself: it asks the
@@ -1192,6 +1257,8 @@ behaviour when the pod is deleted mid-session.</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#client-setup">Client setup</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#or-let-podbench-vscode-do-all-four">Or let <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> do all four</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-prints-and-where-the-detail-went">What it prints, and where the detail went</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unpacked-in-the-seat-is-a-claim-about-the-seat-not-about-code">“unpacked in the seat” is a claim about the seat, not about <code class="docutils literal notranslate"><span class="pre">code</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-stock-python-workload-needs-debugpy-and-this-is-where-it-gets-it">A stock Python workload needs debugpy, and this is where it gets it</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#re-running-it-on-a-window-that-is-already-connected-reload-it">Re-running it on a window that is already connected? Reload it</a></li>
 </ul>

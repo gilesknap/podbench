@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Your first session &#8212; podbench 0.4.1.dev9+g586f73c11 documentation</title>
+    <title>Your first session &#8212; podbench 0.4.1.dev18+gc7e37eb55 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=f859df82"></script>
+    <script src="../_static/documentation_options.js?v=0749cf7e"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -661,11 +661,21 @@ now — it adds the line above any <code class="docutils literal notranslate"><s
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 container web: the processes in its PID namespace
-PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
-1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
-42   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
+    PID  UID  TARGET  ST  THR  PTRACE  CONTAINER     COMM      CMDLINE
+ &gt;  1    0    yes     S   1    ok      87d20e23a1b4  python    python -m http.server 8080
+    42   0    -       S   1    ok      7206c89bf0e1  podbench  podbench agent
+&gt; is the process `podbench dbg` attaches to with no `--pid`. 2 shown, 1 in the
+target container.
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">&gt;</span></code> marks the pid <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dbg</span></code> picks on its own, so the usual case needs no
+argument at all. Rows outside the target container are dimmed — that second one
+is this seat’s own agent — and <code class="docutils literal notranslate"><span class="pre">CMDLINE</span></code> is cut to the width the other columns
+leave, since one long argv would otherwise be wrapped by the terminal and put
+the next row’s <code class="docutils literal notranslate"><span class="pre">PID</span></code> under this row’s <code class="docutils literal notranslate"><span class="pre">PTRACE</span></code>. The cut takes the <strong>middle</strong>:
+on a pod whose processes are all one interpreter every cmdline opens
+<code class="docutils literal notranslate"><span class="pre">/app/.venv/bin/python</span> <span class="pre">…</span></code>, so the end is the only part that tells one row from
+the next. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span> <span class="pre">--json</span></code> has the untruncated form.</p>
 <p>There is no listening socket in that pod, no port-forward and no pod IP
 involved. ssh’s <code class="docutils literal notranslate"><span class="pre">ProxyCommand</span></code> is a <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> running <code class="docutils literal notranslate"><span class="pre">sshd</span> <span class="pre">-i</span> <span class="pre">-e</span></code> on the
 far side; your kubeconfig is the outer authentication and your ssh key is the
