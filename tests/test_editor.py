@@ -821,17 +821,28 @@ def test_a_local_short_circuit_is_answered_by_installing_through_the_seat() -> N
     assert not any("did not land in the seat" in note for note in notes)
 
 
-def test_installing_through_the_seat_needs_no_reload() -> None:
-    """Measured 2026-08-21: an install through the *running* server's own CLI is
-    live in the open window immediately, because it goes through the extension
-    service that window is attached to - the same path the "Install in SSH"
-    button takes. `_RELOAD_NOTE` is about a write from outside that server, and
-    saying it here would send somebody to reload for nothing."""
+def test_installing_through_the_seat_asks_for_a_reload() -> None:
+    """The seat-side install is a *separate process* writing into the extensions
+    directory, so the window notices a change rather than performing an install
+    - and a `debuggers` contribution is registered when the extension host
+    starts, which already happened.
+
+    VS Code says which of the two it was, in its own log (measured on a Diamond
+    seat, 2026-08-21):
+
+        Extension installed successfully: <id>        # the window did it
+        Extensions added from another source <id>     # the window noticed it
+
+    The second is this path, always, because the seat's vscode-server does not
+    exist until a window has bootstrapped it - so the install cannot precede the
+    window that needs it. Without the note F5 fails with `could not find a debug
+    adapter descriptor` and nothing has explained why.
+    """
     seat = FakeSeat(install_lands=False)
     notes = run_open(seat)
 
     assert any("through the seat's own vscode-server" in note for note in notes)
-    assert not any("Reload Window" in note for note in notes)
+    assert any("Reload Window" in note for note in notes)
 
 
 def test_the_seat_install_waits_for_the_window_that_bootstraps_the_server() -> None:
