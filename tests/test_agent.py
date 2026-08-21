@@ -19,6 +19,7 @@ import pytest
 from podbench import agent
 from podbench.model import (
     SEAT_IDENTITY_VOLUME,
+    SEAT_REPORT_MARKER,
     TARGET_CID_ENV,
     Rung,
     SeatReport,
@@ -1199,6 +1200,32 @@ def test_main_print_host_key(
 
     assert agent.main(["--print-host-key", "--no-self-check"]) == 0
     assert "ssh-ed25519 AAAAHOST podbench" in capsys.readouterr().out
+
+
+def test_print_host_key_writes_no_second_start_up_report(
+    tmp_path: Path,
+    env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--print-host-key` runs the same start-up over an exec into a live seat.
+
+    `SeatReport.from_log` takes the *last* marked line, so a report emitted on
+    this path would become every launcher verb's answer to "what is this seat"
+    - timestamped later than the real one and read from the same two files.
+    `--ensure-only` is the same `_run` with the flag off, and it does write one.
+    """
+    layout = make_layout(tmp_path)
+    patch_layout(monkeypatch, layout)
+    monkeypatch.setattr(agent, "run_command", FakeRunner())
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    assert agent.main(["--print-host-key", "--no-self-check"]) == 0
+    assert SEAT_REPORT_MARKER not in capsys.readouterr().err
+
+    assert agent.main(["--ensure-only"]) == 0
+    assert SEAT_REPORT_MARKER in capsys.readouterr().err
 
 
 def test_session_env_forwards_podbench_variables_and_the_named_few() -> None:

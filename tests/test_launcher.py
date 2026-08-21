@@ -662,7 +662,11 @@ class FakeCluster:
             # The target's own ids as the seat reads them from
             # `/proc/<pid>/status` - defaulted to root, because a manifest that
             # pins no uid leaves the container running as its image's user and
-            # podbench's fixtures have no `USER`.
+            # podbench's fixtures have no `USER`. The gid falls back to the
+            # *uid* rather than to that default, so a fixture stating
+            # `runAsUser: 1000` and no `runAsGroup` reports 1000:1000 - the
+            # p47-blueapi-0 shape, where the target's group comes from the
+            # image and the seat lands at 1000:0 beside it.
             target_uid=cast(int, target.get("runAsUser", 0)),
             target_gid=cast(int, target.get("runAsGroup", target.get("runAsUser", 0))),
             target_pid=17,
@@ -5811,16 +5815,13 @@ def test_a_guaranteed_pod_is_offered_the_spelling_that_works(
         assert any("`--resize 2Gi:2Gi`" in line for line in lines), columns
 
 
-def test_a_guaranteed_pod_asked_for_both_halves_is_resized(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_guaranteed_pod_asked_for_both_halves_is_resized() -> None:
     """The capability exists; only the limit-alone spelling is unavailable.
 
     Measured on the bed 2026-08-21: `--resize 2Gi:2Gi` keeps `qos=Guaranteed`
     and takes effect. So the check has to be "would this patch change the
     class", never "is this pod Guaranteed".
     """
-    del monkeypatch
     cluster = FakeCluster(guaranteed_document())
 
     note = try_resize(talking_to(cluster), "target", "app", "2Gi:2Gi")
