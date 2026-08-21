@@ -59,7 +59,14 @@ import typer
 
 from .cli import new_app, require_subcommand, run
 from .console import emit, paragraph
-from .kubectl import CommandResult, Kubectl, KubectlError, Runner, run_subprocess
+from .kubectl import (
+    DEFAULT_CALL_TIMEOUT,
+    CommandResult,
+    Kubectl,
+    KubectlError,
+    Runner,
+    run_subprocess,
+)
 from .launcher import CONTAINER_BASE, kubectl_for, running_seat
 from .model import (
     SEAT_HOME_PATH,
@@ -483,19 +490,25 @@ class PodStore:
     pod: str
     container: str
 
+    def _exec(
+        self, argv: Sequence[str], *, check: bool, timeout: float
+    ) -> CommandResult:
+        return self.kube.exec_(
+            self.pod, argv, container=self.container, check=check, timeout=timeout
+        )
+
     def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
         # Every git command this verb issues comes through here, clone included,
         # so the bound is the pod-work one rather than the per-call default.
-        return self.kube.exec_(
-            self.pod,
-            argv,
-            container=self.container,
-            check=check,
-            timeout=POD_WORK_TIMEOUT,
-        )
+        return self._exec(argv, check=check, timeout=POD_WORK_TIMEOUT)
 
     def read_text(self, path: str) -> str | None:
-        result = self.run(["cat", path], check=False)
+        # A `cat` is a question, not work, so it keeps issue #118's bound rather
+        # than the clone's: reaching it through `run` would let a wedged exec on
+        # a manifest read sit for fifteen minutes, which is the failure that
+        # bound exists to stop. `write_text` below passes no timeout for the
+        # same reason.
+        result = self._exec(["cat", path], check=False, timeout=DEFAULT_CALL_TIMEOUT)
         return result.stdout if result.returncode == 0 else None
 
     def write_text(self, path: str, text: str) -> None:
@@ -509,7 +522,12 @@ class PodStore:
         )
 
     def exists(self, path: str) -> bool:
-        return self.run(["test", "-e", path], check=False).returncode == 0
+        return (
+            self._exec(
+                ["test", "-e", path], check=False, timeout=DEFAULT_CALL_TIMEOUT
+            ).returncode
+            == 0
+        )
 
 
 def read_manifest(store: HotfixStore, venv: str) -> HotfixManifest | None:
