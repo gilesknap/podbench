@@ -24,9 +24,11 @@ belongs in a dev pod ([Iterate on Python](iterate-on-python.md)).
 :::{warning}
 **A breakpoint on a probed pod is on a timer.** A process stopped in a debugger
 does not answer its probes, and the kubelet cannot tell that from a hang. The
-budget is `(failureThreshold - 1) x periodSeconds + timeoutSeconds` after the
-pause begins, plus up to one more period depending on where in the probe cycle
-it began — and there are two of them:
+budget is
+`(failureThreshold - 1) x max(periodSeconds, timeoutSeconds) + timeoutSeconds`
+after the pause begins (a `timeoutSeconds` longer than the period paces the
+attempts itself), plus up to one more period depending on where in the probe
+cycle it began — and there are two of them:
 
 * **readiness** — the pod goes not-ready and stops taking Service traffic. This
   is the quiet one: nothing restarts, no state survives it, and it recovers a
@@ -122,6 +124,18 @@ removed or restarted, every attach appends to the pod spec permanently, and a
 container name once used is burnt for the pod's lifetime. `--new` forces a fresh
 container with the next free `podbench-<n>` name — use it when the previous one
 died, not out of habit.
+
+### Two seats can appear on one attach
+
+`__ptrace_may_access()` compares the group ids as well as the user ids, so a seat
+that landed at the target's uid in the image's group reads nothing the rung
+exists for. podbench measures the target's real gid from `/proc` and, where it
+disagrees with the one the seat was authored at, lands a **corrected** seat
+beside it and says so on one `WARNING` line. That costs a second container name
+for the pod's lifetime, because an ephemeral container's `securityContext`
+cannot be changed in place. It happens once. `--target-gid GID` spends one name
+instead of two; `--no-correct-ids` keeps the first seat with the `gid-mismatch`
+blocker. See [`--target-gid`](../reference/cli.md).
 
 ### Reconnecting only reaches *your* seat
 
@@ -416,6 +430,10 @@ Write `REQUEST:LIMIT` — `--resize 1Gi:6Gi` — to choose the request yourself.
 request already large enough is left alone: it is a scheduling promise the
 workload was placed on.
 
+The `--resize` flag is opt-in on `attach` — `podbench vscode` raises the limit
+itself unless `--no-resize` — and podbench prints a warning either way, for two
+reasons.
+
 ### A Guaranteed pod has to be asked for both halves
 
 A Guaranteed pod is one whose every request already equals its limit, and the
@@ -471,8 +489,6 @@ Until then the only lever is the workload's own template — raise the limits
 there and let it roll — because `podbench dev` cannot help either: a claim is
 allocated to one pod, so a copy of the workload would either be refused the
 device or take it away from the pod being debugged.
-
-It is opt-in and it prints a warning either way, for two reasons.
 
 It is only **partly proven**: three pods, two of them managed by a Deployment —
 a ReplicaSet reconciles pod *existence*, not pod *spec*, so it does not fight
@@ -560,7 +576,8 @@ Useful flags:
 ## Host keys and `known_hosts`
 
 podbench mints a host key per attach and manages its own `known_hosts` at
-`~/.podbench/known_hosts`, keyed on an alias derived from the **pod UID**. It
+`~/.podbench/known_hosts`, keyed on an alias derived from the **pod UID and the
+seat** — a pod can carry several seats and each mints its own host key. It
 deliberately does not ship `StrictHostKeyChecking no`: a debugging tool that
 teaches you to skip host verification has taught you something you will apply
 elsewhere.
@@ -581,16 +598,20 @@ $ podbench status web -n demo  # every seat in one pod
 $ podbench list -n demo        # every pod in the namespace carrying one
 ```
 
-Each seat is listed with the rung it was admitted on and, under it, a `target`
-and a `verdict`. The `target` is the container that seat's namespaces are those
+Each seat is listed under `RUNG (measured)` — the four numbers the agent writes
+into the container log at start-up, recovered with `kubectl logs` and no exec, so
+the cost does not scale with the namespace. A seat whose log could not be read
+reads `not measured`, with a `request:` row naming what admission *stored*, which
+is not what the kernel gave the container. A seat the gid correction replaced
+carries a `superseded by podbench-N` row. The mechanism is in the
+{term}`rung` entry of the [Glossary](../reference/glossary.md).
+
+Under each seat are a `target` and a `verdict`. The `target` is the container that seat's namespaces are those
 of: two seats on one pod may have entered different containers, and an
 ephemeral container's `targetContainerName` is fixed for its lifetime, so this
 is read back from the spec rather than assumed.
 The verdict is measured: `status` runs `capreport` in every *running* seat, on
-the node, exactly as `attach` did. It is not derived from the rung, which says
-only what was asked for — a mutating webhook that strips `capabilities.add`
-leaves a root seat reading back as `degraded` while it attaches perfectly well.
-`--no-probe` skips the exec, and every verdict then reads `not probed`, which is
+the node, exactly as `attach` did. `--no-probe` skips the exec, and every verdict then reads `not probed`, which is
 also what `list` says: it lists a whole namespace and execs into nothing.
 
 `status` shows dead containers too, because their names remain burnt. Both

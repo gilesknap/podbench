@@ -88,7 +88,7 @@ first-class mode rather than an error state.
 
 | Rung | securityContext | Admitted under | Buys |
 |---|---|---|---|
-| **full** | `runAsUser: 0`, `capabilities.add: [SYS_PTRACE]` | privileged / exempted namespaces, or a targeted policy | attach to the workload's live processes |
+| **full** | `runAsUser: 0`, `capabilities.add: [SYS_PTRACE]`, `privileged: false`, `allowPrivilegeEscalation: false` | privileged / exempted namespaces, or a targeted policy | attach to the workload's live processes |
 | **degraded** | `runAsUser: <target's uid>`, `runAsGroup: <target's gid>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, and the target's own `seccompProfile` where it has one | **restricted**, verified | `/proc/<pid>/root`, `maps`, `environ`, `exe`, `cwd`; full source-level debugging of processes gdb starts itself |
 | *(seat)* | whatever the cluster will admit | anything | editor, shell, git, uv |
 

@@ -14,7 +14,7 @@ This page is the mechanism, in order, with the `kubectl` commands each step beco
 ## Creating the dev pod
 
 ```text
-podbench dev POD -n NS [--container NAME] [--port 8080]
+podbench dev POD -n NS [--container NAME] [--port 8080] [--name NAME]
                        [--take-traffic | --cutover SERVICE] [--dry-run]
     │
     ▼

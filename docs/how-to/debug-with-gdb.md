@@ -14,8 +14,9 @@ have not installed the launcher, run each as `uvx podbench <verb>`. See
 **A breakpoint on a probed pod is on a timer.** A process stopped in a debugger
 does not answer its probes, and the kubelet cannot tell that from a hang. Two
 deadlines follow, and the quiet one is the one that will catch you out. Both are
-`(failureThreshold - 1) x periodSeconds + timeoutSeconds` after the pause
-begins, plus up to one more period depending on where in the cycle it began:
+`(failureThreshold - 1) x max(periodSeconds, timeoutSeconds) + timeoutSeconds`
+after the pause begins, plus up to one more period depending on where in the
+cycle it began:
 
 | deadline | what happens | how visible |
 |---|---|---|
