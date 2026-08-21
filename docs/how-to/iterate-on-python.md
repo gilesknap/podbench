@@ -328,9 +328,17 @@ if os.environ.get("DEBUGPY_LISTEN"):
         debugpy.wait_for_client()
 ```
 
-Bind to `127.0.0.1`, never `0.0.0.0`: the pod's network namespace is shared with
-the debug container, so loopback is exactly the reach you want and nothing more.
-A debug port on the pod IP is an unauthenticated code-execution endpoint.
+Bind to `127.0.0.1`, never `0.0.0.0`: on the pod IP the port is an
+unauthenticated code-execution endpoint for anything that can route to it. How
+much less loopback exposes depends on the target's own spec. On an ordinary pod
+the network namespace is the pod's, shared with the debug container and nothing
+else, so `127.0.0.1` is exactly the reach you want. On a `hostNetwork: true`
+pod — the usual shape for an EPICS IOC, because Channel Access needs UDP
+broadcast — that namespace is the node's, so `127.0.0.1` is the node's
+loopback, shared with every other hostNetwork pod and every node daemon on it.
+Binding narrowly is still right, but on such a pod treat the listener as
+node-wide and stop it when you are done; see the
+[Security model](../explanations/security.md).
 
 Run the app with the variable set:
 
