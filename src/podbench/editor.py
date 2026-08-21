@@ -283,6 +283,43 @@ be open, because this side cannot tell: ``code --install-extension`` exits 0 for
 the argv.
 """
 
+_SEAT_INSTALL_RELOAD_NOTE = (
+    "the window has noticed these but not registered them: a debug adapter is "
+    "contributed when the extension host starts, and that already happened. "
+    "Command Palette -> Developer: Reload Window, or the Run and Debug list has "
+    "no podbench entry and F5 says `could not find a debug adapter descriptor`"
+)
+"""Said whenever the seat-side install ran, because it is always true of it.
+
+VS Code distinguishes the two paths in its own log, and the wording is the whole
+explanation (measured on a Diamond seat, 2026-08-21)::
+
+    Extension installed successfully: <id>        # the window did it
+    Extensions added from another source <id>     # the window noticed it
+
+The Extensions view button takes the first: the window's own service performs
+the install, so contributions are registered live and nothing needs reloading.
+:func:`_install_through_the_seat` is a *separate process* writing into
+``~/.vscode-server/extensions``; the running server spots the change and
+invalidates its scan cache, which is enough for the extension to appear in the
+Extensions view and not enough to register a ``debuggers`` contribution.
+
+Out-of-process is structural here, not a timing accident to be engineered away:
+the seat's vscode-server does not exist until a window has bootstrapped it, so
+the install cannot precede the window that needs it.
+
+**There is an in-process route, and it is deliberately not taken.** ``remote-cli/
+code`` forwards to the window over ``VSCODE_IPC_HOOK_CLI``, and installing
+through it was proved to produce "Extension installed successfully" on a live
+seat. Reaching it costs a scan of another process's ``/proc/<pid>/environ`` for
+an undocumented variable, a path inside a version-stamped server directory, and
+a rule for which window wins when a seat has several - and the fallback below
+would still be needed for when any of that is absent. What it buys is one
+Command Palette action. Worse, its failure mode is this bug with the hint
+removed: a renamed variable and podbench believes it installed in-process,
+suppresses this note, and F5 fails with nothing said.
+"""
+
 _STORAGE_NOTE = (
     "1215 MiB measured, on the workload's ephemeral-storage budget in Observe mode"
 )
@@ -579,9 +616,12 @@ def open_seat(
     # of is `settings.json` — the watcher starts walking the moment the window
     # opens, and that race is the one whose loser is an unrecoverable seat.
     if missing:
+        wanted = list(missing)
         missing = _install_through_the_seat(
             alias, missing, ssh=ssh, runner=run, report=report, sleep=sleep
         )
+        if len(missing) < len(wanted):
+            report(_SEAT_INSTALL_RELOAD_NOTE)
     if missing:
         report(_MISSING_REMEDY.format(missing=", ".join(missing), alias=alias))
     # The exit code still is not evidence - `code` hands the argv to a window
@@ -789,9 +829,12 @@ def _install_through_the_seat(
     Python extension on their laptop.
 
     So the install is made where it has to land, by the server's own CLI over
-    ssh. That is the same code path the "Install in SSH: <alias>" button takes,
-    which is why the extension is **live in the open window with no reload** —
-    also measured, and the reason no reload note is printed here.
+    ssh. That is a *separate process* from the one the window is talking to, so
+    what the window gets is a directory that changed underneath it rather than
+    an install it performed — which is the whole of
+    :data:`_SEAT_INSTALL_RELOAD_NOTE`, printed by the caller whenever anything
+    lands here. It is emphatically **not** the "Install in SSH: <alias>" button,
+    however much it looks like it.
     """
     binary = _server_cli(alias, ssh=ssh, runner=runner, sleep=sleep)
     if binary is None:

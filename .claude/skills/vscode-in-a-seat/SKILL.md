@@ -164,23 +164,56 @@ ssh <alias> '~/.vscode-server/cli/servers/Stable-<commit>/server/bin/code-server
    --install-extension <id>'
 ```
 
-Two things decide whether that works, both measured:
-
-- **It must be the server the window is attached to.** A seat holds more than
-  one. An install through any other lands the extension where that window never
-  sees it — which is the out-of-band write the reload note below is about. The
-  running server's argv carries its own path (`ps -eo args=`, grep for
-  `cli/servers/*/server`); `~/.vscode-server/cli/servers/lru.json` is a plain
-  most-recent-first array and is the fallback before a window has started one.
-- **Through that server there is no reload.** It goes via the extension service
-  the window is connected to — the same path the "Install in SSH" button takes —
-  so the adapter is live immediately. The reload note applies to a write from
-  *outside* that server, not to this.
+Use the server the window is attached to. A seat holds more than one — the
+running server's argv carries its own path (`ps -eo args=`, grep
+`cli/servers/*/server`), and `~/.vscode-server/cli/servers/lru.json` is a plain
+most-recent-first array for before a window has started one.
 
 The server does not exist until a window has bootstrapped it, so this can only
 run **after** the window opens — while `.vscode/settings.json` still cannot move
-after it, for the walk-OOM reason above. That ordering is the whole shape of the
-fix, not an implementation detail.
+after it, for the walk-OOM reason above.
+
+### That install always needs a reload, and VS Code says why
+
+This is a *separate process* writing into the extensions directory. The window
+notices a change rather than performing an install, and a `debuggers`
+contribution is registered when the extension host starts — which already
+happened. F5 then gives `could not find a debug adapter descriptor for debugpy`
+while the Extensions view happily lists it.
+
+VS Code distinguishes the two in its own log, and the wording is the whole
+explanation (measured on a Diamond seat, 2026-08-21):
+
+| how it was installed | log line | reload |
+|---|---|---|
+| the window's own service — Extensions view button | `Extension installed successfully:` | **no** |
+| a separate process writing the files | `Extensions added from another source` | **yes** |
+
+Out-of-process is **structural** here, not a timing accident: the seat's
+vscode-server does not exist until a window has bootstrapped it, so the install
+cannot precede the window that needs it. Say "Reload Window" and mean it.
+
+### The in-process route exists, works, and is deliberately not taken
+
+Do not rediscover this and build it. `remote-cli/code` forwards to the window
+over `VSCODE_IPC_HOOK_CLI`; the socket is in `/tmp/vscode-ipc-*.sock` and the
+live one is whichever a running extension host carries in `/proc/<pid>/environ`.
+Installing through it was **proved** to produce `Extension installed
+successfully` on a live seat, no reload — it is genuinely the button.
+
+It was rejected on cost. It needs a scan of another process's environment for an
+undocumented variable, a path inside a version-stamped server directory, and a
+rule for which window wins when a seat has several — and the out-of-process
+fallback is still needed for when any of that is missing, so it is *additional*
+code, not a replacement. What it buys is one Command Palette action.
+
+The failure mode settles it: if VS Code renames the variable or moves
+`remote-cli`, podbench believes it installed in-process, **suppresses the reload
+note**, and F5 fails with nothing said — this bug, with the hint removed.
+
+Two smaller things measured alongside: `--force` does not bypass "already
+installed" on *either* path, so verify-then-install still earns its place; and
+an uninstall is deferred to the next window start, so the directory lingers.
 
 **"X is unpacked in SSH" reports presence, not that this run installed it.**
 Right check, different question — and on a warm seat it launders "was already
