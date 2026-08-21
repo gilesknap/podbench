@@ -599,6 +599,26 @@ $ podbench status web -n demo  # every seat in one pod
 $ podbench list -n demo        # every pod in the namespace carrying one
 ```
 
+`KIND` names which of the three modes a seat is serving, and it is derived from
+the pod rather than stamped on the container: `dev` is the `podbench` sidecar of
+a pod podbench cloned, `hotfix` is a seat that mounts one of the workload's own
+volumes in a pod carrying the hotfix annotation, and `attach` is everything
+else. Two consequences are worth knowing.
+
+A `dev` seat is an **ordinary** container, not an ephemeral one, so `podbench
+attach` on a dev pod does not find it — it lands a second seat beside it and
+spends a container name for the pod's lifetime. It says so, and does not refuse:
+the sidecar gives up `SYS_PTRACE` along with the root it does not have, so a
+full-rung ephemeral seat beside it is occasionally what is wanted.
+
+A seat in a hotfixed pod that mounts none of the workload's volumes carries a
+`note` saying so. Nothing is broken — the seat works — but the application is
+running the venv on the claim while an editor or debugger in that seat resolves
+the image's, so the code you read is not the code running and breakpoints set on
+it never bind. An ephemeral container's `volumeMounts` are fixed when it is
+created, so the fix is a fresh seat: `podbench attach --new --mount CLAIM`, with
+the claim named by `podbench hotfix status`.
+
 Each seat is listed under `RUNG (measured)` — the four numbers the agent writes
 into the container log at start-up, recovered with `kubectl logs` and no exec, so
 the cost does not scale with the namespace. A seat whose log could not be read

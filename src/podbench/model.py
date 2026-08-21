@@ -42,6 +42,8 @@ __all__ = [
     "POD_CONTAINERS_ENV",
     "TARGET_CID_ENV",
     "TARGET_NAME_ENV",
+    "DEVPOD_LABEL",
+    "HOTFIXED_ANNOTATION",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
@@ -49,6 +51,7 @@ __all__ = [
     "PodRef",
     "ProcInfo",
     "Rung",
+    "SeatKind",
     "Verdict",
     "and_list",
     "as_dict",
@@ -730,6 +733,57 @@ class Blocker(enum.Enum):
                 "for it. Please report this with the full capreport output."
             ),
         }[self]
+
+
+DEVPOD_LABEL = "podbench.dev/devpod"
+"""Marks a pod as Iterate mode's sacrificial clone.
+
+Here rather than in :mod:`podbench.spec`, beside the annotation below, because
+the pair is one vocabulary: they are how a *listing* tells podbench's three
+modes apart, and a listing reads them together or not at all.
+"""
+
+HOTFIXED_ANNOTATION = "podbench.dev/hotfixed"
+"""Marks a pod (or pod template) as carrying a hotfix on a claim.
+
+Its natural home is :mod:`podbench.hotfix`, and it cannot live there: that
+module imports :mod:`podbench.launcher`, which is where the listing is built.
+"""
+
+
+class SeatKind(enum.Enum):
+    """Which of podbench's three modes a seat is serving.
+
+    A property of the **pod**, not of the container: the docs introduce three
+    modes and the cluster records each of them somewhere else - a label, an
+    annotation, and a volumeMount that neither of them mentions. A seat carries
+    no stamp saying which it is, so this is derived on every read
+    (``podbench.launcher.seat_kind``) and never stored. That also makes it true
+    on a machine that never saw the attach, which is where a listing usually
+    runs.
+
+    Two of these are the same *container* kind and the third is not, which is
+    the asymmetry that makes the question worth asking at all: :attr:`ATTACH`
+    and :attr:`HOTFIX` are both ephemeral containers differing by one mount,
+    while :attr:`DEV` is an ordinary sidecar in a pod of its own.
+    """
+
+    ATTACH = "attach"
+    """Observe mode: an ephemeral container that touches the workload not at
+    all. The default, and the one with no marker of its own - it is what a seat
+    is when neither of the others applies."""
+
+    DEV = "dev"
+    """Iterate mode: the ``podbench`` sidecar of a pod labelled
+    :data:`DEVPOD_LABEL`. Not an ephemeral container, which is why it is
+    invisible to anything reading ``spec.ephemeralContainers``."""
+
+    HOTFIX = "hotfix"
+    """An ephemeral container in a pod annotated :data:`HOTFIXED_ANNOTATION`
+    that mounts one of the workload's own volumes - the claim the venv lives
+    on. The mount is what makes it this kind and not :attr:`ATTACH`: a seat
+    without it resolves the image's venv while the application runs the
+    claim's."""
 
 
 class Rung(enum.Enum):
