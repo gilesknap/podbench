@@ -1,0 +1,793 @@
+# S4 — Python takeover: `--copy-to` dev pod, uv editable install, relaunch on the pod IP
+
+**Verdict:** PASS (with three material deviations from the brief — see *Deviations*)
+**Date:** 2026-08-15  (cluster: k3s v1.34.6+k3s1, kubectl v1.36.3, mixed arm64/amd64)
+**Namespace:** `podbench-s4` (only namespace touched)
+
+---
+
+## What was tested
+
+The whole Iterate-mode loop, end to end, against a real Deployment + Service:
+
+1. A target `Deployment` + `Service` running a stdlib Python HTTP server on `:8080`,
+   with **readiness, liveness and startup probes** and a ConfigMap-mounted source file.
+   Proved reachable through the Service from a throwaway pod.
+2. `kubectl debug pod/… --copy-to … --container app -- sleep infinity` — and a forensic
+   diff of what `--copy-to` does to **probes, labels, annotations, ownerReferences,
+   nodeName, resources and volumes**.
+3. The **Phase-4 authored-spec variant**: a launcher prototype
+   (`podbench_author.py`) that reads the live pod JSON, mutates it, and creates the
+   dev pod itself — with a **real sidecar container** that has its own
+   `resources`, an `emptyDir` workspace, `CAP_SYS_PTRACE` and
+   `shareProcessNamespace: true`.
+4. Toolchain bootstrap inside the sidecar at runtime: `apt-get install curl git`,
+   `curl -LsSf https://astral.sh/uv/install.sh | sh`, `uv python install 3.12`,
+   `uv venv`, `uv pip install -e .` (real editable install, hatchling pulled from PyPI).
+5. Relaunch of the app **from the sidecar** on the same pod port; verified the response
+   arrives through the **Service**, not just the pod IP.
+6. Edit → relaunch → curl loop, timed.
+7. The mount-namespace warning: a `.pth` in the *target* container's site-packages
+   pointing at a path that only exists in the *debug* container.
+8. Port-conflict behaviour, including the `SO_REUSEPORT` silent-split case and a
+   `TIME_WAIT` case that breaks the relaunch loop for ~60 s.
+9. Timings for every phase.
+10. Before/after `resourceVersion` comparison on the original pod and Deployment.
+
+---
+
+## Exact commands that worked
+
+### 1. Target workload
+
+```yaml
+# 00-target.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: app-src, namespace: podbench-s4 }
+data:
+  app.py: |
+    import http.server, socketserver, os
+    MSG = "PODBENCH-ORIGINAL-v1 from %s" % os.environ.get("HOSTNAME", "?")
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"ok" if self.path == "/healthz" else MSG.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def log_message(self, *a): pass
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("0.0.0.0", 8080), H) as s: s.serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: podbench-target, namespace: podbench-s4, labels: { app: podbench-target } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: podbench-target } }
+  template:
+    metadata:
+      labels: { app: podbench-target, tier: demo }
+    spec:
+      nodeSelector: { kubernetes.io/arch: amd64 }
+      containers:
+        - name: app
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/src/app.py"]
+          ports: [{ name: http, containerPort: 8080 }]
+          volumeMounts: [{ name: src, mountPath: /src }]
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 2, periodSeconds: 5 }
+          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5, periodSeconds: 10 }
+          startupProbe:   { httpGet: { path: /healthz, port: 8080 }, failureThreshold: 30, periodSeconds: 2 }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+      volumes: [{ name: src, configMap: { name: app-src } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: podbench-target, namespace: podbench-s4 }
+spec:
+  selector: { app: podbench-target }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+```
+
+```bash
+kubectl create namespace podbench-s4
+kubectl apply -f 00-target.yaml
+timeout 300 kubectl -n podbench-s4 rollout status deploy/podbench-target --timeout=280s
+
+# throwaway client pod (curlimages/curl, sleep infinity, amd64 nodeSelector)
+kubectl -n podbench-s4 exec curler -- curl -s -m 5 http://podbench-target/
+# PODBENCH-ORIGINAL-v1 from podbench-target-7b8d54747c-ltmtd
+```
+
+### 2. Plain `kubectl debug --copy-to` (the control)
+
+```bash
+kubectl -n podbench-s4 debug pod/podbench-target-7b8d54747c-ltmtd \
+  --copy-to devpod-plain --container app -- sleep infinity
+# (prints NOTHING on stdout, exit 0 — no "Defaulting…" message, easy to think it failed)
+```
+
+Result, extracted from the created pod:
+
+```
+labels:            null          <-- ALL labels removed
+annotations:       {}            <-- ALL annotations removed (verified separately)
+ownerReferences:   null          <-- orphaned; no ReplicaSet adoption
+generateName:      null
+nodeName:          <cleared, rescheduled normally>
+container app:
+  command:         ['sleep','infinity']
+  ports:           [{containerPort: 8080, name: http}]      kept
+  resources:       {requests 50m/64Mi, limits 500m/256Mi}   kept
+  volumeMounts:    ['/src', serviceaccount]                 kept
+  readinessProbe / livenessProbe / startupProbe:  ALL None  <-- stripped
+```
+
+Missing `--container` gives:
+
+```
+error: you must specify an existing container or a new image when specifying args.
+```
+
+`kubectl debug` has **no `--dry-run`**:
+
+```
+error: unknown flag: --dry-run
+```
+
+`--copy-to` *can* add a brand-new container, and it sets `shareProcessNamespace` for you:
+
+```bash
+kubectl -n podbench-s4 debug pod/podbench-target-7b8d54747c-ltmtd \
+  --copy-to devpod-addc --image=debian:bookworm-slim --container podbench -- sleep infinity
+```
+```
+labels None
+app      cmd=['python','/src/app.py']  probes=[]  res={50m/64Mi,500m/256Mi}  mounts=['/src', sa]
+podbench cmd=['sleep','infinity']      probes=[]  res={}   <-- EMPTY, not settable
+volumes ['src', 'kube-api-access-2x9jr']            <-- no workspace volume, not settable
+shareProcessNamespace True
+```
+
+Note that in this mode probes are stripped from **all** containers, but the app container
+is **not** idled (it keeps its original command).
+
+### 3. Phase-4 authored spec (what the launcher should actually do)
+
+```python
+#!/usr/bin/env python3
+"""Podbench Phase-4 launcher prototype: author the dev-pod spec ourselves.
+Reads `kubectl get pod -o json` on stdin, emits a mutated pod manifest on stdout."""
+import json, sys
+
+TARGET_CONTAINER = sys.argv[1]
+DEV_NAME         = sys.argv[2]
+TAKE_TRAFFIC     = "--take-traffic" in sys.argv
+
+pod = json.load(sys.stdin)
+
+# ---- 1. metadata: drop server-owned + controller-owned fields -------------
+md = pod["metadata"]
+ORIGIN = md["name"]
+for k in ("uid", "resourceVersion", "creationTimestamp", "generation",
+          "managedFields", "ownerReferences", "selfLink", "generateName",
+          "deletionTimestamp", "deletionGracePeriodSeconds", "finalizers"):
+    md.pop(k, None)
+md["name"] = DEV_NAME
+pod.pop("status", None)
+
+# ---- 2. labels -----------------------------------------------------------
+# kubectl debug --copy-to nukes ALL labels, so the clone never receives Service
+# traffic.  We keep them, but MUST drop the controller-revision label, otherwise
+# the owning ReplicaSet adopts the clone and deletes one pod to honour replicas=1.
+labels = dict(md.get("labels") or {})
+for k in ("pod-template-hash", "controller-revision-hash",
+          "statefulset.kubernetes.io/pod-name", "batch.kubernetes.io/job-name",
+          "job-name", "controller-uid", "batch.kubernetes.io/controller-uid"):
+    labels.pop(k, None)
+md["labels"] = labels if TAKE_TRAFFIC else {}
+md["annotations"] = {"podbench.dev/origin": ORIGIN}
+md["labels"]["podbench.dev/devpod"] = "true"
+
+spec = pod["spec"]
+
+# ---- 3. scheduling -------------------------------------------------------
+spec.pop("nodeName", None)
+spec["restartPolicy"] = "Never"          # a crashed dev pod must stay dead
+
+# ---- 4. idle the target container, strip everything that can kill it -----
+found = False
+for c in spec["containers"]:
+    if c["name"] != TARGET_CONTAINER:
+        continue
+    found = True
+    c["command"] = ["sleep", "infinity"]
+    c.pop("args", None)
+    for probe in ("readinessProbe", "livenessProbe", "startupProbe", "lifecycle"):
+        c.pop(probe, None)
+    c["stdin"] = True
+    c["tty"] = False
+if not found:
+    sys.exit("container %s not found" % TARGET_CONTAINER)
+
+# ---- 5. add the podbench sidecar + workspace volume ----------------------
+spec.setdefault("volumes", []).append(
+    {"name": "podbench-workspace", "emptyDir": {"sizeLimit": "4Gi"}})
+spec["containers"].append({
+    "name": "podbench",
+    "image": "debian:bookworm-slim",
+    "imagePullPolicy": "IfNotPresent",
+    "command": ["sleep", "infinity"],
+    "workingDir": "/workspace",
+    "env": [{"name": "PODBENCH_TARGET", "value": TARGET_CONTAINER},
+            {"name": "HOME", "value": "/workspace"}],
+    "volumeMounts": [{"name": "podbench-workspace", "mountPath": "/workspace"}],
+    "resources": {"requests": {"cpu": "200m", "memory": "512Mi"},
+                  "limits":   {"cpu": "2",    "memory": "3Gi"}},
+    "securityContext": {"capabilities": {"add": ["SYS_PTRACE"]}},
+    "stdin": True, "tty": True,
+})
+spec["shareProcessNamespace"] = True     # gdb + ss -lntp across containers
+
+json.dump(pod, sys.stdout, indent=2)
+```
+
+```bash
+kubectl -n podbench-s4 get pod podbench-target-7b8d54747c-ltmtd -o json \
+  | python3 podbench_author.py app devpod --take-traffic > devpod.json
+kubectl apply -f devpod.json
+timeout 240 kubectl -n podbench-s4 wait --for=condition=Ready pod/devpod --timeout=230s
+```
+
+```
+labels {'app': 'podbench-target', 'tier': 'demo', 'podbench.dev/devpod': 'true'}
+annot  {'podbench.dev/origin': 'podbench-target-7b8d54747c-ltmtd'}
+containers ['app', 'podbench']   shareProcessNamespace True
+devpod  2/2  Running  10.42.5.125  nuc2
+```
+
+The dev pod **joins the Service** (the whole point):
+
+```bash
+kubectl -n podbench-s4 get endpointslices \
+  -o custom-columns='EP:.endpoints[*].addresses,TARGETS:.endpoints[*].targetRef.name'
+# [10.42.5.117],[10.42.5.125]   podbench-target-7b8d54747c-ltmtd,devpod
+```
+
+…and the ReplicaSet does **not** fight it (because `pod-template-hash` was dropped):
+
+```
+NAME                         DESIRED   CURRENT
+podbench-target-7b8d54747c   1         1
+```
+
+### 4. Toolchain bootstrap in the sidecar
+
+```bash
+kubectl -n podbench-s4 exec devpod -c podbench -- bash -lc '
+  set -e; export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq >/dev/null
+  apt-get install -y -qq --no-install-recommends curl ca-certificates git xz-utils procps >/dev/null
+  echo APT_OK'
+# APT_OK        (10.6 s)
+
+kubectl -n podbench-s4 exec devpod -c podbench -- bash -lc '
+  set -e; export HOME=/workspace
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH=/workspace/.local/bin:$PATH
+  uv --version
+  uv python install 3.12'
+# uv 0.12.5 (x86_64-unknown-linux-gnu)
+# Downloaded cpython-3.12.14-linux-x86_64-gnu (download)
+# Installed Python 3.12.14 in 615ms       (2.3 s total)
+```
+
+### 5. Editable install
+
+```bash
+# bootstrap-src.sh, piped in with `kubectl exec -i devpod -c podbench -- bash -s < …`
+export HOME=/workspace PATH=/workspace/.local/bin:$PATH
+mkdir -p /workspace/src/podbench_demo/src/podbench_demo
+cd /workspace/src/podbench_demo
+cat > pyproject.toml <<'EOF'
+[project]
+name = "podbench-demo"
+version = "0.1.0"
+requires-python = ">=3.12"
+[project.scripts]
+podbench-demo = "podbench_demo.app:main"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+EOF
+: > src/podbench_demo/__init__.py
+cat > src/podbench_demo/app.py <<'EOF'
+import http.server, os, socketserver
+MESSAGE = "PODBENCH-DEVPOD-v2 (editable install from the sidecar)"
+def main() -> None:
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = ("%s host=%s\n" % (MESSAGE, os.environ.get("HOSTNAME","?"))).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","text/plain")
+            self.send_header("Content-Length",str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def log_message(self,*a): pass
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("0.0.0.0",8080), H) as s: s.serve_forever()
+if __name__ == "__main__": main()
+EOF
+uv venv --python 3.12 /workspace/.venv
+VIRTUAL_ENV=/workspace/.venv uv pip install -e .
+/workspace/.venv/bin/python -c "import podbench_demo.app as a; print('IMPORT_OK', a.MESSAGE)"
+```
+
+```
+Using CPython 3.12.14
+Creating virtual environment at: /workspace/.venv
+   Building podbench-demo @ file:///workspace/src/podbench_demo
+      Built podbench-demo @ file:///workspace/src/podbench_demo
+Prepared 1 package in 631ms
+Installed 1 package in 0.46ms
+ + podbench-demo==0.1.0 (from file:///workspace/src/podbench_demo)
+IMPORT_OK PODBENCH-DEVPOD-v2 (editable install from the sidecar)
+site-packages: _editable_impl_podbench_demo.pth  _virtualenv.pth  podbench_demo-0.1.0.dist-info
+```
+
+### 6. Relaunch on the pod IP from the sidecar
+
+```bash
+# relaunch.sh, run with `kubectl exec -i devpod -c podbench -- bash -s < relaunch.sh`
+export HOME=/workspace PATH=/workspace/.local/bin:$PATH
+pkill -f 'podbench_demo' 2>/dev/null; sleep 0.4
+cd /workspace/src/podbench_demo
+setsid nohup /workspace/.venv/bin/python -m podbench_demo.app \
+    > /workspace/app.log 2>&1 < /dev/null &
+for i in $(seq 1 40); do
+  if /workspace/.venv/bin/python -c "
+import socket,sys
+s=socket.socket(); s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(('127.0.0.1',8080))==0 else 1)"; then
+    echo "LISTENING after ${i} polls"; exit 0
+  fi; sleep 0.25
+done
+echo "FAILED to listen"; cat /workspace/app.log; exit 1
+```
+
+Verification **through the Service**, from a separate pod:
+
+```bash
+kubectl -n podbench-s4 exec curler -- sh -c 'for i in $(seq 1 10); do curl -s -m 3 http://podbench-target/; done'
+```
+```
+PODBENCH-ORIGINAL-v1 from podbench-target-7b8d54747c-ltmtd
+PODBENCH-ORIGINAL-v1 from podbench-target-7b8d54747c-ltmtd
+PODBENCH-DEVPOD-v2 (editable install from the sidecar) host=devpod
+...
+```
+
+Clean cutover — flip the Service selector so **only** the dev pod serves
+(**use a JSON patch, not a merge patch** — see Findings):
+
+```bash
+kubectl -n podbench-s4 patch svc podbench-target --type=json \
+  -p '[{"op":"replace","path":"/spec/selector","value":{"podbench.dev/devpod":"true"}}]'
+```
+```
+podbench-target-smpjx   [10.42.5.125]   devpod
+PODBENCH-DEVPOD-v2 (editable install from the sidecar) host=devpod   (x6)
+```
+
+### 7. Edit → relaunch → verify
+
+```bash
+kubectl -n podbench-s4 exec devpod -c podbench -- bash -lc \
+  "sed -i 's/PODBENCH-DEVPOD-v2 (editable install from the sidecar)/PODBENCH-DEVPOD-v3 EDITED-IN-PLACE/' \
+   /workspace/src/podbench_demo/src/podbench_demo/app.py"
+kubectl -n podbench-s4 exec -i devpod -c podbench -- bash -s < relaunch.sh
+kubectl -n podbench-s4 exec curler -- curl -s -m 5 http://podbench-target/
+```
+```
+LISTENING after 2 polls
+PODBENCH-DEVPOD-v3 EDITED-IN-PLACE host=devpod
+```
+**Elapsed 10:44:56.325 → 10:44:57.501 = 1.18 s** for the whole edit→relaunch→Service-verify loop.
+
+### 8. Mount-namespace `.pth` test (run **inside the target `app` container**)
+
+```bash
+SP=/usr/local/lib/python3.12/site-packages
+ls -la /workspace                                     # -> No such file or directory
+echo '/workspace/src/podbench_demo/src' > $SP/podbench_dangle.pth
+python -c "import sys; print('on sys.path?', any('podbench_demo' in p for p in sys.path))"
+python -c "import podbench_demo"
+# exec-style .pth, which is what modern editable installs actually emit:
+printf 'import _podbench_impl\n' > $SP/podbench_exec.pth
+cat > $SP/_podbench_impl.py <<'EOF'
+import sys
+sys.path.insert(0, "/workspace/src/podbench_demo/src")
+import podbench_demo
+EOF
+python -c "print('interpreter started')"
+python -m podbench_demo.app
+```
+
+### 9. Port conflicts
+
+```bash
+# A. sidecar holds :8080, app container tries to bind
+kubectl -n podbench-s4 exec devpod -c app -- python -c "
+import socket
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)
+s.bind(('0.0.0.0',8080))"
+#   OSError: [Errno 98] Address already in use
+
+# B. who owns the port?  (works cross-container thanks to shared netns + shared PID ns + CAP_SYS_PTRACE)
+kubectl -n podbench-s4 exec devpod -c podbench -- bash -lc 'apt-get install -y -qq iproute2; ss -lntp'
+#   LISTEN 0 5 0.0.0.0:8080 0.0.0.0:*  users:(("python",pid=3463,fd=3))
+kubectl -n podbench-s4 exec devpod -c podbench -- ls -l /proc/3463/root/   # tells you WHICH container
+
+# C. rebinding after a SO_REUSEPORT server has served traffic
+kubectl -n podbench-s4 exec devpod -c podbench -- /workspace/.venv/bin/python -c "
+import socket
+for name in ('SO_REUSEADDR only','SO_REUSEADDR+SO_REUSEPORT'):
+    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)
+    if 'PORT' in name: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT,1)
+    try: s.bind(('0.0.0.0',8080)); print(name,'-> BOUND OK')
+    except OSError as e: print(name,'-> errno',e.errno,str(e))
+    s.close()"
+#   SO_REUSEADDR only            -> errno 98 [Errno 98] Address already in use
+#   SO_REUSEADDR+SO_REUSEPORT    -> BOUND OK
+```
+
+### 10. Readiness-gated dev pod (the fix for the split-traffic window)
+
+Add to the **podbench sidecar** (pod Ready = all containers Ready):
+
+```yaml
+readinessProbe:
+  tcpSocket: { port: 8080 }
+  periodSeconds: 2
+  failureThreshold: 1
+  initialDelaySeconds: 0
+```
+
+```
+# before the relaunched process binds :8080
+devpod2  1/2  Running
+endpointslice: devpod2 ready=false serving=false     <-- gets NO traffic
+
+# after a process binds :8080 inside the sidecar
+devpod2  2/2  Running
+endpointslice: devpod2 ready=true                    <-- joins the Service
+curl http://podbench-target/  ->  READINESS-GATED-DEVPOD2
+
+# kill the process again
+devpod2  1/2  Running   (within ~6 s)
+endpointslice: devpod2 ready=false                   <-- drops out again
+```
+
+---
+
+## Findings
+
+### F1 — `--copy-to` strips probes **and all labels and annotations**. The clone gets **no Service traffic**.
+The brief's claim about probes is correct — `readinessProbe`, `livenessProbe` and
+`startupProbe` are all removed. But `--copy-to` also sets `metadata.labels = nil`,
+`metadata.annotations = nil` and `metadata.ownerReferences = nil` (verified twice:
+once on the app pod, once on a pod carrying a deliberately-added annotation).
+Empirically:
+
+| field | after `--copy-to` |
+|---|---|
+| labels | **removed** |
+| annotations | **removed** |
+| ownerReferences | **removed** (orphan — no RS adoption, no GC) |
+| all three probes | **removed** (on *every* container, even in `--image` mode) |
+| `nodeName` | cleared; pod is rescheduled normally |
+| ports / resources / volumeMounts / volumes | preserved |
+| `shareProcessNamespace` | set to `true` **only** when `--image` adds a container |
+
+Consequence for the demo: a plain `--copy-to` dev pod is **invisible to the Service**.
+The endpointslice keeps only the original pod. Anyone demoing "edit code, curl the
+Service, see your change" with vanilla `--copy-to` will see the *old* response forever
+and have no idea why.
+
+### F2 — Restoring labels works, but you must drop `pod-template-hash`, or the ReplicaSet eats your dev pod.
+The Service selector is `{app: podbench-target}` while the ReplicaSet selector is
+`{app: podbench-target, pod-template-hash: 7b8d54747c}`. Keeping `app` + `tier` and
+dropping `pod-template-hash` puts the dev pod in the Service **without** making it a
+ReplicaSet member — verified: RS stayed `DESIRED 1 / CURRENT 1` and never deleted
+either pod. Keeping the hash would have made two pods match a `replicas: 1` RS and one
+of them would be reaped. The same applies to `controller-revision-hash` (StatefulSet/
+DaemonSet) and `controller-uid`/`batch.kubernetes.io/*` (Job).
+
+### F3 — Joining the Service *before* the app is relaunched produces ~50 % hard failures.
+With no probes, the dev pod is `Ready` the instant its containers start, so it enters
+the endpointslice while nothing is listening on `:8080`:
+
+```
+000 ERR 000 ERR 200 000 ERR 200 200 000 ERR 000 ERR
+```
+
+Two clean fixes, both verified:
+* **Readiness gate** (recommended): put a `tcpSocket: 8080` readinessProbe on the
+  *podbench* container. The dev pod then joins the Service exactly when the relaunched
+  process binds, and **drops out again within ~6 s** when you kill it. This makes
+  Service membership automatically track your inner loop.
+* **Selector flip** for an exclusive cutover:
+  `--type=json … replace /spec/selector` → only the dev pod serves; the original
+  Deployment stays running untouched as an instant rollback.
+
+### F4 — Shared network namespace claim: **CONFIRMED**.
+The process launched by the sidecar's own `uv`-installed interpreter bound
+`0.0.0.0:8080` and served on the **pod IP** `10.42.5.125:8080`, reachable both directly
+and through the Service, with the app container untouched and idled. `/proc/net/tcp`
+read from the *app* container showed the *sidecar's* outbound sockets — same netns.
+
+### F5 — Mount-namespace warning: **CONFIRMED, and worse than "it dangles"**.
+Two distinct failure shapes, from inside the target container:
+
+*Path-style `.pth`* — **silently ignored**, no warning at all. `site.py` only appends
+directories that exist:
+```
+on sys.path? False
+sys.path == ['', '/usr/local/lib/python312.zip', '/usr/local/lib/python3.12',
+             '/usr/local/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/site-packages']
+ModuleNotFoundError: No module named 'podbench_demo'
+```
+The failure surfaces much later as an unrelated-looking import error.
+
+*Exec-style `.pth`* (what modern PEP-660 editable installs emit) — prints an error but
+is **non-fatal**; the interpreter still starts with exit code 0:
+```
+Error processing line 1 of /usr/local/lib/python3.12/site-packages/podbench_exec.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 206, in addpackage
+    File "<string>", line 1, in <module>
+    File "/usr/local/lib/python3.12/site-packages/_podbench_impl.py", line 3, in <module>
+      import podbench_demo
+      ^^^^^^^^^^^^^^^^^^^^
+  ModuleNotFoundError: No module named 'podbench_demo'
+
+Remainder of file ignored
+interpreter started
+exit=0
+```
+And running the app the naive way:
+```
+/usr/local/bin/python: Error while finding module specification for 'podbench_demo.app'
+(ModuleNotFoundError: No module named 'podbench_demo')
+```
+This is decisive support for the "everything in the debug container" design rule.
+
+### F6 — The `/proc/<pid>/root` bridge is **one-directional**, by capability.
+From the **podbench sidecar** → into the app container's rootfs: works.
+```
+FOUND via /proc/7
+/workspace/src/podbench_demo/src
+```
+From the **app container** → into the sidecar's rootfs: **fails**, finds nothing.
+```
+bridged paths found: []
+```
+Cause (measured, not assumed):
+```
+app container      CapEff: 00000000a80425fb
+podbench container CapEff: 00000000a80c25fb    (delta = bit 19, CAP_SYS_PTRACE)
+```
+With `yama/ptrace_scope = 1`, traversing another process's `/proc/<pid>/root` needs
+`CAP_SYS_PTRACE`. Only the sidecar has it. This is a *good* property: the debug
+container can reach into the app, but a compromised app container cannot reach the
+debug toolchain. It also means "just symlink from the target into the workspace" is
+not available as a workaround — the design rule stands.
+
+### F7 — Port conflicts: three distinct behaviours, one of them silent and dangerous.
+
+* **Plain conflict** — clear and loud:
+  `OSError: [Errno 98] Address already in use`, raised from
+  `socketserver.TCPServer.server_bind`.
+* **`SO_REUSEPORT` silent split** — if the process already holding the port set
+  `SO_REUSEPORT` (uvicorn with multiple workers, gunicorn `reuse_port`, many Go/Rust
+  servers), a second `SO_REUSEPORT` bind **succeeds with no error** and the kernel
+  load-balances between the two listeners:
+  ```
+  ss -lntp:
+    LISTEN 0.0.0.0:8080  users:(("python",pid=3645,fd=3))
+    LISTEN 0.0.0.0:8080  users:(("python",pid=3635,fd=3))
+  curl x10 through the Service:
+    NEW-CODE-from-podbench-sidecar   (x5)
+    OLD-CODE-still-in-app-container  (x3)
+    NEW-CODE-from-podbench-sidecar   (x2)
+  ```
+  You would be debugging code that only handles half the requests, with nothing in any
+  log to tell you.
+* **`TIME_WAIT` lockout after a `SO_REUSEPORT` server** — once a `SO_REUSEPORT`
+  listener has served connections, a plain `SO_REUSEADDR` rebind of the same port fails
+  for the full TIME_WAIT window (~60 s) even though `ss -lntp` shows **no listener**:
+  ```
+  ss -antp:  TIME-WAIT 10.42.5.125:8080  10.42.5.119:56498   (x9)
+  SO_REUSEADDR only          -> errno 98 [Errno 98] Address already in use
+  SO_REUSEADDR+SO_REUSEPORT  -> BOUND OK
+  ```
+  Verified recovery: after ~70 s the plain relaunch succeeded again and the Service
+  returned the edited string.
+
+### F8 — A naive "wait for the port to open" health check gives a **false PASS**.
+`relaunch.sh` polls `connect(127.0.0.1:8080)`. When the idled container was still
+holding the port, the relaunch crashed with `EADDRINUSE` and the wrapper still printed
+`LISTENING after 1 polls`, exit 0 — while the Service kept returning the *old* string.
+The wrapper must verify **its own child** is alive and owns the socket, not merely that
+*something* answers.
+
+### F9 — Operational footguns observed
+* `kubectl debug --copy-to` prints **nothing** on success. No confirmation line.
+* `pkill -f <pattern>` inside the sidecar **kills the exec'd shell itself** when the
+  pattern appears in the shell's own command line (`command terminated with exit code
+  143`). With `shareProcessNamespace: true` this is worse: `pkill` sees every process
+  in every container of the pod.
+* `kubectl patch svc --type=merge` on `spec.selector` **merges** map keys rather than
+  replacing them. Patching back to `{app: podbench-target}` produced
+  `{app: podbench-target, podbench.dev/devpod: "true"}` and silently dropped the
+  original pod out of the endpointslice. Use `--type=json` with `op: replace`.
+* `ss` and `pkill` are not in `debian:bookworm-slim`; `ps` is not in `python:3.12-slim`.
+  `iproute2` and `procps` are required parts of the podbench image.
+* The target `python:3.12-slim` container has **no shell tooling** for diagnosis — all
+  diagnosis has to be driven from the sidecar.
+
+### F10 — Original workload provably untouched
+```
+BEFORE:  rv=38532067  uid=b75ba7ec-…  restarts=0  start=2026-08-15T10:40:55Z
+AFTER:   rv=38532067  uid=b75ba7ec-…  restarts=0  start=2026-08-15T10:40:55Z   ready=true
+deploy   BEFORE rv=38532071 gen=1     AFTER rv=38532071 gen=1 obsGen=1 ready=1
+events on the original pod: Scheduled / Pulled / Created / Started — and nothing else
+```
+`resourceVersion` was **byte-identical** across the entire spike (12 minutes, three dev
+pods, a Service selector flipped twice). The original `/src/app.py` was unmodified.
+Note this is only true because the dev pod is an *orphan copy* — the Deployment never
+learned it existed.
+
+### F11 — Timings (all on `nuc2`, warm image cache)
+
+| phase | elapsed |
+|---|---|
+| author spec + `kubectl apply` + pod `Ready` | **4.3 s** |
+| `apt-get install curl ca-certificates git xz-utils procps` | **10.6 s** |
+| uv install script + `uv python install 3.12` | **2.3 s** |
+| write package + `uv venv` + `uv pip install -e .` (hatchling from PyPI) | **1.0 s** |
+| first relaunch → listening | **0.85 s** |
+| **edit → relaunch → verified through the Service** | **1.18 s** |
+| **total, `--copy-to` to a working edit-relaunch loop** | **≈ 19 s of work** |
+
+Caveats: `python:3.12-slim` and `debian:bookworm-slim` were already cached on `nuc2`
+("Container image … already present on machine"), so **image pull time is excluded**.
+I attempted a genuinely cold measurement on the other amd64 node and could not —
+`ws03` carries a `workstation` taint and `node01` a control-plane taint, so **`nuc2` is
+the only schedulable amd64 node on this cluster**:
+```
+0/6 nodes are available: 2 node(s) had untolerated taint(s),
+4 node(s) didn't match Pod's node affinity/selector.
+```
+
+---
+
+## Deviations from the brief
+
+1. **`--copy-to` does far more than strip probes — it strips *all* labels and
+   annotations, so the clone receives no Service traffic.** The brief only claimed
+   probes. This is the single most important deviation: the headline Iterate-mode demo
+   ("edit code, curl the Service, see your change") **cannot work at all** with vanilla
+   `--copy-to`. Podbench must author the spec and deliberately re-apply the selector
+   labels, minus the controller-revision label.
+
+2. **`--copy-to` cannot give the debug container `resources` or a workspace volume.**
+   `kubectl debug --copy-to --image=… --container podbench` does create a real
+   (non-ephemeral) sidecar and does set `shareProcessNamespace: true`, but the container
+   comes out with `resources: {}` and only the serviceaccount mount. There is no flag
+   for requests/limits or an `emptyDir`. This empirically justifies the Phase-4
+   authored-spec approach rather than shelling out to `kubectl debug`.
+
+3. **Taking Service traffic is not free — there is a broken window, and the fix is a
+   readiness probe on the *debug* container.** The brief treats "the clone receives
+   Service traffic" as a binary property. In practice a probe-less dev pod becomes
+   `Ready` immediately and blackholes ~50 % of requests until you relaunch. A
+   `tcpSocket` readinessProbe on the podbench sidecar makes endpoint membership track
+   the inner loop automatically, in both directions. This should be part of the
+   authored spec, not an option.
+
+4. **`SO_REUSEPORT` breaks the "the port is either free or you get EADDRINUSE"
+   assumption.** With any framework that sets `SO_REUSEPORT`, a relaunch succeeds
+   silently and splits traffic between old and new code, and afterwards TIME_WAIT
+   entries lock out a plain rebind for ~60 s with no visible listener. Podbench must
+   inspect the port before relaunching, not just try to bind.
+
+5. **Cold-start timings could not be measured on this cluster** — only one amd64 node is
+   schedulable (`ws03` is tainted `workstation`). All numbers are warm-cache.
+
+---
+
+## Recommendations for implementation
+
+1. **Author the pod spec in the launcher. Do not shell out to `kubectl debug --copy-to`.**
+   The prototype above is ~60 lines and gives you probes, labels, resources, volumes and
+   `shareProcessNamespace` under your own control. `kubectl debug` has no `--dry-run`,
+   so you cannot even preview what it will produce.
+
+2. **Label policy is the crux.** Copy the origin pod's labels, then delete
+   `pod-template-hash`, `controller-revision-hash`, `controller-uid`,
+   `batch.kubernetes.io/controller-uid`, `batch.kubernetes.io/job-name`, `job-name`,
+   `statefulset.kubernetes.io/pod-name`. Add `podbench.dev/devpod: "true"` and an
+   annotation recording the origin pod. Gate the whole thing behind an explicit
+   `--take-traffic` flag: default **off** (labels emptied, like `--copy-to`), because
+   silently joining a production Service is a foot-cannon.
+
+3. **Always put a `tcpSocket` readinessProbe for the target port on the podbench
+   container** (`periodSeconds: 2, failureThreshold: 1`). This makes the dev pod's
+   Service membership follow the relaunched process automatically and removes the
+   50 %-failure window entirely.
+
+4. **Offer a "cutover" mode** that flips the Service selector to
+   `{podbench.dev/devpod: "true"}` for exclusive traffic, restoring on exit. Implement
+   it with `kubectl patch --type=json op=replace` on `/spec/selector` — a merge patch
+   silently unions the maps. Record the original selector so the restore is exact.
+
+5. **Pre-flight the port before every relaunch.** Read `/proc/net/tcp{,6}` (or run
+   `ss -lntp`, which sees all containers thanks to shared netns + shared PID ns +
+   `CAP_SYS_PTRACE`) and refuse to launch if anything is already LISTENing on the target
+   port, naming the owning PID and — via `/proc/<pid>/root` — the owning container.
+   Also count TIME_WAIT entries on the port and tell the user to wait rather than
+   letting them stare at an inexplicable `EADDRINUSE`.
+
+6. **Never assume the socket poll means success.** The relaunch wrapper must track its
+   own child PID, confirm it is alive, and confirm that PID owns the listening socket
+   (match the socket inode against `/proc/<pid>/fd`). Otherwise a crashed relaunch
+   reports success while the idled container keeps serving stale code.
+
+7. **Bake the toolchain into the podbench image.** `apt-get` at runtime cost 10.6 s of
+   the 19 s loop — 55 % of the total. The image needs at minimum `curl`,
+   `ca-certificates`, `git`, `xz-utils`, `procps`, `iproute2`, plus `uv` and a
+   pre-seeded CPython. That would bring the bootstrap to ~4 s.
+
+8. **Give the sidecar `CAP_SYS_PTRACE` unconditionally.** It is what makes
+   `ss -lntp`, `/proc/<pid>/root` and gdb work across containers, and it is what keeps
+   the bridge one-directional — the app container cannot reach back into the workspace.
+
+9. **Set `HOME=/workspace` on the sidecar** so uv's toolchains, caches and venvs land in
+   the `emptyDir` rather than the container's writable layer. Size the `emptyDir`
+   generously (4 Gi was fine; a CPython toolchain plus a real dependency tree will use
+   it).
+
+10. **Document the mount-namespace rule with the exec-style `.pth` error text**, not
+    just the path-style one. Users hitting the path-style case get *no* diagnostic at
+    all, which is the harder failure to recognise.
+
+11. **`restartPolicy: Never` on the dev pod**, so a crash leaves a corpse to inspect
+    rather than looping. (Used throughout this spike; the pod never restarted.)
+
+12. **Warn about `pkill -f` in generated helper scripts.** Under
+    `shareProcessNamespace: true` it matches the invoking shell and every container's
+    processes. Kill by recorded PID instead.
+
+---
+
+## Cleanup / what was left behind
+
+Deleted: `deployment/podbench-target`, `pod/devpod`, `pod/devpod2`, `pod/devpod-plain`,
+`pod/devpod-plain2`, `pod/devpod-addc`, `pod/devpod-cold`, `pod/curler-copy`,
+`pod/curler`. `kubectl -n podbench-s4 get pods` → `No resources found`.
+
+**Left in place (deliberately):**
+* namespace `podbench-s4` (as instructed)
+* `service/podbench-target` (ClusterIP 10.43.124.195, selector restored to
+  `{app: podbench-target}`, now with zero endpoints)
+* `configmap/app-src` (and the auto-created `kube-root-ca.crt`)
+
+Nothing outside `podbench-s4` was created, modified or deleted. No node-level settings
+were changed. Scratch artefacts (manifests, `podbench_author.py`, helper scripts) are in
+`/tmp/claude-0/-workspaces-tpi-k3s-ansible/2c9abbf4-6c26-436d-9237-a03194fe5977/scratchpad/s4/`.
