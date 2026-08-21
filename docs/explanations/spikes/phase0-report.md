@@ -976,8 +976,14 @@ every device-attached IOC at Diamond is a pod where §3.9's unrecoverable OOM ha
 `--resize` cannot work, and `podbench dev` cannot substitute, because a claim is allocated to one
 pod and a copy would either be refused the device or take it from the workload being debugged. The
 only lever left is the workload's own template, which costs a rollout. podbench submits the patch
-anyway rather than pre-empting it, because a 1.36 cluster will take it, and names the claim when
+anyway rather than pre-empting it, because a fixed cluster will take it, and names the claim when
 the refusal comes back.
+
+> **Correction, 2026-08-21.** This section predicted that Kubernetes 1.36 would carry the fix. It
+> does not: kubernetes/kubernetes@9a7d0e438 landed on `master` after 1.36 was cut, and the
+> `Claims`-dropping line is still present in the tagged source of both v1.36.0 and v1.36.3. The
+> measurement above stands; only the forecast about which release repairs it was wrong.
+
 
 **`--resize` is memory-only.** It takes a memory value and patches `limits.memory`; a CPU limit is
 not raised with it. That did not bite in this measurement — `cpu.stat` showed `nr_throttled 0` with

@@ -460,8 +460,9 @@ policies — accepted a no-op resize. Nothing about the patch is at fault, so
 nothing podbench can send will get through.
 
 It is an upstream defect rather than a rule about claims: `release-1.32`
-through `release-1.35` all drop `Claims` in that comparison, and `master`
-preserves it, so a 1.36 cluster resizes such a container normally. podbench
+through `release-1.36` all drop `Claims` in that comparison. Only `master`
+preserves it: the fix missed the 1.36 release, so no released Kubernetes
+resizes such a container today. podbench
 submits the patch rather than refusing first, for that reason, and names the
 claim when the refusal comes back.
 
