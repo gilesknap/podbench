@@ -57,7 +57,7 @@ choice, and all three run the same code:
 | `uv tool install podbench` (or pipx, or pip) | for `podbench` permanently on `PATH` |
 
 See [Setup](../tutorials/setup.md) for the details, including how
-to run it before the first PyPI release.
+to pin a version and how to run an unreleased checkout.
 
 The in-pod verbs are spelled the same way from a terminal in the seat:
 `podbench pids`, `podbench dbg`, and so on. There are no shorter aliases on
@@ -66,8 +66,8 @@ The in-pod verbs are spelled the same way from a terminal in the seat:
 
 ## Common options
 
-The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take these,
-and so does `doctor`:
+The five launcher verbs — `attach`, `vscode`, `ssh-config`, `status`, `list` —
+take these, and so does `doctor`:
 
 ```
 --namespace  -n  NAMESPACE  namespace (default: the kubeconfig context's own)
@@ -89,11 +89,19 @@ podbench shells out to `kubectl` deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
 credential and no client library.
 
+A verb's `--timeout` and the bound on a kubectl call are different timers. The
+first bounds a polling wait — for a seat to start, or a dev pod to reach
+Running. The second bounds one `kubectl` invocation, at 30 s
+(`kubectl.DEFAULT_CALL_TIMEOUT`); kubectl is told to give up 5 s earlier so that
+its own message names the server rather than podbench's kill. Three calls are
+deliberately exempt: the exec that *is* your ssh session, the `code --remote`
+bootstraps, and the git clone under `hotfix`.
+
 (naming-the-pod)=
 ## Naming the pod
 
-`attach`, `ssh-config` and `status` take a `POD`, and none of them needs the
-whole name. Resolution is the same in all three:
+`attach`, `vscode`, `ssh-config` and `status` take a `POD`, and none of them
+needs the whole name. Resolution is the same in all four:
 
 | you type | what happens |
 |---|---|
@@ -358,7 +366,10 @@ what that seat can actually do.
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
-│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
+│                                              that wait and nothing else: one kubectl call is     │
+│                                              bounded separately, at 30s                          │
+│                                              [default: 120.0]                                    │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
 │                                              implied when stdin is not a tty                     │
@@ -598,7 +609,10 @@ all, and two of these steps change it.
 │                                              [default: ~/.ssh/id_ed25519]                        │
 │ --ssh-user                  NAME             login name to put in the stanza                     │
 │ --host-alias                NAME             ssh Host name for the seat                          │
-│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
+│                                              that wait and nothing else: one kubectl call is     │
+│                                              bounded separately, at 30s                          │
+│                                              [default: 120.0]                                    │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
 │                                              implied when stdin is not a tty                     │
@@ -611,8 +625,9 @@ all, and two of these steps change it.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-`POD` and every option `attach` takes mean the same thing here; only the four
-below are its own.
+`POD` and every option `attach` takes mean the same thing here; only the two
+below are its own. (`attach --print-config` is the one option `vscode` does
+*not* take — see below.)
 
 #### Sizing the pod
 
@@ -841,7 +856,8 @@ burnt.
 │ --timeout             SECONDS    wait this long for a seat that is still starting before         │
 │                                  reporting. The default reports what is there now; pass the same │
 │                                  number `attach --timeout` needed on a cluster whose image pull  │
-│                                  is slow                                                         │
+│                                  is slow. It bounds that wait and nothing else: one kubectl call │
+│                                  is bounded separately, at 30s                                   │
 │                                  [default: 0.0]                                                  │
 │ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
 │                                  ~/.podbench)                                                    │
@@ -912,7 +928,11 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 │                                    ~/.podbench)                                                  │
 │ --host-alias            NAME       ssh Host name for the sidecar                                 │
 │ --delete                           tear the dev pod down                                         │
-│ --timeout               SECONDS    seconds to wait [default: 120.0]                              │
+│ --timeout               SECONDS    seconds to wait for the dev pod to reach Running. It bounds   │
+│                                    that wait and nothing else: it is `kubectl wait`'s own        │
+│                                    deadline, backed by a kill 15s later, and every other kubectl │
+│                                    call is bounded separately, at 30s                            │
+│                                    [default: 120.0]                                              │
 │ --dry-run                          print the authored pod instead of creating it                 │
 │ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
 │                                    with the candidates instead. Already implied when stdin is    │
@@ -1542,7 +1562,10 @@ the port.
 │ *  --port             PORT     the port it must serve [required]                                 │
 │    --workspace        DIR      workspace root [default: /workspace]                              │
 │    --dir              DIR      working directory (default: workspace)                            │
-│    --timeout          SECONDS  seconds to verify [default: 15.0]                                 │
+│    --timeout          SECONDS  seconds to wait for the command to bind its port before reporting │
+│                                that it did not. It bounds this process's own poll loop and       │
+│                                nothing else: no kubectl call is involved                         │
+│                                [default: 15.0]                                                   │
 │    --help                      Show this message and exit.                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1637,7 +1660,7 @@ stream.
 |---|---|---|
 | `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides. Both override the default, which is `ghcr.io/gilesknap/podbench:` plus the launcher's own version (`main` for a dev build) |
 | `PODBENCH_CONFIG_DIR` | launcher, `dev` | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
-| `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `run` | the target container's runtime ID, injected at attach time |
+| `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `debug-config`, `run` | the target container's runtime ID, injected at attach time |
 | `PODBENCH_TARGET` | `pids` | the target container's *name*, injected at attach time. What the listing is headed with |
 | `PODBENCH_POD_CONTAINERS` | `pids` | every container in the pod, comma-separated, injected at attach time. How the listing names the containers the seat is not in |
 | `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected into the seat's spec by `attach` and by `dev` |
@@ -1646,6 +1669,9 @@ stream.
 | `PODBENCH_SSH_HOST_KEY_FILE` | agent | the same from a file. Default mount `/etc/podbench/ssh/ssh_host_ed25519_key` |
 | `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net`; the seat drops it from ssh sessions when nothing answers there |
 | `DEBUGINFOD_TIMEOUT` | gdb, `dbg` | seconds gdb will wait on that server, per file. The image sets `2`; gdb's own default is 90 |
+| `PODBENCH_OWNER` | launcher, `list`, `status` | the cluster identity `kubectl auth whoami` named, stamped into the seat's spec so a reconnect reaches only your own seat (#113) |
+| `PODBENCH_HOST_NETWORK` | `debug-config` | carries `spec.hostNetwork` into the seat, because absent means *unknown* and a loopback debug port on such a pod is the node's (#87) |
+| `PODBENCH_NODE_NAME` | `capreport` | the node the report names, since Yama differs per node |
 
 sshd leaks none of its own environment to the commands it runs, so a variable
 set on the debug container reaches `kubectl exec` and a shell but not an ssh

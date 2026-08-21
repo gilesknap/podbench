@@ -15,15 +15,6 @@ itself is not installed — `uvx` fetches and runs it.
 `uvx podbench doctor --fix` checks all of that and adds the `Include` for you;
 it exits `0` when nothing is in the way.
 
-:::{important}
-**Before the first PyPI release** there is nothing for `uvx podbench` to
-resolve. Until then, run every `uvx podbench` on this page as:
-
-```
-$ uvx --from git+https://github.com/gilesknap/podbench podbench <verb>
-```
-:::
-
 :::{note}
 The measurements quoted throughout these docs were taken on a 6-node k3s
 cluster, not on kind. The behaviour is the same; the timings will not be.
@@ -126,9 +117,10 @@ the spec podbench asked for:
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
 target      web
 version     0.4.0b1, the same build as this launcher
+owner       kubernetes-admin
 rung        full - uid 0, gid 0, CapEff 00000000a80c25fb
 ladder
-  full      landed   admitted by the API server and the kubelet
+  full      landed   running since 2026-08-21T09:14:02Z
 supports
   [x] live attach (gdb -p <pid>)
   [x] read-only inspect (/proc/<pid>/root, maps, environ)
@@ -137,12 +129,14 @@ supports
   [ ] iterate (edit, relaunch, verify through the Service)
   [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
   [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
-measured
+measured    --no-probe skips this block
   verdict     live attach available
   blocker     none
   node        kind-worker
   yama        1
   ids         seat 0:0, target 0:0
+  pause       none - PTRACE_SEIZE does not stop the tracee
+  memory      2986Mi free of 3Gi (86Mi in use)
 ```
 
 Four lines are worth learning to read:
@@ -159,12 +153,17 @@ Four lines are worth learning to read:
   and the command still exits `0`. What podbench asked admission for is on the
   `ladder` lines below, and the two can differ: a policy that rewrites a request
   rather than refusing it leaves a container the spec no longer describes.
-* **`blocker`** — what actually stops ptrace, if anything. Four unrelated
-  subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
-  `EPERM`; this line names which.
+* **`blocker`** — what actually stops ptrace, if anything. Several unrelated
+  mechanisms refuse with the same `EPERM` — a missing capability, Yama, seccomp,
+  an LSM label mismatch (SELinux or AppArmor), or a uid/gid mismatch; this line
+  names which.
 * **`yama` and `node`** — both are per-node. Attach working on one pod and being
   denied on the next, in the same cluster, is expected: kernel flavours differ.
   podbench never caches a cluster-wide answer.
+* **`memory`** — the headroom in **this** pod, read with `kubectl top pod`. An
+  ample margin is a number and not a caution. Where there is no metrics API the
+  row reads `in use not measured (no metrics API here)`, which says
+  **unmeasured** and not *fine*.
 
 The indented line under a tick is the measurement the tick was taken from — here,
 which of the target's `/proc` paths actually opened. Read it rather than the box:
@@ -176,10 +175,11 @@ which of the target's `/proc` paths actually opened. Read it rather than the box
 The last lines of the attach output tell you the alias:
 
 ```
-ssh config written to ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
-add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+ssh config written to /home/you/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
+add this to ~/.ssh/config once:  Include /home/you/.podbench/config.d/*.conf
 or let podbench check and add it:  podbench doctor --fix
-then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
+then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1   (or Remote-SSH: Connect to Host -> podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1)
+to debug in VS Code, run `podbench debug-config` in the seat (writes .vscode/launch.json)
 ```
 
 If you have not added the `Include` line yet, run `uvx podbench doctor --fix`
@@ -192,7 +192,7 @@ root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 container web: the processes in its PID namespace
 PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
 1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
-42   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
+42   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
 ```
 
 There is no listening socket in that pod, no port-forward and no pod IP
@@ -217,14 +217,20 @@ On first connect the server downloads and extracts itself into the container
 (about 2 s to download, 6 s to extract, ~680 MiB on disk).
 
 :::{warning}
-No real VS Code GUI client has been driven against podbench yet. The transport
-was verified at the protocol level and the server was driven headlessly, so the
-memory figures in these docs are **lower bounds** — no extension host or
-language server has been measured. Expect the connection to work and the
-footprint to be larger than quoted.
+A real VS Code GUI client has now connected — and the numbers still have not
+been taken. On 2026-08-17 a Remote-SSH client reached a seat, started an
+extension host, unpacked `ms-vscode.cpptools` and drove gdb through the C++
+adapter into a live IOC. The transport was verified at the protocol level
+besides, and the server was driven headlessly, so the memory figures in these
+docs are **lower bounds** — no extension host or language server has been
+measured. Expect the connection to work and the footprint to be larger than
+quoted.
 :::
 
-Open `/` in the remote window and you are editing inside the cluster. See
+Open the seat's home in the remote window — `/root`, or `/home/podbench` on a
+`podbench-home` volume — and you are editing inside the cluster. Do **not** open
+`/`: it points the file watcher and the search indexer at `/proc`, where the
+walk has no bottom. See
 [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md) for sizing, extensions and
 the settings that matter.
 

@@ -22,14 +22,17 @@ RBAC, in the namespace being debugged. That is the whole list:
 | `pods` | `create`, `delete` | mint and remove a dev pod | Iterate mode |
 | `services` | `get`, `list`, `patch` | repoint a Service at the dev pod | `--take-traffic` / `--cutover` only |
 | `persistentvolumeclaims` | `get`, `list` | granted by the chart for the optional scratch workspace claim. Nothing in the launcher reads it yet — the dev pod's workspace is always an `emptyDir` | Iterate mode |
-| `pods/resize` | `get`, `patch` | raise a running workload's memory limit before attaching | `attach --resize` only |
+| `pods/resize` | `get`, `patch` | raise a running workload's memory limit before attaching | `attach --resize` / `--resize-cpu`, and every `podbench vscode` unless `--no-resize` |
 | `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout | Hotfix mode |
 | `apps`: `deployments`, `statefulsets` | `patch` | write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Hotfix mode relies on, so they go on the template — and that same edit is what rolls the workload | Hotfix mode |
 | `pods` | `patch`, `delete` | annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back | Hotfix mode |
 
 `podbench doctor` asks the cluster for these one `kubectl auth can-i` at a time,
-as your own kubeconfig, and reports them per feature — `attach OK`,
-`iterate missing`. It is the same list: `podbench.doctor.FEATURES` names the
+as your own kubeconfig, and reports them per feature —
+`[ok] attach   all 5 verbs allowed`,
+`[warn] iterate  missing: create pods, delete pods`. Only the `attach` row
+blocks; the rest are warnings and do not change the exit code. It is the same
+list: `podbench.doctor.FEATURES` names the
 chart flag that grants each feature, and `tests/test_chart_contract.py` renders
 the chart to assert the two cannot drift. Without it an RBAC denial arrives
 mid-attach, after a container name has been burnt for the life of the pod.
@@ -85,7 +88,7 @@ first-class mode rather than an error state.
 
 | Rung | securityContext | Admitted under | Buys |
 |---|---|---|---|
-| **full** | `runAsUser: 0`, `capabilities.add: [SYS_PTRACE]` | privileged / exempted namespaces, or a targeted policy | attach to the workload's live processes |
+| **full** | `runAsUser: 0`, `capabilities.add: [SYS_PTRACE]`, `privileged: false`, `allowPrivilegeEscalation: false` | privileged / exempted namespaces, or a targeted policy | attach to the workload's live processes |
 | **degraded** | `runAsUser: <target's uid>`, `runAsGroup: <target's gid>`, `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, and the target's own `seccompProfile` where it has one | **restricted**, verified | `/proc/<pid>/root`, `maps`, `environ`, `exe`, `cwd`; full source-level debugging of processes gdb starts itself |
 | *(seat)* | whatever the cluster will admit | anything | editor, shell, git, uv |
 
@@ -221,9 +224,12 @@ process — and even that has workarounds:
   the capability check both exempt them.
 * **gdb-launch survives.** `podbench dbg --launch ./prog` gives breakpoints,
   `run`, `continue`, backtraces, arguments and locals at uid 1000 with
-  `CapEff: 0000000000000000`, under `restricted` with `RuntimeDefault` seccomp.
-  Document the inner loop as gdb-**launch**; attach is the privileged special
-  case.
+  `CapEff: 0000000000000000`, under `restricted` on every runtime the spikes
+  measured. `RuntimeDefault` is a name, not a filter: a DLS node's own denied
+  `ptrace` even on a self-forked child (2026-08-18, above), which is why the
+  seat now mirrors the target's profile and why `capreport` **measures** this
+  rung rather than claiming it. Document the inner loop as gdb-**launch**;
+  attach is the privileged special case.
 * **In-process debug servers are the ptrace-free live attach.** debugpy, Node's
   inspector, JDWP: the app listens on loopback, the editor attaches through the
   shared network namespace and the ssh tunnel. For Python this means the live
@@ -300,7 +306,7 @@ automatically and prints why.
 * **The `/proc/<pid>/root` bridge is one-directional.** The debug container can
   read the app's rootfs; the app cannot see the debug container's. A compromised
   application container cannot reach the debug toolchain.
-* **The target's filesystem is never written.** `readOnlyRootFilesystem` is
+* **`attach` never writes the target's filesystem.** `readOnlyRootFilesystem` is
   common in production and podbench does not depend on writing into the target.
   `/proc/<pid>/root` is a read path in every standard workflow.
 * **An ssh-able seat on a live pod runs as the target's own uid and gid**, and
@@ -327,11 +333,20 @@ automatically and prints why.
   [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md). Air-gapped operation is
   unspiked.
 * **`--resize` changes a running workload's memory limit.** It is a separate
-  RBAC grant for that reason, and it is opt-in.
+  RBAC grant for that reason. It is opt-in on `attach`; `podbench vscode` spends
+  it by default, sized from the measured headroom, with `--resize MEMORY` to
+  choose the number and `--no-resize` to decline. The raise lands on the pod and
+  not on its controller, so a rollout reverts it.
+* **`podbench vscode` installs debugpy into the target, by default.** ~15 MB into
+  the workload's writable layer through `/proc/<pid>/root`, needing egress from
+  the pod, and it ptraces the app for a few seconds to start the server.
+  `--no-provision` declines; a read-only target rootfs gets `EROFS`. See
+  *Provisioning* in the [command-line reference](../reference/cli.md).
 * **Availability, not confidentiality, is the real risk in Observe mode.**
   podbench cannot reserve resources on a live pod, so the plausible incident is
-  an OOM-killed or evicted workload, not a data breach. See the footgun section
-  on the front page.
+  an OOM-killed or evicted workload, not a data breach. See
+  *Read this before you attach to a live pod* on the
+  [front page](../index.md).
 
 ### The seat's login, and the world-writable file that provides it
 

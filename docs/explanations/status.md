@@ -7,10 +7,12 @@ parts they are not.
 
 ## The evidence
 
-Five spikes ran against a real 6-node k3s cluster and all five passed. They are
-kept verbatim in [Spikes](spikes.md), along with the
-[Phase 0 gate report](spikes/phase0-report.md) that consolidates them. The
-report is the empirical basis for most of the non-obvious behaviour in the tool:
+Five Phase 0 spikes ran against a real 6-node k3s cluster and all five passed.
+They are kept verbatim in [Spikes](spikes.md), along with the
+[Phase 0 gate report](spikes/phase0-report.md) that consolidates them — and with
+the later notes, S6 among them, recorded whether or not the answer was the
+hoped-for one. The report is the empirical basis for most of the non-obvious
+behaviour in the tool:
 it falsified five of the [design brief](design-brief.md)'s load-bearing
 assumptions, and **where the brief and the report disagree, the report wins**.
 
@@ -20,11 +22,11 @@ a dated paragraph on each row that a later session has settled or added to.
 Several of those constraints look arbitrary and are not; the failure modes they
 avoid are silent.
 
-The spikes ran on a cluster this project owns. A field session on 2026-08-17 did
-not: an EPICS IOC at Diamond, in a namespace where the user is not an admin,
-under someone else's Kyverno policies and against a RHEL-family target image. It
-closed the largest item below and opened two others, and most of what it found
-was invisible from this side of the cluster boundary.
+The spikes ran on a cluster this project owns. Field sessions on 2026-08-17, -18
+and -19 did not: an EPICS IOC at Diamond, in a namespace where the user is not an
+admin, under someone else's Kyverno policies and against a RHEL-family target
+image. They closed the largest item below and opened two others, and most of what
+they found was invisible from this side of the cluster boundary.
 
 ## Known-unproven, stated plainly
 
@@ -59,10 +61,10 @@ set — a `validate.pattern` rule fails on an *absent* field — and the ladder
 treated that as fatal instead of dropping a rung. Both are fixed, and the ladder
 now degrades through any webhook denial while still raising a webhook that
 failed to *answer*. **Gatekeeper is untested.** An engine that **mutates**
-rather than refuses now is: one that strips `capabilities.add` leaves a root
-seat that reads back as the degraded rung and attaches perfectly well, which is
-the opposite way round from the worry recorded here, and it was reporting rather
-than debugging that it broke (issue #89). `status` no longer describes a seat
+rather than refuses now is (2026-08-18): one that strips `capabilities.add`
+leaves a root seat that reads back as the degraded rung and attaches perfectly
+well, which is the opposite way round from the worry recorded here, and it was
+reporting rather than debugging that it broke (issue #89). `status` no longer describes a seat
 from the rung it landed on; it reports what `capreport` measured in it, or
 `not probed`.
 
@@ -74,14 +76,24 @@ and Ubuntu targets need one of the other routes. See
 from today.
 
 **In-place pod resize is partly proven, and it diverges a pod from its
-controller.** `attach --resize` was measured on three pods, two of them
-Deployment-managed — but on one Kubernetes version, and the raised limit lives
-on the *pod*, not on its controller, so a rollout regenerates the pod from an
-unchanged template and silently reverts it. A `LimitRange` bounding
+controller.** It is reached two ways: `attach --resize`, which is opt-in, and
+`podbench vscode`, which spends it on every run unless `--no-resize`. It was
+measured on three pods, two of them Deployment-managed — but on one Kubernetes
+version, and the raised limit lives on the *pod*, not on its controller, so a
+rollout regenerates the pod from an unchanged template and silently reverts it. A `LimitRange` bounding
 `maxLimitRequestRatio` is now handled — the request moves with the limit, by an
 amount read from the namespace — after it made `--resize` unusable across a
 whole namespace at Diamond on 2026-08-16. A **`ResourceQuota` is still
 untested**, as is a second Kubernetes version.
+
+**`podbench vscode` has never been driven end to end against a GUI client.** The
+verb probes the alias, sizes the pod, provisions debugpy, writes the three
+`.vscode` files, installs the remote extensions and opens the seat's home. That
+sequence has unit tests and was verified flag by flag by hand on 2026-08-16; it
+has no live proof. Two of its steps mutate the workload **by default** —
+`--no-resize` and `--no-provision` opt out — and both carry the caveats already
+recorded under resize and provisioning. The headroom it sizes from is read with
+`kubectl top pod`, and reports **unmeasured** where there is no metrics API.
 
 **Hotfix mode has never been run against a cluster.** The workflow exists —
 `podbench hotfix init|apply|status|consolidate`, plus `hotfix --print-values`

@@ -37,10 +37,11 @@ capreport
   about capability comes from here, never from the spec that was submitted.
 
 blocker
-  The named mechanism that denied {term}`ptrace`. Four unrelated subsystems refuse
-  with the same {term}`EPERM` — a missing {term}`CAP_SYS_PTRACE`, {term}`Yama`,
-  {term}`seccomp` and {term}`AppArmor` — so naming which one is the entire point of
-  {term}`capreport`.
+  The named mechanism that denied {term}`ptrace`. Several unrelated mechanisms
+  refuse with the same {term}`EPERM` — a missing {term}`CAP_SYS_PTRACE`,
+  {term}`Yama`, {term}`seccomp` and a mismatch between the seat's and the target's
+  LSM labels (SELinux MCS categories, or AppArmor profiles) — so naming which one
+  is the entire point of {term}`capreport`.
 
 dev pod
   Iterate mode's sacrificial clone of a running pod: same image, same volumes, same
@@ -49,8 +50,8 @@ dev pod
   the mode is unsafe for a {term}`singleton`.
 
 launcher
-  The half of podbench that runs on your machine — the `attach`, `dev`, `hotfix`,
-  `status`, `list` and `doctor` verbs. It shells out to {term}`kubectl` rather than
+  The half of podbench that runs on your machine — the `doctor`, `attach`,
+  `vscode`, `ssh-config`, `status`, `list`, `dev` and `hotfix` verbs. It shells out to {term}`kubectl` rather than
   linking a Kubernetes client library, so authentication, contexts and exec credential
   plugins are inherited rather than reimplemented.
 
@@ -81,8 +82,8 @@ launch-only
   processes.
 
 mode
-  One of the three ways in. **Observe** is the `attach` verb, **Iterate** is `dev`,
-  and **Hotfix** is `hotfix`. The design documents use the mode names and the CLI uses
+  One of the three ways in. **Observe** is the `attach` and `vscode` verbs,
+  **Iterate** is `dev`, and **Hotfix** is `hotfix`. The design documents use the mode names and the CLI uses
   the verbs; they refer to the same things.
 
 origin
@@ -167,7 +168,8 @@ spike
   building on it. S1 (the ssh transport), S2 (vscode-server in an
   {term}`ephemeral container`), S3 (gdb against a {term}`distroless` target), S4 (the
   Python relaunch loop) and S5 (the no-capability fallback) were the Phase 0 gate, and
-  are collated in the Phase 0 gate report — which is where most of the non-obvious code
+  are collated in [the Phase 0 gate report](../explanations/spikes/phase0-report.md) —
+  which is where most of the non-obvious code
   here comes from, and which wins wherever it and the design brief disagree. S6 came
   later and records a route *not* taken: suspending an {term}`Argo CD`-managed workload.
 
@@ -321,9 +323,11 @@ ReplicaSet
 
 resize subresource
   `pods/resize` — the in-place change of a running container's resource limits,
-  `kubectl patch pod --subresource resize`. `attach --resize` uses it to make headroom
-  for the editor, opt-in and never fatal: the raised limit lives on the pod alone, so
-  a rollout, scale, image bump or eviction regenerates it away silently.
+  `kubectl patch pod --subresource resize`. `podbench vscode` uses it to make
+  headroom for the editor by default (`--no-resize` declines); `attach --resize`
+  exposes it for a number you choose yourself. Never fatal: the raised limit lives
+  on the pod alone, so a rollout, scale, image bump or eviction regenerates it away
+  silently.
 
 RWO
   ReadWriteOnce — a volume access mode allowing one node to mount the volume for
@@ -620,11 +624,22 @@ sshd
   against a generated config file of its own rather than the image's, so the working
   configuration is a reviewable artifact and the distro's sshd is left alone.
 
+vscode
+  The laptop verb that lands an Observe-mode seat, sizes the pod against
+  {term}`vscode-server`'s measured footprint, provisions debugpy into the target
+  and opens the editor on the seat's home. Both mutations are **on by default** —
+  `--no-resize` and `--no-provision` decline them — which makes it the only verb
+  that changes a running workload without being asked for a number. See
+  {term}`resize subresource` and {term}`mode`.
+
 vscode-server
   The server half of {term}`Remote-SSH`, unpacked into the seat's home on first
-  connect. It is about 700 MiB, and a working session with extensions and a language
-  server index reaches 1.1–1.3 GB — the number behind every warning about memory and
-  ephemeral storage in Observe mode.
+  connect. Measured at **1215 MiB** in a seat carrying a real Remote-SSH session
+  (2026-08-16) — the figure `resize.EDITOR_HEADROOM` checks this pod's headroom
+  against, and the one memory cost that still earns a warning. On disk a working
+  session with extensions and a language-server index reaches **1.1–1.3 GB**,
+  which is the ephemeral-storage figure. The ~700 MiB once quoted was an S2
+  projection taken without a GUI client.
 ```
 
 ## Python packaging
