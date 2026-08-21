@@ -7,9 +7,7 @@ need to size a pod **before** you attach.
 
 :::{note}
 Commands here are written `podbench <verb>` — the only spelling there is. If you
-have not installed the launcher, run each as `uvx podbench <verb>`, or, before
-the first PyPI release, as
-`uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`. See
+have not installed the launcher, run each as `uvx podbench <verb>`. See
 [Setup](../tutorials/setup.md).
 :::
 

@@ -44,19 +44,17 @@ $ uvx podbench list
 no podbench containers in namespace default
 ```
 
-:::{important}
-**Before the first PyPI release, `uvx podbench` cannot resolve anything** — the
-name is not published yet, and `uvx` will tell you so. Until it is, put
-`--from git+https://github.com/gilesknap/podbench` in front of every
-`uvx podbench` on this site:
+:::{note}
+Only prereleases are published so far, so `uvx podbench` resolves the newest
+beta today. To run an unreleased checkout instead, put
+`--from git+https://github.com/gilesknap/podbench` in front of the verb:
 
 ```
 $ uvx --from git+https://github.com/gilesknap/podbench podbench --version
-$ uvx --from git+https://github.com/gilesknap/podbench podbench list
 ```
 
-That builds the launcher from the repository head, so it is a dev build — see
-*The image*, below, for which image such a launcher asks for.
+That builds from repository head, so it is a dev build — see *The image*, below,
+for which image such a launcher asks for.
 :::
 
 That is the whole setup. `uvx` resolves the wheel from PyPI and runs it;
@@ -70,26 +68,31 @@ consequence worth knowing — an unpinned `uvx podbench` keeps using the cached
 version rather than checking PyPI for a newer one. Ask for `podbench@latest`, or
 pass `--refresh`, when you want the newest release.
 
-Pin it as `uvx podbench@1.0.0 <verb>` in anything that has to be reproducible —
+Pin it as `uvx podbench@0.4.0b1 <verb>` in anything that has to be reproducible —
 a script, a runbook, a shared incident channel.
 
 If you would rather have `podbench` on your `PATH` and manage upgrades yourself,
 `uv tool install podbench` does that, as do `pipx install podbench` and a plain
 `pip install podbench` into a virtualenv you keep activated. They all run the
-same program and all read the same name from PyPI, so they wait on the first
-release too. Only the `pip` route does not fetch its own interpreter, so build
+same program and all read the same name from PyPI. Until a final release
+exists, each needs the prerelease asked for explicitly —
+`pip install --pre podbench`, `uv tool install podbench --prerelease allow`.
+Only the `pip` route does not fetch its own interpreter, so build
 that venv with **3.11 or later** — pip refuses the wheel otherwise.
 
 A release carries two spellings of its version: the wheel is PEP 440
 (`1.0.0b1`), while the git tag and the chart are SemVer (`1.0.0-beta.1`). The
 **image carries both**, pushed onto one digest, which is what lets the launcher
-ask for its own version verbatim. A bare `uvx podbench` will not select a
-prerelease, which is the behaviour you want — so testing a beta means asking for
-it by its wheel spelling, `uvx podbench@1.0.0b1 attach ...`.
+ask for its own version verbatim. uv prefers a stable release and falls back to
+a prerelease only when no stable one exists — which is the case today, so a bare
+`uvx podbench` currently gets `0.4.0b1`. Once a stable release ships, testing a
+beta will mean asking for it by its wheel spelling,
+`uvx podbench@1.0.0b1 attach ...`.
 
 The current release string is on the
 [releases page](https://github.com/gilesknap/podbench/releases); you need it
-below for `helm --version`.
+below for the `--version` flag on `helm show chart` and `helm upgrade
+--install`.
 
 ## Check the machine, and add the ssh include
 

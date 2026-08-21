@@ -15,15 +15,6 @@ itself is not installed — `uvx` fetches and runs it.
 `uvx podbench doctor --fix` checks all of that and adds the `Include` for you;
 it exits `0` when nothing is in the way.
 
-:::{important}
-**Before the first PyPI release** there is nothing for `uvx podbench` to
-resolve. Until then, run every `uvx podbench` on this page as:
-
-```
-$ uvx --from git+https://github.com/gilesknap/podbench podbench <verb>
-```
-:::
-
 :::{note}
 The measurements quoted throughout these docs were taken on a 6-node k3s
 cluster, not on kind. The behaviour is the same; the timings will not be.
