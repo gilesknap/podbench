@@ -13,7 +13,10 @@ a user is most likely to improvise are the two that fail quietly:
   ``<alias>``". A locally-installed extension runs the debug adapter on the
   laptop, where none of the ``/proc/<pid>/root`` paths mean anything, and the
   failure presents as a bad ``launch.json``. ``code --remote ssh-remote+<alias>
-  --install-extension`` is that button as a flag.
+  --install-extension`` looks like that button as a flag and is not: it answers
+  from the *laptop's* install list and short-circuits on anything held there,
+  so it is attempted, verified, and then made good by the seat's own
+  ``code-server`` — which is that button, being the code path it runs.
 
 Everything either step needs is already known here: the alias comes from the
 stanza this attach just wrote, the folder from the seat's own home, and the
@@ -61,6 +64,7 @@ from __future__ import annotations
 import enum
 import json
 import shutil
+import time
 from collections.abc import Callable, Sequence
 from shlex import quote
 from typing import Any, cast
@@ -88,6 +92,8 @@ __all__ = [
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_FLAG",
+    "SERVER_CLI_ATTEMPTS",
+    "SERVER_CLI_INTERVAL",
     "Provision",
     "check_reachable",
     "open_seat",
@@ -444,6 +450,7 @@ def open_seat(
     provision: Provision = Provision.NEVER,
     ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Configure ``folder`` in the seat, install what it needs, and open it.
 
@@ -544,6 +551,7 @@ def open_seat(
             report(f"could not install {extension}: {_detail(result.stderr)}")
             continue
         attempted = True
+    missing: list[str] = []
     if attempted:
         # The exit code above proves nothing, so the seat is asked. See
         # `unpacked_extensions` — this is the check whose absence let a DLS run
@@ -553,8 +561,6 @@ def open_seat(
         )
         if installed:
             report(_RELOAD_NOTE)
-        if missing:
-            report(_MISSING_REMEDY.format(missing=", ".join(missing), alias=alias))
 
     # Unbounded: this hands the argv to a window and returns, and on a cold
     # start it is waiting for the user's editor to exist.
@@ -567,6 +573,17 @@ def open_seat(
             "alias itself was proven above."
         )
     report(f"asked VS Code to open {folder} over Remote-SSH ({alias})")
+    # Only now, and this ordering is the fix: the seat's own vscode-server does
+    # not exist until a window has connected and bootstrapped it, so the
+    # fallback cannot run before the line above. What it must never move ahead
+    # of is `settings.json` — the watcher starts walking the moment the window
+    # opens, and that race is the one whose loser is an unrecoverable seat.
+    if missing:
+        missing = _install_through_the_seat(
+            alias, missing, ssh=ssh, runner=run, report=report, sleep=sleep
+        )
+    if missing:
+        report(_MISSING_REMEDY.format(missing=", ".join(missing), alias=alias))
     # The exit code still is not evidence - `code` hands the argv to a window
     # and returns, and the connection is made in that window afterwards - but
     # the preflight has already removed every cause that lives outside VS Code,
@@ -586,6 +603,54 @@ because the home that matters is the one NSS gives the seat's login user — whi
 is not always the container's ``$HOME`` (see :func:`podbench.agent.session_home`).
 Asking through the same client, as the same user, is the only spelling that
 cannot be right here and wrong for VS Code.
+"""
+
+SERVERS_DIR = "~/.vscode-server/cli/servers"
+"""Where the seat keeps the vscode-server builds it has bootstrapped.
+
+More than one lives here — this seat held ``Stable-6928394…`` beside
+``Stable-110a328…`` — and *which* one an extension is installed through decides
+whether the open window ever notices it. See :func:`_server_cli`.
+"""
+
+_SERVER_CLI_SCRIPT = r"""
+servers=$HOME/.vscode-server/cli/servers
+running=$(ps -eo args= 2>/dev/null |
+  grep -o '/[^ ]*/cli/servers/[^/]*/server' | head -1)
+lru=$(sed 's/[][",]/ /g' "$servers/lru.json" 2>/dev/null)
+for candidate in "$running" $lru; do
+  case "$candidate" in
+    /*) bin="$candidate/bin/code-server" ;;
+    ?*) bin="$servers/$candidate/server/bin/code-server" ;;
+    *) continue ;;
+  esac
+  [ -x "$bin" ] && { echo "$bin"; exit 0; }
+done
+exit 1
+"""
+"""Find the ``code-server`` belonging to the server the window is *using*.
+
+The running process first, because that is not a guess: the server the window is
+attached to is a process in this seat, and its argv carries its own path.
+``lru.json`` — a plain most-recent-first array of ids — is the fallback for the
+window that has not started one yet, and it agreed with the running process when
+both were measured (2026-08-21).
+
+Picking the wrong one is not a harmless miss. An install through a server the
+window is *not* attached to lands the extension on disk where that window never
+sees it, which is precisely the 2026-08-16 observation :data:`_RELOAD_NOTE`
+records — so a glob over :data:`SERVERS_DIR` would reintroduce the reload as an
+intermittent, unexplainable one.
+"""
+
+SERVER_CLI_ATTEMPTS = 60
+SERVER_CLI_INTERVAL = 5.0
+"""How long to wait for the window to bootstrap a server, as attempts x seconds.
+
+Five minutes. The bootstrap is the 1215 MiB download :data:`_STORAGE_NOTE`
+names, over whatever link the cluster has, and this runs immediately after the
+window was asked to open — so on a cold seat the server genuinely does not exist
+yet and the wait is the normal case rather than the failure.
 """
 
 _MISSING_REMEDY = (
@@ -674,6 +739,92 @@ def _verify_installed(
         else:
             missing.append(extension)
     return installed, missing
+
+
+def _server_cli(
+    alias: str,
+    *,
+    ssh: str,
+    runner: Runner,
+    sleep: Callable[[float], None],
+    attempts: int = SERVER_CLI_ATTEMPTS,
+) -> str | None:
+    """The ``code-server`` of the server this seat's window is using.
+
+    ``None`` once :data:`SERVER_CLI_ATTEMPTS` have passed without one — which
+    is a window that never connected, not a slow one, since the caller has
+    already proved the alias and asked VS Code to open it.
+    """
+    for attempt in range(attempts):
+        result = runner(
+            [ssh, "-T", "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT}", alias],
+            stdin=_SERVER_CLI_SCRIPT,
+            timeout=UNBOUNDED,
+        )
+        found = result.stdout.strip().splitlines() if result.returncode == 0 else []
+        if found:
+            return found[0].strip()
+        if attempt + 1 < attempts:
+            sleep(SERVER_CLI_INTERVAL)
+    return None
+
+
+def _install_through_the_seat(
+    alias: str,
+    missing: Sequence[str],
+    *,
+    ssh: str,
+    runner: Runner,
+    report: Callable[[str], None],
+    sleep: Callable[[float], None],
+) -> list[str]:
+    """Install what the local CLI would not, and return what is still absent.
+
+    ``code --remote <authority> --install-extension`` answers from the
+    *developer's own* install list and short-circuits: an extension held
+    locally is reported "already installed" and the seat is never contacted,
+    with or without ``--force`` (measured at DLS, 2026-08-21 — the seat held no
+    matching path anywhere on its filesystem). That fails worst for the people
+    most likely to be here, since anyone who debugs Python already has the
+    Python extension on their laptop.
+
+    So the install is made where it has to land, by the server's own CLI over
+    ssh. That is the same code path the "Install in SSH: <alias>" button takes,
+    which is why the extension is **live in the open window with no reload** —
+    also measured, and the reason no reload note is printed here.
+    """
+    binary = _server_cli(alias, ssh=ssh, runner=runner, sleep=sleep)
+    if binary is None:
+        report(
+            f"{', '.join(missing)}: no vscode-server has started in the seat, "
+            "so there is nothing to install through. The window above has not "
+            "connected - its own error is the diagnosis"
+        )
+        return list(missing)
+    report(
+        f"installing {', '.join(missing)} through the seat's own vscode-server, "
+        "because `code --install-extension` answers from this machine's "
+        "install list and never reaches the seat"
+    )
+    for extension in missing:
+        result = runner(
+            [
+                ssh,
+                "-T",
+                "-o",
+                f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+                alias,
+                f"{quote(binary)} --install-extension {quote(extension)}",
+            ],
+            timeout=UNBOUNDED,
+        )
+        if result.returncode != 0:
+            report(
+                f"could not install {extension} in the seat: {_detail(result.stderr)}"
+            )
+    # Asked again rather than believed: this CLI reports "already installed"
+    # too, and the whole defect above was an exit code that meant nothing.
+    return _verify_installed(alias, missing, ssh=ssh, runner=runner, report=report)[1]
 
 
 def _detail(stderr: str) -> str:
