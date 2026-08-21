@@ -37,6 +37,7 @@ __all__ = [
     "Column",
     "Row",
     "console",
+    "ellipsis",
     "emit",
     "paragraph",
     "rule",
@@ -327,7 +328,34 @@ this module exists to keep becomes two.
 
 _ELLIPSIS = "…"
 """What marks a cell that did not fit. One column wide, unlike ``...``, which
-matters when the budget it is spent from is the last few columns of the window."""
+matters when the budget it is spent from is the last few columns of the window.
+
+:func:`ellipsis` is what callers use, because this one cannot always be
+printed."""
+
+
+def ellipsis() -> str:
+    """:data:`_ELLIPSIS` where stdout can carry it, ``...`` where it cannot.
+
+    Measured rather than assumed. Under ``LC_ALL=C`` with PEP 538's locale
+    coercion switched off, ``sys.stdout.encoding`` is ``ascii`` and printing
+    the single-column form raises ``UnicodeEncodeError`` — so a seat in that
+    environment lost the whole listing, and exited 1, over one character of
+    decoration. Python coerces C to C.UTF-8 by default and the image has that
+    locale, which is exactly what makes this the sort of thing that is found in
+    the field rather than here.
+
+    Asked per call for :func:`console`'s reason: the stream is whatever it is
+    at the moment of printing, and a constant computed at import time answers
+    for a process that had not chosen its output yet.
+    """
+    encoding = getattr(console().file, "encoding", None)
+    try:
+        _ELLIPSIS.encode(encoding or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return "..."
+    return _ELLIPSIS
+
 
 _FILL_FLOOR = 12
 """Columns a filling cell keeps however narrow the window.
@@ -461,9 +489,10 @@ def table(
         spent = sum(widths[i] for i in live if i != index)
         gaps = len(_CELL_GAP) * (len(live) - 1) + len(indent)
         widths[index] = max(_FILL_FLOOR, limit - spent - gaps)
+        cut = ellipsis()
         for row in grid:
             if len(row[index]) > widths[index]:
-                row[index] = row[index][: widths[index] - 1] + _ELLIPSIS
+                row[index] = row[index][: widths[index] - len(cut)] + cut
     columns = [columns[index] for index in live]
     widths = [widths[index] for index in live]
     grid = [[row[index] for index in live] for row in grid]

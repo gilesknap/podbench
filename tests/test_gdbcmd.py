@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from podbench import execfile, gdbcmd
+from podbench.console import ellipsis
 from podbench.gdbcmd import (
     EXIT_USAGE,
     MAX_OFFERED_PIDS,
@@ -560,7 +561,7 @@ def test_a_long_cmdline_is_cut_rather_than_left_to_wrap(
     out = capsys.readouterr().out
     assert max(len(line) for line in out.splitlines()) <= 80
     cut = table_rows(out)[str(TARGET_PID)]["CMDLINE"]
-    assert cut.endswith("\u2026")
+    assert cut.endswith(ellipsis())
 
     main(["pids", "--container-id", TARGET_CID, "--json"], proc=proc)
     payload = json.loads(capsys.readouterr().out)

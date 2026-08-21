@@ -17,6 +17,7 @@ from podbench.console import (
     WARNING_LEAD,
     Column,
     Row,
+    ellipsis,
     emit,
     paragraph,
     rule,
@@ -290,3 +291,30 @@ def test_a_table_fills_the_window_where_a_paragraph_would_not(
     monkeypatch.setenv("COLUMNS", "200")
     assert wrap_width() == MAX_WIDTH
     assert table_width() == 199
+
+
+def test_the_ellipsis_degrades_where_stdout_cannot_carry_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One character of decoration must not be able to end a listing.
+
+    Under ``LC_ALL=C`` with PEP 538's coercion switched off,
+    ``sys.stdout.encoding`` is ``ascii`` and printing the single-column form
+    raises. The seat lost the whole table and exited 1.
+    """
+
+    class AsciiStream:
+        encoding = "ascii"
+
+    class Ascii:
+        file = AsciiStream()
+
+    def ascii_console(*, stderr: bool = False) -> Ascii:
+        return Ascii()
+
+    monkeypatch.setattr("podbench.console.console", ascii_console)
+    assert ellipsis() == "..."
+    # And the cut still lands inside the budget, three columns rather than one.
+    (row,) = table([Column("CMD", fill=True)], [Row(["x" * 40])], width=20)[1:]
+    assert len(row.plain) == 20
+    assert row.plain.endswith("...")
