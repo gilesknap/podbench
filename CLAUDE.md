@@ -85,6 +85,14 @@ silent.
 - pytest runs with `--doctest-modules`: any `>>>` in a docstring is executed.
 - Comments explain *why* — cite the constraint or spike finding that forced the
   shape, and do not narrate what the code already says. `model.py` sets the bar.
+- **`dev.py` and `hotfix.py` both import `launcher.py`, so it can import
+  neither.** A constant or helper the launcher needs from one of them goes in
+  `model.py`, which imports nothing of podbench and is where the shared
+  vocabulary belongs anyway; re-export from the original module so its public
+  surface does not move. `DEVPOD_LABEL` and `HOTFIXED_ANNOTATION` went that way
+  when a *listing* had to key on both. Duplicating instead is the trap: two
+  copies of `dev_pod_name`'s truncation rule is how the launcher comes to print
+  a command naming a pod the API server would refuse.
 - Commits: one logical change, imperative subject, body explaining the reasoning
   rather than restating the diff.
 - Docs build with `just docs` — `sphinx-build -EW` plus `nitpicky = True`, so any
