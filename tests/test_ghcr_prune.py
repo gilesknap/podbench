@@ -145,3 +145,91 @@ def test_candidates_spares_every_release_even_with_no_branches_and_no_closure() 
         version(4, ("main",)),
     ]
     assert ghcr_prune.candidates(releases, [], frozenset(), CUTOFF) == []
+
+
+class FakeRegistry:
+    """Serves manifests by digest, so the orphan walk can be driven offline."""
+
+    def __init__(self, manifests: dict[str, Any]) -> None:
+        self.manifests = manifests
+        self.fetched: list[str] = []
+
+    def manifest(self, reference: str) -> Any:
+        self.fetched.append(reference)
+        return self.manifests.get(reference, {"config": {}, "layers": []})
+
+
+def index(*children: str) -> dict[str, Any]:
+    return {"manifests": [{"digest": child} for child in children]}
+
+
+def test_orphans_takes_an_untagged_leaf_nothing_points_at() -> None:
+    junk = version(1, (), digest="sha256:junk")
+    doomed, held = ghcr_prune.orphans(FakeRegistry({}), [junk], frozenset(), CUTOFF)
+    assert doomed == [junk]
+    assert held == []
+
+
+def test_orphans_spares_a_child_of_a_surviving_image() -> None:
+    """The whole hazard: a release's arch layer is untagged but load-bearing."""
+    layer = version(1, (), digest="sha256:layer")
+    doomed, held = ghcr_prune.orphans(
+        FakeRegistry({}), [layer], frozenset({"sha256:layer"}), CUTOFF
+    )
+    assert doomed == []
+    assert held == []
+
+
+def test_orphans_spares_a_child_of_a_spared_live_branch_image() -> None:
+    """A live branch's image carries no release tag, so its layers survive only
+    because the keep set is seeded from survivors rather than from releases."""
+    layer = version(1, (), digest="sha256:branchlayer")
+    keep = frozenset({"sha256:branchindex", "sha256:branchlayer"})
+    doomed, _ = ghcr_prune.orphans(FakeRegistry({}), [layer], keep, CUTOFF)
+    assert doomed == []
+
+
+def test_orphans_holds_back_a_wrapper_index_whose_children_are_live() -> None:
+    """The per-arch wrapper is garbage, but a cascade would take a live layer."""
+    wrapper = version(1, (), digest="sha256:wrapper")
+    registry = FakeRegistry({"sha256:wrapper": index("sha256:live", "sha256:att")})
+    doomed, held = ghcr_prune.orphans(
+        registry, [wrapper], frozenset({"sha256:live"}), CUTOFF
+    )
+    assert doomed == []
+    assert held == [wrapper]
+
+
+def test_orphans_takes_a_wrapper_index_whose_children_are_all_dead() -> None:
+    wrapper = version(1, (), digest="sha256:wrapper")
+    registry = FakeRegistry({"sha256:wrapper": index("sha256:dead1", "sha256:dead2")})
+    doomed, held = ghcr_prune.orphans(registry, [wrapper], frozenset(), CUTOFF)
+    assert doomed == [wrapper]
+    assert held == []
+
+
+def test_orphans_never_touches_a_tagged_version() -> None:
+    """Tagged versions are `candidates`' business; a double claim would be a bug."""
+    tagged = version(1, ("0.5.0",), digest="sha256:release")
+    doomed, held = ghcr_prune.orphans(FakeRegistry({}), [tagged], frozenset(), CUTOFF)
+    assert doomed == []
+    assert held == []
+
+
+def test_orphans_spares_anything_inside_the_age_window() -> None:
+    """A publish in flight has pushed its layers but not yet the index."""
+    inflight = version(1, (), updated=FRESH, digest="sha256:inflight")
+    doomed, _ = ghcr_prune.orphans(FakeRegistry({}), [inflight], frozenset(), CUTOFF)
+    assert doomed == []
+
+
+def test_orphans_does_not_fetch_a_manifest_it_has_already_ruled_out() -> None:
+    """Kept, young and tagged versions must cost no registry round trip."""
+    registry = FakeRegistry({})
+    versions = [
+        version(1, (), digest="sha256:kept"),
+        version(2, (), updated=FRESH, digest="sha256:young"),
+        version(3, ("0.5.0",), digest="sha256:tagged"),
+    ]
+    ghcr_prune.orphans(registry, versions, frozenset({"sha256:kept"}), CUTOFF)
+    assert registry.fetched == []

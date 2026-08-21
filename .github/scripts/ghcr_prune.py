@@ -18,13 +18,21 @@ manifests, and nothing has ever removed one. This reaps them, and nothing else.
    creates the index that references them. In that gap the children are untagged
    and unreferenced, which is indistinguishable from being garbage.
 
+It then reaps the **untagged** manifests nothing surviving refers to. That half is
+where the disk actually is - each push publishes seven manifests and tags exactly
+one - and it is also the half that destroys a release if it is done carelessly,
+because an untagged manifest is either a live image's arch layer or garbage and
+only the reference graph tells them apart. See `orphans` for the two rules that
+keep it safe.
+
 **What protects an image** is not its tag but its whole manifest closure. A
 podbench image is an index over four untagged children - two per-arch manifests
 and their two SLSA attestations - so deleting "untagged versions" without walking
 indexes destroys live releases while leaving their tags in place. The keep set is
-therefore computed by resolving every protected tag to its descendants, exactly as
-`ghcr_audit` does, and that module is imported rather than reimplemented so the
-two can never disagree about what "protected" means.
+computed by resolving every *surviving* version to its descendants - not merely
+every protected one, since a live branch's image is spared while its children
+carry no release tag - using `ghcr_audit.closure`, imported rather than
+reimplemented so the two can never disagree about what protected means.
 
 Two independent brakes, because the failure is unrecoverable in the place it
 lands - an `ImagePullBackOff` inside an ephemeral container that cannot be
@@ -204,6 +212,48 @@ def candidates(
     ]
 
 
+def orphans(
+    registry: ghcr_audit.Registry,
+    all_versions: Iterable[Version],
+    keep: frozenset[str],
+    cutoff: dt.datetime,
+) -> tuple[list[Version], list[Version]]:
+    """Untagged manifests nothing surviving refers to, and the ones spared anyway.
+
+    Reaping only the *tagged* half reclaims almost nothing: each podbench build
+    publishes seven manifests and tags exactly one, so the children outnumber the
+    tags six to one. They are also the dangerous half - an untagged manifest is
+    either a live image's arch layer or genuine garbage, and the only thing that
+    tells them apart is whether something surviving still points at it.
+
+    `keep` must therefore be the closure of *every surviving version*, not just of
+    the protected tags: a live branch's image is spared by `candidates` while its
+    four children carry no release tag at all, so a keep set seeded from releases
+    alone would spare the index and delete the layers underneath it.
+
+    The second return value is the versions held back by the cascade guard. Each
+    publishing push leaves an untagged per-arch *wrapper* index whose two children
+    are also referenced by the tagged merged index, so a wrapper for a release
+    build is unreferenced garbage whose children are live. GHCR is not documented
+    to cascade a version delete to an index's children and no evidence was found
+    that it does - but that is the one shape where a cascade would take a
+    release's arch manifest with it, and it has never been tested against a real
+    package. Until it has, leave them: the cost is a few manifests kept, and the
+    cost of being wrong is a release that cannot be pulled.
+    """
+    doomed: list[Version] = []
+    spared: list[Version] = []
+    for version in all_versions:
+        if version.tags or version.digest in keep or version.updated >= cutoff:
+            continue
+        children = ghcr_audit.children(registry.manifest(version.digest))
+        if any(child in keep for child in children):
+            spared.append(version)
+            continue
+        doomed.append(version)
+    return doomed, spared
+
+
 def main(argv: list[str] | None = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description="Reap generated container tags.")
     parser.add_argument("--owner", default="gilesknap")
@@ -260,16 +310,42 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     cutoff = dt.datetime.now(tz=dt.UTC) - dt.timedelta(hours=args.min_age_hours)
     doomed = candidates(all_versions, branches, protected, cutoff)
 
+    # The keep set for the untagged half is the closure of everything that
+    # survives, which is a strictly larger seed than the protected tags: a live
+    # branch's image is spared above while its four children carry no release tag,
+    # so seeding from releases alone would spare an index and delete its layers.
+    dying = {version.digest for version in doomed}
+    survivors = [
+        version.digest
+        for version in all_versions
+        if version.tags and version.digest not in dying
+    ]
+    try:
+        keep = frozenset(ghcr_audit.closure(registry, survivors))
+        orphaned, held_back = orphans(registry, all_versions, keep, cutoff)
+    except (urllib.error.URLError, KeyError, ValueError) as error:
+        print(f"::error::could not walk the survivors' closure: {error!r}")
+        return 2
+
     print(
         f"{len(all_versions)} versions, {len(branches)} live branches, "
-        f"{len(protected)} manifests protected by {len(inventory.protected)} tags"
+        f"{len(protected)} manifests protected by {len(inventory.protected)} tags, "
+        f"{len(keep)} reachable from {len(survivors)} surviving tagged versions"
     )
     for version in sorted(doomed, key=lambda v: v.updated):
         age = (cutoff - version.updated).days
         print(
             f"  delete {version.digest[:19]} {list(version.tags)} (+{age}d past cutoff)"
         )
-    print(f"{len(doomed)} of {len(all_versions)} versions are candidates")
+    print(f"{len(doomed)} tagged and {len(orphaned)} untagged versions are candidates")
+    if held_back:
+        # Named rather than silently dropped: this count is what the unproven
+        # cascade question is still costing in manifests kept.
+        print(
+            f"::notice::{len(held_back)} untagged indexes held back because their "
+            f"children are still live - see `orphans` for why"
+        )
+    doomed = doomed + orphaned
 
     if not args.apply:
         print("::notice::dry run - nothing deleted. Pass --apply to delete.")
