@@ -303,6 +303,23 @@ jobs:
             echo "::notice::last tag $last does not end in a number, not bumping"
             base="$last"
           fi
+          # Bumping the trailing number keeps a prerelease a prerelease
+          # (0.4.0-beta.3 -> 0.4.0-beta.4) and turns a *final* release into
+          # another final one (0.4.0 -> 0.4.1), which the assertion below then
+          # refuses - correctly, since a branch image must never be mistakable
+          # for a release. Before 0.4.0 there had never been a final tag to
+          # describe back to, so every branch build took the first path and this
+          # one could not be reached; the first release broke branch images on
+          # every branch at once.
+          #
+          # Asked of the parser rather than by looking for a hyphen, for the
+          # reason the guard below gives: PEP 440's normal form has no separator
+          # at all, so `1.0.0rc1` reads as final to a string test.
+          if ! uv run --no-project --with packaging python -c \
+            'import sys; from packaging.version import Version; sys.exit(0 if Version(sys.argv[1]).is_prerelease else 1)' \
+            "$base" 2>/dev/null; then
+            base="$base-beta.1"
+          fi
           # OCI tags are [A-Za-z0-9_][A-Za-z0-9._-]{0,127} and a branch name is
           # none of those things: it carries slashes, and may carry anything
           # else a person typed. Fold the unusable characters to `-`, collapse
