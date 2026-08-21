@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.4.0b4.dev2+g3db490276 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.4.0b4.dev4+g17cc16cd6 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=e1ba331b"></script>
+    <script src="../_static/documentation_options.js?v=ddad9c02"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -587,13 +587,28 @@ rollout regenerates the pod from an unchanged template and silently reverts it. 
 amount read from the namespace — after it made <code class="docutils literal notranslate"><span class="pre">--resize</span></code> unusable across a
 whole namespace at Diamond on 2026-08-16. A <strong><code class="docutils literal notranslate"><span class="pre">ResourceQuota</span></code> is still
 untested</strong>, as is a second Kubernetes version.</p>
-<p><strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> has never been driven end to end against a GUI client.</strong> The
-verb probes the alias, sizes the pod, provisions debugpy, writes the three
-<code class="docutils literal notranslate"><span class="pre">.vscode</span></code> files, installs the remote extensions and opens the seat’s home. That
-sequence has unit tests and was verified flag by flag by hand on 2026-08-16; it
-has no live proof. Two of its steps mutate the workload <strong>by default</strong> —
-<code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> opt out — and both carry the caveats already
-recorded under resize and provisioning. The headroom it sizes from is read with
+<p><strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> has now been driven end to end against a GUI client</strong>, on
+2026-08-21, against a live EPICS IOC on a Diamond production cluster
+(<code class="docutils literal notranslate"><span class="pre">p47-beamline/bl47p-ea-fastcs-01-0</span></code>, seat <code class="docutils literal notranslate"><span class="pre">0.4.0b3</span></code>, over an ssh API tunnel
+from home). The verb probes the alias, sizes the pod, provisions debugpy, writes
+the three <code class="docutils literal notranslate"><span class="pre">.vscode</span></code> files, installs the remote extensions and opens the seat’s
+home. Everything but the provisioning step worked first time: the extensions
+unpacked in the remote, Remote-SSH connected, and after the server was started
+the debugger attached, <strong>breakpoints bound and source resolved</strong> through the
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path mappings — so issue #112’s collision did not bite even
+though the seat’s venv and the workload’s are both <code class="docutils literal notranslate"><span class="pre">/app/.venv</span></code>. Re-running the
+verb against the same pod reconnects to the existing seat correctly.</p>
+<p>What the run found is that the provisioning step <em>never fired</em>, because its
+trigger was the wrong one: it keyed on a target that cannot import debugpy,
+where this target ships its own, so the emitted <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> connected to a
+port nothing was listening on. That is fixed — the trigger is now the seat
+naming <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, which it does for either blocker — but the fix is itself
+only unit-tested, and <strong>the resize path remains unproven live</strong>: this pod had
+1513 MiB of headroom against vscode-server’s measured 1215 MiB, so nothing had
+to be resized.</p>
+<p>Two of the verb’s steps mutate the workload <strong>by default</strong> — <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> opt out — and both carry the caveats already recorded under
+resize and provisioning. The headroom it sizes from is read with
 <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">top</span> <span class="pre">pod</span></code>, and reports <strong>unmeasured</strong> where there is no metrics API.</p>
 <p><strong>Hotfix mode has never been run against a cluster.</strong> The workflow exists —
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">init|apply|status|consolidate</span></code>, plus <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">--print-values</span></code>
