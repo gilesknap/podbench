@@ -4152,6 +4152,28 @@ def _seat_verdict(measured: CapabilityReport | str | None) -> str:
     return f"{NOT_PROBED} - {measured}" if measured else NOT_PROBED
 
 
+REQUESTED_RUNG_HEADING = "RUNG (requested)"
+"""What the third column of a listing is a reading of.
+
+Two words on the heading rather than a word per row: what these verbs have in
+hand is a securityContext, which is what admission agreed to store, and calling
+that column ``RUNG`` claimed the measurement ``attach`` takes and these do not.
+The plain heading comes back when the value under it is measured."""
+
+REQUESTED_RUNG_FOOTNOTE = (
+    "requested: this column reads each seat's securityContext, which is what "
+    "admission stored and not what the kernel gave the container. The two "
+    "differ in both directions - a policy that strips `capabilities.add` "
+    "leaves a root seat reading `degraded` while it traces perfectly well. "
+    "`podbench attach` reports the rung it measured"
+)
+"""Said once per pod block, under the seats rather than over them.
+
+The heading has room for the word and not for the reason, and the reason is the
+whole of why the word is there. Backticked runs so `wrap` cannot break a flag or
+a verb across the margin (issue #120)."""
+
+
 def format_seats(
     pod: PodRef,
     present: Sequence[SeatInfo],
@@ -4200,7 +4222,7 @@ def format_seats(
     # Headed, as `format_pod_choices` is, because the third cell now stops at
     # the rung's name: `degraded` under nothing at all is the very reading this
     # verb has to stop making, and a header is cheaper than a word per row.
-    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} RUNG"]
+    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} {REQUESTED_RUNG_HEADING}"]
     for seat in present:
         lines.append(f"  {seat.name:<12} {seat.phase:<11} {seat.rung.value}")
         lines.extend(_fact("state", seat.detail))
@@ -4226,6 +4248,7 @@ def format_seats(
         # seats has two of them, and a single line would have to pick.
         if seat.running:
             lines.append(ssh_connect_line(directory, pod, seat.name))
+    lines.extend(paragraph(REQUESTED_RUNG_FOOTNOTE, first="  ", indent="  "))
     if not any(seat.running for seat in present):
         # The command ends the line, as it does on `ssh_connect_line`'s two
         # missing-stanza answers: this line is never wrapped - the right-hand
