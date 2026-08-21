@@ -238,7 +238,9 @@ __all__ = [
     "is_dev_pod",
     "is_hotfixed",
     "shares_workload_volume",
-    "DEV_POD_SIDECAR_WARNING",
+    "DEV_SIDECAR_PROVISION_NOTE",
+    "DEV_SIDECAR_REUSED_NOTE",
+    "OTHER_MODES_NOTE",
     "UNMOUNTED_HOTFIX_NOTE",
     "wait_for_seats",
     "spec_env",
@@ -1128,6 +1130,17 @@ def dev_seat(
     return None
 
 
+def _is_sidecar(session: Session, sidecar: SeatInfo | None) -> bool:
+    """Whether this session ended up in Iterate mode's sidecar.
+
+    Asked of the pair rather than of the container's name: an ephemeral seat may
+    legitimately be called ``podbench`` - :func:`seats` accepts the bare base,
+    which is what an older podbench landed - so the name alone does not say
+    which container kind is in hand.
+    """
+    return sidecar is not None and session.seat.container == sidecar.name
+
+
 def all_seats(
     pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE
 ) -> list[SeatInfo]:
@@ -1407,20 +1420,56 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
     return replaced
 
 
-DEV_POD_SIDECAR_WARNING = (
-    "this is a podbench dev pod and it already has a seat: the `{seat}` "
-    "container, which is an ordinary sidecar rather than an ephemeral one. "
-    "Attaching lands a second seat beside it, spending a container name for "
-    "the pod's lifetime, and the seat it lands is an Observe-mode seat - the "
-    "application is not its child, so it gets none of Iterate mode's launch "
-    "shape. `podbench status` names the sidecar's ssh alias"
+DEV_SIDECAR_REUSED_NOTE = (
+    "reconnected to `{seat}`, this dev pod's own sidecar, rather than landing "
+    "an ephemeral seat beside it - so this is an Iterate-mode seat: the "
+    "application runs as its child and is relaunched from here with `podbench "
+    "run`, and the workload container is idled. `--new` lands an Observe-mode "
+    "seat instead, which is worth a permanent container name only where this "
+    "pod's sidecar is non-root and the cluster will admit `SYS_PTRACE`"
 )
-"""Why an attach on a dev pod is almost never what was meant.
+"""Said whenever an attach hands back Iterate mode's sidecar.
 
-Almost, not never: the sidecar gives up ``SYS_PTRACE`` along with the root it
-does not have (:func:`podbench.spec.dev_seat_identity`), so a full-rung
-ephemeral seat beside it is a real want on a cluster that admits one. Hence a
-warning rather than a refusal.
+The mode is the whole of it. Everything else `attach` prints is true of both
+kinds of seat, and the one fact that is not - which process the debugger will be
+looking at - is the one that decides whether a breakpoint binds. Reporting it is
+issue #141's second decision, arrived at from the other side: the mode is
+measured here rather than declared, so there is nothing to disagree with.
+"""
+
+OTHER_MODES_NOTE = (
+    "other modes are their own verbs: `podbench hotfix init` for a venv on a "
+    "claim that survives restarts, `podbench dev` for a clone the application "
+    "relaunches from. Both change the workload in ways this verb was given no "
+    "arguments for, so neither is offered as a choice here"
+)
+"""Named once, on the run that landed a seat where there was none.
+
+Said rather than asked, and the difference is what the question would have been
+worth: with no seat in the pod there is nothing ambiguous to resolve, ``attach``
+is the only one of the three this verb could carry out, and the other two answers
+would both have been "go and run a different command". A prompt whose default is
+the only actionable answer is a keystroke on the commonest path in the product.
+
+The explicitness #141 asked for is delivered by the *other* half of that issue:
+the mode is measured and reported - by the ``KIND`` column, and by
+:data:`DEV_SIDECAR_REUSED_NOTE` on a reconnect - rather than declared by a word
+the user typed.
+"""
+
+DEV_SIDECAR_PROVISION_NOTE = (
+    "not provisioning: this is Iterate mode's seat, where the application is "
+    "launched *from* the seat rather than found running in another container. "
+    "There is no live target process to install debugpy into or to inject a "
+    "server into, and the launch configuration needs neither - it starts the "
+    "interpreter under the debugger itself"
+)
+"""Why ``vscode`` spends nothing on provisioning a dev pod.
+
+Not a decline that could have gone the other way: provisioning targets a running
+process in the *workload* container, and :func:`podbench.spec.dev_pod_spec` idles
+that container to ``sleep`` precisely so the seat can own the port. Injecting
+into it would succeed against ``sleep`` and report a debugger nobody can reach.
 """
 
 OTHER_OWNER_WARNING = (
@@ -2032,16 +2081,13 @@ def attach(
     pod_json = kubectl.get_pod(pod)
     workload = target_container_name(pod_json, target)
     warnings: list[str] = []
-    # Before the ladder walks, because the name it spends is spent for the pod's
-    # lifetime and this is the case where it buys nothing: Iterate mode's pod
-    # already carries a seat, in a container kind `seats()` cannot see, so
-    # nothing here would have found it and every attach on a dev pod lands
-    # another one. A warning and not a refusal - an ephemeral seat in a dev pod
-    # is a real if rare want, since the sidecar gives up SYS_PTRACE with the
-    # root it does not have and an ephemeral seat need not.
+    # Read before the ladder is planned, because it decides whether the ladder
+    # runs at all: Iterate mode's seat is an ordinary sidecar, so nothing
+    # walking `spec.ephemeralContainers` finds it, and an attach on a dev pod
+    # used to land a second seat beside the pod's own - spending a permanent
+    # name to get a strictly worse view, since the sidecar is the container the
+    # application was relaunched *from*.
     sidecar = dev_seat(pod_json)
-    if sidecar is not None:
-        warnings.append(DEV_POD_SIDECAR_WARNING.format(seat=sidecar.name))
     volume_mounts, mount_warnings = resolve_mounts(pod_json, workload, mounts)
     warnings.extend(mount_warnings)
     if seat_identity:
@@ -2074,7 +2120,16 @@ def attach(
     # and it is stamped on whatever gets landed, so both halves have to be the
     # same answer.
     owner = kubectl.whoami()
-    existing = running_seat(pod_json, ids=wanted_ids, owner=owner)
+    # The pod's *own* seat comes first where there is one. Not a preference
+    # between two equivalent seats: in a dev pod the workload container is idled
+    # and the application runs as a child of the sidecar, so an ephemeral seat
+    # beside it would attach to a container with nothing in it. The ids and the
+    # ceiling below still apply, and `--new` still lands one - which is the case
+    # this is a preference rather than a refusal for, since the sidecar gives up
+    # SYS_PTRACE along with the root it does not have.
+    existing = sidecar if sidecar is not None and sidecar.running else None
+    if existing is None:
+        existing = running_seat(pod_json, ids=wanted_ids, owner=owner)
     declined: str | None = None
     if existing is None and wanted_ids is not None and correct_ids:
         # Said only on the path a human asked for: the correction below runs
@@ -2143,10 +2198,20 @@ def attach(
                 ),
             ),
         )
+        # Said first, because it is the one that changes what the other lines
+        # mean: this seat is Iterate mode's, which is a different contract from
+        # the one `attach` usually hands back.
+        if existing.kind is SeatKind.DEV:
+            warnings.append(DEV_SIDECAR_REUSED_NOTE.format(seat=existing.name))
         if public_key is not None:
             warnings.append(
                 "reconnected to an existing container: its authorized_keys was "
-                "written when it started, so a new ssh key needs --new"
+                "written when it started, so a new ssh key needs "
+                + (
+                    "`podbench dev --identity`, which recreates the pod"
+                    if existing.kind is SeatKind.DEV
+                    else "--new"
+                )
             )
         if mounts:
             warnings.append(
@@ -2284,9 +2349,15 @@ def attach(
             if remeasured is not None:
                 session = replace(session, rung=remeasured, rung_measured=True)
                 session = replace(session, steps=_relabel_reconnect(session))
+        # Never off a sidecar. The correction exists because an ephemeral
+        # container's securityContext is fixed for its lifetime, so the only way
+        # to change a seat's ids is to land another one - and landing an
+        # ephemeral seat in a dev pod to correct the *sidecar's* ids fixes
+        # nothing, since it is the sidecar the application runs under. A dev
+        # pod's ids are corrected by authoring it again.
         correction = (
             id_correction(report, pinned_uid=target_uid, pinned_gid=target_gid)
-            if correct_ids
+            if correct_ids and not _is_sidecar(session, sidecar)
             else None
         )
         if report is not None and correction is not None:
@@ -6000,10 +6071,17 @@ def _build_app(
         # After the seat, because which rung landed is half the question, and
         # before the report, because it is a warning about this pod like every
         # other one on it.
-        storage = _storage_note(kube.get_pod(name), session)
+        landed_pod = kube.get_pod(name)
+        storage = _storage_note(landed_pod, session)
         if storage is not None:
             session = replace(session, warnings=(*session.warnings, storage))
         emit(format_session(session))
+        # Only where a seat was actually landed. On a reconnect the mode is
+        # already settled and already reported, so naming the other two would be
+        # offering a choice that was made on some earlier day.
+        if not session.reused:
+            print()
+            emit("\n".join(paragraph(OTHER_MODES_NOTE, first="  ", indent="  ")))
         print()
         wiring = _wire(
             kube,
@@ -6017,12 +6095,28 @@ def _build_app(
         )
         emit(wiring.note)
         print()
+        # Iterate mode is provisioned by construction, not by exec: the seat
+        # launches the application itself, so debugpy is installed where the
+        # launch configuration needs it and there is no live process in the
+        # workload container to inject a server into - `dev_pod_spec` idles that
+        # container to `sleep` for exactly this reason. Injecting anyway would
+        # succeed against `sleep` and report a debugger nobody can reach.
+        in_dev_pod = is_dev_pod(landed_pod)
+        if in_dev_pod and not no_provision:
+            emit(
+                "\n".join(
+                    paragraph(DEV_SIDECAR_PROVISION_NOTE, first="  ", indent="  ")
+                )
+            )
+            print()
         _open_editor(
             kube,
             session,
             wiring,
             editor=editor,
-            provision=Provision.NEVER if no_provision else Provision.IF_NEEDED,
+            provision=(
+                Provision.NEVER if no_provision or in_dev_pod else Provision.IF_NEEDED
+            ),
             runner=runner,
         )
         if session.probes:

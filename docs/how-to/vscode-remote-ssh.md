@@ -171,7 +171,37 @@ what an in-place resize costs — chiefly that it lives on the pod and not on it
 controller, so the next rollout takes it away.
 
 **It provisions the target when the target says it needs it** — see the next
-section.
+section. With one exception: in a dev pod it provisions nothing and says so.
+Iterate mode launches the application *from* the seat, so debugpy is already
+where the launch configuration needs it and the workload container has been
+idled to `sleep` — injecting into that would succeed against `sleep` and report
+a debugger nobody can reach.
+
+**It uses the seat that is already there**, whichever of the three modes made
+it. A pod you have already `attach`ed is reconnected to; a **dev pod** is
+reconnected to through its `podbench` sidecar rather than by landing an ephemeral
+seat beside it, which is what used to happen and cost a permanent container name
+for a strictly worse view — in a dev pod the application runs as a child of the
+sidecar, so a seat in the idled workload container sees nothing. The reconnect
+says which mode the seat is, because that decides what the debugger is looking
+at. `--new` still lands an Observe-mode seat, which is worth the name only where
+the sidecar is non-root and the cluster admits `SYS_PTRACE`.
+
+**It names the other two modes once**, on the run that landed a seat where there
+was none, and asks nothing:
+
+```
+  other modes are their own verbs: `podbench hotfix init` for a venv on a
+  claim that survives restarts, `podbench dev` for a clone the application
+  relaunches from. Both change the workload in ways this verb was given no
+  arguments for, so neither is offered as a choice here.
+```
+
+Said rather than asked, because with no seat in the pod there is nothing
+ambiguous to resolve: `attach` is the only one of the three this verb could
+carry out, and the other two answers would both have been *go and run a
+different command*. A reconnect does not print it — the mode was settled
+whenever the seat was landed, and the `KIND` column reports it.
 
 It needs `code` on your PATH — VS Code's Command Palette has *Shell Command:
 Install 'code' command in PATH* — and the local **Remote - SSH** extension,

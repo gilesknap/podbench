@@ -32,8 +32,9 @@ from podbench.kubectl import (
     KubectlTimeoutError,
 )
 from podbench.launcher import (
-    DEV_POD_SIDECAR_WARNING,
+    DEV_SIDECAR_REUSED_NOTE,
     NO_TARGET_CONTAINER,
+    OTHER_MODES_NOTE,
     UNKNOWN_SEAT_VERSION,
     UNMOUNTED_HOTFIX_NOTE,
     VERSION_SKEW_WARNING,
@@ -6458,11 +6459,11 @@ def test_a_listing_is_silent_about_a_seat_that_shares_the_hotfix(
     assert "hotfixed" not in text
 
 
-def test_attach_on_a_dev_pod_says_the_sidecar_is_already_a_seat() -> None:
-    """A warning and not a refusal: the sidecar gives up SYS_PTRACE with the
-    root it does not have, so a full-rung ephemeral seat beside it is a real if
-    rare want. But it spends a container name for the pod's lifetime, and
-    nothing said so."""
+def test_attach_on_a_dev_pod_reconnects_to_the_sidecar() -> None:
+    """Rather than landing an ephemeral seat beside it. In a dev pod the
+    workload container is idled and the application runs as a child of the
+    sidecar, so the seat that would land there attaches to a container with
+    nothing in it - and spends a permanent name doing so."""
     cluster = FakeCluster(dev_pod())
 
     session = attach(
@@ -6473,5 +6474,90 @@ def test_attach_on_a_dev_pod_says_the_sidecar_is_already_a_seat() -> None:
         probe=False,
     )
 
+    assert session.seat.container == "podbench"
+    assert session.reused
     flowed = [" ".join(warning.split()) for warning in session.warnings]
-    assert " ".join(DEV_POD_SIDECAR_WARNING.format(seat="podbench").split()) in flowed
+    assert " ".join(DEV_SIDECAR_REUSED_NOTE.format(seat="podbench").split()) in flowed
+
+
+# -- vscode opens the seat that is already there (issue #141) ---------------
+
+
+def test_new_lands_an_ephemeral_seat_in_a_dev_pod_after_all() -> None:
+    """The preference for the sidecar is a preference, not a refusal: it gives
+    up SYS_PTRACE with the root it does not have, so an Observe-mode seat beside
+    it is worth a permanent name on a cluster that admits the capability."""
+    cluster = FakeCluster(dev_pod())
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "demo-podbench",
+        image="ghcr.io/gilesknap/podbench:test",
+        public_key=None,
+        force_new=True,
+        probe=False,
+    )
+
+    assert session.seat.container == "podbench-1"
+    assert not session.reused
+
+
+def test_reconnecting_to_a_sidecar_points_re_keying_at_the_dev_verb() -> None:
+    """`--new` re-keys an ephemeral seat by landing another one. A sidecar's
+    authorized_keys is written when the pod is authored, so the same advice
+    there sends the reader to land a seat that does not fix it."""
+    cluster = FakeCluster(dev_pod())
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "demo-podbench",
+        image="ghcr.io/gilesknap/podbench:test",
+        public_key="ssh-ed25519 AAAA test",
+        probe=False,
+    )
+
+    keying = [w for w in session.warnings if "authorized_keys" in w]
+    assert keying
+    assert all("podbench dev --identity" in warning for warning in keying)
+    assert not any("needs --new" in warning for warning in keying)
+
+
+def test_landing_a_seat_names_the_other_two_modes_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Said, not asked. With no seat in the pod there is nothing ambiguous to
+    resolve and `attach` is the only one of the three this verb could carry
+    out, so a prompt's default would have been its only actionable answer."""
+    cluster = FakeCluster(pod_document(uid=1000))
+
+    main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(OTHER_MODES_NOTE.split()) in flowed
+
+
+def test_a_reconnect_does_not_name_the_other_modes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mode was settled on whatever day the seat was landed, and it is
+    already reported - by the KIND column, and by the reconnect's own line."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+    main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(OTHER_MODES_NOTE.split()) not in flowed
