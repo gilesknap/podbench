@@ -219,6 +219,15 @@ an uninstall is deferred to the next window start, so the directory lingers.
 Right check, different question — and on a warm seat it launders "was already
 there" into "we did it", which is what hid the defect above for two more pods.
 
+### Test this path on a cold seat or you have not tested it
+
+Three separate defects shipped through it in one day — the install never
+reaching the seat, the dry-run staging ordering, and the missing reload — and
+**every one was invisible on a warm seat**, because a seat that already has
+vscode-server and the extensions makes each of them look like success. A
+reconnect is not a test of this path. Land a seat on a pod that has never had
+one, or the run proves nothing.
+
 ## `Program path … is missing or invalid` usually means neither
 
 cpptools composes that sentence for **any** failure to load the program, with
