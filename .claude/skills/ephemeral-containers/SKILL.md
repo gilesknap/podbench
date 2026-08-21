@@ -143,6 +143,31 @@ existence, not pod spec — but the raised limit lives on the pod alone, so anyt
 regenerates the pod from the unchanged template silently reverts it. Both halves belong
 in the warning text (report R13).
 
+## A resize can only be verified on the *resized* container
+
+The seat's own cgroup says `memory.max: max` — an ephemeral container carries no
+`resources`, so it is confined by the pod's cgroup and its own shows no limit.
+Reading it proves nothing whatever the resize did. Read the container that was
+resized:
+
+```
+kubectl exec <pod> -c <workload> -- sh -c 'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max'
+kubectl get pod <pod> -o jsonpath='{.status.containerStatuses[0].resources}'
+```
+
+`status.containerStatuses[].resources` matching spec is the kubelet saying it
+actuated; `restartCount` unchanged is it saying the resize was in place.
+
+**`top` in a seat answers about the node, not the pod.** `/proc/meminfo`, uptime
+and load average are not namespaced — a Diamond seat reported 385 GB. The cgroup
+is the only thing that knows.
+
+Proven on a Diamond production pod (2026-08-21): 500Mi raised to 6Gi/4cpu in
+place, `memory.max 6442450944`, `cpu.max 400000 100000`, `restartCount 0`. Where
+the namespace sets `maxLimitRequestRatio`, podbench raises the *request*
+alongside the limit to stay under it — 6144Mi/615Mi = 9.99 against a cap of 10 —
+which is what turns a refusal into an admission.
+
 ## `capabilities.add` on a non-root uid is a silent no-op
 
 The kernel grants capabilities to a non-zero uid only through the ambient set, which no
@@ -153,6 +178,73 @@ unprivileged.
 The ladder therefore has exactly two capability rungs and no middle ground, and
 `spec.validate_security_context` raises rather than emitting the combination. Do not
 "fix" a failing degraded rung by adding the capability back.
+
+## Where the cluster strips `SYS_PTRACE`, a root seat is *weaker* than a matched one
+
+Root's power over ptrace comes from the capability, not from uid 0. Strip
+`SYS_PTRACE` — which admission controllers at Diamond do, rewriting
+`capabilities.add` wholesale — and `__ptrace_may_access` has neither a
+credential match nor a capability to bridge one, so a root seat reaches only the
+target's *root* processes.
+
+Measured on one pod, 2026-08-21, which shows it cleanly because nginx splits:
+
+| | uid | `/proc/<pid>/exe` |
+|---|---|---|
+| seat | 0 | — |
+| master, pid 1 | root | readable → configuration emitted |
+| worker, pid 32 | **101** | **denied** → nothing emitted |
+
+The same cluster ran full live attach, breakpoints and source on a *different*
+pod where the seat's uid matched the target's. So on a capability-stripped
+cluster the useful rung is the uid-matched one, and choosing root costs the
+match.
+
+**The credential check is per process, not per pod.** A report that says "this
+seat can attach" is a statement about the pid it probed.
+
+Two things this cannot be fixed by, and both are worth knowing before trying:
+the capability (stripped, and a no-op on a non-root uid anyway), and matching an
+arbitrary uid — `libnss-extrausers` ignores uid/gid below 500, so a target
+running as 101 has no seat identity that both matches it and can log in over
+ssh. That pid is genuinely out of reach; say so rather than reporting a `/proc`
+error.
+
+## Five measured facts about the ptrace credential check
+
+Measured on k3s (v1.34.6, Ubuntu 24.04, containerd 2.2.2) in a scratch
+namespace; evidence in the 2026-08-17 comment on issue #98.
+
+1. **The check needs the gid, not just the uid.** A gid mismatch denies in both
+   directions. So `--seat-gid-root` (which pins `runAsGroup: 0`) costs the
+   debugger on any target whose gid is non-zero.
+2. **Dumpability is the confounder that will waste an hour.** A process that
+   reaches uid 1000 *via* `setuid()` from root is left non-dumpable, and tracing
+   a non-dumpable process needs `CAP_SYS_PTRACE` whatever the credentials — so a
+   synthetic tracee built by dropping privileges denies every attach and looks
+   exactly like a credential failure. `setpriv --reuid 1000` has the same
+   problem: the flag clears at `execve` and `/proc/<pid>/status` comes back owned
+   by `0:0`. A **kubelet-started** uid-1000 container process is dumpable and its
+   `/proc` files are uid-owned. Any fixture must restore dumpability with
+   `prctl(PR_SET_DUMPABLE, 1)` or start the workload as a real container.
+3. **Yama restricts `PTRACE_ATTACH` only — never `PTRACE_MODE_READ`.** Measured:
+   matching uid+gid read `maps`, `environ`, `exe` and `root` while
+   `PTRACE_ATTACH` was refused at `ptrace_scope=1`, purely because the tracer was
+   not an ancestor; `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` on the target
+   flipped it with nothing else changed. **A seat can have complete `/proc`
+   access and still be unable to attach** — which reads as a contradiction in a
+   report, and `Blocker` cannot currently express it.
+4. **`CAP_SYS_PTRACE` bypasses Yama; becoming the target's uid does not.**
+   Capabilities drop at `setuid()` and sshd uses no ambient caps. On
+   `ptrace_scope=1` (the Ubuntu default) a root-serving rung gets the `/proc`
+   reads but cannot attach, where FULL can — which is why the ladder stays
+   FULL → ROOT-SERVING → DEGRADED → SEAT. Diamond measures `ptrace_scope=0`, so
+   it works there.
+5. **A root ephemeral container with no `capabilities` stanza** gets
+   `CapEff=00000000a80425fb`: `CHOWN`, `DAC_OVERRIDE`, `SETGID`, `SETUID`
+   present, `SYS_PTRACE` absent. Enough to write `/etc/passwd`, chown the home
+   and drop the login; nothing more. A real `sshd` there hands the session the
+   passwd record's **primary** gid, which is what makes that rung work at all.
 
 ## Refusal arrives through two unrelated channels
 
