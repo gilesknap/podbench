@@ -49,6 +49,7 @@ from .console import WARNING_LEAD, emit, paragraph
 from .editor import EditorError, Provision, open_seat, resolve_editor
 from .kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
+    DEFAULT_CALL_TIMEOUT,
     DEFAULT_POLL_INTERVAL,
     EphemeralContainerError,
     Kubectl,
@@ -3812,7 +3813,11 @@ def current_namespace(
     if context is not None:
         argv += ["--context", context]
     argv += ["config", "view", "--minify", "-o", "jsonpath={..namespace}"]
-    result = run(argv)
+    # Bounded like every other kubectl call, though this one reads a file and
+    # contacts nothing: it is the first call every verb makes, and a kubeconfig
+    # on a mount that has stopped answering would hang before anything is
+    # printed at all.
+    result = run(argv, timeout=DEFAULT_CALL_TIMEOUT)
     namespace = result.stdout.strip()
     if result.returncode != 0 or not namespace:
         return "default"
@@ -4811,7 +4816,13 @@ _ResizeCpu = Annotated[
 
 _Timeout = Annotated[
     float,
-    typer.Option("--timeout", metavar="SECONDS", help="seconds to wait for the seat"),
+    typer.Option(
+        "--timeout",
+        metavar="SECONDS",
+        help="seconds to wait for the seat to start. It bounds that wait and "
+        "nothing else: one kubectl call is bounded separately, at "
+        f"{DEFAULT_CALL_TIMEOUT:g}s",
+    ),
 ]
 
 
@@ -5326,7 +5337,8 @@ def _build_app(
                 help="wait this long for a seat that is still starting before "
                 "reporting. The default reports what is there now; pass the "
                 "same number `attach --timeout` needed on a cluster whose "
-                "image pull is slow",
+                "image pull is slow. It bounds that wait and nothing else: one "
+                f"kubectl call is bounded separately, at {DEFAULT_CALL_TIMEOUT:g}s",
             ),
         ] = 0.0,
         config_dir: _ConfigDir = None,

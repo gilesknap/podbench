@@ -104,7 +104,11 @@ class FakeRunner:
         self.stdins: list[str | None] = []
 
     def key(self, argv: Sequence[str]) -> str:
-        return " ".join(argv[3:])
+        # The bound issue #118 added rides in the global flags, so it is dropped
+        # here rather than counted: this key is what every canned response is
+        # matched on, and an offset that moved would match none of them.
+        rest = [word for word in argv if not word.startswith("--request-timeout=")]
+        return " ".join(rest[3:])
 
     def __call__(
         self,
@@ -112,6 +116,7 @@ class FakeRunner:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
         self.stdins.append(stdin)

@@ -32,12 +32,19 @@ from .model import as_dict
 __all__ = [
     "ADMISSION_DENIAL_MARKERS",
     "CREATE_CONTAINER_CONFIG_ERROR",
+    "DEFAULT_CALL_TIMEOUT",
     "DRY_RUN_QUERY",
     "PSA_SYS_PTRACE_DENIAL",
+    "REQUEST_TIMEOUT_HEADROOM",
+    "STREAMED_SUBCOMMANDS",
+    "TIMED_OUT_RETURNCODE",
+    "UNBOUNDED",
+    "WAIT_GRACE",
     "CommandResult",
     "EphemeralContainerError",
     "Kubectl",
     "KubectlError",
+    "KubectlTimeoutError",
     "Runner",
     "allowed_run_as_user",
     "next_container_name",
@@ -123,6 +130,78 @@ answer, and ``--target-uid`` is where the answer goes.
 
 DEFAULT_POLL_INTERVAL = 0.5
 
+DEFAULT_CALL_TIMEOUT = 30.0
+"""How long one ``kubectl`` invocation may take before podbench stops waiting.
+
+A bound on *one call*, which is not what any verb's ``--timeout`` means: that
+one bounds a polling loop, and cannot bound the single call inside an iteration
+of it. Both are needed, because an ``exec`` that wedges never returns to the
+loop at all — measured in the field with a stub ``kubectl``, where ``status
+--timeout 5`` was still running at 75s (issue #118).
+
+Thirty seconds is chosen against the calls that carry it: a pod read, a patch, a
+probe ``exec`` into podbench's own image. Every one of those answers in
+milliseconds on a working cluster, so this is a bound on a *stuck* call rather
+than a budget for a slow one. Work that legitimately takes longer — a git clone
+or an editable install over ``exec`` — names its own bound at the call site, and
+an interactive or streamed call passes ``timeout=None`` and is bounded by the
+user hanging up.
+"""
+
+UNBOUNDED: float | None = None
+"""``timeout`` for a call that is deliberately not bounded, said out loud.
+
+The same value the parameter defaults to in :mod:`subprocess`, given a name so
+that an exemption reads as a decision and greps as one. Issue #118 is about a
+verb that hung because nothing bounded a call; a call that *should* hang — one
+holding a user's session, or waiting on their passphrase — must be visibly
+chosen rather than left to whatever the signature happened to default to.
+"""
+
+TIMED_OUT_RETURNCODE = 124
+"""The exit status reported for a call podbench had to stop.
+
+124 is coreutils ``timeout``'s, borrowed rather than invented so that a killed
+call is spelled the same way here as it is in
+:mod:`podbench.provision`. ``kubectl`` never exits 124 of its own accord.
+"""
+
+REQUEST_TIMEOUT_HEADROOM = 5.0
+"""How far under a call's bound ``kubectl`` is told to give up by itself.
+
+Both timers start at about the same moment and podbench's starts first, so equal
+numbers would mean the kill always won the race and ``kubectl``'s own message —
+which names the server that did not answer — was never printed. This hands the
+ordinary case back to ``kubectl`` and leaves the kill as the backstop for a
+client that has stopped honouring its own deadline.
+
+A bound smaller than this headroom carries no ``--request-timeout`` at all,
+which is right: at that point the only enforcement anyone should trust is the
+one that does not depend on the process being well.
+"""
+
+WAIT_GRACE = 15.0
+"""How long past its own deadline a ``kubectl wait`` is given before it is killed.
+
+``kubectl wait --timeout=Ns`` gives up at N and prints why, which is a better
+answer than a killed process; this only catches the ``kubectl`` that does not.
+"""
+
+STREAMED_SUBCOMMANDS = frozenset({"attach", "exec", "logs", "port-forward", "wait"})
+"""``kubectl`` subcommands that must never carry ``--request-timeout``.
+
+``--request-timeout`` bounds *one server request*, and each of these holds a
+single request open for its whole duration — an upgraded connection for ``exec``
+and ``attach``, a watch for ``wait``, a stream for ``logs`` and
+``port-forward``. Applying it there would cut exactly the calls it is meant to
+protect, and would do it at the flag's value rather than at the caller's: a
+``wait --timeout=120s`` under a 30s request timeout fails at 30s, reporting a
+condition that was never given time to become true.
+
+They are bounded by the subprocess timeout instead, which kills a wedged call
+without telling the API server how long a legitimate one may take.
+"""
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -151,8 +230,16 @@ class Runner(Protocol):
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
-        """Run ``argv`` to completion and report how it went."""
+        """Run ``argv`` to completion and report how it went.
+
+        ``timeout`` is in seconds and ``None`` means *no bound at all*, which is
+        :mod:`subprocess`'s own spelling and the right one for a call holding a
+        user's session. An implementation that cannot enforce a bound must still
+        accept the argument: every caller passes one, and the decision about
+        which calls are exempt is made at the call site rather than here.
+        """
         ...
 
 
@@ -161,21 +248,52 @@ def run_subprocess(
     *,
     stdin: str | None = None,
     capture: bool = True,
+    timeout: float | None = None,
 ) -> CommandResult:
-    """Run ``argv``, capturing its output unless ``capture`` is false."""
-    completed = subprocess.run(
-        list(argv),
-        input=stdin,
-        capture_output=capture,
-        text=True,
-        check=False,
-    )
+    """Run ``argv``, capturing its output unless ``capture`` is false.
+
+    Raises :class:`KubectlTimeoutError` when ``timeout`` seconds pass with the
+    child still running. Killing it is the point: before issue #118 nothing bounded a
+    single invocation, so one wedged ``kubectl exec`` — an API server that never
+    answers, or an orphaned child holding the exec pipes open (issue #92) — hung
+    a laptop verb for as long as the user was willing to watch it.
+    """
+    try:
+        completed = subprocess.run(
+            list(argv),
+            input=stdin,
+            capture_output=capture,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as expired:
+        # Whatever the call managed to say before it stopped saying anything is
+        # the only evidence there is about where it wedged, so it is carried
+        # into the error rather than dropped with the child.
+        raise KubectlTimeoutError(
+            argv,
+            timeout if timeout is not None else 0.0,
+            stdout=_partial(expired.stdout),
+            stderr=_partial(expired.stderr),
+        ) from expired
     return CommandResult(
         argv=tuple(argv),
         returncode=completed.returncode,
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
     )
+
+
+def _partial(captured: Any) -> str:
+    """Whatever a timed-out child had written, as text.
+
+    ``TimeoutExpired`` carries ``str`` under ``text=True`` and ``bytes``
+    otherwise, and carries ``None`` when the stream was not captured at all.
+    """
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", "replace")
+    return captured if isinstance(captured, str) else ""
 
 
 class KubectlError(RuntimeError):
@@ -191,7 +309,11 @@ class KubectlError(RuntimeError):
         self.returncode = result.returncode
         self.stdout = result.stdout
         self.stderr = result.stderr
-        super().__init__(
+        super().__init__(self._message(result))
+
+    def _message(self, result: CommandResult) -> str:
+        """The one line a verb prints for this. Overridden, not reformatted."""
+        return (
             f"{' '.join(result.argv)} exited {result.returncode}: "
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
@@ -251,6 +373,48 @@ class KubectlError(RuntimeError):
         about the uid, which is most of them.
         """
         return allowed_run_as_user(f"{self.stderr}\n{self.stdout}")
+
+
+class KubectlTimeoutError(KubectlError):
+    """A ``kubectl`` invocation that had to be killed because it never returned.
+
+    A :class:`KubectlError` on purpose, so that every verb's existing ``except``
+    clause turns it into one sentence on stderr rather than a traceback: giving
+    up is an outcome the launcher already knows how to report, and a new
+    exception type would have to be caught in a dozen places to be printed once.
+
+    ``returncode`` is :data:`TIMED_OUT_RETURNCODE` rather than the child's,
+    which there is not: the process was killed, so nothing exited.
+    """
+
+    def __init__(
+        self,
+        argv: Sequence[str],
+        timeout: float,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> None:
+        self.timeout = timeout
+        super().__init__(
+            CommandResult(
+                argv=tuple(argv),
+                returncode=TIMED_OUT_RETURNCODE,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        )
+
+    def _message(self, result: CommandResult) -> str:
+        # One line, because that is what `podbench: <error>` prints and what
+        # every warning in this CLI is. The argv is the diagnosis — which call
+        # wedged — and the partial output, when there is any, is the only clue
+        # about how far it got.
+        said = (result.stderr.strip() or result.stdout.strip()).splitlines()
+        return (
+            f"{' '.join(result.argv)} did not answer within {self.timeout:g}s "
+            "and was stopped" + (f", having said: {said[-1].strip()}" if said else "")
+        )
 
 
 def allowed_run_as_user(message: str) -> tuple[int, ...]:
@@ -387,7 +551,7 @@ class Kubectl:
 
     # -- plumbing ---------------------------------------------------------
 
-    def base_argv(self) -> list[str]:
+    def base_argv(self, *, request_timeout: float | None = None) -> list[str]:
         """The prefix every invocation shares.
 
         ``--kubeconfig`` and ``--context`` are selected here rather than left to
@@ -396,6 +560,15 @@ class Kubectl:
         cluster by the same two arguments. A launcher that could name a
         kubeconfig for one and not the other would let a session's control plane
         and its data plane drift apart.
+
+        ``request_timeout`` is the *other half* of issue #118's bound, and it
+        covers a different failure from the subprocess one: an API server that
+        accepts the connection and never answers leaves ``kubectl`` waiting
+        happily, so it is told to give up itself. It then exits with its own
+        message about which server did not answer, which is a better sentence
+        than anything a killed process can leave behind. ``None`` emits no flag
+        at all — the calls that must not carry one are
+        :data:`STREAMED_SUBCOMMANDS`.
         """
         argv = [self.binary]
         if self.kubeconfig is not None:
@@ -403,6 +576,8 @@ class Kubectl:
         if self.context is not None:
             argv += ["--context", self.context]
         argv += ["-n", self.namespace]
+        if request_timeout is not None and request_timeout > 0:
+            argv.append(f"--request-timeout={request_timeout:g}s")
         return argv
 
     def run(
@@ -411,10 +586,28 @@ class Kubectl:
         stdin: str | None = None,
         check: bool = True,
         capture: bool = True,
+        timeout: float | None = DEFAULT_CALL_TIMEOUT,
     ) -> CommandResult:
-        """Run ``kubectl`` with this instance's context and namespace."""
-        argv = self.base_argv() + list(args)
-        result = self._runner(argv, stdin=stdin, capture=capture)
+        """Run ``kubectl`` with this instance's context and namespace.
+
+        Bounded by default and unbounded only where a caller says so with
+        ``timeout=None``: the failure this defends against is silent — a call
+        that never returns produces no output, no error and no exit — so
+        omitting a bound must not be how a call comes to have none.
+
+        The subprocess bound is the outer one, and ``--request-timeout`` is set
+        :data:`REQUEST_TIMEOUT_HEADROOM` under it, so on any call carrying one
+        (:meth:`base_argv`) ``kubectl`` gives up first and says so in its own
+        words. The kill is the backstop for a ``kubectl`` that has stopped
+        listening to anything, including its own deadline.
+        """
+        streamed = bool(args) and args[0] in STREAMED_SUBCOMMANDS
+        request = (
+            None if streamed or timeout is None else timeout - REQUEST_TIMEOUT_HEADROOM
+        )
+        argv = self.base_argv(request_timeout=request)
+        argv += list(args)
+        result = self._runner(argv, stdin=stdin, capture=capture, timeout=timeout)
         if check and result.returncode != 0:
             raise KubectlError(result)
         return result
@@ -586,14 +779,24 @@ class Kubectl:
         container: str | None = None,
         stdin: str | None = None,
         check: bool = True,
+        timeout: float | None = DEFAULT_CALL_TIMEOUT,
     ) -> CommandResult:
-        """Run a command in a container and capture its output."""
+        """Run a command in a container and capture its output.
+
+        Bounded like every other call, because a captured ``exec`` is a question
+        with an answer — a probe, a ``cat``, a ``test`` — and the caller is
+        waiting on the answer with nothing on the terminal. A caller running
+        something that genuinely takes minutes in the pod (a clone, an editable
+        install) passes its own ``timeout``; one holding a user's session uses
+        :meth:`exec_stream`, which is exempt.
+        """
         return self.run(
             *self._exec_argv(
                 pod, argv, container=container, stdin_open=stdin is not None
             ),
             stdin=stdin,
             check=check,
+            timeout=timeout,
         )
 
     def exec_stream(
@@ -613,11 +816,19 @@ class Kubectl:
         forever (report 3.19), and closing or replacing the child's stderr tears
         down the whole CRI exec stream (report 3.1). So stderr is left alone and
         a tty is never requested.
+
+        **Exempt from issue #118's bound, deliberately.** This process's stdio
+        is the session: sshd in inetd mode, or a shell somebody is typing into.
+        Blocking for as long as the user holds it is the contract, and a bound
+        here would drop an ssh connection mid-edit at whatever number seemed
+        reasonable to the launcher. It ends when the user hangs up, so
+        ``timeout=None`` is stated rather than defaulted.
         """
         return self.run(
             *self._exec_argv(pod, argv, container=container, stdin_open=stdin_open),
             capture=False,
             check=check,
+            timeout=UNBOUNDED,
         )
 
     def _exec_argv(
@@ -647,12 +858,21 @@ class Kubectl:
         *,
         timeout: float = 120.0,
     ) -> CommandResult:
-        """``kubectl wait`` on one resource, e.g. ``condition=Ready``."""
+        """``kubectl wait`` on one resource, e.g. ``condition=Ready``.
+
+        The bound is ``kubectl``'s own, and the subprocess one is set past it by
+        :data:`WAIT_GRACE`: this is the one call whose long block is the point,
+        so cutting it at :data:`DEFAULT_CALL_TIMEOUT` would report "not ready"
+        about a pod that was still pulling. ``wait`` is in
+        :data:`STREAMED_SUBCOMMANDS` for the same reason — its watch must
+        outlive any ``--request-timeout``.
+        """
         return self.run(
             "wait",
             resource,
             f"--for={condition}",
             f"--timeout={int(timeout)}s",
+            timeout=timeout + WAIT_GRACE,
         )
 
     # -- ephemeral containers ---------------------------------------------

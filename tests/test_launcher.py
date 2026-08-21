@@ -25,9 +25,11 @@ from podbench.agent import SEAT_NSS_PATH
 from podbench.console import console
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
+    DEFAULT_CALL_TIMEOUT,
     CommandResult,
     Kubectl,
     KubectlError,
+    KubectlTimeoutError,
 )
 from podbench.launcher import (
     NO_TARGET_CONTAINER,
@@ -368,6 +370,7 @@ class FakeCluster:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
         if argv[0].endswith("code"):
@@ -392,6 +395,11 @@ class FakeCluster:
         rest = argv[1:]
         while rest and rest[0] in ("-n", "--namespace", "--context"):
             rest = rest[2:]
+        # Issue #118 put a bound on the call itself, so every argv this fake
+        # sees now carries one. It is asserted where it matters
+        # (`test_kubectl.py`) rather than in every dispatch here.
+        if rest and rest[0].startswith("--request-timeout="):
+            rest = rest[1:]
         return rest
 
     def _dispatch(
@@ -3832,7 +3840,11 @@ def test_nothing_matches_names_the_namespace_and_shows_what_is_there() -> None:
 
 
 def empty_namespace(
-    argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    argv: Sequence[str],
+    *,
+    stdin: str | None = None,
+    capture: bool = True,
+    timeout: float | None = None,
 ) -> CommandResult:
     """A namespace kubectl finds nothing in — the one shape FakeCluster, which
     is built around a pod, cannot express."""
@@ -3997,6 +4009,57 @@ def starting_cluster(reason: str = "ContainerCreating") -> FakeCluster:
             ephemeral_statuses=[waiting_status("podbench-1", reason)],
         )
     )
+
+
+class WedgedRunner:
+    """A ``kubectl`` that never comes back, standing in rather than blocking.
+
+    Issue #118's failure was measured in the field: with a stub ``kubectl`` that
+    slept for ever, ``status --timeout 5`` was still running at 75 s, because
+    nothing bounded the single call inside the polling loop. What is asserted
+    here is the half that lives in this process — that the verb gives the call a
+    bound and turns the expiry into a sentence — so this raises what
+    :func:`podbench.kubectl.run_subprocess` would raise instead of really
+    hanging: a test that proved it by hanging would prove it to nobody.
+
+    An unbounded call is the failure this class exists to catch, so it is an
+    assertion rather than a wait. The exemptions are real but none of them is
+    reachable from ``status``.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[str, ...], float | None]] = []
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        self.calls.append((tuple(argv), timeout))
+        if timeout is None:
+            raise AssertionError(f"this call would hang for ever: {list(argv)}")
+        raise KubectlTimeoutError(argv, timeout)
+
+
+def test_a_wedged_kubectl_ends_the_verb_instead_of_hanging(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every call `status` makes is bounded, and the expiry is one sentence."""
+    runner = WedgedRunner()
+
+    assert (
+        main(["status", "target", "-n", "demo", "--timeout", "5"], runner=runner) == 2
+    )
+
+    said = capsys.readouterr().err
+    assert f"did not answer within {DEFAULT_CALL_TIMEOUT:g}s" in said
+    assert "was stopped" in said
+    # The argv is the diagnosis: which call wedged, not merely that one did.
+    assert "get pod target" in said
+    assert [timeout for _, timeout in runner.calls] == [DEFAULT_CALL_TIMEOUT]
 
 
 def test_a_plain_status_reads_the_pod_once_and_never_sleeps() -> None:
@@ -5141,7 +5204,11 @@ def test_an_unbounded_pod_has_no_ceiling_to_raise(
 
 def test_current_namespace_falls_back_to_default() -> None:
     def runner(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         return CommandResult(tuple(argv), 0, "", "")
 
@@ -5163,7 +5230,11 @@ def test_kubectl_for_asks_the_kubeconfig_only_when_the_flag_did_not() -> None:
     assert kubectl_for(None, runner=cluster).namespace == "demo"
 
     def refuses(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         raise AssertionError(f"nothing should have run: {list(argv)}")
 

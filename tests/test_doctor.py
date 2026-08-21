@@ -109,6 +109,7 @@ class FakeMachine:
         *,
         stdin: str | None = None,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         del stdin, capture
         self.calls.append(tuple(argv))

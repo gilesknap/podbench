@@ -902,7 +902,11 @@ def gdb_saying(stderr: str, returncode: int = 0) -> Callable[..., CommandResult]
     """
 
     def runner(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         return CommandResult(tuple(argv), returncode, "", stderr)
 
@@ -979,7 +983,11 @@ def test_the_load_check_asks_about_the_sysroot_prefixed_path() -> None:
     seen: list[tuple[str, ...]] = []
 
     def runner(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         seen.append(tuple(argv))
         return CommandResult(tuple(argv), 0, "", "")
@@ -993,7 +1001,11 @@ def test_no_gdb_to_ask_is_not_a_second_refusal() -> None:
     """`assess` already has a better-worded refusal for an image without gdb."""
 
     def missing(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         raise FileNotFoundError(2, "No such file or directory", argv[0])
 
@@ -1102,7 +1114,11 @@ def ss_saying(*rows: str) -> Callable[..., CommandResult]:
     is emitted."""
 
     def runner(
-        argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         return CommandResult(tuple(argv), 0, SS_HEADER + "".join(rows), "")
 
@@ -1110,7 +1126,11 @@ def ss_saying(*rows: str) -> Callable[..., CommandResult]:
 
 
 def no_listeners(
-    argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+    argv: Sequence[str],
+    *,
+    stdin: str | None = None,
+    capture: bool = True,
+    timeout: float | None = None,
 ) -> CommandResult:
     """An ``ss`` that reports an empty pod."""
     return ss_saying()(argv, stdin=stdin, capture=capture)
@@ -1381,7 +1401,12 @@ class InstallingUv:
         return int(match.group(1))
 
     def __call__(
-        self, argv: Sequence[str], *, stdin: str | None = None, capture: bool = True
+        self,
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        capture: bool = True,
+        timeout: float | None = None,
     ) -> CommandResult:
         if argv[0] == "timeout":
             # The injection reaches the shell only through a bound: #76 was a
