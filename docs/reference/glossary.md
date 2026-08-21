@@ -37,10 +37,11 @@ capreport
   about capability comes from here, never from the spec that was submitted.
 
 blocker
-  The named mechanism that denied {term}`ptrace`. Four unrelated subsystems refuse
-  with the same {term}`EPERM` — a missing {term}`CAP_SYS_PTRACE`, {term}`Yama`,
-  {term}`seccomp` and {term}`AppArmor` — so naming which one is the entire point of
-  {term}`capreport`.
+  The named mechanism that denied {term}`ptrace`. Several unrelated mechanisms
+  refuse with the same {term}`EPERM` — a missing {term}`CAP_SYS_PTRACE`,
+  {term}`Yama`, {term}`seccomp` and a mismatch between the seat's and the target's
+  LSM labels (SELinux MCS categories, or AppArmor profiles) — so naming which one
+  is the entire point of {term}`capreport`.
 
 dev pod
   Iterate mode's sacrificial clone of a running pod: same image, same volumes, same
@@ -167,7 +168,8 @@ spike
   building on it. S1 (the ssh transport), S2 (vscode-server in an
   {term}`ephemeral container`), S3 (gdb against a {term}`distroless` target), S4 (the
   Python relaunch loop) and S5 (the no-capability fallback) were the Phase 0 gate, and
-  are collated in the Phase 0 gate report — which is where most of the non-obvious code
+  are collated in [the Phase 0 gate report](../explanations/spikes/phase0-report.md) —
+  which is where most of the non-obvious code
   here comes from, and which wins wherever it and the design brief disagree. S6 came
   later and records a route *not* taken: suspending an {term}`Argo CD`-managed workload.
 
@@ -632,9 +634,12 @@ vscode
 
 vscode-server
   The server half of {term}`Remote-SSH`, unpacked into the seat's home on first
-  connect. It is about 700 MiB, and a working session with extensions and a language
-  server index reaches 1.1–1.3 GB — the number behind every warning about memory and
-  ephemeral storage in Observe mode.
+  connect. Measured at **1215 MiB** in a seat carrying a real Remote-SSH session
+  (2026-08-16) — the figure `resize.EDITOR_HEADROOM` checks this pod's headroom
+  against, and the one memory cost that still earns a warning. On disk a working
+  session with extensions and a language-server index reaches **1.1–1.3 GB**,
+  which is the ephemeral-storage figure. The ~700 MiB once quoted was an S2
+  projection taken without a GUI client.
 ```
 
 ## Python packaging

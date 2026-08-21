@@ -12,10 +12,13 @@ have not installed the launcher, run each as `uvx podbench <verb>`. See
 :::
 
 :::{warning}
-No real VS Code GUI client has been driven against podbench yet. The transport
-was verified at the protocol level — a real vscode-server completed an HTTP
-`200` plus a WebSocket `101 Switching Protocols` handshake through `ssh -L`,
-with no port-forward and no pod IP — and the server was driven headlessly. Every
+A real VS Code GUI client has now connected — and the numbers still have not
+been taken. On 2026-08-17 a Remote-SSH client reached a seat, started an
+extension host, unpacked `ms-vscode.cpptools` and drove gdb through the C++
+adapter into a live IOC. The transport was verified at the protocol level
+besides — a real vscode-server completed an HTTP `200` plus a WebSocket
+`101 Switching Protocols` handshake through `ssh -L`, with no port-forward and
+no pod IP — and the server was driven headlessly. Every
 memory figure below is therefore a **lower bound**: no extension host and no
 language server has been measured. Treat this page as the best available
 guidance, not as a proven result.
@@ -77,6 +80,25 @@ Which pod that lands in decides how much it matters:
   short; read the caveats on [Attach to a pod](attach-to-a-pod.md) before you
   rely on it. Ephemeral storage cannot be raised in place at all — that one
   needs a `podbench-home` volume in the chart.
+
+### Declaring the volume
+
+`spec.volumes` is immutable, so this is a chart change and not something `attach`
+can do:
+
+```yaml
+spec:
+  securityContext:
+    fsGroup: 1000          # without this the volume arrives root-owned
+  volumes:                 # and unwritable, and the seat can chown nothing
+    - name: podbench-home
+      emptyDir: {}         # or a claim, to survive a restart
+```
+
+No `volumeMount` on the application container: only the seat mounts it. One
+caveat (#42): a **root** seat takes `$HOME` from its passwd record and ignores
+the volume, so the storage is bought with `--max-rung degraded` — which is also
+what gives up the live attach.
 
 ## Client setup
 
@@ -249,7 +271,8 @@ pod's lifetime. `podbench dev` gives its own sidecar the seat.
 
 If Remote-SSH does not offer the alias, it is reading a different config file.
 Set `remote.SSH.configFile` to the file that has the `Include`, or point it
-straight at `~/.podbench/config.d/<namespace>-<pod>.conf`.
+straight at `~/.podbench/config.d/<namespace>-<pod>-<n>.conf`, where `<n>` is the
+seat's number (a `dev` sidecar, named exactly `podbench`, gets no suffix).
 
 ## The generated stanza, and why each line is there
 
@@ -357,7 +380,7 @@ Two reclaims that are known to work, and one caveat:
 # after the server extracts
 rm -rf ~/.vscode-server/bin/*/extensions/{copilot,copilot-chat,mermaid-markdown-features}
 # once extensions are installed
-rm -rf ~/.vscode-server/data/CachedExtensionVSIXs
+rm -rf ~/.vscode-server/data/data/CachedExtensionVSIXs
 ```
 
 The first takes the server from 646 MiB to **428 MiB (−34 %)**. It was verified

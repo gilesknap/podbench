@@ -177,8 +177,8 @@ If the `TARGET` column is a guess rather than a fact, `podbench pids` says so.
 `ST`, `THR` and `PTRACE` are the columns to read when you disagree with the pid
 `dbg` or `debug-config` chose, because they are what it chose on. `ST` is the
 kernel's process state: a `Z` there is a zombie, which no seat can attach to
-however good its credentials — it is the entry `--pid` should never be pointed
-at. `PTRACE` says whether *this* seat may read that process at all; a `DENIED`
+however good its credentials — it is the entry you should never pass as
+`podbench dbg <pid>`. `PTRACE` says whether *this* seat may read that process at all; a `DENIED`
 beside a live process is usually a uid the seat does not share (see
 [Attach to a pod](attach-to-a-pod.md) for the rung that fixes it). `THR` is the
 thread count, which is what separates a workload from the short-lived helper it
@@ -646,8 +646,10 @@ before it claims the rung. Three things take it away with everything else, none
 of which cares whose descendant the inferior is: a seccomp filter that rejects
 `ptrace(2)` outright, `ptrace_scope` **2 or 3** — scope 2 is the one Yama setting
 with no descendant exemption, and it demands `CAP_SYS_PTRACE` of
-`PTRACE_TRACEME` too — and an AppArmor profile that denies `ptrace`.
-`podbench capreport` names whichever of the three it finds.
+`PTRACE_TRACEME` too — and an LSM policy that denies `ptrace` — differing
+AppArmor profiles, or differing SELinux MCS categories, which `capreport`
+reports as `lsm-mismatch`. `podbench capreport` names whichever of the three it
+finds.
 
 The offer is conditional for that reason: where the scratch attach was measured
 and failed, `podbench dbg` says so instead of pointing at `--launch`, because a

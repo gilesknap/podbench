@@ -279,5 +279,16 @@ spec at creation: pod volumes are immutable and a container's rootfs is reset on
 every restart. The workflow ships as `podbench hotfix`
 (`init`/`apply`/`status`/`consolidate`, plus `--print-values` for the chart
 snippet), but it has only ever been exercised against unit tests: no cluster has
-run it, and `attach` cannot yet mount the claim into the seat, so the seat must
-be authored by hand or `hotfix` run inside it with `--local`.
+run it. `attach --mount CLAIM` now puts the claim into the seat at the
+application's own mountPath, so the workflow is reachable end to end — but
+reachable is not demonstrated. See [What `hotfix` does](hotfix-flow.md).
+
+## See also
+
+* [Glossary](../reference/glossary.md) — every term this page uses without
+  explanation.
+* [Ways in](ways-in.md) — which mode a given problem belongs in.
+* [What `attach` does](attach-flow.md), [What `dev` does](dev-flow.md) and
+  [What `hotfix` does](hotfix-flow.md) — each mode's flow, call by call.
+* [Phase 0 gate report](spikes/phase0-report.md) — the measurements the shapes
+  on this page were chosen against.

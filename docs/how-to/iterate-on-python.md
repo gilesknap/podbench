@@ -96,7 +96,7 @@ prints nothing at all on success.
 A dev pod's sidecar is an **ordinary** container, so — unlike an `attach` seat —
 it may mount a file with `subPath`. Where the origin pod declares the
 `podbench-identity` volume (the ConfigMap the podbench chart emits; see
-[Attach to a pod](attach-to-a-pod.md)), the clone carries it and the sidecar is
+[What `dev` does](../explanations/dev-flow.md)), the clone carries it and the sidecar is
 authored differently:
 
 * `passwd` is mounted read-only over `/etc/passwd` and `group` over `/etc/group`;

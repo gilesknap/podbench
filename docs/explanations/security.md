@@ -224,9 +224,12 @@ process — and even that has workarounds:
   the capability check both exempt them.
 * **gdb-launch survives.** `podbench dbg --launch ./prog` gives breakpoints,
   `run`, `continue`, backtraces, arguments and locals at uid 1000 with
-  `CapEff: 0000000000000000`, under `restricted` with `RuntimeDefault` seccomp.
-  Document the inner loop as gdb-**launch**; attach is the privileged special
-  case.
+  `CapEff: 0000000000000000`, under `restricted` on every runtime the spikes
+  measured. `RuntimeDefault` is a name, not a filter: a DLS node's own denied
+  `ptrace` even on a self-forked child (2026-08-18, above), which is why the
+  seat now mirrors the target's profile and why `capreport` **measures** this
+  rung rather than claiming it. Document the inner loop as gdb-**launch**;
+  attach is the privileged special case.
 * **In-process debug servers are the ptrace-free live attach.** debugpy, Node's
   inspector, JDWP: the app listens on loopback, the editor attaches through the
   shared network namespace and the ssh tunnel. For Python this means the live
@@ -303,7 +306,7 @@ automatically and prints why.
 * **The `/proc/<pid>/root` bridge is one-directional.** The debug container can
   read the app's rootfs; the app cannot see the debug container's. A compromised
   application container cannot reach the debug toolchain.
-* **The target's filesystem is never written.** `readOnlyRootFilesystem` is
+* **`attach` never writes the target's filesystem.** `readOnlyRootFilesystem` is
   common in production and podbench does not depend on writing into the target.
   `/proc/<pid>/root` is a read path in every standard workflow.
 * **An ssh-able seat on a live pod runs as the target's own uid and gid**, and
@@ -330,11 +333,20 @@ automatically and prints why.
   [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md). Air-gapped operation is
   unspiked.
 * **`--resize` changes a running workload's memory limit.** It is a separate
-  RBAC grant for that reason, and it is opt-in.
+  RBAC grant for that reason. It is opt-in on `attach`; `podbench vscode` spends
+  it by default, sized from the measured headroom, with `--resize MEMORY` to
+  choose the number and `--no-resize` to decline. The raise lands on the pod and
+  not on its controller, so a rollout reverts it.
+* **`podbench vscode` installs debugpy into the target, by default.** ~15 MB into
+  the workload's writable layer through `/proc/<pid>/root`, needing egress from
+  the pod, and it ptraces the app for a few seconds to start the server.
+  `--no-provision` declines; a read-only target rootfs gets `EROFS`. See
+  *Provisioning* in the [command-line reference](../reference/cli.md).
 * **Availability, not confidentiality, is the real risk in Observe mode.**
   podbench cannot reserve resources on a live pod, so the plausible incident is
-  an OOM-killed or evicted workload, not a data breach. See the footgun section
-  on the front page.
+  an OOM-killed or evicted workload, not a data breach. See
+  *Read this before you attach to a live pod* on the
+  [front page](../index.md).
 
 ### The seat's login, and the world-writable file that provides it
 

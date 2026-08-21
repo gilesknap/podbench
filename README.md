@@ -132,8 +132,8 @@ Not fine print — each of these has bitten a spike on a real cluster.
   records the original selector for an exact restore.
 
 The docs carry the reasoning and the measurements behind all four, and *What is
-proven, and what is not* is candid about the gaps — no real VS Code GUI client
-has connected yet, and Hotfix mode has never been run against a cluster.
+proven, and what is not* is candid about the gaps — every memory figure is still a lower
+bound, and Hotfix mode has never been run against a cluster.
 
 What            | Where
 :---:           | :---:

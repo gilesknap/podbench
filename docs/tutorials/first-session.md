@@ -153,9 +153,10 @@ Four lines are worth learning to read:
   and the command still exits `0`. What podbench asked admission for is on the
   `ladder` lines below, and the two can differ: a policy that rewrites a request
   rather than refusing it leaves a container the spec no longer describes.
-* **`blocker`** — what actually stops ptrace, if anything. Four unrelated
-  subsystems (missing capability, Yama, seccomp, AppArmor) refuse with the same
-  `EPERM`; this line names which.
+* **`blocker`** — what actually stops ptrace, if anything. Several unrelated
+  mechanisms refuse with the same `EPERM` — a missing capability, Yama, seccomp,
+  an LSM label mismatch (SELinux or AppArmor), or a uid/gid mismatch; this line
+  names which.
 * **`yama` and `node`** — both are per-node. Attach working on one pod and being
   denied on the next, in the same cluster, is expected: kernel flavours differ.
   podbench never caches a cluster-wide answer.
@@ -216,14 +217,20 @@ On first connect the server downloads and extracts itself into the container
 (about 2 s to download, 6 s to extract, ~680 MiB on disk).
 
 :::{warning}
-No real VS Code GUI client has been driven against podbench yet. The transport
-was verified at the protocol level and the server was driven headlessly, so the
-memory figures in these docs are **lower bounds** — no extension host or
-language server has been measured. Expect the connection to work and the
-footprint to be larger than quoted.
+A real VS Code GUI client has now connected — and the numbers still have not
+been taken. On 2026-08-17 a Remote-SSH client reached a seat, started an
+extension host, unpacked `ms-vscode.cpptools` and drove gdb through the C++
+adapter into a live IOC. The transport was verified at the protocol level
+besides, and the server was driven headlessly, so the memory figures in these
+docs are **lower bounds** — no extension host or language server has been
+measured. Expect the connection to work and the footprint to be larger than
+quoted.
 :::
 
-Open `/` in the remote window and you are editing inside the cluster. See
+Open the seat's home in the remote window — `/root`, or `/home/podbench` on a
+`podbench-home` volume — and you are editing inside the cluster. Do **not** open
+`/`: it points the file watcher and the search indexer at `/proc`, where the
+walk has no bottom. See
 [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md) for sizing, extensions and
 the settings that matter.
 

@@ -13,6 +13,7 @@ Where to start
 
 * Never used it — [Setup](tutorials/setup.md), then
   [Your first session](tutorials/first-session.md).
+* Here to open an editor on a live pod — [VS Code Remote-SSH](how-to/vscode-remote-ssh.md).
 * Here to debug a crash — [Debug with gdb](how-to/debug-with-gdb.md).
 * Here to change code in the cluster — [Iterate on Python](how-to/iterate-on-python.md).
 * Here to decide whether to allow it — [Security model](explanations/security.md).

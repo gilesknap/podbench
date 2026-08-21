@@ -452,3 +452,5 @@ anything.
 * [Phase 0 gate report](spikes/phase0-report.md) — the measurements behind every
   "silently" on this page.
 * [Attach to a pod](../how-to/attach-to-a-pod.md) — the same thing as instructions.
+* [VS Code over Remote-SSH](../how-to/vscode-remote-ssh.md) — what `podbench vscode`
+  drives, and the four host groups the seat needs egress to.
