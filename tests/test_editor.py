@@ -22,6 +22,8 @@ import pytest
 
 from podbench.editor import (
     PROVISION_FLAG,
+    SERVER_CLI_ATTEMPTS,
+    SERVER_CLI_INTERVAL,
     EditorError,
     Provision,
     open_seat,
@@ -39,6 +41,12 @@ DEBUGPY_CONFIG: dict[str, Any] = {
     "type": "debugpy",
     "request": "attach",
 }
+SERVER_CLI = (
+    "/root/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c"
+    "/server/bin/code-server"
+)
+"""The seat-side CLI of the server the window is attached to, as measured."""
+
 CPPDBG_CONFIG: dict[str, Any] = {
     "name": "podbench: attach to victim (gdb)",
     "type": "cppdbg",
@@ -66,6 +74,8 @@ class FakeSeat:
         ssh_rc: int = 0,
         ssh_stderr: str = "",
         list_rc: int = 0,
+        server_cli: str | None = SERVER_CLI,
+        seat_install_rc: int = 0,
     ) -> None:
         self.configurations = list(configurations)
         self.debug_config_rc = debug_config_rc
@@ -86,6 +96,11 @@ class FakeSeat:
         self.ssh_rc = ssh_rc
         self.ssh_stderr = ssh_stderr
         self.list_rc = list_rc
+        # `None` is a window that never connected, so no vscode-server was ever
+        # bootstrapped and there is nothing to install through.
+        self.server_cli = server_cli
+        self.seat_install_rc = seat_install_rc
+        self.seat_installed: list[str] = []
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(
@@ -100,7 +115,7 @@ class FakeSeat:
         if argv[0] == "code":
             return self._editor(list(argv))
         if argv[0] == "ssh":
-            return self._ssh(list(argv))
+            return self._ssh(list(argv), stdin)
         command = list(argv)[list(argv).index("--") + 1 :]
         return self._in_seat(command, stdin)
 
@@ -142,11 +157,23 @@ class FakeSeat:
 
     # -- the laptop --------------------------------------------------------
 
-    def _ssh(self, argv: list[str]) -> CommandResult:
+    def _ssh(self, argv: list[str], stdin: str | None = None) -> CommandResult:
+        if argv[-1] == ALIAS and stdin is not None:
+            # Resolving the seat's own vscode-server: the script goes on stdin,
+            # so the alias is the last word rather than the second to last.
+            if self.server_cli is None:
+                return _result(1)
+            return _result(0, stdout=f"{self.server_cli}\n")
         assert argv[-2] == ALIAS, (
             "the preflight has to use the alias VS Code will, through the same "
             f"config: {argv}"
         )
+        if self.server_cli is not None and argv[-1].startswith(self.server_cli):
+            extension = argv[-1].rsplit(" ", 1)[-1]
+            if self.seat_install_rc == 0:
+                self.seat_installed.append(extension)
+                self.unpacked.add(extension.lower())
+            return _result(self.seat_install_rc, stderr="no such extension")
         if argv[-1].startswith("ls -1"):
             # The seat's extensions directory, named as vscode-server names it:
             # the id, a version and sometimes a platform triple. Its own return
@@ -216,6 +243,7 @@ def run_open(
     *,
     folder: str = HOME,
     provision: Provision = Provision.NEVER,
+    naps: list[float] | None = None,
 ) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
     goes rather than returning a list at the end, because the install is a
@@ -230,6 +258,10 @@ def run_open(
         editor="code",
         provision=provision,
         runner=seat,
+        # Never the real one: waiting for a vscode-server that a fake will never
+        # bootstrap is five minutes of a unit suite that is meant to take
+        # seconds. `naps` is how a test that cares about the wait sees it.
+        sleep=(naps.append if naps is not None else lambda _: None),
     )
     return notes
 
@@ -758,13 +790,105 @@ def test_an_install_that_exits_0_without_reaching_the_seat_is_not_believed() -> 
     button - and a locally-installed cpptools runs the adapter on the laptop,
     where `/proc/<pid>/root/...` does not exist.
     """
-    seat = FakeSeat(install_lands=False)
+    seat = FakeSeat(install_lands=False, server_cli=None)
     notes = run_open(seat)
 
     assert any("did not land in the seat" in note for note in notes)
     assert any("Install in SSH" in note for note in notes)
     assert not any("is unpacked in SSH" in note for note in notes)
     assert not any("Reload Window" in note for note in notes)
+
+
+def test_a_local_short_circuit_is_answered_by_installing_through_the_seat() -> None:
+    """`code --remote <authority> --install-extension` answers from the
+    *developer's own* install list: an extension held locally is reported
+    "already installed", exit 0, and the seat is never contacted - with or
+    without `--force` (measured at DLS 2026-08-21, the seat held no matching
+    path anywhere on its filesystem). So every first-time `podbench vscode`
+    handed over a seat with no debug adapter, and it failed worst for the people
+    most likely to be here: anyone who debugs Python has the Python extension on
+    their laptop already.
+
+    The install is made where it has to land instead, by the server's own CLI.
+    """
+    seat = FakeSeat(install_lands=False)
+    notes = run_open(seat)
+
+    assert seat.seat_installed == ["ms-python.python", "ms-python.debugpy"]
+    assert any("through the seat's own vscode-server" in note for note in notes)
+    assert any("ms-python.debugpy is unpacked in SSH" in note for note in notes)
+    # It landed, so the remedy that sends somebody to do it by hand must not.
+    assert not any("did not land in the seat" in note for note in notes)
+
+
+def test_installing_through_the_seat_needs_no_reload() -> None:
+    """Measured 2026-08-21: an install through the *running* server's own CLI is
+    live in the open window immediately, because it goes through the extension
+    service that window is attached to - the same path the "Install in SSH"
+    button takes. `_RELOAD_NOTE` is about a write from outside that server, and
+    saying it here would send somebody to reload for nothing."""
+    seat = FakeSeat(install_lands=False)
+    notes = run_open(seat)
+
+    assert any("through the seat's own vscode-server" in note for note in notes)
+    assert not any("Reload Window" in note for note in notes)
+
+
+def test_the_seat_install_waits_for_the_window_that_bootstraps_the_server() -> None:
+    """The seat's vscode-server does not exist until a window has connected and
+    bootstrapped it, so the fallback cannot run before the window is opened -
+    and `settings.json` cannot move after it, because the watcher starts walking
+    the moment it opens and that race ends in an unrecoverable seat."""
+    seat = FakeSeat(install_lands=False)
+    run_open(seat)
+
+    settings = next(
+        i for i, call in enumerate(seat.calls) if "settings.json" in " ".join(call)
+    )
+    opened = next(
+        i
+        for i, call in enumerate(seat.calls)
+        if call[0] == "code" and "--install-extension" not in call
+    )
+    through_seat = next(
+        i for i, call in enumerate(seat.calls) if call[-1].startswith(SERVER_CLI)
+    )
+    assert settings < opened < through_seat
+
+
+def test_a_window_that_never_connects_leaves_nothing_to_install_through() -> None:
+    """No vscode-server means no CLI to install by, and the window's own error is
+    the diagnosis - so this says what is missing and does not invent a cause."""
+    seat = FakeSeat(install_lands=False, server_cli=None)
+    notes = run_open(seat)
+
+    assert any("no vscode-server has started in the seat" in note for note in notes)
+    assert seat.seat_installed == []
+
+
+def test_the_wait_for_a_server_is_bounded_and_is_not_a_busy_loop() -> None:
+    """A seat with no server yet is the normal case, not a failure: the
+    bootstrap is the 1215 MiB download and this runs the moment the window was
+    asked to open. But a wait with no bound is a launcher that never returns,
+    and a wait with no pause is a seat asked sixty times in a millisecond."""
+    naps: list[float] = []
+    seat = FakeSeat(install_lands=False, server_cli=None)
+    run_open(seat, naps=naps)
+
+    assert len(naps) == SERVER_CLI_ATTEMPTS - 1, "one fewer pause than attempts"
+    assert set(naps) == {SERVER_CLI_INTERVAL}
+
+
+def test_a_seat_side_install_that_fails_is_reported_and_not_believed() -> None:
+    """This CLI reports "already installed" too. The whole defect above was an
+    exit code that meant nothing, so the seat is asked again either way."""
+    seat = FakeSeat(install_lands=False, seat_install_rc=1)
+    notes = run_open(seat)
+
+    assert any(
+        "could not install ms-python.python in the seat" in note for note in notes
+    )
+    assert any("did not land in the seat" in note for note in notes)
 
 
 def test_an_unlistable_seat_is_unproven_rather_than_a_failure() -> None:

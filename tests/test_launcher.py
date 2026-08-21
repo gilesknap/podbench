@@ -286,6 +286,10 @@ def capreport_payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+SERVER_CLI = "/root/.vscode-server/cli/servers/Stable-abc123/server/bin/code-server"
+"""The seat-side vscode-server CLI the extension install goes through."""
+
+
 class FakeCluster:
     """A kubectl that answers from one mutable pod document."""
 
@@ -399,6 +403,13 @@ class FakeCluster:
         if argv[0] == "ssh":
             # `--open`'s preflight, for the same reason: it proves the alias
             # before anything is written, and a unit test opens no connection.
+            if stdin is not None:
+                # Resolving the seat's own vscode-server, which the extension
+                # install goes through. Answering "not yet" here is not a
+                # harmless default: `_server_cli` would then poll for five
+                # minutes, which is right against a cold seat and a hang in a
+                # unit test.
+                return CommandResult(tuple(argv), 0, f"{SERVER_CLI}\n", "")
             return CommandResult(tuple(argv), self.ssh_probe_rc, "", self.ssh_probe_err)
         rest = self._strip_global_flags(list(argv))
         result = self._dispatch(rest, stdin, argv)
