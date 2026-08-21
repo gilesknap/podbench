@@ -5004,14 +5004,21 @@ def format_seats(
     # verb has to stop making, and a header is cheaper than a word per row.
     lines = [
         str(pod),
-        f"  {'SEAT':<12} {'KIND':<7} {'PHASE':<11} {MEASURED_RUNG_HEADING}",
+        f"  {'SEAT':<11}  {'KIND':<6}  {'PHASE':<10}  {MEASURED_RUNG_HEADING}",
     ]
     unmeasured = False
     for seat in present:
         report = startup.get(seat.name)
         rung = None if report is None else report.rung
         lines.append(
-            f"  {seat.name:<12} {seat.kind.value:<7} {seat.phase:<11} "
+            # The gaps are literal, and the padding one column narrower to
+            # keep every column start exactly where it was. Relying on the pad
+            # to make the gap means a value that fills its field leaves *one*
+            # space - and one space is `console`'s rule for "this is a
+            # sentence": the cell stops being coloured as a verdict, and the
+            # cell before it is read as part of the label. A twelve-character
+            # seat name (`podbench-100`) is all it takes.
+            f"  {seat.name:<11}  {seat.kind.value:<6}  {seat.phase:<10}  "
             f"{NOT_MEASURED if rung is None else rung.value}"
         )
         lines.extend(_fact("state", seat.detail))

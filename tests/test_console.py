@@ -318,3 +318,24 @@ def test_the_ellipsis_degrades_where_stdout_cannot_carry_it(
     (row,) = table([Column("CMD", fill=True)], [Row(["x" * 40])], width=20)[1:]
     assert len(row.plain) == 20
     assert row.plain.endswith("...")
+
+
+def test_a_cell_that_fills_its_field_still_reads_as_a_cell(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why a table's gaps are literal rather than left to the padding.
+
+    `_LABEL` and `_COLUMN_WORD` both key on a run of two spaces. A row that
+    makes its gap by padding loses it the moment a value fills its field —
+    and then the cell stops being coloured as a verdict *and* the cell before
+    it is swallowed into the label. `status`'s seat column is twelve wide,
+    so `podbench-100` is all it takes.
+    """
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    emit(f"  {'podbench-1234':<11}  {'attach':<6}  {'running':<10}  full")
+    drawn_line = capsys.readouterr().out
+    assert "\x1b[32mrunning" in drawn_line, "the phase is still a verdict"
+    assert "podbench-1234\x1b[0m" in drawn_line, "the label stops at the name"
