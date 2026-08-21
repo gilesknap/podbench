@@ -34,6 +34,7 @@ from podbench.kubectl import (
 from podbench.launcher import (
     DEV_SIDECAR_REUSED_NOTE,
     NO_TARGET_CONTAINER,
+    OTHER_MODES_NOTE,
     UNKNOWN_SEAT_VERSION,
     UNMOUNTED_HOTFIX_NOTE,
     VERSION_SKEW_WARNING,
@@ -43,7 +44,6 @@ from podbench.launcher import (
     all_seats,
     attach,
     capability_report_from_json,
-    choose_mode,
     container_names,
     current_namespace,
     default_host_alias,
@@ -6483,113 +6483,6 @@ def test_attach_on_a_dev_pod_reconnects_to_the_sidecar() -> None:
 # -- vscode opens the seat that is already there (issue #141) ---------------
 
 
-def seated_pod() -> dict[str, Any]:
-    return pod_document(
-        uid=1000,
-        ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
-        ephemeral_statuses=[running_status("podbench-1")],
-    )
-
-
-def test_a_pod_that_already_has_a_seat_is_never_asked_which_mode() -> None:
-    """The mode is decided and readable once a seat is there, so asking would be
-    asking the user to re-state a fact the cluster is holding."""
-    assert (
-        choose_mode(
-            seated_pod(),
-            namespace="demo",
-            pod="target",
-            ask=answers("2"),
-            interactive=True,
-        )
-        is None
-    )
-
-
-def test_an_empty_answer_means_attach() -> None:
-    """Unlike `choose_pod`, where an empty line cancels. Getting this one wrong
-    costs nothing the verb was not already going to do."""
-    assert (
-        choose_mode(
-            pod_document(uid=1000),
-            namespace="demo",
-            pod="target",
-            ask=answers(""),
-            interactive=True,
-        )
-        is None
-    )
-
-
-def test_choosing_dev_prints_the_verb_rather_than_creating_a_pod() -> None:
-    """`dev` creates a pod and can be asked to take the Service's traffic, which
-    is consent that lives in a verb the user typed (#45)."""
-    answer = choose_mode(
-        pod_document(uid=1000),
-        namespace="demo",
-        pod="api",
-        ask=answers("dev"),
-        interactive=True,
-    )
-
-    assert answer is not None
-    assert "podbench dev api -n demo" in answer
-    assert "podbench vscode api-podbench -n demo" in answer
-
-
-def test_choosing_hotfix_names_the_claim_the_seat_will_need() -> None:
-    answer = choose_mode(
-        pod_document(uid=1000),
-        namespace="demo",
-        pod="api",
-        ask=answers("3"),
-        interactive=True,
-    )
-
-    assert answer is not None
-    assert "podbench hotfix init api -n demo" in answer
-    assert "--new --mount CLAIM" in answer
-
-
-def test_an_unrecognised_answer_is_asked_again() -> None:
-    assert (
-        choose_mode(
-            pod_document(uid=1000),
-            namespace="demo",
-            pod="api",
-            ask=answers("banana", "1"),
-            interactive=True,
-        )
-        is None
-    )
-
-
-def test_a_non_interactive_run_lands_an_attach_seat_as_it_always_did() -> None:
-    """Every script and every `--no-prompt` run predates the question, so the
-    silence has to mean what it used to."""
-    assert (
-        choose_mode(
-            pod_document(uid=1000),
-            namespace="demo",
-            pod="api",
-            ask=answers("2"),
-            interactive=False,
-        )
-        is None
-    )
-    assert (
-        choose_mode(
-            pod_document(uid=1000),
-            namespace="demo",
-            pod="api",
-            prompt=False,
-            ask=answers("2"),
-            interactive=True,
-        )
-        is None
-    )
-
-
 def test_new_lands_an_ephemeral_seat_in_a_dev_pod_after_all() -> None:
     """The preference for the sidecar is a preference, not a refusal: it gives
     up SYS_PTRACE with the root it does not have, so an Observe-mode seat beside
@@ -6627,3 +6520,44 @@ def test_reconnecting_to_a_sidecar_points_re_keying_at_the_dev_verb() -> None:
     assert keying
     assert all("podbench dev --identity" in warning for warning in keying)
     assert not any("needs --new" in warning for warning in keying)
+
+
+def test_landing_a_seat_names_the_other_two_modes_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Said, not asked. With no seat in the pod there is nothing ambiguous to
+    resolve and `attach` is the only one of the three this verb could carry
+    out, so a prompt's default would have been its only actionable answer."""
+    cluster = FakeCluster(pod_document(uid=1000))
+
+    main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(OTHER_MODES_NOTE.split()) in flowed
+
+
+def test_a_reconnect_does_not_name_the_other_modes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mode was settled on whatever day the seat was landed, and it is
+    already reported - by the KIND column, and by the reconnect's own line."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+    main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(OTHER_MODES_NOTE.split()) not in flowed

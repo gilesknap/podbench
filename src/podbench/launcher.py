@@ -182,11 +182,6 @@ __all__ = [
     "above_ceiling",
     "attach",
     "capability_report_from_json",
-    "DEV_POD_SUFFIX",
-    "MAX_POD_NAME",
-    "choose_mode",
-    "dev_pod_name",
-    "mode_needs_its_own_verb",
     "choose_pod",
     "client_dir",
     "container_names",
@@ -245,7 +240,7 @@ __all__ = [
     "shares_workload_volume",
     "DEV_SIDECAR_PROVISION_NOTE",
     "DEV_SIDECAR_REUSED_NOTE",
-    "MODE_MENU",
+    "OTHER_MODES_NOTE",
     "UNMOUNTED_HOTFIX_NOTE",
     "wait_for_seats",
     "spec_env",
@@ -1440,6 +1435,26 @@ kinds of seat, and the one fact that is not - which process the debugger will be
 looking at - is the one that decides whether a breakpoint binds. Reporting it is
 issue #141's second decision, arrived at from the other side: the mode is
 measured here rather than declared, so there is nothing to disagree with.
+"""
+
+OTHER_MODES_NOTE = (
+    "other modes are their own verbs: `podbench hotfix init` for a venv on a "
+    "claim that survives restarts, `podbench dev` for a clone the application "
+    "relaunches from. Both change the workload in ways this verb was given no "
+    "arguments for, so neither is offered as a choice here"
+)
+"""Named once, on the run that landed a seat where there was none.
+
+Said rather than asked, and the difference is what the question would have been
+worth: with no seat in the pod there is nothing ambiguous to resolve, ``attach``
+is the only one of the three this verb could carry out, and the other two answers
+would both have been "go and run a different command". A prompt whose default is
+the only actionable answer is a keystroke on the commonest path in the product.
+
+The explicitness #141 asked for is delivered by the *other* half of that issue:
+the mode is measured and reported - by the ``KIND`` column, and by
+:data:`DEV_SIDECAR_REUSED_NOTE` on a reconnect - rather than declared by a word
+the user typed.
 """
 
 DEV_SIDECAR_PROVISION_NOTE = (
@@ -5192,151 +5207,6 @@ def choose_pod(choices: Sequence[PodChoice], ask: Callable[[], str]) -> PodChoic
         )
 
 
-MODE_MENU = (
-    "  1) attach   observe this pod; touches the workload not at all  [default]",
-    "  2) dev      clone it; the application relaunches from the seat",
-    "  3) hotfix   edit a venv on a claim, surviving restarts",
-)
-"""The three modes, in the order the docs introduce them.
-
-``attach`` is first and defaulted because it is the only one of the three that
-costs the workload nothing, and because it is what this verb did before there
-was a choice at all - an empty line must not change what an existing habit does.
-"""
-
-
-def mode_needs_its_own_verb(mode: str, why: str, run: str, then: str) -> str:
-    """The block printed instead of opening, when the answer was not ``attach``.
-
-    Why the other two modes are printed rather than carried out: ``dev`` creates
-    a pod and can be asked to take the Service's traffic, and ``hotfix`` writes
-    to a claim that has to have been deployed with the workload. Each is a
-    decision with a blast radius of its own, and #45's finding was that this
-    kind of consent lives in a verb the user typed, not in an answer to a menu.
-
-    The two commands are laid out rather than wrapped into the prose, for the
-    reason ``doctor._note`` has: they are there to be pasted, and
-    :func:`~podbench.console.wrap` would both collapse the indent and break them
-    on a space.
-    """
-    return "\n".join(
-        [
-            *paragraph(
-                f"{mode} needs consent and arguments `vscode` was not given"
-                f" - {why}. Run:"
-            ),
-            "",
-            f"  {run}",
-            "",
-            *paragraph("then open it with:"),
-            "",
-            f"  {then}",
-        ]
-    )
-
-
-DEV_POD_SUFFIX = "-podbench"
-MAX_POD_NAME = 63
-"""RFC 1123 label limit; the API server rejects a longer pod name."""
-
-
-def dev_pod_name(origin: str, *, suffix: str = DEV_POD_SUFFIX) -> str:
-    """The dev pod's name, derived from its origin and idempotent.
-
-    Idempotent so that ``dev --delete`` accepts either the origin's name or the
-    dev pod's own without the user having to remember which they typed.
-
-    Here rather than in :mod:`podbench.dev`, which is where it was and where it
-    reads more naturally, because :func:`choose_mode` has to name the pod
-    ``podbench dev`` would make and this module cannot import that one. Two
-    copies of a truncation rule is how the launcher comes to offer a command
-    naming a pod the API server would refuse.
-
-    >>> dev_pod_name("demo")
-    'demo-podbench'
-    >>> dev_pod_name("demo-podbench")
-    'demo-podbench'
-    """
-    if origin.endswith(suffix):
-        return origin
-    return origin[: MAX_POD_NAME - len(suffix)].rstrip("-") + suffix
-
-
-def choose_mode(
-    pod_json: Mapping[str, Any],
-    *,
-    namespace: str,
-    pod: str,
-    prompt: bool = True,
-    ask: Callable[[], str] | None = None,
-    interactive: bool | None = None,
-) -> str | None:
-    """Which mode to open this pod in, when it has no seat yet.
-
-    ``None`` means "carry on and land an attach seat", which is both the default
-    answer and every non-interactive answer - so a script, a ``--no-prompt`` run
-    and a pod that already has a seat all behave exactly as they did before this
-    existed. A string is what to print instead of opening anything: the other
-    two modes are commands to run, not work this verb may do.
-
-    The question is only ever asked of a pod with **no running seat**. That is
-    the whole trigger: with one there, the mode is already decided and readable
-    (:func:`seat_kind`), and asking would be asking the user to re-state a fact
-    the cluster is holding.
-    """
-    if any(seat.running for seat in all_seats(pod_json)):
-        return None
-    if not prompt or not (
-        interactive if interactive is not None else sys.stdin.isatty()
-    ):
-        return None
-    _say(f"no podbench seat in {namespace}/{pod}. which mode?")
-    for line in MODE_MENU:
-        _say(line)
-    _say("[number or name, empty for attach]")
-    return _mode_answer(ask if ask is not None else _read_line, namespace, pod)
-
-
-def _mode_answer(ask: Callable[[], str], namespace: str, pod: str) -> str | None:
-    """Loop until the answer names one of the three, EOF included.
-
-    Unlike :func:`choose_pod`, an empty line is a *default* rather than a
-    cancellation, and the difference is what the two questions cost to get
-    wrong: choosing the wrong pod spends a permanent container name in somebody
-    else's workload, while choosing ``attach`` here does what this verb has
-    always done unprompted.
-    """
-    flag = f"-n {namespace}"
-    while True:
-        try:
-            answer = ask().strip().lower()
-        except EOFError:
-            answer = ""
-        if not answer or answer in {"1", "attach"}:
-            return None
-        if answer in {"2", "dev"}:
-            return mode_needs_its_own_verb(
-                "dev",
-                "it creates a pod, and can be asked to take the Service's traffic",
-                f"podbench dev {pod} {flag}",
-                # The dev pod's own name, which `dev_pod_name` derives the same
-                # way: an idempotent suffix, so the user may type either.
-                f"podbench vscode {dev_pod_name(pod)} {flag}",
-            )
-        if answer in {"3", "hotfix"}:
-            return mode_needs_its_own_verb(
-                "hotfix",
-                "the venv has to be on a claim the workload was deployed with, "
-                "and `--print-values` is how that gets into the chart",
-                f"podbench hotfix init {pod} {flag}",
-                # `--new` because the claim can only be mounted by a seat landed
-                # with it: an ephemeral container's volumeMounts are fixed when
-                # it is created, so a reconnect silently keeps the image's venv.
-                f"podbench vscode {pod} {flag} --new --mount CLAIM",
-            )
-        _say(f"{answer!r} is not one of the three")
-
-
 def resolve_pod(
     kubectl: Kubectl,
     reference: str | None,
@@ -6177,19 +6047,6 @@ def _build_app(
         # way.
         editor = resolve_editor(which)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
-        # Between resolving the pod and spending anything on it. `attach` is the
-        # only one of the three this verb can carry out itself - the other two
-        # need consent and arguments it was not given - so the offer is a choice
-        # of *what to run*, and declining it here costs nothing at all.
-        chosen = choose_mode(
-            kube.get_pod(name),
-            namespace=kube.namespace,
-            pod=name,
-            prompt=not no_prompt and not force_new,
-        )
-        if chosen is not None:
-            emit(chosen)
-            raise typer.Exit(0)
         session = _land(
             kube,
             name,
@@ -6219,6 +6076,12 @@ def _build_app(
         if storage is not None:
             session = replace(session, warnings=(*session.warnings, storage))
         emit(format_session(session))
+        # Only where a seat was actually landed. On a reconnect the mode is
+        # already settled and already reported, so naming the other two would be
+        # offering a choice that was made on some earlier day.
+        if not session.reused:
+            print()
+            emit("\n".join(paragraph(OTHER_MODES_NOTE, first="  ", indent="  ")))
         print()
         wiring = _wire(
             kube,

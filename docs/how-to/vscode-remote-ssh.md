@@ -187,22 +187,21 @@ says which mode the seat is, because that decides what the debugger is looking
 at. `--new` still lands an Observe-mode seat, which is worth the name only where
 the sidecar is non-root and the cluster admits `SYS_PTRACE`.
 
-**It asks which mode, when the pod has no seat at all**:
+**It names the other two modes once**, on the run that landed a seat where there
+was none, and asks nothing:
 
 ```
-no podbench seat in demo/api-7f9. which mode?
-  1) attach   observe this pod; touches the workload not at all  [default]
-  2) dev      clone it; the application relaunches from the seat
-  3) hotfix   edit a venv on a claim, surviving restarts
-[number or name, empty for attach]
+  other modes are their own verbs: `podbench hotfix init` for a venv on a
+  claim that survives restarts, `podbench dev` for a clone the application
+  relaunches from. Both change the workload in ways this verb was given no
+  arguments for, so neither is offered as a choice here.
 ```
 
-`attach` is the default and is carried out here. The other two are printed as
-the command to run and nothing is opened: `dev` creates a pod and can be asked
-to take the Service's traffic, and `hotfix` needs a claim the workload was
-deployed with — each a decision that belongs in a verb you typed rather than in
-an answer to a menu. `--no-prompt`, a closed stdin and any non-tty run all take
-the default, so a script behaves exactly as it did before the question existed.
+Said rather than asked, because with no seat in the pod there is nothing
+ambiguous to resolve: `attach` is the only one of the three this verb could
+carry out, and the other two answers would both have been *go and run a
+different command*. A reconnect does not print it — the mode was settled
+whenever the seat was landed, and the `KIND` column reports it.
 
 It needs `code` on your PATH — VS Code's Command Palette has *Shell Command:
 Install 'code' command in PATH* — and the local **Remote - SSH** extension,
