@@ -69,6 +69,7 @@ from .kubectl import (
 )
 from .launcher import CONTAINER_BASE, kubectl_for, running_seat
 from .model import (
+    HOTFIXED_ANNOTATION,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
@@ -143,10 +144,6 @@ podbench will meet volumes written by this one and by whatever came before it. A
 *higher* version is refused outright — guessing at fields we have never seen is
 how a fix silently loses its provenance.
 """
-
-HOTFIXED_ANNOTATION = "podbench.dev/hotfixed"
-"""Cheap marker. ``kubectl get pods -l`` cannot select on annotations, but this
-keeps the "is this pod hotfixed?" question answerable by eye and by grep."""
 
 MANIFEST_ANNOTATION = "podbench.dev/hotfix-manifest"
 """The manifest itself, so ``status`` needs one ``get pods`` and no exec."""

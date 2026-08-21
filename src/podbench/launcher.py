@@ -60,7 +60,9 @@ from .kubectl import (
 )
 from .model import (
     DEFAULT_IMAGE,
+    DEVPOD_LABEL,
     HOST_NETWORK_ENV,
+    HOTFIXED_ANNOTATION,
     IMAGE_ENV,
     NOT_MEASURED,
     NOT_PROBED,
@@ -78,6 +80,7 @@ from .model import (
     Lsm,
     PodRef,
     Rung,
+    SeatKind,
     SeatReport,
     Verdict,
     and_list,
@@ -229,6 +232,14 @@ __all__ = [
     "seat_layout",
     "seat_version_fact",
     "seats",
+    "all_seats",
+    "dev_seat",
+    "seat_kind",
+    "is_dev_pod",
+    "is_hotfixed",
+    "shares_workload_volume",
+    "DEV_POD_SIDECAR_WARNING",
+    "UNMOUNTED_HOTFIX_NOTE",
     "wait_for_seats",
     "spec_env",
     "ssh_config_path",
@@ -889,6 +900,24 @@ class SeatInfo:
     ephemeral container's mounts are fixed at creation, so a reconnect has to
     read this rather than re-derive it from what the pod declares *now*."""
 
+    kind: SeatKind = SeatKind.ATTACH
+    """Which of the three modes this seat is serving, from :func:`seat_kind`.
+
+    Derived from the pod on every read rather than stamped on the container,
+    because two of the three markers are not on the container at all and the
+    third is a mount. Defaulted so that a ``SeatInfo`` built in a test or a
+    doctest states only what it is about."""
+
+    in_hotfixed_pod: bool = False
+    """Whether the pod carries :data:`~podbench.model.HOTFIXED_ANNOTATION` while
+    this seat is *not* :attr:`~podbench.model.SeatKind.HOTFIX`.
+
+    The one combination that is neither kind and has to be said out loud: the
+    application runs the venv on the claim and the seat resolves the image's, so
+    an editor opened here reads code that is not running and a debugger sets
+    breakpoints that never bind. Kept apart from :attr:`kind` because it is a
+    fact about the *pod* the seat is in, not about the seat."""
+
     owner: str | None = None
     """The cluster identity that landed it, from :data:`OWNER_ENV`, or ``None``.
 
@@ -904,12 +933,108 @@ class SeatInfo:
         return self.phase == "running"
 
 
+def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
+    """Whether podbench authored this pod as Iterate mode's clone.
+
+    The same read :func:`podbench.dev.is_dev_pod` makes, and duplicated rather
+    than imported: :mod:`podbench.dev` imports this module, so the listing
+    cannot ask it. Both are one dict lookup against the label podbench itself
+    wrote, so there is nothing here to drift.
+
+    >>> is_dev_pod({"metadata": {"labels": {DEVPOD_LABEL: "true"}}})
+    True
+    """
+    return (
+        as_dict(as_dict(pod_json.get("metadata")).get("labels")).get(DEVPOD_LABEL)
+        == "true"
+    )
+
+
+def is_hotfixed(pod_json: Mapping[str, Any]) -> bool:
+    """Whether this pod runs a venv that podbench put on a claim.
+
+    Read from the annotation and never from the manifest beside it: loading that
+    *raises* on a manifest a newer podbench wrote, deliberately
+    (:meth:`podbench.hotfix.HotfixManifest.from_json`), and a listing must not
+    be the thing that fails on it.
+
+    >>> is_hotfixed({"metadata": {"annotations": {HOTFIXED_ANNOTATION: "true"}}})
+    True
+    """
+    annotations = as_dict(as_dict(pod_json.get("metadata")).get("annotations"))
+    return annotations.get(HOTFIXED_ANNOTATION) == "true"
+
+
+_CONVENTION_VOLUMES = frozenset({SEAT_IDENTITY_VOLUME, SEAT_HOME_VOLUME})
+"""The volumes a seat mounts because podbench asked it to, not because the user
+did. Both are routinely mounted by the workload as well - that is what makes the
+identity a *convention* - so a kind derived from "shares a mount with the target"
+has to discount them or every seat in a cooperating pod reads as ``hotfix``."""
+
+
+def shares_workload_volume(
+    pod_json: Mapping[str, Any], container: Mapping[str, Any], target: str | None
+) -> bool:
+    """Whether this seat mounts one of its target's own volumes.
+
+    Which is the whole of what makes a seat Hotfix mode's rather than Observe
+    mode's: :func:`resolve_mounts` authors the mount at the *same path* the
+    application uses, because the venv's ``bin/python`` and the checkout's
+    editable install are absolute paths recorded on the claim.
+    """
+    if target is None:
+        return False
+    mine = {
+        _entry_name(as_dict(entry)) for entry in _as_list(container.get("volumeMounts"))
+    } - _CONVENTION_VOLUMES
+    if not mine:
+        return False
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        workload = as_dict(entry)
+        if _entry_name(workload) != target:
+            continue
+        return any(
+            _entry_name(as_dict(mount)) in mine
+            for mount in _as_list(workload.get("volumeMounts"))
+        )
+    return False
+
+
+def seat_kind(
+    pod_json: Mapping[str, Any],
+    container: Mapping[str, Any],
+    *,
+    sidecar: bool,
+    target: str | None,
+) -> SeatKind:
+    """Which mode this seat serves, from the pod and the container together.
+
+    ``sidecar`` is not the same question as "is this a dev pod", and conflating
+    them is the mistake this signature exists to prevent: nothing stops an
+    ``attach`` landing an ephemeral seat *in* a dev pod, and that seat is an
+    Observe-mode seat whatever the pod is labelled - its target's process is not
+    its own child, so ``flavour.detect_mode`` measures ``OBSERVE`` and every path
+    mapping is the Observe-mode one. Only the sidecar podbench authored is
+    :attr:`~podbench.model.SeatKind.DEV`.
+    """
+    if sidecar and is_dev_pod(pod_json):
+        return SeatKind.DEV
+    if is_hotfixed(pod_json) and shares_workload_volume(pod_json, container, target):
+        return SeatKind.HOTFIX
+    return SeatKind.ATTACH
+
+
 def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[SeatInfo]:
-    """Every podbench container this pod carries, live or burnt.
+    """Every podbench **ephemeral** container this pod carries, live or burnt.
 
     Dead ones are listed too, deliberately: their names are gone for the pod's
     lifetime and a user looking at ``podbench-4`` deserves to see why 1-3 are
     not reusable.
+
+    Iterate mode's sidecar is *not* here, and that is load-bearing rather than an
+    oversight: this is what :func:`running_seat` decides a reconnect from, and an
+    ordinary container is not a seat an ``attach`` may reuse or supersede. A
+    listing wants both and asks :func:`all_seats`.
     """
     statuses = {
         name: as_dict(entry)
@@ -918,6 +1043,7 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
         )
         if (name := _entry_name(entry)) is not None
     }
+    hotfixed = is_hotfixed(pod_json)
     found: list[SeatInfo] = []
     for entry in _as_list(as_dict(pod_json.get("spec")).get("ephemeralContainers")):
         container = as_dict(entry)
@@ -925,6 +1051,8 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
         if name is None or not (name == base or name.startswith(f"{base}-")):
             continue
         phase, detail = _phase_of(statuses.get(name, {}))
+        target = _as_str(container.get("targetContainerName"))
+        kind = seat_kind(pod_json, container, sidecar=False, target=target)
         found.append(
             SeatInfo(
                 name=name,
@@ -936,13 +1064,82 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
                     as_dict(container.get("securityContext")).get("runAsGroup")
                 ),
                 image=_as_str(container.get("image")),
-                target=_as_str(container.get("targetContainerName")),
+                target=target,
                 home=spec_env(container).get("HOME"),
                 identity_mounted=_mounts_volume(container, SEAT_IDENTITY_VOLUME),
+                kind=kind,
+                in_hotfixed_pod=hotfixed and kind is not SeatKind.HOTFIX,
                 owner=spec_env(container).get(OWNER_ENV),
             )
         )
     return found
+
+
+def dev_seat(
+    pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE
+) -> SeatInfo | None:
+    """Iterate mode's sidecar as a seat, or ``None`` if this is not a dev pod.
+
+    A separate read because it is a separate *place*: the sidecar is an ordinary
+    container in ``spec.containers``, so nothing walking
+    ``spec.ephemeralContainers`` has ever seen it. ``podbench list`` therefore
+    reported a dev pod as carrying no podbench container at all - which is to
+    say it did not report the pod at all, since a pod with no seats is dropped
+    (issue #141's premise, and the reason the three modes could not be told
+    apart by looking).
+
+    Its ``target`` comes from :data:`TARGET_NAME_ENV` rather than from a
+    ``targetContainerName`` it cannot have, so the column reads the same for
+    both container kinds and :func:`superseded_seats` compares like with like.
+
+    >>> pod = {"metadata": {"labels": {DEVPOD_LABEL: "true"}},
+    ...        "spec": {"containers": [{"name": "app"}, {"name": "podbench"}]}}
+    >>> dev_seat(pod).kind
+    <SeatKind.DEV: 'dev'>
+    >>> dev_seat({"spec": {"containers": [{"name": "podbench"}]}}) is None
+    True
+    """
+    if not is_dev_pod(pod_json):
+        return None
+    statuses = {
+        name: as_dict(entry)
+        for entry in _as_list(as_dict(pod_json.get("status")).get("containerStatuses"))
+        if (name := _entry_name(entry)) is not None
+    }
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        container = as_dict(entry)
+        if _entry_name(container) != base:
+            continue
+        phase, detail = _phase_of(statuses.get(base, {}))
+        return SeatInfo(
+            name=base,
+            rung=rung_of_spec(container),
+            phase=phase,
+            detail=detail,
+            uid=_as_int(as_dict(container.get("securityContext")).get("runAsUser")),
+            gid=_as_int(as_dict(container.get("securityContext")).get("runAsGroup")),
+            image=_as_str(container.get("image")),
+            target=spec_env(container).get(TARGET_NAME_ENV),
+            home=spec_env(container).get("HOME"),
+            identity_mounted=_mounts_volume(container, SEAT_IDENTITY_VOLUME),
+            kind=SeatKind.DEV,
+            owner=spec_env(container).get(OWNER_ENV),
+        )
+    return None
+
+
+def all_seats(
+    pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE
+) -> list[SeatInfo]:
+    """Every seat in this pod, of either container kind, for a **listing**.
+
+    Not for :func:`running_seat`, and the split is the point: a reconnect may
+    only reuse an ephemeral container it could have landed itself, while a
+    report is asked what is *there*. The sidecar comes first because it is the
+    pod's reason to exist and any ephemeral seat beside it was added later.
+    """
+    sidecar = dev_seat(pod_json, base=base)
+    return [*([] if sidecar is None else [sidecar]), *seats(pod_json, base=base)]
 
 
 def running_seat(
@@ -1195,12 +1392,36 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
         for later in live[index + 1 :]:
             if (later.target, later.uid) != (earlier.target, earlier.uid):
                 continue
+            # Since `all_seats` folds Iterate mode's sidecar in beside any
+            # ephemeral seat somebody attached into the same dev pod, the two
+            # can now reach this pairing while being different container kinds
+            # entirely - and the correction this signature detects can only ever
+            # happen between two ephemeral containers, because it exists to work
+            # around a securityContext an ephemeral container cannot change.
+            if later.kind is not earlier.kind:
+                continue
             if _owned_by_another(later.owner, earlier.owner):
                 continue
             if later.gid is not None and later.gid != earlier.gid:
                 replaced[earlier.name] = later.name
     return replaced
 
+
+DEV_POD_SIDECAR_WARNING = (
+    "this is a podbench dev pod and it already has a seat: the `{seat}` "
+    "container, which is an ordinary sidecar rather than an ephemeral one. "
+    "Attaching lands a second seat beside it, spending a container name for "
+    "the pod's lifetime, and the seat it lands is an Observe-mode seat - the "
+    "application is not its child, so it gets none of Iterate mode's launch "
+    "shape. `podbench status` names the sidecar's ssh alias"
+)
+"""Why an attach on a dev pod is almost never what was meant.
+
+Almost, not never: the sidecar gives up ``SYS_PTRACE`` along with the root it
+does not have (:func:`podbench.spec.dev_seat_identity`), so a full-rung
+ephemeral seat beside it is a real want on a cluster that admits one. Hence a
+warning rather than a refusal.
+"""
 
 OTHER_OWNER_WARNING = (
     "{seat} is running but was not reused because {owner} landed it: an "
@@ -1811,6 +2032,16 @@ def attach(
     pod_json = kubectl.get_pod(pod)
     workload = target_container_name(pod_json, target)
     warnings: list[str] = []
+    # Before the ladder walks, because the name it spends is spent for the pod's
+    # lifetime and this is the case where it buys nothing: Iterate mode's pod
+    # already carries a seat, in a container kind `seats()` cannot see, so
+    # nothing here would have found it and every attach on a dev pod lands
+    # another one. A warning and not a refusal - an ephemeral seat in a dev pod
+    # is a real if rare want, since the sidecar gives up SYS_PTRACE with the
+    # root it does not have and an ephemeral seat need not.
+    sidecar = dev_seat(pod_json)
+    if sidecar is not None:
+        warnings.append(DEV_POD_SIDECAR_WARNING.format(seat=sidecar.name))
     volume_mounts, mount_warnings = resolve_mounts(pod_json, workload, mounts)
     warnings.extend(mount_warnings)
     if seat_identity:
@@ -1923,6 +2154,8 @@ def attach(
                 "volumeMounts are fixed when it is created and cannot be added "
                 "to, so --mount only takes effect on a seat landed with --new"
             )
+        if existing.in_hotfixed_pod:
+            warnings.append(UNMOUNTED_HOTFIX_NOTE)
         # The same admission facts a first attach reports. They were produced
         # only inside the walk, and a reconnect is the common case - somebody
         # who attaches on Monday and reconnects all week was never told the
@@ -1934,6 +2167,14 @@ def attach(
                 _admission_warnings(requested_seat_spec(landed), landed, scalars=False)
             )
     else:
+        # Asked of the mounts about to be authored rather than of the seat about
+        # to land, because the seat does not exist yet and this is the last
+        # moment the answer can be acted on: an ephemeral container's
+        # volumeMounts are fixed once it is created.
+        if is_hotfixed(pod_json) and not shares_workload_volume(
+            pod_json, {"volumeMounts": volume_mounts}, workload
+        ):
+            warnings.append(UNMOUNTED_HOTFIX_NOTE)
         session = _walk_ladder(
             kubectl,
             pod=pod,
@@ -4300,7 +4541,7 @@ def list_seats(kubectl: Kubectl) -> list[tuple[PodRef, list[SeatInfo]]]:
         name = _entry_name(as_dict(pod_json.get("metadata")))
         if name is None:
             continue
-        present = seats(pod_json)
+        present = all_seats(pod_json)
         if present:
             found.append((PodRef(kubectl.namespace, name), present))
     return found
@@ -4354,7 +4595,7 @@ def wait_for_seats(
     ``timeout <= 0`` — the default — is a single read and no clock at all, so a
     plain ``podbench status`` costs exactly what it always did.
     """
-    present = seats(kubectl.get_pod(pod))
+    present = all_seats(kubectl.get_pod(pod))
     if timeout <= 0:
         return present
     deadline = clock() + timeout
@@ -4362,7 +4603,7 @@ def wait_for_seats(
         if clock() >= deadline:
             break
         sleep(poll_interval)
-        present = seats(kubectl.get_pod(pod))
+        present = all_seats(kubectl.get_pod(pod))
     return present
 
 
@@ -4538,6 +4779,21 @@ def _seat_verdict(measured: CapabilityReport | str | None) -> str:
     return f"{NOT_PROBED} - {measured}" if measured else NOT_PROBED
 
 
+UNMOUNTED_HOTFIX_NOTE = (
+    "this pod is hotfixed and this seat mounts none of the workload's volumes, "
+    "so the application runs the venv on the claim while an editor or debugger "
+    "here resolves the image's - the code you read is not the code running, and "
+    "breakpoints set on it never bind. `podbench hotfix status` names the "
+    "claim; a seat that shares it has to be landed with `--new --mount CLAIM`, "
+    "since an ephemeral container's volumeMounts are fixed when it is created"
+)
+"""Said on a seat whose kind is ``attach`` in a pod whose kind is hotfix.
+
+The one disagreement between the two that is silent in both directions: nothing
+refuses the attach, ``--mount`` on a *reconnect* is already warned about
+elsewhere, and the seat that results works perfectly - against the wrong tree.
+"""
+
 MEASURED_RUNG_HEADING = "RUNG (measured)"
 """What the third column of a listing is a reading of.
 
@@ -4657,13 +4913,16 @@ def format_seats(
     # Headed, as `format_pod_choices` is, because the third cell now stops at
     # the rung's name: `degraded` under nothing at all is the very reading this
     # verb has to stop making, and a header is cheaper than a word per row.
-    lines = [str(pod), f"  {'SEAT':<12} {'PHASE':<11} {MEASURED_RUNG_HEADING}"]
+    lines = [
+        str(pod),
+        f"  {'SEAT':<12} {'KIND':<7} {'PHASE':<11} {MEASURED_RUNG_HEADING}",
+    ]
     unmeasured = False
     for seat in present:
         report = startup.get(seat.name)
         rung = None if report is None else report.rung
         lines.append(
-            f"  {seat.name:<12} {seat.phase:<11} "
+            f"  {seat.name:<12} {seat.kind.value:<7} {seat.phase:<11} "
             f"{NOT_MEASURED if rung is None else rung.value}"
         )
         lines.extend(_fact("state", seat.detail))
@@ -4680,6 +4939,12 @@ def format_seats(
             lines.extend(
                 _fact("note", SUPERSEDED_NOTE.format(later=replaced[seat.name]))
             )
+        # A note beside the other notes rather than a WARNING: `list` and
+        # `status` report a fleet, and a warning lead on a row inside one reads
+        # as being about the listing. `attach` says it as a warning, where it is
+        # about the single seat that just landed.
+        if seat.in_hotfixed_pod:
+            lines.extend(_fact("note", UNMOUNTED_HOTFIX_NOTE))
         # The question a second person on a shared pod actually has, and the
         # one `podbench-1` beside `podbench-2` could not answer at all before
         # seats carried a stamp (issue #113).

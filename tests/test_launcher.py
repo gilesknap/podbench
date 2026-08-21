@@ -32,17 +32,21 @@ from podbench.kubectl import (
     KubectlTimeoutError,
 )
 from podbench.launcher import (
+    DEV_POD_SIDECAR_WARNING,
     NO_TARGET_CONTAINER,
     UNKNOWN_SEAT_VERSION,
+    UNMOUNTED_HOTFIX_NOTE,
     VERSION_SKEW_WARNING,
     LauncherError,
     SeatInfo,
     Session,
+    all_seats,
     attach,
     capability_report_from_json,
     container_names,
     current_namespace,
     default_host_alias,
+    dev_seat,
     emit_ssh_config,
     features,
     forget_known_hosts,
@@ -74,6 +78,8 @@ from podbench.launcher import (
     wait_for_seats,
 )
 from podbench.model import (
+    DEVPOD_LABEL,
+    HOTFIXED_ANNOTATION,
     PTRACE_READ_PATHS,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
@@ -84,6 +90,7 @@ from podbench.model import (
     Lsm,
     PodRef,
     Rung,
+    SeatKind,
     SeatReport,
     Verdict,
     describe_pause,
@@ -192,6 +199,10 @@ def pod_document(
     host_network: bool = False,
     siblings: Sequence[str] = (),
     reported_uid: int | None = None,
+    labels: Mapping[str, str] | None = None,
+    annotations: Mapping[str, str] | None = None,
+    sidecar: dict[str, Any] | None = None,
+    sidecar_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {}
     if uid is not None:
@@ -212,6 +223,8 @@ def pod_document(
             "namespace": "demo",
             "uid": POD_UID,
             "creationTimestamp": created,
+            **({"labels": dict(labels)} if labels else {}),
+            **({"annotations": dict(annotations)} if annotations else {}),
         },
         "spec": {
             "nodeName": "node02",
@@ -219,7 +232,11 @@ def pod_document(
             # seat has to read a missing key as "no" and a missing *variable* as
             # "unknown", and those are not the same absence.
             **({"hostNetwork": True} if host_network else {}),
-            "containers": [workload, *({"name": name} for name in siblings)],
+            "containers": [
+                workload,
+                *({"name": name} for name in siblings),
+                *([sidecar] if sidecar is not None else []),
+            ],
             "volumes": [dict(volume) for volume in volumes],
             "ephemeralContainers": [dict(entry) for entry in ephemeral],
         },
@@ -238,7 +255,8 @@ def pod_document(
                         if reported_uid is not None
                         else {}
                     ),
-                }
+                },
+                *([sidecar_status] if sidecar_status is not None else []),
             ],
             "ephemeralContainerStatuses": [dict(s) for s in ephemeral_statuses],
         },
@@ -4948,7 +4966,7 @@ def test_status_lists_every_container_live_or_burnt(
     # target's uid and no group, so it runs in the image's group 0 against a
     # target in group 1000 and the credential check denies it (p47-blueapi-0's
     # shape). `rung_of_spec` reads the same securityContext as `degraded`.
-    assert "podbench-1   running     seat" in out
+    assert "podbench-1   attach  running     seat" in out
     assert "other-sidecar" not in out
 
 
@@ -5572,7 +5590,7 @@ def test_list_and_status_recover_the_rung_without_an_exec(
         cluster = argus_shaped_pod()
         assert main(argv, runner=cluster) == 0
         assert [call for call in cluster.calls if "exec" in call] == []
-        assert "podbench-1   running     degraded" in capsys.readouterr().out
+        assert "podbench-1   attach  running     degraded" in capsys.readouterr().out
 
 
 def test_a_seat_whose_log_cannot_be_read_is_not_measured(
@@ -5595,7 +5613,7 @@ def test_a_seat_whose_log_cannot_be_read_is_not_measured(
     )
     out = capsys.readouterr().out
 
-    assert "podbench-1   running     not measured" in out
+    assert "podbench-1   attach  running     not measured" in out
     assert "request   degraded" in out
     assert "read from the seat's securityContext" in out
 
@@ -5624,7 +5642,7 @@ def test_an_older_seat_against_a_newer_launcher_lists_rather_than_raises(
     assert (
         main(["list", "-n", "demo", "--config-dir", str(tmp_path)], runner=newer) == 0
     )
-    assert "podbench-1   running     degraded" in capsys.readouterr().out
+    assert "podbench-1   attach  running     degraded" in capsys.readouterr().out
 
     # And a report carrying only half of the credential check is *not measured*
     # either. The uids matching is half a comparison, and half a comparison is
@@ -5634,7 +5652,7 @@ def test_an_older_seat_against_a_newer_launcher_lists_rather_than_raises(
         'agent: podbench-report: {"uid": 0, "target_uid": 0, "sys_ptrace": false}'
     )
     assert main(["list", "-n", "demo", "--config-dir", str(tmp_path)], runner=half) == 0
-    assert "podbench-1   running     not measured" in capsys.readouterr().out
+    assert "podbench-1   attach  running     not measured" in capsys.readouterr().out
 
 
 def test_a_refused_startup_step_reaches_a_laptop_verb(
@@ -6247,3 +6265,213 @@ def test_features_without_a_report_claim_nothing() -> None:
     assert not ssh_seat.available
     assert "was not asked" in ssh_seat.reason
     assert exec_seat.available
+
+
+# -- which of the three modes a seat is serving (issue #141) ----------------
+
+
+def hotfixed_pod(*, mounted: bool) -> dict[str, Any]:
+    """A pod whose venv is on a claim, with a seat that shares it or does not.
+
+    Mirrors what `hotfix init` leaves behind: the annotation on the pod, the
+    claim in `spec.volumes`, and the application mounting it at the path the
+    manifest on the volume records.
+    """
+    mount = {"name": "myapp-venv", "mountPath": "/opt/venv"}
+    return pod_document(
+        uid=1000,
+        annotations={HOTFIXED_ANNOTATION: "true"},
+        volumes=[{"name": "myapp-venv", "persistentVolumeClaim": {"claimName": "c"}}],
+        volume_mounts=[mount],
+        ephemeral=[
+            {
+                "name": "podbench-1",
+                "targetContainerName": "app",
+                "securityContext": {"runAsUser": 1000},
+                **({"volumeMounts": [mount]} if mounted else {}),
+            }
+        ],
+        ephemeral_statuses=[running_status("podbench-1")],
+    )
+
+
+def dev_pod(*, ephemeral: Sequence[dict[str, Any]] = ()) -> dict[str, Any]:
+    """Iterate mode's clone: the seat is an ordinary sidecar, not an ephemeral
+    container, and ``spec.ephemeralContainers`` is empty because the API server
+    refuses one on create."""
+    return pod_document(
+        name="demo-podbench",
+        labels={DEVPOD_LABEL: "true"},
+        sidecar={
+            "name": "podbench",
+            "image": "ghcr.io/gilesknap/podbench:0.1.0",
+            "env": [{"name": "PODBENCH_TARGET", "value": "app"}],
+            "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+        },
+        sidecar_status=running_status("podbench"),
+        ephemeral=list(ephemeral),
+        ephemeral_statuses=[running_status(entry["name"]) for entry in ephemeral],
+    )
+
+
+def test_a_dev_pods_sidecar_is_invisible_to_the_ephemeral_read() -> None:
+    """The premise of issue #141: ``seats()`` walks ``spec.ephemeralContainers``,
+    Iterate mode's seat is in ``spec.containers``, so a listing built on the
+    former reported a dev pod as carrying no podbench container at all - which
+    dropped the pod from ``list`` entirely."""
+    pod = dev_pod()
+
+    assert seats(pod) == []
+    assert [seat.name for seat in all_seats(pod)] == ["podbench"]
+
+
+def test_the_dev_sidecar_reads_back_as_a_dev_seat() -> None:
+    seat = dev_seat(dev_pod())
+
+    assert seat is not None
+    assert seat.kind is SeatKind.DEV
+    assert seat.running
+    # From PODBENCH_TARGET, since an ordinary container has no
+    # targetContainerName to read - so the column says the same thing for both
+    # container kinds.
+    assert seat.target == "app"
+    assert (seat.uid, seat.gid) == (1000, 1000)
+
+
+def test_an_ephemeral_seat_in_a_dev_pod_is_not_a_dev_seat() -> None:
+    """The distinction ``seat_kind`` takes ``sidecar=`` for. Nothing stops an
+    attach landing an ephemeral seat in a dev pod, and that seat is an
+    Observe-mode seat whatever the pod is labelled: the application is not its
+    child, so ``flavour.detect_mode`` measures OBSERVE and every path mapping is
+    the Observe-mode one."""
+    pod = dev_pod(
+        ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}]
+    )
+
+    kinds = {seat.name: seat.kind for seat in all_seats(pod)}
+
+    assert kinds == {"podbench": SeatKind.DEV, "podbench-1": SeatKind.ATTACH}
+
+
+def test_a_seat_sharing_the_workloads_claim_is_a_hotfix_seat() -> None:
+    (seat,) = seats(hotfixed_pod(mounted=True))
+
+    assert seat.kind is SeatKind.HOTFIX
+    assert not seat.in_hotfixed_pod
+
+
+def test_a_seat_in_a_hotfixed_pod_that_shares_nothing_is_flagged() -> None:
+    """The combination that is silent in both directions: nothing refuses the
+    attach, the seat works, and it resolves the image's venv while the
+    application runs the claim's."""
+    (seat,) = seats(hotfixed_pod(mounted=False))
+
+    assert seat.kind is SeatKind.ATTACH
+    assert seat.in_hotfixed_pod
+
+
+def test_the_hotfix_kind_needs_the_annotation_as_well_as_the_mount() -> None:
+    """A ``--mount`` on a pod nobody hotfixed is somebody mounting a volume, and
+    calling it Hotfix mode would claim a provenance that is not there."""
+    pod = hotfixed_pod(mounted=True)
+    pod["metadata"]["annotations"] = {}
+
+    (seat,) = seats(pod)
+
+    assert seat.kind is SeatKind.ATTACH
+    assert not seat.in_hotfixed_pod
+
+
+def test_the_convention_volumes_do_not_make_a_seat_a_hotfix_seat() -> None:
+    """``seat_identity_mounts`` mounts the home volume by convention, and a pod
+    prepared for podbench has the application mounting it too - so a kind
+    derived from "shares a mount with the target" has to discount it, or every
+    seat in a cooperating pod reads as ``hotfix``."""
+    home = {"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}
+    pod = pod_document(
+        uid=1000,
+        annotations={HOTFIXED_ANNOTATION: "true"},
+        volumes=[{"name": SEAT_HOME_VOLUME, "emptyDir": {}}],
+        volume_mounts=[home],
+        ephemeral=[
+            {
+                "name": "podbench-1",
+                "targetContainerName": "app",
+                "volumeMounts": [home],
+            }
+        ],
+        ephemeral_statuses=[running_status("podbench-1")],
+    )
+
+    (seat,) = seats(pod)
+
+    assert seat.kind is SeatKind.ATTACH
+    assert seat.in_hotfixed_pod
+
+
+def test_the_sidecar_is_never_paired_with_an_ephemeral_seat_as_superseded() -> None:
+    """``superseded_seats``'s signature - same target, same uid, a gid the later
+    seat pins - is now reachable across container kinds, because ``all_seats``
+    folds the sidecar in beside anything attached into the same dev pod. The
+    correction it detects only ever happens between two ephemeral containers."""
+    pod = dev_pod(
+        ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}]
+    )
+
+    assert superseded_seats(all_seats(pod)) == {}
+
+
+def test_a_listing_names_each_seats_kind(tmp_path: Path) -> None:
+    text = format_seats(
+        PodRef("demo", "demo-podbench"),
+        all_seats(
+            dev_pod(
+                ephemeral=[
+                    {"name": "podbench-1", "securityContext": {"runAsUser": 1000}}
+                ]
+            )
+        ),
+        directory=tmp_path,
+    )
+
+    assert "KIND" in text
+    assert "podbench     dev" in text
+    assert "podbench-1   attach" in text
+
+
+def test_a_listing_says_when_a_seat_misses_its_pods_hotfix(tmp_path: Path) -> None:
+    text = format_seats(
+        PodRef("demo", "target"), seats(hotfixed_pod(mounted=False)), directory=tmp_path
+    )
+
+    flowed = " ".join(text.split())
+    assert " ".join(UNMOUNTED_HOTFIX_NOTE.split()) in flowed
+
+
+def test_a_listing_is_silent_about_a_seat_that_shares_the_hotfix(
+    tmp_path: Path,
+) -> None:
+    text = format_seats(
+        PodRef("demo", "target"), seats(hotfixed_pod(mounted=True)), directory=tmp_path
+    )
+
+    assert "hotfixed" not in text
+
+
+def test_attach_on_a_dev_pod_says_the_sidecar_is_already_a_seat() -> None:
+    """A warning and not a refusal: the sidecar gives up SYS_PTRACE with the
+    root it does not have, so a full-rung ephemeral seat beside it is a real if
+    rare want. But it spends a container name for the pod's lifetime, and
+    nothing said so."""
+    cluster = FakeCluster(dev_pod())
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "demo-podbench",
+        image="ghcr.io/gilesknap/podbench:test",
+        public_key=None,
+        probe=False,
+    )
+
+    flowed = [" ".join(warning.split()) for warning in session.warnings]
+    assert " ".join(DEV_POD_SIDECAR_WARNING.format(seat="podbench").split()) in flowed

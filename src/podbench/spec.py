@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from .model import (
+    DEVPOD_LABEL,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
@@ -76,9 +77,6 @@ __all__ = [
     "validate_ephemeral_volume_mounts",
     "validate_security_context",
 ]
-
-DEVPOD_LABEL = "podbench.dev/devpod"
-"""Marks an authored dev pod. Also the selector a cutover flips a Service to."""
 
 ORIGIN_ANNOTATION = "podbench.dev/origin"
 """Records the pod a dev pod was cloned from."""
