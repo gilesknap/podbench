@@ -248,6 +248,48 @@ Fix for the branch in front of you: `git fetch origin <branch> && git reset <sha
 bed, leaving the working tree untouched — the sync just wrote it. That repairs `--version`
 for that branch only; a later sync from a different branch reintroduces the mismatch.
 
+## Reproducing argus: a policy that *strips* rather than refuses
+
+The bed can produce the cluster shape most rung defects live in, and needs nothing
+installed. k3s v1.36.3 serves `admissionregistration.k8s.io/v1`
+`MutatingAdmissionPolicy`, and the repo already carries one:
+
+```sh
+kubectl create ns podbench-<item>
+kubectl label ns podbench-<item> podbench.dev/strip-sys-ptrace=enforce
+kubectl apply -f tests/e2e/apps/strip-sys-ptrace.yaml   # cluster-scoped, delete after
+```
+
+Point it at a target that pins **no** `runAsUser` at all — not `dls-ioc.yaml`, which
+states `runAsUser: 0` explicitly — and the full rung lands stripped: a seat at uid 0
+with `CapEff` carrying no `SYS_PTRACE`, beside a target at uid 0. That is argus
+(`hgv27681`), where no pod in the namespace sets `runAsUser` and every target is root,
+and it is the shape issue #94 was filed from. Measured 2026-08-21.
+
+The pod pinning nothing is the load-bearing half. A manifest that states `runAsUser: 0`
+hands the launcher a target uid, so every question about "what does podbench do when the
+uid is only discoverable from `/proc`" is answered by the fixture rather than by the
+code.
+
+**A superseded pair needs an image, not a flag.** `--target-gid <n>` will make two seats,
+but the second is then pinned to a gid the target does not have and is *worse* than the
+one it replaced, so anything reasoning about which seat to prefer reads backwards. The
+honest fixture is an image whose `USER` line sets a non-zero uid **and** gid, under a
+manifest that states only `runAsUser` — five lines of Dockerfile — which makes podbench's
+own gid correction fire:
+
+```dockerfile
+FROM docker.io/library/python:3.12-slim
+RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
+USER 1000:1000
+CMD ["sleep", "infinity"]
+```
+
+**A read-only `podbench-home` induces real start-up failures.** Declare the volume as a
+`configMap` rather than an `emptyDir` and every `ensure_all` step that writes under
+`$HOME` fails for real — five of them — which is the only cheap way to exercise what a
+laptop verb says about a seat that came up half-working.
+
 ## What the bed does not model
 
 Worth stating, because a green run here is not a green run at Diamond:
