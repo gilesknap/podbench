@@ -86,13 +86,30 @@ amount read from the namespace — after it made `--resize` unusable across a
 whole namespace at Diamond on 2026-08-16. A **`ResourceQuota` is still
 untested**, as is a second Kubernetes version.
 
-**`podbench vscode` has never been driven end to end against a GUI client.** The
-verb probes the alias, sizes the pod, provisions debugpy, writes the three
-`.vscode` files, installs the remote extensions and opens the seat's home. That
-sequence has unit tests and was verified flag by flag by hand on 2026-08-16; it
-has no live proof. Two of its steps mutate the workload **by default** —
-`--no-resize` and `--no-provision` opt out — and both carry the caveats already
-recorded under resize and provisioning. The headroom it sizes from is read with
+**`podbench vscode` has now been driven end to end against a GUI client**, on
+2026-08-21, against a live EPICS IOC on a Diamond production cluster
+(`p47-beamline/bl47p-ea-fastcs-01-0`, seat `0.4.0b3`, over an ssh API tunnel
+from home). The verb probes the alias, sizes the pod, provisions debugpy, writes
+the three `.vscode` files, installs the remote extensions and opens the seat's
+home. Everything but the provisioning step worked first time: the extensions
+unpacked in the remote, Remote-SSH connected, and after the server was started
+the debugger attached, **breakpoints bound and source resolved** through the
+`/proc/<pid>/root` path mappings — so issue #112's collision did not bite even
+though the seat's venv and the workload's are both `/app/.venv`. Re-running the
+verb against the same pod reconnects to the existing seat correctly.
+
+What the run found is that the provisioning step *never fired*, because its
+trigger was the wrong one: it keyed on a target that cannot import debugpy,
+where this target ships its own, so the emitted `launch.json` connected to a
+port nothing was listening on. That is fixed — the trigger is now the seat
+naming `--provision`, which it does for either blocker — but the fix is itself
+only unit-tested, and **the resize path remains unproven live**: this pod had
+1513 MiB of headroom against vscode-server's measured 1215 MiB, so nothing had
+to be resized.
+
+Two of the verb's steps mutate the workload **by default** — `--no-resize` and
+`--no-provision` opt out — and both carry the caveats already recorded under
+resize and provisioning. The headroom it sizes from is read with
 `kubectl top pod`, and reports **unmeasured** where there is no metrics API.
 
 **Hotfix mode has never been run against a cluster.** The workflow exists —

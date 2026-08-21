@@ -2106,6 +2106,21 @@ def _hint(
     nothing is listening until the injection is run — and running it is not
     something authoring a launch.json may do on its own, since it ptraces the
     workload and leaves a server inside it.
+
+    ``--provision`` is named here, and that is load-bearing rather than
+    politeness: :func:`podbench.editor._author` reads the flag out of this
+    stderr to decide whether ``podbench vscode`` should answer the need itself.
+    Until it was named, a target that could *already* import debugpy took the
+    prerequisites-met path straight past ``Provision.IF_NEEDED`` — the trigger
+    was the install blocker alone — and the verb whose whole contract is a
+    debuggable target emitted a launch.json pointing at a closed port. Measured
+    on a Diamond IOC, 2026-08-21.
+
+    The seat is named too, because on this pod's shape it is ambiguous: the
+    workload's venv and the seat's are both ``/app/.venv``, so the interpreter
+    in the pasted command is one file over ``kubectl exec -c <seat>`` and a
+    different one over ``-c <target>``. Same collision as the sysroot ones, in
+    the instruction text rather than in BFD.
     """
     if Flavour.DEBUGPY not in wanted or mode is Mode.DEV:
         return
@@ -2120,8 +2135,13 @@ def _hint(
     if exposure is not None:
         _warn(exposure)
     print(
-        f"debug-config: nothing is listening on {DEBUGPY_HOST}:{port} yet. "
-        "Start the server inside the app with:\n"
+        f"debug-config: nothing is listening on {DEBUGPY_HOST}:{port} yet, so "
+        "the configuration above connects to a closed port. `podbench "
+        "debug-config --provision` starts the server itself; by hand it is the "
+        "command below, which runs in *this seat* - the interpreter is the "
+        "seat's own and PYTHONPATH reaches the target's debugpy through /proc, "
+        "so the same spelling pasted into the target container is a different "
+        "file:\n"
         f"{injection_command(target, seat, port)}",
         file=sys.stderr,
     )

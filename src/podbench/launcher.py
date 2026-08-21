@@ -5684,11 +5684,13 @@ def _build_app(
             typer.Option(
                 "--no-provision",
                 help="author whatever fits the target as it stands. Without it, "
-                "a Python workload that cannot import debugpy has it installed "
-                "and its server started, because that target gets no "
-                "launch.json at all otherwise. Mutates the workload: ~15 MB of "
-                "shared ephemeral storage, needs egress from the pod, ptraces "
-                "the app for a few seconds, and no restart survives it",
+                "a Python workload gets debugpy installed where it cannot "
+                "import one, and its server started where nothing is listening "
+                "on the port the configuration connects to - the two ways a "
+                "target reaches F5 with no debugger behind it. Mutates the "
+                "workload: ~15 MB of shared ephemeral storage, needs egress "
+                "from the pod, ptraces the app for a few seconds, and no "
+                "restart survives it",
             ),
         ] = False,
         identity: _Identity = DEFAULT_IDENTITY,

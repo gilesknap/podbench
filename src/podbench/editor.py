@@ -36,6 +36,15 @@ config author must be asked for — the other being the ptrace
 ``flavour.injection_command`` prints rather than runs. What the flag fixes is
 that the remedy was previously unreachable from the laptop at all.
 
+It answers **two** blockers, and reading it as one is what left this verb unable
+to finish its own job. A Python target that cannot import debugpy gets no
+configuration; a Python target that can — which is most of them, since an app
+with debugpy in its lockfile is the common shape — gets one that connects to a
+port nothing is listening on. Only the first is a non-zero exit from the seat,
+so keying on the exit code meant the second silently skipped provisioning and
+handed over a launch.json whose F5 met ``ECONNREFUSED``. The trigger is now the
+seat naming the flag, which it does for either.
+
 The order below is load-bearing. ``.vscode/settings.json`` is written **before**
 the window opens, because the watcher and the indexer start walking the moment
 it does; opening first and configuring afterwards is the race whose loser is an
@@ -114,11 +123,16 @@ command that never ran.
 PROVISION_FLAG = "--provision"
 """What a provisioning run appends to :data:`DEBUG_CONFIG_ARGV`.
 
-Also the string the *unprovisioned* refusal is recognised by. ``debug-config``
-names this flag in its own remedy when debugpy is the blocker and does not name
-it for any other flavour — there is no ``--provision`` for a missing delve — so
+Also the string an *unprovisioned* run is recognised by. ``debug-config`` names
+this flag in its own narration when debugpy is the blocker and does not name it
+for any other flavour — there is no ``--provision`` for a missing delve — so
 matching on it offers the pass-through exactly where it is the answer, without
 this side of the wire guessing the target's language a second time.
+
+"Blocker" covers both of debugpy's, and deliberately: the flag is named by the
+refusal a target that cannot import debugpy gets, *and* by the hint a target
+that can import it gets when nothing is listening on the port its configuration
+connects to. One string, because to this side of the wire they are one request.
 """
 
 
@@ -127,10 +141,10 @@ class Provision(enum.Enum):
 
     Three states rather than a boolean because the *decision* and the *consent*
     are separate facts, and only the seat holds the first one. ``debug-config``
-    is the one thing that can see the target: it refuses on a Python workload
-    that cannot import debugpy, and names :data:`PROVISION_FLAG` in its own
-    refusal when — and only when — that is the blocker. So a run that already
-    has consent can answer the refusal itself instead of printing it.
+    is the one thing that can see the target, and it names
+    :data:`PROVISION_FLAG` in its own narration when — and only when — debugpy
+    is what stands between this target and a bound breakpoint. So a run that
+    already has consent can answer the need itself instead of printing it.
 
     :attr:`NEVER` and :attr:`ALWAYS` are what ``attach --open`` had.
     :attr:`IF_NEEDED`
@@ -144,7 +158,12 @@ class Provision(enum.Enum):
     """Author whatever fits the target as it stands, and offer the flag."""
 
     IF_NEEDED = "if-needed"
-    """Provision only where the seat itself said that is the blocker."""
+    """Provision only where the seat itself named the flag.
+
+    Not "only where no configuration came back": a target shipping its own
+    debugpy gets one, and it connects to a port nothing is listening on until
+    the injection runs. That is the same request, made by a run that exited 0.
+    """
 
     ALWAYS = "always"
     """Provision first, whether or not the target turns out to need it."""
@@ -216,19 +235,26 @@ who said ``--no-provision`` and then met the refusal it leads to.
 """
 
 _PROVISION_NEEDED = (
-    "the target cannot import debugpy, which is what the refusal above is; "
-    "provisioning it now, because that is what this verb is for. "
-    "`--no-provision` authors whatever fits the target as it stands instead."
+    "debugpy is what stands between this target and a bound breakpoint, which "
+    "is what the seat named `--provision` for above - either it cannot import "
+    "debugpy at all, or it can and nothing is listening on the port the "
+    "configuration connects to; provisioning it now, because that is what this "
+    "verb is for. `--no-provision` authors whatever fits the target as it "
+    "stands instead."
 )
 """Said instead of :data:`_PROVISION_REMEDY` when the answer is already known.
 
-The refusal it follows is relayed rather than swallowed, for the reason the
-module docstring gives about narration: ``debug-config`` is the only thing that
-can see the target, so its account of *why* debugpy is the blocker is the
-diagnosis, and a run that hid it would be asserting the need rather than showing
-it. What changes is only the last line — "re-run with the flag" becomes "doing
-it now", because :attr:`Provision.IF_NEEDED` means the flag was already typed,
-as the verb's own name.
+The narration it follows is relayed rather than swallowed, for the reason the
+module docstring gives: ``debug-config`` is the only thing that can see the
+target, so its account of *why* debugpy is the blocker is the diagnosis, and a
+run that hid it would be asserting the need rather than showing it. What changes
+is only the last line — "re-run with the flag" becomes "doing it now", because
+:attr:`Provision.IF_NEEDED` means the flag was already typed, as the verb's own
+name.
+
+Both blockers are named because only the seat knows which one it met, and this
+sentence is composed on the laptop. Naming the wrong one would be worse than
+naming both: the reader has the seat's own account two lines above.
 """
 
 _RELOAD_NOTE = (
@@ -694,6 +720,15 @@ def _configurations(
     than a second measurement of anything. It cannot loop — the retry runs with
     :attr:`Provision.ALWAYS`, and only a run that did *not* provision reports
     itself unprovisioned.
+
+    The retry falls back to what the first run authored, which it did not have
+    to do while the trigger was a refusal: back then the first run had no
+    configurations by definition, so there was nothing to lose. Now it often
+    has good ones whose only fault is a closed port — and the command that
+    opens that port by hand was relayed along with them. A provisioning run
+    that then fails on egress or on the injection must not take them with it,
+    or widening the trigger would be a regression for the very case it was
+    widened to serve.
     """
     entries, unprovisioned = _author(
         kubectl, seat, report, provision=provision is Provision.ALWAYS
@@ -704,7 +739,7 @@ def _configurations(
         report(_PROVISION_REMEDY)
         return entries
     report(_PROVISION_NEEDED)
-    return _author(kubectl, seat, report, provision=True)[0]
+    return _author(kubectl, seat, report, provision=True)[0] or entries
 
 
 def _author(
@@ -714,7 +749,7 @@ def _author(
     *,
     provision: bool,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """One ``debug-config`` run, and whether debugpy is what it wanted.
+    """One ``debug-config`` run, and whether the seat asked to be provisioned.
 
     The second half of the pair is the only thing :func:`_configurations` needs
     that a list of configurations cannot carry: "empty" is the same answer for a
@@ -722,6 +757,21 @@ def _author(
     Python workload one ``uv pip install`` away from working. Reading
     :data:`PROVISION_FLAG` out of the seat's own stderr keeps the three apart
     without this side of the wire guessing the target's language.
+
+    Which is why it is read on a **successful** run too, and not only on a
+    refusal. Provisioning answers two blockers, not one: a target that cannot
+    import debugpy gets no configuration at all, and a target that *can* gets
+    one whose port has nothing behind it until the injection is run. Only the
+    first is a non-zero exit. Keying the retry on the exit code therefore left
+    the second — every Python workload shipping its own debugpy, which is most
+    of them — with a launch.json whose F5 met a closed port, from the one verb
+    that exists to hand over a debuggable target (measured against a Diamond
+    IOC, 2026-08-21). The flag in the narration is the seat's own request, and
+    it is the same request either way.
+
+    ``not provision`` is what keeps it from looping, and it is the whole of
+    that guarantee: a provisioning run's stderr names the flag on every line it
+    narrates, so the guard has to be here rather than in the caller.
     """
     argv = [*DEBUG_CONFIG_ARGV, *([PROVISION_FLAG] if provision else [])]
     if provision:
@@ -735,6 +785,7 @@ def _author(
         timeout=PROVISION_TIMEOUT if provision else DEFAULT_CALL_TIMEOUT,
     )
     relayed = _relay(result.stderr, report)
+    wants_provisioning = not provision and PROVISION_FLAG in result.stderr
     if result.returncode != 0:
         # The last line only when there was nothing to relay - a `podbench` the
         # image does not resolve exits 127 with sh's message and no narration,
@@ -744,7 +795,7 @@ def _author(
             if relayed
             else f"no launch.json: {_detail(result.stderr)}"
         )
-        return [], not provision and PROVISION_FLAG in result.stderr
+        return [], wants_provisioning
     document: Any
     try:
         document = json.loads(result.stdout)
@@ -756,7 +807,9 @@ def _author(
         return [], False
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
-    return [as_dict(entry) for entry in entries if isinstance(entry, dict)], False
+    return [
+        as_dict(entry) for entry in entries if isinstance(entry, dict)
+    ], wants_provisioning
 
 
 def _merge_into(
