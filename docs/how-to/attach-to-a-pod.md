@@ -125,6 +125,35 @@ container name once used is burnt for the pod's lifetime. `--new` forces a fresh
 container with the next free `podbench-<n>` name — use it when the previous one
 died, not out of habit.
 
+### Reconnecting only reaches *your* seat
+
+A pod is a shared thing, and a seat is not: an ephemeral container's
+`authorized_keys` is written from the environment it started with and cannot be
+added to afterwards, so reconnecting into a colleague's seat would produce a
+stanza whose only outcome is `Permission denied (publickey)`.
+
+So each seat records the cluster identity that landed it — whatever `kubectl
+auth whoami` answers for your kubeconfig — in its container spec, and `attach`,
+`vscode` and `ssh-config` reconnect only to a seat that records yours. Somebody
+else's is named in one line and a fresh seat is landed beside it:
+
+```
+WARNING  podbench-1 is running but was not reused because
+         system:serviceaccount:beamline:ci landed it: ...
+```
+
+The `owner` row on the report and under every seat in `podbench list` says whose
+each one is. Two answers there are not names:
+
+* **`unknown - this container was landed before seats recorded one`** — an older
+  podbench landed it. It is still reconnected to, because refusing it would
+  spend a permanent container name, but podbench will not tell you it is yours.
+* **`unknown - kubectl auth whoami did not name this kubeconfig's user`** — the
+  cluster has no `SelfSubjectReview` resource (it is a 1.28 API) or your role
+  cannot create one. Seats landed from here stay anonymous, and podbench invents
+  no local substitute: `$USER` is a fact about a workstation, not about a
+  cluster.
+
 ## Choosing the target container
 
 podbench needs to know *which* container's PID namespace to join and whose UID

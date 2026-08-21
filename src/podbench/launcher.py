@@ -64,6 +64,7 @@ from .model import (
     IMAGE_ENV,
     NOT_MEASURED,
     NOT_PROBED,
+    OWNER_ENV,
     POD_CONTAINERS_ENV,
     SEAT_GROUP_KEY,
     SEAT_HOME_PATH,
@@ -161,6 +162,8 @@ __all__ = [
     "SEAT_IDENTITY_MOUNTS",
     "SEAT_STATUS_ARGV",
     "UNKNOWN_SEAT_VERSION",
+    "OTHER_OWNER_WARNING",
+    "UNKNOWN_OWNER",
     "VERSION_ARGV",
     "VERSION_SKEW_WARNING",
     "Feature",
@@ -201,6 +204,7 @@ __all__ = [
     "match_pod_choices",
     "match_pod_names",
     "other_containers",
+    "other_owners_seat",
     "parse_mount",
     "plan_ladder",
     "pod_choices",
@@ -216,6 +220,7 @@ __all__ = [
     "resolve_pod_name",
     "run_capreport",
     "same_build",
+    "superseded_seats",
     "ssh_unavailable_note",
     "running_seat",
     "seat_identity_mounts",
@@ -882,6 +887,15 @@ class SeatInfo:
     ephemeral container's mounts are fixed at creation, so a reconnect has to
     read this rather than re-derive it from what the pod declares *now*."""
 
+    owner: str | None = None
+    """The cluster identity that landed it, from :data:`OWNER_ENV`, or ``None``.
+
+    ``None`` is **unknown** and never "yours": every seat landed before the
+    variable existed carries none, and so does one landed where ``kubectl auth
+    whoami`` would not answer. Read back from the spec for the same reason the
+    ids are - a listing routinely runs on a machine that never saw the attach,
+    and on this question it is routinely a *different* machine (issue #113)."""
+
     @property
     def running(self) -> bool:
         """Whether this container can still take an ssh session."""
@@ -923,6 +937,7 @@ def seats(pod_json: Mapping[str, Any], *, base: str = CONTAINER_BASE) -> list[Se
                 target=_as_str(container.get("targetContainerName")),
                 home=spec_env(container).get("HOME"),
                 identity_mounted=_mounts_volume(container, SEAT_IDENTITY_VOLUME),
+                owner=spec_env(container).get(OWNER_ENV),
             )
         )
     return found
@@ -933,6 +948,7 @@ def running_seat(
     *,
     base: str = CONTAINER_BASE,
     ids: tuple[int, int] | None = None,
+    owner: str | None = None,
 ) -> SeatInfo | None:
     """The podbench container a reconnect should reuse, if there is one.
 
@@ -960,6 +976,15 @@ def running_seat(
     path (issue #117). :func:`superseded_seats` decides, from the seats alone,
     so this holds on a machine that never saw the attach.
 
+    ``owner`` is the caller's own cluster identity, and a seat recording a
+    **different** one is never the answer either: its ``authorized_keys`` was
+    written for another key when it started and cannot be added to from here,
+    so reconnecting would hand a stanza that gets ``Permission denied
+    (publickey)`` and nothing to read it against (issue #113). A seat recording
+    *no* owner is still reused - that is every seat landed before the stamp
+    existed, and refusing them would spend a permanent container name on each
+    one - but the report says ``unknown owner`` rather than claiming it.
+
     >>> spec = {"spec": {"ephemeralContainers": [
     ...     {"name": "podbench-1", "securityContext": {"runAsUser": 1000}},
     ...     {"name": "podbench-2",
@@ -981,7 +1006,49 @@ def running_seat(
             continue
         if ids is not None and (seat.uid, seat.gid) != ids:
             continue
+        if _owned_by_another(seat.owner, owner):
+            continue
         return seat
+    return None
+
+
+def _owned_by_another(recorded: str | None, asking: str | None) -> bool:
+    """Whether a seat is provably somebody else's.
+
+    Both halves have to be known for the answer to be yes. Either one missing
+    is *unknown*, and unknown is not a verdict: a seat landed before the stamp
+    existed records nothing, and a cluster that would not answer ``auth
+    whoami`` leaves the asker nameless. Deciding either way on one name is how
+    an anonymous seat would come to be reported as somebody's.
+
+    >>> _owned_by_another("alice", "bob")
+    True
+    >>> _owned_by_another(None, "bob"), _owned_by_another("alice", None)
+    (False, False)
+    """
+    return recorded is not None and asking is not None and recorded != asking
+
+
+def other_owners_seat(
+    present: Sequence[SeatInfo], owner: str | None
+) -> SeatInfo | None:
+    """The first live seat that provably belongs to somebody else, if any.
+
+    Asked only to explain why a fresh seat is being landed beside a running
+    one, which is a surprise worth a line: the pod already carries a working
+    seat and the user is spending a permanent container name anyway.
+
+    >>> mine = SeatInfo("podbench-2", Rung.DEGRADED, "running", "", owner="bob")
+    >>> theirs = SeatInfo("podbench-1", Rung.DEGRADED, "running", "",
+    ...                   owner="alice")
+    >>> other_owners_seat([theirs, mine], "bob").name
+    'podbench-1'
+    >>> other_owners_seat([mine], "bob") is None
+    True
+    """
+    for seat in present:
+        if seat.running and _owned_by_another(seat.owner, owner):
+            return seat
     return None
 
 
@@ -1012,6 +1079,17 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
     ...                       uid=1000, gid=None, target="app")
     >>> superseded_seats([first, deliberate])
     {}
+
+    Two *people* on one pod produce the same signature and mean nothing by it:
+    a colleague attaching after you lands a corrected seat beside your
+    uncorrected one, and calling that a supersession would tell you your own
+    seat had been replaced and send the next attach off to land a third
+    (issue #113). So a pairing needs the owners not to disagree.
+
+    >>> theirs = SeatInfo("podbench-2", Rung.DEGRADED, "running", "",
+    ...                   uid=1000, gid=1000, target="app", owner="alice")
+    >>> superseded_seats([replace(first, owner="bob"), theirs])
+    {}
     """
     replaced: dict[str, str] = {}
     live = [seat for seat in present if seat.running]
@@ -1021,10 +1099,34 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
         for later in live[index + 1 :]:
             if (later.target, later.uid) != (earlier.target, earlier.uid):
                 continue
+            if _owned_by_another(later.owner, earlier.owner):
+                continue
             if later.gid is not None and later.gid != earlier.gid:
                 replaced[earlier.name] = later.name
     return replaced
 
+
+OTHER_OWNER_WARNING = (
+    "{seat} is running but was not reused because {owner} landed it: an "
+    "ephemeral container's authorized_keys is written when it starts and "
+    "cannot be added to from here, so a new container is being landed - and "
+    "its name is spent whether or not it works out"
+)
+"""Why a running seat was passed over for a fresh one (issue #113).
+
+A warning and not a note, unlike :data:`SUPERSEDED_NOTE`: it is said on the
+attach that spends the name, to the person spending it, and the fact it carries
+- somebody else is working in this pod - is one they did not have.
+"""
+
+UNKNOWN_OWNER = "unknown - this seat records none"
+"""What a listing says about a seat with no :data:`OWNER_ENV`.
+
+Every seat that existed before the stamp did, which on the beamline is six pods'
+worth. Reported as unknown rather than left blank, and never attributed to the
+reader: the same rule the memory row is held to, in the one place where guessing
+would tell somebody a colleague's seat was theirs.
+"""
 
 SUPERSEDED_NOTE = (
     "superseded by {later}, which corrected this seat's group id - an "
@@ -1426,6 +1528,13 @@ class Session:
     """``$HOME`` as pinned in the container's env, ``None`` for the image's own.
     :func:`seat_layout` derives every path the ProxyCommand names from it."""
 
+    owner: str | None = None
+    """The cluster identity recorded on the seat, ``None`` when it records none.
+
+    The seat's, not the caller's: on a reconnect this is what the container was
+    stamped with, which is the fact the report has to state rather than the
+    name of whoever is reading it."""
+
     identity_mounted: bool = False
     """Whether the seat mounts :data:`podbench.model.SEAT_IDENTITY_VOLUME`.
 
@@ -1616,15 +1725,20 @@ def attach(
     wanted_ids = (
         (wanted_uid, target_gid) if target_gid is not None and wanted_uid else None
     )
-    existing = running_seat(pod_json, ids=wanted_ids)
+    # One call per run, cached on the Kubectl: it decides which seat is offered
+    # and it is stamped on whatever gets landed, so both halves have to be the
+    # same answer.
+    owner = kubectl.whoami()
+    existing = running_seat(pod_json, ids=wanted_ids, owner=owner)
+    declined: str | None = None
     if existing is None and wanted_ids is not None and correct_ids:
         # Said only on the path a human asked for: the correction below runs
         # with `correct_ids=False` and carries its own one-line account of the
         # name it is spending, and two warnings for one event is how a report
         # becomes mostly warnings.
-        stale = running_seat(pod_json)
+        stale = running_seat(pod_json, owner=owner)
         if stale is not None:
-            warnings.append(
+            declined = (
                 f"{stale.name} is running but was not reused because it is "
                 f"pinned to {_ids(stale.uid, stale.gid)}, not the "
                 f"{_ids(wanted_uid, target_gid)} asked for: an ephemeral "
@@ -1632,6 +1746,15 @@ def attach(
                 "so a new container is being landed - and its name is spent "
                 "whether or not it works out"
             )
+    if existing is None and declined is None:
+        # The other reason a running seat is passed over. One line and one
+        # only, which is why it shares `declined` with the ids case: a user who
+        # is landing a second seat needs the reason, not both candidate reasons.
+        theirs = other_owners_seat(seats(pod_json), owner)
+        if theirs is not None:
+            declined = OTHER_OWNER_WARNING.format(seat=theirs.name, owner=theirs.owner)
+    if declined is not None:
+        warnings.append(declined)
     if existing is not None and max_rung is not None:
         above = above_ceiling(existing, max_rung, target_uid=wanted_uid)
         if above is not None:
@@ -1665,6 +1788,7 @@ def attach(
             gid=existing.gid,
             home=existing.home,
             identity_mounted=existing.identity_mounted,
+            owner=existing.owner,
             steps=(
                 LadderStep(
                     existing.rung,
@@ -1703,6 +1827,7 @@ def attach(
             workload=workload,
             image=image,
             public_key=public_key,
+            owner=owner,
             target_uid=target_uid,
             target_gid=target_gid,
             max_rung=max_rung,
@@ -1939,6 +2064,7 @@ def _walk_ladder(
     workload: str,
     image: str,
     public_key: str | None,
+    owner: str | None,
     target_uid: int | None,
     target_gid: int | None,
     max_rung: Rung | None,
@@ -1989,6 +2115,7 @@ def _walk_ladder(
                     rung,
                     workload=workload,
                     home=_seat_home(volume_mounts, rung),
+                    owner=owner,
                 ),
                 volume_mounts=volume_mounts,
                 # The target's own, never RuntimeDefault by default: a filter
@@ -2096,6 +2223,7 @@ def _walk_ladder(
             gid=_as_int(as_dict(spec.get("securityContext")).get("runAsGroup")),
             home=spec_env(spec).get("HOME"),
             identity_mounted=_mounts_volume(spec, SEAT_IDENTITY_VOLUME),
+            owner=spec_env(spec).get(OWNER_ENV),
             steps=tuple(steps),
             warnings=tuple(warnings),
         )
@@ -2351,8 +2479,16 @@ def _container_env(
     *,
     workload: str,
     home: str | None,
+    owner: str | None = None,
 ) -> dict[str, str]:
     env: dict[str, str] = {}
+    if owner is not None:
+        # Who landed this seat, so that the next person on this pod is offered
+        # their own rather than handed one whose authorized_keys was written
+        # for somebody else's key (issue #113). Written only when the cluster
+        # named the user: absence has to keep meaning "unknown", and a locally
+        # invented name would be a claim nothing measured.
+        env[OWNER_ENV] = owner
     # Which container this seat is in, and what else is in the pod. Both are
     # laptop-side facts - the seat sees namespaces, never the pod object - and
     # `pids` needs them to head its listing with the container whose processes
@@ -3021,6 +3157,7 @@ def format_session(session: Session) -> str:
             first="version     ",
             indent=" " * 12,
         ),
+        *paragraph(_owner_fact(session), first="owner       ", indent=" " * 12),
         f"rung        {session.rung.value} - {_rung_evidence(session)}",
         "ladder",
     ]
@@ -3093,6 +3230,25 @@ def format_session(session: Session) -> str:
             paragraph(warning, first=f"{WARNING_LEAD}  ", indent=" " * _WARNING_HANG)
         )
     return "\n".join(lines)
+
+
+def _owner_fact(session: Session) -> str:
+    """Whose seat this is, or why the report cannot say.
+
+    The two ways an owner comes back unknown have different causes and one of
+    them is about *this* run, so they are not merged: a reconnect into an
+    unstamped container is history, while a seat landed without a stamp means
+    the cluster would not name the kubeconfig's user and the seat this run just
+    created will be anonymous to the next person too.
+    """
+    if session.owner is not None:
+        return session.owner
+    if session.reused:
+        return "unknown - this container was landed before seats recorded one"
+    return (
+        "unknown - `kubectl auth whoami` did not name this kubeconfig's user, "
+        "so this seat records none either"
+    )
 
 
 def _rung_evidence(session: Session) -> str:
@@ -4324,6 +4480,10 @@ def format_seats(
             lines.extend(
                 _fact("note", SUPERSEDED_NOTE.format(later=replaced[seat.name]))
             )
+        # The question a second person on a shared pod actually has, and the
+        # one `podbench-1` beside `podbench-2` could not answer at all before
+        # seats carried a stamp (issue #113).
+        lines.extend(_fact("owner", seat.owner or UNKNOWN_OWNER))
         # Per seat and not per pod: two seats on one pod may target different
         # containers, and a listing that says only which pod they are in leaves
         # the reader of a multi-container pod to guess which of them either seat
@@ -5436,7 +5596,12 @@ def _build_app(
         key_path, _ = read_public_key(identity)
         name = resolve_pod(kube, pod, prompt=not no_prompt)
         pod_json = kube.get_pod(name)
-        seat = running_seat(pod_json)
+        # The owner is the id this verb has to select on. It writes a stanza
+        # naming *this* kubeconfig's IdentityFile, so a colleague's seat is the
+        # one seat that cannot work - its authorized_keys holds another key -
+        # and picking it would emit a stanza whose only failure is `Permission
+        # denied (publickey)` (issue #113, on top of #117's superseded seat).
+        seat = running_seat(pod_json, owner=kube.whoami())
         if seat is None:
             raise LauncherError(
                 f"no running podbench container in {kube.namespace}/{name}; "
@@ -5461,6 +5626,7 @@ def _build_app(
             uid=seat.uid,
             home=seat.home,
             identity_mounted=seat.identity_mounted,
+            owner=seat.owner,
             credentials=credentials,
             # Asked again rather than assumed: this command exists to regenerate
             # a stanza from another machine, where nothing of the original

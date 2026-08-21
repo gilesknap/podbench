@@ -38,6 +38,7 @@ __all__ = [
     "SEAT_PASSWD_KEY",
     "IMAGE_ENV",
     "HOST_NETWORK_ENV",
+    "OWNER_ENV",
     "POD_CONTAINERS_ENV",
     "TARGET_CID_ENV",
     "TARGET_NAME_ENV",
@@ -226,6 +227,35 @@ nothing of the pod object - and without it ``pids`` can name the container it is
 showing but not the ones it is not, which is half of the answer a reader of a
 multi-container pod needs. Absent means **unknown**, never "this pod has one
 container": a seat landed by an older launcher carries no such variable.
+"""
+
+OWNER_ENV = "PODBENCH_OWNER"
+"""Env var carrying the cluster identity that landed this seat.
+
+A seat is otherwise anonymous, so ``podbench-1`` beside ``podbench-2`` gives a
+second person no way to tell which one is theirs — and reconnecting into
+somebody else's is a login refused by an ``authorized_keys`` written for another
+key (issue #113).
+
+It lives in the container's ``env`` because that is the only place on an
+ephemeral container that survives both of the things ownership has to outlive.
+A container **name** is burnt the moment the container exits, so an owner keyed
+on the name goes stale on the next OOM; the ``env`` is a property of the
+container spec, which the API server keeps for the pod's lifetime and hands back
+verbatim to any later ``kubectl get pod -o json``. And a securityContext is
+fixed for that same lifetime, so a seat whose gid the correction could only
+mend by landing a *second* container (#103) has two names and one owner — which
+is what an owner recorded per container, at the moment it is authored, gets
+right and a mapping keyed on either id does not.
+
+A pod annotation would do neither better and costs an RBAC grant podbench
+deliberately does not ask for: it writes the ``ephemeralcontainers``
+subresource, never the pod object.
+
+Absent means **unknown**, never "mine": every seat landed before this variable
+existed carries none, as does one landed where ``kubectl auth whoami`` would not
+name the kubeconfig's user. Reporting it as unknown is the same rule the memory
+row and the rung label are held to — never assert what was not measured.
 """
 
 TARGET_CID_ENV = "PODBENCH_TARGET_CID"

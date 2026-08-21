@@ -36,6 +36,7 @@ from podbench.launcher import (
     UNKNOWN_SEAT_VERSION,
     VERSION_SKEW_WARNING,
     LauncherError,
+    SeatInfo,
     Session,
     attach,
     capability_report_from_json,
@@ -60,10 +61,12 @@ from podbench.launcher import (
     probe_seat_versions,
     resolve_pod,
     resolve_pod_name,
+    running_seat,
     same_build,
     seat_layout,
     seats,
     ssh_config_path,
+    superseded_seats,
     target_container_name,
     target_row,
     try_resize,
@@ -307,6 +310,7 @@ class FakeCluster:
         mutate: Callable[[dict[str, Any]], None] | None = None,
         allowed_uids: Sequence[int] = (),
         seat_status: str | None = None,
+        whoami: str | None = "kubernetes-admin",
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -365,6 +369,11 @@ class FakeCluster:
         # Start-up steps that gave up, carried in the seat's own report. #99 is
         # that these used to reach nothing but the container log.
         self.startup_failures: list[str] = []
+        # Who the API server says this kubeconfig is, which is what a seat is
+        # stamped with and what the next attach selects on. `None` is the
+        # cluster that will not answer `auth whoami`, where every seat stays
+        # anonymous and nothing may claim one.
+        self.whoami = whoami
         # Whether `debug-config` refuses for want of debugpy in the *target*.
         # Off by default, because the interesting default is a target that
         # already has a debugger: a fake that always needed provisioning would
@@ -416,6 +425,13 @@ class FakeCluster:
     ) -> CommandResult:
         if rest[:1] == ["config"]:
             return _ok("demo\n")
+        if rest[:2] == ["auth", "whoami"]:
+            if self.whoami is None:
+                return _fail(
+                    "error: the server doesn't have a resource type "
+                    '"selfsubjectreviews"'
+                )
+            return _ok(json.dumps({"status": {"userInfo": {"username": self.whoami}}}))
         if rest[:2] == ["get", "pods"]:
             return _ok(json.dumps({"items": [self.pod, *self.others]}))
         if rest[:2] == ["top", "pod"]:
@@ -3245,6 +3261,250 @@ def test_reconnecting_cannot_change_the_seats_group_so_it_is_not_reused() -> Non
     assert "1000:?" in warning, "what the running seat is pinned to"
     assert "1000:1000" in warning, "and what was asked for"
     assert session.gid == 1000
+
+
+# -- whose seat is this (issue #113) ----------------------------------------
+
+
+def as_user(cluster: FakeCluster, who: str | None) -> Kubectl:
+    """A launcher run by ``who``, against the same cluster.
+
+    A fresh :class:`Kubectl` per identity, because the identity is cached on the
+    instance - which is what a second person running podbench is: a second
+    process.
+    """
+    cluster.whoami = who
+    return Kubectl("demo", runner=cluster)
+
+
+def test_a_seat_records_the_identity_that_landed_it() -> None:
+    """The stamp goes in the container's env, which is where it has to be.
+
+    A name is burnt when the container exits and a securityContext cannot be
+    corrected in place, so the two things already on a seat that a later reader
+    can key on are both unusable for this. The ``env`` is neither: the API
+    server keeps the spec entry for the pod's lifetime and hands it back
+    verbatim.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    attach(as_user(cluster, "alice"), "target")
+
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["PODBENCH_OWNER"] == "alice"
+    assert seats(cluster.pod)[0].owner == "alice"
+
+
+def test_two_identities_on_one_pod_get_one_seat_each() -> None:
+    """The acceptance for #113, and the case the beamline already has.
+
+    The second person's seat cannot be the first person's: an ephemeral
+    container's ``authorized_keys`` is written from the env it started with and
+    cannot be added to from the launcher, so a reconnect would hand out a stanza
+    whose only outcome is `Permission denied (publickey)`.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    first = attach(as_user(cluster, "alice"), "target")
+    second = attach(as_user(cluster, "bob"), "target")
+
+    assert first.seat.container == "podbench-1"
+    assert second.seat.container == "podbench-2"
+    assert not second.reused
+    assert second.owner == "bob"
+    warning = next(w for w in second.warnings if "podbench-1" in w)
+    assert "alice" in warning, "and it names who has it"
+
+
+def test_each_identity_gets_its_own_seat_back() -> None:
+    """The other half: owning a seat has to be worth something.
+
+    bob is the discriminating case, because ephemeral containers are listed in
+    the order they were appended and alice's is always the first one reached.
+    Without the owner in the filter bob's second attach reconnects into alice's
+    seat - a container his key cannot log into - and his own is left running
+    beside it.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    attach(as_user(cluster, "alice"), "target")
+    attach(as_user(cluster, "bob"), "target")
+
+    hers = attach(as_user(cluster, "alice"), "target")
+    his = attach(as_user(cluster, "bob"), "target")
+
+    assert len(cluster.added) == 2, "no third seat was landed"
+    assert (hers.seat.container, hers.reused) == ("podbench-1", True)
+    assert (his.seat.container, his.reused) == ("podbench-2", True)
+
+
+def test_a_seat_with_no_owner_is_reported_as_unknown_and_not_claimed() -> None:
+    """Every seat that existed before the stamp did, including six at DLS.
+
+    Reused, because refusing them would spend a permanent container name on
+    each - but never attributed to whoever is reading, which is the same rule
+    the memory row and the rung label are held to.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    session = attach(as_user(cluster, "alice"), "target")
+
+    assert session.reused
+    assert session.owner is None
+    assert len(cluster.added) == 0
+    report = format_session(session)
+    assert "owner       unknown" in report
+    assert "alice" not in report
+
+
+def test_a_cluster_that_will_not_name_its_user_stamps_nothing() -> None:
+    """``auth whoami`` is a 1.28 resource and an RBAC grant of its own.
+
+    A launcher that could not ask must land a seat that says so, rather than
+    inventing a local name: two people on one workstation share ``$USER``, and
+    one person on two laptops does not.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    session = attach(as_user(cluster, None), "target")
+
+    assert "env" not in cluster.added[0] or not any(
+        entry["name"] == "PODBENCH_OWNER" for entry in cluster.added[0]["env"]
+    )
+    assert session.owner is None
+    assert "kubectl auth whoami" in format_session(session)
+
+
+def test_a_nameless_launcher_still_reuses_the_seat_it_finds() -> None:
+    """Unknown is not a verdict, in either direction.
+
+    Declining on one missing name would make a cluster without the resource pay
+    a permanent container name on every attach, for ever.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    attach(as_user(cluster, "alice"), "target")
+    session = attach(as_user(cluster, None), "target")
+
+    assert session.reused
+    assert len(cluster.added) == 1
+    assert session.owner == "alice", "and the report says whose it is"
+
+
+def test_the_listing_says_whose_each_seat_is(tmp_path: Path) -> None:
+    """What `podbench list` could not answer at all before the stamp."""
+    document = pod_document(
+        uid=1000,
+        ephemeral=[
+            {
+                "name": "podbench-1",
+                "securityContext": {"runAsUser": 1000},
+                "env": [{"name": "PODBENCH_OWNER", "value": "alice"}],
+            },
+            {"name": "podbench-2", "securityContext": {"runAsUser": 1000}},
+        ],
+        ephemeral_statuses=[running_status("podbench-1"), running_status("podbench-2")],
+    )
+    text = format_seats(PodRef("demo", "target"), seats(document), directory=tmp_path)
+
+    assert "owner     alice" in text
+    assert "owner     unknown" in text
+
+
+def test_ssh_config_writes_a_stanza_for_the_callers_own_seat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#117 selected the right seat of one owner; this is the other axis.
+
+    The stanza names *this* kubeconfig's ``IdentityFile``, so a colleague's seat
+    is the one seat it cannot be written for - and the failure arrives as
+    `Permission denied (publickey)` with nothing to read it against.
+    """
+    cluster = FakeCluster(pod_document(uid=1000))
+    attach(as_user(cluster, "alice"), "target")
+    attach(as_user(cluster, "bob"), "target")
+
+    # bob, because alice's seat is the first one listed and would be picked by
+    # a selection that read nothing at all.
+    cluster.whoami = "bob"
+    code = main(
+        [
+            "ssh-config",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--print-config",
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "demo/target[podbench-2]" in printed
+    assert "demo/target[podbench-1]" not in printed
+
+
+def test_two_owners_are_not_read_as_a_gid_correction() -> None:
+    """The signature #103 leaves and two people leave by accident.
+
+    alice's uncorrected seat beside bob's corrected one has the same shape as
+    one seat superseding another. Called a supersession, it would tell alice her
+    own seat had been replaced by a container she cannot log into, and send her
+    next attach off to land a third.
+    """
+    hers = SeatInfo(
+        "podbench-1",
+        Rung.DEGRADED,
+        "running",
+        "",
+        uid=1000,
+        target="app",
+        owner="alice",
+    )
+    his = SeatInfo(
+        "podbench-2",
+        Rung.DEGRADED,
+        "running",
+        "",
+        uid=1000,
+        gid=1000,
+        target="app",
+        owner="bob",
+    )
+
+    assert superseded_seats([hers, his]) == {}
+    reached = running_seat(_pod_of([hers, his]), owner="alice")
+    assert reached is not None and reached.name == "podbench-1"
+
+
+def _pod_of(present: Sequence[SeatInfo]) -> dict[str, Any]:
+    """A pod document carrying exactly these seats, live."""
+    return pod_document(
+        uid=1000,
+        ephemeral=[
+            {
+                "name": seat.name,
+                "securityContext": {
+                    key: value
+                    for key, value in (
+                        ("runAsUser", seat.uid),
+                        ("runAsGroup", seat.gid),
+                    )
+                    if value is not None
+                },
+                "targetContainerName": seat.target,
+                "env": (
+                    []
+                    if seat.owner is None
+                    else [{"name": "PODBENCH_OWNER", "value": seat.owner}]
+                ),
+            }
+            for seat in present
+        ],
+        ephemeral_statuses=[running_status(seat.name) for seat in present],
+    )
 
 
 def test_ssh_config_without_a_session_says_so(
