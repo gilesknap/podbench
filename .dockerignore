@@ -20,9 +20,19 @@ docs/_build/
 .coverage
 cov.xml
 
-# Editor and container tooling that never reaches the runtime image
-.devcontainer/
-.vscode/
+# NOTHING TRACKED MAY BE EXCLUDED BELOW THIS LINE. The build stage runs
+# setuptools_scm against the .git above, and an excluded *tracked* file reads to
+# `git describe --dirty` as a deletion: the context is dirty, so a build of the
+# tagged commit renders the next version instead of the tag. `.devcontainer/`
+# and `.vscode/` (five tracked files, inherited from the copier template) sat
+# here and did exactly that - 0.4.0-beta.2 built an image reporting
+# 0.4.0b3.dev0+g50cc5414e.d20260821, which is the version `model.image_tag_for`
+# would then refuse to ask for. They are gone rather than replaced with a
+# workaround: they cost the build stage a few KiB and reach the runtime image
+# never, since only /app/.venv crosses over.
+#
+# Only untracked or gitignored paths belong here. `git describe --dirty` does
+# not consider untracked files, so the two entries below are free.
 
 # Generated kubeconfigs, which `k8s/.gitignore` keeps out of the history for the
 # same reason. Gitignoring them is not enough here: the build context is the
