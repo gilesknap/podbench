@@ -265,8 +265,11 @@ because the env var is also set in a local window). **Verify the guard rather th
 ```sh
 ssh podbench-bed true          # if this fails, mint a key and STOP until it is authorised
 
+# --exclude=k8s is not tidiness: k8s/*.kubeconfig holds live DLS
+# service-account tokens, and gitignored files are invisible to review while
+# `tar .` copies them anyway. --exclude=tmp is the same argument, lower stakes.
 tar -C <checkout> --exclude=.git --exclude=.venv --exclude=__pycache__ \
-    --exclude=.pytest_cache -cf - . \
+    --exclude=.pytest_cache --exclude=k8s --exclude=tmp -cf - . \
   | ssh podbench-bed 'tar -C /root/podbench --overwrite -xf -'
 
 # image changes only — nothing else carries them to the cluster
