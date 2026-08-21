@@ -414,6 +414,26 @@ Write `REQUEST:LIMIT` — `--resize 1Gi:6Gi` — to choose the request yourself.
 request already large enough is left alone: it is a scheduling promise the
 workload was placed on.
 
+### A Guaranteed pod has to be asked for both halves
+
+A Guaranteed pod is one whose every request already equals its limit, and the
+API server refuses any resize that would move a pod between QoS classes:
+
+```
+Invalid value: "Guaranteed": Pod QOS Class may not change as a result of
+resizing
+```
+
+Raising the limit on its own must change the class, at every number, so there
+is nothing to retry. podbench does not send that patch: it says the pod is
+Guaranteed and names the spelling that works — `--resize 2Gi:2Gi`, both halves,
+which resizes and keeps the class (measured on k3s v1.36.3, 2026-08-21). This
+is also the one case where `podbench vscode`'s automatic raise stops and hands
+you a command instead of choosing the number for you. It does not pin the
+request on your behalf, because a request is a *reservation* on the node and
+not a cap: moving it takes that memory from everything else scheduled there,
+and can leave the pod unresizable for want of allocatable memory.
+
 ### A container with a resource claim cannot be resized at all
 
 A container that declares `resources.claims` — a DRA claim, which is how a

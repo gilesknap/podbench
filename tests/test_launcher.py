@@ -22,7 +22,7 @@ import pytest
 
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
-from podbench.console import console
+from podbench.console import console, wrap, wrap_width
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
     DEFAULT_CALL_TIMEOUT,
@@ -5720,6 +5720,106 @@ def test_a_claim_explanation_joins_our_sentence_and_not_the_clusters() -> None:
 
     assert "existing limits - the target container holds a resource claim" in note
     assert note.index("bl01c-ea-flip-02") < note.index("The API server said:")
+
+
+def guaranteed_document() -> dict[str, Any]:
+    """A pod the kubelet called Guaranteed: request equals limit, and it says so."""
+    document = pod_document(uid=1000)
+    document["spec"]["containers"][0]["resources"] = {
+        "limits": {"memory": "256Mi", "cpu": "500m"},
+        "requests": {"memory": "256Mi", "cpu": "500m"},
+    }
+    document["status"]["qosClass"] = "Guaranteed"
+    return document
+
+
+def test_a_guaranteed_pod_is_offered_the_spelling_that_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #124, half one: a doomed patch replaced by the command to paste.
+
+    Guaranteed means request == limit, so raising the limit alone must change
+    the QoS class and the API server refuses it at every number. Nothing is
+    submitted, and what the user is told is `--resize REQUEST:LIMIT`.
+    """
+    cluster = FakeCluster(guaranteed_document())
+
+    note = try_resize(talking_to(cluster), "target", "app", "2Gi")
+
+    assert "Guaranteed" in note
+    assert "`--resize 2Gi:2Gi`" in note
+    assert [call for call in cluster.calls if "patch" in call] == []
+    # And it survives the wrap that made #120: the half to be pasted is still
+    # one line at the two widths anybody runs a terminal at.
+    for columns in ("80", "60"):
+        monkeypatch.setenv("COLUMNS", columns)
+        lines = wrap(note, width=wrap_width())
+        assert len(lines) > 1, columns
+        assert any("`--resize 2Gi:2Gi`" in line for line in lines), columns
+
+
+def test_a_guaranteed_pod_asked_for_both_halves_is_resized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The capability exists; only the limit-alone spelling is unavailable.
+
+    Measured on the bed 2026-08-21: `--resize 2Gi:2Gi` keeps `qos=Guaranteed`
+    and takes effect. So the check has to be "would this patch change the
+    class", never "is this pod Guaranteed".
+    """
+    del monkeypatch
+    cluster = FakeCluster(guaranteed_document())
+
+    note = try_resize(talking_to(cluster), "target", "app", "2Gi:2Gi")
+
+    assert "resized app to memory 2Gi/2Gi" in note
+    assert [call for call in cluster.calls if "patch" in call] != []
+
+
+def test_a_burstable_pod_still_takes_a_limit_only_resize() -> None:
+    """The pre-check reads the class the kubelet published, and nothing else.
+
+    A container whose request happens to equal its limit inside a Burstable pod
+    changes no class by being raised, and refusing it here would break the
+    ordinary case to protect the rare one.
+    """
+    document = pod_document(uid=1000)
+    document["spec"]["containers"][0]["resources"] = {
+        "limits": {"memory": "256Mi"},
+        "requests": {"memory": "256Mi"},
+    }
+    cluster = FakeCluster(document)
+
+    note = try_resize(talking_to(cluster), "target", "app", "2Gi")
+
+    assert "resized app to memory 2Gi" in note
+
+
+def test_a_qos_refusal_from_the_api_server_names_the_remedy_too() -> None:
+    """The backstop, for a pod object that carried no `status.qosClass`.
+
+    The pre-check reads a field, and a document fetched by somebody else may
+    not have one. The refusal then arrives from the API server, and it names
+    the class and not the flag - so podbench names the flag.
+    """
+    document = pod_document(uid=1000)
+    document["spec"]["containers"][0]["resources"] = {
+        "limits": {"memory": "256Mi"},
+        "requests": {"memory": "256Mi"},
+    }
+    cluster = FakeCluster(
+        document,
+        patch_error=(
+            'Pod "target" is invalid: spec: Invalid value: "Guaranteed": Pod '
+            "QOS Class may not change as a result of resizing"
+        ),
+    )
+
+    note = try_resize(talking_to(cluster), "target", "app", "2Gi")
+
+    assert "`--resize 2Gi:2Gi`" in note
+    # The cluster's own words still end the note, with ours before them.
+    assert note.index("`--resize 2Gi:2Gi`") < note.index("The API server said:")
 
 
 def test_an_attach_that_changed_no_limits_never_offers_the_flag(

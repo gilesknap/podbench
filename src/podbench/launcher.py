@@ -91,6 +91,7 @@ from .resize import (
     CPU,
     EDITOR_HEADROOM,
     MEMORY,
+    QOS_REFUSAL,
     SEAT_FOOTPRINT,
     SEAT_HEADROOM,
     Headroom,
@@ -106,6 +107,7 @@ from .resize import (
     parse_want,
     plan_resize,
     pod_memory_limit,
+    qos_preserving_flags,
 )
 from .spec import (
     AGENT_COMMAND,
@@ -4088,14 +4090,32 @@ def try_resize(
         if cpu is not None:
             wants[CPU] = parse_want(cpu, resource=CPU)
         document = pod_json if pod_json is not None else kubectl.get_pod(pod)
+        current = _container_resources(document, container)
         plan = plan_resize(
             container,
-            current=_container_resources(document, container),
+            current=current,
             wants=wants,
             limits=namespace_limits(kubectl.list_limit_ranges()),
         )
     except ResizeError as error:
         return f"no resize was attempted: {error}"
+
+    # The one refusal that is knowable before it happens. A Guaranteed pod has
+    # request == limit everywhere by definition, so raising a limit on its own
+    # must change its QoS class, and the API server refuses every resize that
+    # does - at any number, so there is nothing to retry (#124). podbench does
+    # not pin the request itself: a request is a *reservation* on the node, not
+    # a cap, and choosing to take one is a bigger decision than this flag's, so
+    # what the user gets is the command that works rather than a mutation that
+    # cannot.
+    remedy = qos_preserving_flags(current, plan)
+    if remedy is not None and _qos_class(document) == "Guaranteed":
+        return (
+            "no resize was attempted: this pod is Guaranteed, so every request "
+            "equals its limit, and a resize may not change a pod's QoS class - "
+            "raising the limit alone is refused whatever the number. Ask for "
+            f"both halves instead: `{remedy}`."
+        )
 
     asked = ", ".join(
         f"{resource} {value}" for resource, value in sorted(_asked(plan).items())
@@ -4109,9 +4129,15 @@ def try_resize(
         # The API server answers a claim-bearing container with a sentence about
         # cpu and memory, which sends the reader after the numbers they just
         # asked for. See resize.explain_claim_refusal.
-        explanation = explain_claim_refusal(
-            _container_resources(document, container), refusal
-        )
+        explanation = explain_claim_refusal(current, refusal)
+        if not explanation and QOS_REFUSAL in refusal and remedy is not None:
+            # The backstop for a pod whose `status` did not say Guaranteed -
+            # a caller-supplied document without one, or a class the API server
+            # recomputed under us. The remedy is the same either way.
+            explanation = (
+                "a resize may not change a pod's QoS class, and this one would."
+                f" Ask for both halves instead: `{remedy}`."
+            )
         return (
             f"in-place resize ({asked}) was refused, so podbench is sharing "
             "the pod's existing limits"
@@ -4157,6 +4183,18 @@ def _asked(plan: ResizePlan) -> dict[str, str]:
         request = as_dict(resources.get("requests")).get(resource)
         stated[resource] = f"{request}/{value}" if request else str(value)
     return stated
+
+
+def _qos_class(pod_json: Mapping[str, Any]) -> str:
+    """The class the kubelet computed for this pod, or the empty string.
+
+    Read rather than derived: the rule is "every container's every request
+    equals its limit", but which containers count and what an unset request
+    means are the kubelet's business, and a pod object always carries its own
+    answer. An absent one is a document that was not fetched whole, and is
+    never treated as evidence either way.
+    """
+    return str(as_dict(pod_json.get("status")).get("qosClass") or "")
 
 
 def _container_resources(
