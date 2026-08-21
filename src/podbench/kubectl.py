@@ -928,12 +928,18 @@ class Kubectl:
         about a pod that was still pulling. ``wait`` is in
         :data:`STREAMED_SUBCOMMANDS` for the same reason — its watch must
         outlive any ``--request-timeout``.
+
+        Formatted rather than truncated, because ``--timeout`` is a ``float`` on
+        every verb that reaches here and Go's ``ParseDuration`` takes a decimal
+        for any unit. ``int()`` turned ``--timeout 0.5`` into ``--timeout=0s``,
+        which ``kubectl wait`` reads as "check once and do not wait" — the one
+        value that means something else entirely.
         """
         return self.run(
             "wait",
             resource,
             f"--for={condition}",
-            f"--timeout={int(timeout)}s",
+            f"--timeout={timeout:g}s",
             timeout=timeout + WAIT_GRACE,
         )
 

@@ -265,6 +265,20 @@ def test_wait_for_builds_a_condition() -> None:
     assert runner.argv[-3:] == ("pod/devpod", "--for=condition=Ready", "--timeout=30s")
 
 
+def test_wait_for_keeps_a_fractional_deadline() -> None:
+    """``--timeout`` is a ``float`` on every verb that reaches here.
+
+    ``int(timeout)`` made ``0.5`` into ``--timeout=0s``, and zero is the one
+    value ``kubectl wait`` reads as something else: check once, do not wait.
+    Go's ``ParseDuration`` takes the decimal, so pass it through.
+    """
+    runner = FakeRunner(ok(""))
+    Kubectl("demo", runner=runner).wait_for(
+        "pod/devpod", "condition=Ready", timeout=0.5
+    )
+    assert "--timeout=0.5s" in runner.argv
+
+
 def test_add_ephemeral_container_uses_the_subresource() -> None:
     existing = json.dumps(
         {
@@ -352,7 +366,7 @@ def test_a_dry_run_asks_the_api_server_to_store_nothing() -> None:
 def test_whoami_reads_the_username_the_api_server_answered_with() -> None:
     runner = FakeRunner(ok('{"status": {"userInfo": {"username": "system:admin"}}}'))
     assert Kubectl("demo", runner=runner).whoami() == "system:admin"
-    assert runner.argv[-3:] == ("auth", "whoami", "-o", "json")[1:]
+    assert runner.argv[-4:] == ("auth", "whoami", "-o", "json")
 
 
 def test_whoami_is_asked_once_per_run() -> None:
