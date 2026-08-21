@@ -2421,6 +2421,174 @@ def test_a_superseded_seat_is_never_the_seat_to_reconnect_to() -> None:
     assert cluster.added == []
 
 
+def legacy_corrected_pair() -> FakeCluster:
+    """The pair an older podbench left on six p47 pods, read 2026-08-21.
+
+    ``bl47p-mo-ioc-01-0`` and ``p47-epics-pvcs-...-jffpp``: a full-rung seat at
+    uid 0 whose ``capabilities.add`` a mutating policy rewrote without
+    ``SYS_PTRACE``, and beside it the seat a later build landed at the target's
+    own 37887:37887. The uids **differ**, so the pair carries none of
+    :func:`superseded_seats`' signature, and neither seat records an owner - the
+    stamp is younger than both.
+    """
+    return FakeCluster(
+        pod_document(
+            uid=37887,
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 0},
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 37887, "runAsGroup": 37887},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+
+
+def test_ssh_config_prefers_the_seat_that_can_reach_the_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`6ffac34` reached only the pairs this build creates.
+
+    Its guard is effectively ``(later.target, later.uid) != (earlier.target,
+    earlier.uid)``, and the leftover p47 pairs differ in the uid, so the pair was
+    skipped and ``ssh-config`` emitted a stanza for ``podbench-1`` - whose
+    verdict reads "launch-only ... no read-only inspection" - in preference to
+    ``podbench-2``, which reads "live attach available".
+    """
+    cluster = legacy_corrected_pair()
+    code = main(
+        [
+            "ssh-config",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--print-config",
+        ],
+        runner=cluster,
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "-c podbench-2" in out
+    assert "-c podbench-1" not in out
+
+
+def test_a_reconnect_takes_the_same_answer_as_the_stanza() -> None:
+    """One selection for every caller, which is `6ffac34`'s own argument: a
+    stanza is not the only thing derived from "which seat is this pod's"."""
+    cluster = legacy_corrected_pair()
+    session = attach(talking_to(cluster), "target")
+
+    assert session.reused
+    assert session.seat.container == "podbench-2"
+    assert cluster.added == []
+
+
+def test_a_capability_seat_is_not_passed_over_for_its_uid() -> None:
+    """The full rung is root against every target by construction, and
+    ``CAP_SYS_PTRACE`` is exempt from the credential check entirely. Demoting it
+    for a uid it does not need would trade the best seat on the pod for one that
+    merely matches - the same trade :func:`id_correction` refuses."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=37887,
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {
+                        "runAsUser": 0,
+                        "capabilities": {"add": ["SYS_PTRACE"]},
+                    },
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 37887, "runAsGroup": 37887},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+    seat = running_seat(cluster.pod)
+
+    assert seat is not None and seat.name == "podbench-1"
+
+
+def test_the_only_seat_is_offered_even_where_it_cannot_reach_the_target() -> None:
+    """A preference, not a filter. A seat that cannot inspect is still an
+    editor, a shell and a git checkout, and refusing to name it would replace a
+    working `ssh-config` with an error on a pod that has one seat."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=37887,
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 0},
+                }
+            ],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+    seat = running_seat(cluster.pod)
+
+    assert seat is not None and seat.name == "podbench-1"
+
+
+def test_a_seat_landed_by_somebody_else_is_still_never_borrowed() -> None:
+    """The tie-break runs *after* `25cd006`'s owner rule and cannot undo it.
+
+    A colleague's seat matching the target perfectly is still a seat whose
+    ``authorized_keys`` was written for another key, so preferring it would hand
+    back a stanza that gets `Permission denied (publickey)`.
+    """
+    cluster = FakeCluster(
+        pod_document(
+            uid=37887,
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 0},
+                    "env": [{"name": "PODBENCH_OWNER", "value": "bob"}],
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 37887, "runAsGroup": 37887},
+                    "env": [{"name": "PODBENCH_OWNER", "value": "alice"}],
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+    seat = running_seat(cluster.pod, owner="bob")
+
+    assert seat is not None and seat.name == "podbench-1"
+
+
 def stripped_root_seat() -> FakeCluster:
     """A running root seat that reads back as the degraded rung.
 

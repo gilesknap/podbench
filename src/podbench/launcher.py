@@ -996,20 +996,114 @@ def running_seat(
     'podbench-2'
     >>> running_seat(spec, ids=(1000, 1000)).name
     'podbench-2'
+
+    Last, and only as a tie-break between seats already found reusable: a seat
+    whose uid **cannot** match its target's is not offered ahead of one whose
+    can. :func:`superseded_seats` reaches only a pair pinned to the same uid, so
+    it does not reach the pairs an older podbench left behind - a full-rung seat
+    at uid 0 corrected to the target's ids, which is six p47 pods
+    (``bl47p-mo-ioc-01-0``, ``p47-epics-pvcs-...``). There ``ssh-config`` was
+    emitting a stanza for the seat whose verdict reads "launch-only ... no
+    read-only inspection" in preference to the one that reads "live attach
+    available", purely because ephemeral containers are listed in the order they
+    were appended.
+
+    >>> legacy = {"spec": {
+    ...     "containers": [{"name": "app",
+    ...                     "securityContext": {"runAsUser": 37887}}],
+    ...     "ephemeralContainers": [
+    ...         {"name": "podbench-1", "targetContainerName": "app",
+    ...          "securityContext": {"runAsUser": 0}},
+    ...         {"name": "podbench-2", "targetContainerName": "app",
+    ...          "securityContext": {"runAsUser": 37887,
+    ...                              "runAsGroup": 37887}}]},
+    ...  "status": {"ephemeralContainerStatuses": [
+    ...     {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
+    ...     {"name": "podbench-2", "state": {"running": {"startedAt": "t"}}}]}}
+    >>> running_seat(legacy).name
+    'podbench-2'
+
+    **Not "prefer the later seat", which would be wrong on the same beamline.**
+    ``p47-epics-opis`` carries a root seat beside a later one at uid 101 against
+    a target the manifest says nothing about and the node reports as root, and
+    there the *earlier* seat is the one that can inspect. The rule is the
+    credential match and never the order:
+
+    >>> opis = {"spec": {
+    ...     "containers": [{"name": "server"}],
+    ...     "ephemeralContainers": [
+    ...         {"name": "podbench-1", "targetContainerName": "server",
+    ...          "securityContext": {"runAsUser": 101}},
+    ...         {"name": "podbench-3", "targetContainerName": "server",
+    ...          "securityContext": {"runAsUser": 0}}]},
+    ...  "status": {
+    ...     "containerStatuses": [{"name": "server",
+    ...                            "user": {"linux": {"uid": 0}}}],
+    ...     "ephemeralContainerStatuses": [
+    ...        {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
+    ...        {"name": "podbench-3",
+    ...         "state": {"running": {"startedAt": "t"}}}]}}
+    >>> running_seat(opis).name
+    'podbench-3'
     """
     present = seats(pod_json, base=base)
     replaced = superseded_seats(present)
-    for seat in present:
-        if not seat.running:
-            continue
-        if seat.name in replaced:
-            continue
-        if ids is not None and (seat.uid, seat.gid) != ids:
-            continue
-        if _owned_by_another(seat.owner, owner):
-            continue
-        return seat
-    return None
+    candidates = [
+        seat
+        for seat in present
+        if seat.running
+        and seat.name not in replaced
+        and (ids is None or (seat.uid, seat.gid) == ids)
+        and not _owned_by_another(seat.owner, owner)
+    ]
+    if not candidates:
+        return None
+    # A preference and never a filter: the demoted seat is still returned when
+    # it is the only one, because it is a working editor and shell and this
+    # function's job is to find a seat rather than to grade one.
+    return next(
+        (seat for seat in candidates if not _cannot_reach_its_target(seat, pod_json)),
+        candidates[0],
+    )
+
+
+def _cannot_reach_its_target(seat: SeatInfo, pod_json: Mapping[str, Any]) -> bool:
+    """Whether this seat's own spec rules out the credential check.
+
+    Deliberately **not** a claim that some other seat replaced it. Relaxing
+    :func:`superseded_seats` to pair seats pinned to different uids would reach
+    the legacy pairs, and would also pair two *people's* seats - the correction
+    signature and "a colleague attached after me" are the same shape once the
+    uid is allowed to move, and legacy seats carry no :data:`OWNER_ENV` for
+    ``_owned_by_another`` to tell them apart with. So nothing here is paired,
+    nothing is skipped, and no seat is described as anybody's: this only breaks
+    a tie between candidates every other rule already found reusable, and
+    breaking it towards the seat that can inspect is right whoever landed them.
+
+    ``True`` needs three things, and the absence of any one of them is
+    *unknown* rather than a verdict:
+
+    * a seat below the **full** rung. A stored ``SYS_PTRACE`` may have been
+      stripped, but it may equally be effective, and a capability is exempt from
+      the credential check entirely - so a seat carrying one is never demoted for
+      a uid it does not need. The same reasoning as :func:`above_ceiling`'s.
+    * a **pinned** uid. A seat that pins none runs as the image's user, which is
+      not in the spec (report §3.10).
+    * a **known** target uid. The manifest's, or - where it states none, which
+      is every pod on argus - the uid the kubelet resolved and reports on the
+      container status.
+
+    The gid is not asked for. A differing uid is already the whole answer, and
+    the gid half of the same comparison is what
+    :func:`superseded_seats` covers.
+    """
+    if seat.rung is Rung.FULL or seat.uid is None or seat.target is None:
+        return False
+    stated, _ = target_uid_gid(pod_json, seat.target)
+    target = (
+        stated if stated is not None else reported_target_uid(pod_json, seat.target)
+    )
+    return target is not None and seat.uid != target
 
 
 def _owned_by_another(recorded: str | None, asking: str | None) -> bool:
