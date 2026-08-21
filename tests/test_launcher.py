@@ -2265,6 +2265,80 @@ def test_ssh_config_subcommand_regenerates_for_an_existing_session(
     assert cluster.added == []
 
 
+def superseded_pair() -> FakeCluster:
+    """The two live seats the gid correction leaves behind.
+
+    A target that pins ``runAsUser: 1000`` and no ``runAsGroup`` puts the first
+    seat in the image's group 0 against a target in group 1000, so podbench
+    measures the real gid and lands a corrected seat beside it. Both are
+    running; the earlier one cannot trace and its agent wrote sshd's config for
+    a *different* ``$HOME``, and it is the one listed first, because ephemeral
+    containers are appended in order and never removed.
+    """
+    return FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000},
+                },
+                {
+                    "name": "podbench-2",
+                    "targetContainerName": "app",
+                    "securityContext": {"runAsUser": 1000, "runAsGroup": 1000},
+                },
+            ],
+            ephemeral_statuses=[
+                running_status("podbench-1"),
+                running_status("podbench-2"),
+            ],
+        )
+    )
+
+
+def test_ssh_config_on_a_two_seat_pod_names_the_corrected_seat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #117. ``ssh-config`` asked :func:`running_seat` with no ids where
+    ``attach`` passes the ones it wants, so it took the first live container it
+    found - the superseded one - and emitted a stanza whose ProxyCommand named
+    the sshd config path of a seat nobody should be connecting to."""
+    cluster = superseded_pair()
+    code = main(
+        [
+            "ssh-config",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--print-config",
+        ],
+        runner=cluster,
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "-c podbench-2" in out
+    assert "-c podbench-1" not in out
+
+
+def test_a_superseded_seat_is_never_the_seat_to_reconnect_to() -> None:
+    """The same selection, one layer down and for every caller of it: a stanza
+    is not the only thing derived from "which seat is this pod's". The pod
+    chooser's SEAT column and ``attach``'s own reconnect read the same answer."""
+    cluster = superseded_pair()
+    session = attach(talking_to(cluster), "target")
+
+    assert session.reused
+    assert session.seat.container == "podbench-2"
+    assert cluster.added == []
+
+
 def stripped_root_seat() -> FakeCluster:
     """A running root seat that reads back as the degraded rung.
 

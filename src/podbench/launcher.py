@@ -948,6 +948,16 @@ def running_seat(
     corrected ids, and *finds the corrected seat already running* here instead of
     landing a third.
 
+    A seat a later one **superseded** is never the answer, whether or not any
+    ids were named. The gid correction leaves two live containers with the same
+    target and the same uid, the earlier of which cannot trace and whose agent
+    wrote its sshd config somewhere the corrected seat's did not; the earlier
+    one is also the one reached first, because ephemeral containers are listed
+    in the order they were appended. ``ssh-config`` asked with no ids at all and
+    got it, and emitted a stanza whose ``ProxyCommand`` named the wrong config
+    path (issue #117). :func:`superseded_seats` decides, from the seats alone,
+    so this holds on a machine that never saw the attach.
+
     >>> spec = {"spec": {"ephemeralContainers": [
     ...     {"name": "podbench-1", "securityContext": {"runAsUser": 1000}},
     ...     {"name": "podbench-2",
@@ -956,12 +966,16 @@ def running_seat(
     ...     {"name": "podbench-1", "state": {"running": {"startedAt": "t"}}},
     ...     {"name": "podbench-2", "state": {"running": {"startedAt": "t"}}}]}}
     >>> running_seat(spec).name
-    'podbench-1'
+    'podbench-2'
     >>> running_seat(spec, ids=(1000, 1000)).name
     'podbench-2'
     """
-    for seat in seats(pod_json, base=base):
+    present = seats(pod_json, base=base)
+    replaced = superseded_seats(present)
+    for seat in present:
         if not seat.running:
+            continue
+        if seat.name in replaced:
             continue
         if ids is not None and (seat.uid, seat.gid) != ids:
             continue
