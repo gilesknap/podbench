@@ -89,6 +89,14 @@ podbench shells out to `kubectl` deliberately, so it inherits your kubeconfig,
 your current context and any exec credential plugin. There is no second
 credential and no client library.
 
+A verb's `--timeout` and the bound on a kubectl call are different timers. The
+first bounds a polling wait — for a seat to start, or a dev pod to reach
+Running. The second bounds one `kubectl` invocation, at 30 s
+(`kubectl.DEFAULT_CALL_TIMEOUT`); kubectl is told to give up 5 s earlier so that
+its own message names the server rather than podbench's kill. Three calls are
+deliberately exempt: the exec that *is* your ssh session, the `code --remote`
+bootstraps, and the git clone under `hotfix`.
+
 (naming-the-pod)=
 ## Naming the pod
 
@@ -358,7 +366,10 @@ what that seat can actually do.
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
-│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
+│                                              that wait and nothing else: one kubectl call is     │
+│                                              bounded separately, at 30s                          │
+│                                              [default: 120.0]                                    │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
 │                                              implied when stdin is not a tty                     │
@@ -598,7 +609,10 @@ all, and two of these steps change it.
 │                                              [default: ~/.ssh/id_ed25519]                        │
 │ --ssh-user                  NAME             login name to put in the stanza                     │
 │ --host-alias                NAME             ssh Host name for the seat                          │
-│ --timeout                   SECONDS          seconds to wait for the seat [default: 120.0]       │
+│ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
+│                                              that wait and nothing else: one kubectl call is     │
+│                                              bounded separately, at 30s                          │
+│                                              [default: 120.0]                                    │
 │ --no-prompt                                  never ask which pod: an ambiguous or missing POD is │
 │                                              refused with the candidates instead. Already        │
 │                                              implied when stdin is not a tty                     │
@@ -842,7 +856,8 @@ burnt.
 │ --timeout             SECONDS    wait this long for a seat that is still starting before         │
 │                                  reporting. The default reports what is there now; pass the same │
 │                                  number `attach --timeout` needed on a cluster whose image pull  │
-│                                  is slow                                                         │
+│                                  is slow. It bounds that wait and nothing else: one kubectl call │
+│                                  is bounded separately, at 30s                                   │
 │                                  [default: 0.0]                                                  │
 │ --config-dir          DIR        where the generated ssh config and known_hosts live (default    │
 │                                  ~/.podbench)                                                    │
@@ -913,7 +928,11 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 │                                    ~/.podbench)                                                  │
 │ --host-alias            NAME       ssh Host name for the sidecar                                 │
 │ --delete                           tear the dev pod down                                         │
-│ --timeout               SECONDS    seconds to wait [default: 120.0]                              │
+│ --timeout               SECONDS    seconds to wait for the dev pod to reach Running. It bounds   │
+│                                    that wait and nothing else: it is `kubectl wait`'s own        │
+│                                    deadline, backed by a kill 15s later, and every other kubectl │
+│                                    call is bounded separately, at 30s                            │
+│                                    [default: 120.0]                                              │
 │ --dry-run                          print the authored pod instead of creating it                 │
 │ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
 │                                    with the candidates instead. Already implied when stdin is    │
@@ -1543,7 +1562,10 @@ the port.
 │ *  --port             PORT     the port it must serve [required]                                 │
 │    --workspace        DIR      workspace root [default: /workspace]                              │
 │    --dir              DIR      working directory (default: workspace)                            │
-│    --timeout          SECONDS  seconds to verify [default: 15.0]                                 │
+│    --timeout          SECONDS  seconds to wait for the command to bind its port before reporting │
+│                                that it did not. It bounds this process's own poll loop and       │
+│                                nothing else: no kubectl call is involved                         │
+│                                [default: 15.0]                                                   │
 │    --help                      Show this message and exit.                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -140,8 +140,8 @@ WARNING  podbench-1 is running but was not reused because
          system:serviceaccount:beamline:ci landed it: ...
 ```
 
-The `owner` row on the report and under every seat in `podbench list` says whose
-each one is. Two answers there are not names:
+The `owner` row says whose each seat is. On the attach report, two answers are
+not names:
 
 * **`unknown - this container was landed before seats recorded one`** — an older
   podbench landed it. It is still reconnected to, because refusing it would
@@ -151,6 +151,9 @@ each one is. Two answers there are not names:
   cannot create one. Seats landed from here stay anonymous, and podbench invents
   no local substitute: `$USER` is a fact about a workstation, not about a
   cluster.
+
+`status` and `list` compress both of those to
+`unknown - this seat records none`.
 
 ## Choosing the target container
 
@@ -193,13 +196,14 @@ rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
   full      refused  Pod Security Admission: must not include "SYS_PTRACE" in
                      securityContext.capabilities.add
-  degraded  landed   admitted by the API server and the kubelet
+  degraded  landed   running since 2026-08-18T09:01:33Z
 supports
   [ ] live attach (gdb -p <pid>)
       CAP_SYS_PTRACE is not in this container's effective set...
   [x] read-only inspect (/proc/<pid>/root, maps, environ)
       root, maps and environ readable
   [x] debug launched processes (podbench dbg --launch ./prog)
+  [ ] iterate (edit, relaunch, verify through the Service)
   [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
   [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
 ```
@@ -240,8 +244,8 @@ rung        degraded - uid 1000, gid 1000, CapEff 0000000000000000
 ladder
   full      refused  admission would take it and remove SYS_PTRACE from it,
                      landing a root seat with no capability: that reads three of
-                     the six probe paths where the rung below, at the target's
-                     own uid, reads all six (report 3.11). A dry run read that
+                     the six probe paths where the rung below, at uid 1000,
+                     reads all six (report 3.11). A dry run read that
                      back before a name was spent; `--max-rung degraded` says it
                      up front
   degraded  landed   running since 2026-08-18T09:01:33Z

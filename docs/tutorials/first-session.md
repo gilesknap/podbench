@@ -117,9 +117,10 @@ the spec podbench asked for:
 seat        podbench-demo/web-6c9d7f4b8b-hq2vn[podbench-1]  (new)
 target      web
 version     0.4.0b1, the same build as this launcher
+owner       kubernetes-admin
 rung        full - uid 0, gid 0, CapEff 00000000a80c25fb
 ladder
-  full      landed   admitted by the API server and the kubelet
+  full      landed   running since 2026-08-21T09:14:02Z
 supports
   [x] live attach (gdb -p <pid>)
   [x] read-only inspect (/proc/<pid>/root, maps, environ)
@@ -128,12 +129,14 @@ supports
   [ ] iterate (edit, relaunch, verify through the Service)
   [x] ssh seat (Remote-SSH: editor, shell, git, sftp)
   [x] exec seat (kubectl exec -- podbench capreport, pids, dbg)
-measured
+measured    --no-probe skips this block
   verdict     live attach available
   blocker     none
   node        kind-worker
   yama        1
   ids         seat 0:0, target 0:0
+  pause       none - PTRACE_SEIZE does not stop the tracee
+  memory      2986Mi free of 3Gi (86Mi in use)
 ```
 
 Four lines are worth learning to read:
@@ -156,6 +159,10 @@ Four lines are worth learning to read:
 * **`yama` and `node`** — both are per-node. Attach working on one pod and being
   denied on the next, in the same cluster, is expected: kernel flavours differ.
   podbench never caches a cluster-wide answer.
+* **`memory`** — the headroom in **this** pod, read with `kubectl top pod`. An
+  ample margin is a number and not a caution. Where there is no metrics API the
+  row reads `in use not measured (no metrics API here)`, which says
+  **unmeasured** and not *fine*.
 
 The indented line under a tick is the measurement the tick was taken from — here,
 which of the target's `/proc` paths actually opened. Read it rather than the box:
@@ -167,10 +174,11 @@ which of the target's `/proc` paths actually opened. Read it rather than the box
 The last lines of the attach output tell you the alias:
 
 ```
-ssh config written to ~/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
-add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+ssh config written to /home/you/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-hq2vn-1.conf
+add this to ~/.ssh/config once:  Include /home/you/.podbench/config.d/*.conf
 or let podbench check and add it:  podbench doctor --fix
-then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
+then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1   (or Remote-SSH: Connect to Host -> podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1)
+to debug in VS Code, run `podbench debug-config` in the seat (writes .vscode/launch.json)
 ```
 
 If you have not added the `Include` line yet, run `uvx podbench doctor --fix`
@@ -183,7 +191,7 @@ root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 container web: the processes in its PID namespace
 PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
 1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
-42   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
+42   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
 ```
 
 There is no listening socket in that pod, no port-forward and no pod IP

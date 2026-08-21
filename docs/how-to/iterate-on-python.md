@@ -117,9 +117,9 @@ authored differently:
 The line is printed when the pod comes up:
 
 ```
-  seat identity    : podbench-identity projected over /etc/passwd and
-                     /etc/group, so the sidecar runs as 1000:1000 (the app's
-                     own) with no SYS_PTRACE
+  identity    seat identity from podbench-identity, projected over
+              /etc/passwd and /etc/group, so the sidecar runs as
+              1000:1000 (the app's own) with no SYS_PTRACE
 ```
 
 This is also what makes a dev pod admissible in a namespace enforcing the

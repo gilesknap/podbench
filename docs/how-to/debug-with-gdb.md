@@ -156,12 +156,12 @@ Then ssh in with the alias it printed.
 ## 3. Find the process
 
 ```
-$ ssh podbench-podbench-gdb-victim
+$ ssh podbench-podbench-gdb-victim-1
 root@victim:~# podbench pids
 container victim: the processes in its PID namespace
 PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
 1    0    yes     S   3    ok      87d20e23a1b4   victim  /app/victim
-38   0    -       S   1    ok      7206c89bf0e1   sleep   sleep infinity
+38   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
 ```
 
 `podbench pids` is not `ps`. Under a shared PID namespace every process in the
