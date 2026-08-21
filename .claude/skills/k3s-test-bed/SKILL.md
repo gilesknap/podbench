@@ -298,6 +298,51 @@ CMD ["sleep", "infinity"]
 `$HOME` fails for real — five of them — which is the only cheap way to exercise what a
 laptop verb says about a seat that came up half-working.
 
+## The bed reproduces Diamond's LimitRange refusal exactly
+
+A `LimitRange` with `maxLimitRequestRatio: 10` over a 64Mi-request pod gives the
+identical message the namespace at Diamond gave — `provided ratio is
+96.000000` — so `--resize` behaviour can be developed here without waiting for a
+cluster session. The fix that satisfies it is raising the *request* alongside the
+limit; a Diamond pod resized 2026-08-21 landed at 6144Mi/615Mi = 9.99 against a
+cap of 10.
+
+## Two tests that go red on *your* machine and green in CI
+
+Neither is a flake, and both have cost a diagnosis already.
+
+**`test_the_host_it_came_from_is_the_tunnels_default_exit`** hard-codes 6443 but
+invokes the real `k8s/vpn-api-tunnel.sh`, which probes the machine's ports and
+picks the next free one above 6443. Any tunnel you have open takes 6443, the
+script answers 6445, and the assertion fails. CI has no tunnel, so it is green
+there. If you are working over the VPN tunnel, expect this one and do not chase
+it.
+
+**`tests/e2e/test_shadowed_exec_file.py` needs a collision that used to be
+luck.** #90 needs one absolute path to name a different file in each mount
+namespace, and the path carries the CPython *patch* version. The target is
+pinned (`fastcs-thorlabs-mff:0.2.0`, 3.11.15 frozen in); the seat is rebuilt
+every run with `uv sync --managed-python`, which resolves whatever exists that
+day. They agreed for months and stopped on 2026-08-21 — the same commit passed
+on its branch and failed on main eight minutes later.
+
+The collision is now **planted** rather than inherited (`shadowed_exe`), and the
+premise test stays fatal, because a fixture that quietly stops reproducing the
+defect leaves #90 with no guard at all. Two things that fixture had to get
+right, both learned the hard way:
+
+- **Plant before anything reads the target.** `gdb_exec_file` stages a copy only
+  where it *finds* a shadowing file, so a `--dry-run` taken first correctly
+  decides no staging is needed and prints a sequence that is unsafe by the time
+  anything replays it. That failed exactly one test of four while the three that
+  ran live all passed.
+- **Never overwrite an existing file at that path.** Where the seat already has
+  one it is the seat's own running interpreter, and `cp` onto a mapped
+  executable is `ETXTBSY` — succeeding would be worse than failing.
+
+The general shape is worth recognising elsewhere: **a precondition that depends
+on two independent version resolutions coinciding is not a guard.** Construct it.
+
 ## What the bed does not model
 
 Worth stating, because a green run here is not a green run at Diamond:

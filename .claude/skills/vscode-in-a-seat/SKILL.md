@@ -35,6 +35,41 @@ lifetime.
   `exitCode 137, reason OOMKilled`. `podbench status` says
   *"OOMKilled: name burnt for this pod's lifetime"*.
 
+## Memory is not the only budget — the unpack can evict the pod
+
+Measured at Diamond, 2026-08-21, on a production `blueapi`: `podbench vscode`
+landed a seat, gave a working terminal, then the kubelet evicted the **whole
+pod**, twice.
+
+```
+Warning  Evicted  Pod ephemeral local storage usage exceeds the total limit
+                  of containers 2Gi.
+```
+
+vscode-server's ~1215 MiB unpack lands on the **workload's ephemeral-storage**
+budget. It presents to the client as a transport fault, because the
+StatefulSet recreates the pod and an ephemeral container does not survive that:
+
+```
+error: unable to upgrade connection: container not found ("podbench-2")
+```
+
+- **`--resize` cannot reach it.** That is the memory lever; in-place resize
+  covers cpu/memory only, and an ephemeral container may not carry `resources`
+  at all. The remedy is a chart change made *before* the seat lands: raise
+  `resources.limits.ephemeral-storage` to cover the workload's own writable
+  layer plus ~1.3 GB. 2Gi is not enough for a pod that writes anything.
+- **An `emptyDir` `podbench-home` does not fix it.** Kubernetes counts local
+  emptyDir volumes against the pod's ephemeral-storage limit, so it moves the
+  weight off the *container's* writable layer and leaves it on the *pod's*
+  budget. Only a claim actually moves it.
+- Why one pod survives and another does not is the app's own writable layer,
+  not the limit — every pod in that namespace had the same 2Gi. Nothing measures
+  that headroom before the unpack.
+
+On a pod you cannot resize, `attach` plus the CLI (`podbench dbg`, `pids`) is
+the 13-23 MiB seat rather than the 1215 MiB one.
+
 ## A breakpoint on a probed pod is on a timer
 
 Pausing stops the app answering its probes. Two budgets, both
@@ -105,6 +140,51 @@ matched by id prefix, since the directory carries a version and a platform
 triple. Over ssh and not `kubectl exec`, because the home that matters is the
 one NSS gives the *login* user. A failed listing is reported as unverified, never
 as missing: sending someone to reinstall what is already there is its own bug.
+
+**And `code --remote … --install-extension` answers from the *laptop's* install
+list.** An extension held locally is reported "already installed", exit 0, and
+the seat is never contacted — with or without `--force`:
+
+```
+$ code --remote ssh-remote+<alias> --install-extension ms-python.python --force
+Extension 'ms-python.python' is already installed.      # ...on this machine
+```
+
+Measured at Diamond 2026-08-21, with no `ms-python*` path anywhere on the seat's
+filesystem. It fails worst for the people most likely to be here: anyone who
+debugs Python already has the Python extension locally. It is also why three
+pods looked like three different bugs — a cold seat where nothing landed, a seat
+where cpptools landed (not held locally) and CodeLLDB did not, and a reconnect
+where both were already there from an earlier run.
+
+The install has to be made where it must land, by **the seat's own server CLI**:
+
+```
+ssh <alias> '~/.vscode-server/cli/servers/Stable-<commit>/server/bin/code-server \
+   --install-extension <id>'
+```
+
+Two things decide whether that works, both measured:
+
+- **It must be the server the window is attached to.** A seat holds more than
+  one. An install through any other lands the extension where that window never
+  sees it — which is the out-of-band write the reload note below is about. The
+  running server's argv carries its own path (`ps -eo args=`, grep for
+  `cli/servers/*/server`); `~/.vscode-server/cli/servers/lru.json` is a plain
+  most-recent-first array and is the fallback before a window has started one.
+- **Through that server there is no reload.** It goes via the extension service
+  the window is connected to — the same path the "Install in SSH" button takes —
+  so the adapter is live immediately. The reload note applies to a write from
+  *outside* that server, not to this.
+
+The server does not exist until a window has bootstrapped it, so this can only
+run **after** the window opens — while `.vscode/settings.json` still cannot move
+after it, for the walk-OOM reason above. That ordering is the whole shape of the
+fix, not an implementation detail.
+
+**"X is unpacked in SSH" reports presence, not that this run installed it.**
+Right check, different question — and on a warm seat it launders "was already
+there" into "we did it", which is what hid the defect above for two more pods.
 
 ## `Program path … is missing or invalid` usually means neither
 
