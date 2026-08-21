@@ -148,7 +148,10 @@ class Registry:
         request.add_header("Accept", accept)
         if self._token and url.startswith("https://ghcr.io/v2/"):
             request.add_header("Authorization", f"Bearer {self._token}")
-        return json.load(self._opener(request))
+        # Closed rather than left to a finalizer: this walks a few hundred
+        # responses in one run, and an HTTP response holds a socket.
+        with self._opener(request) as response:
+            return json.load(response)
 
     def authenticate(self) -> None:
         """Take an anonymous pull token; it grants read on a public package only."""

@@ -16,6 +16,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
+from email.message import Message
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -78,7 +79,9 @@ class FakeRegistry:
             return self._json({"tags": self.tags})
         reference = url.rsplit("/manifests/", 1)[1]
         if reference in self.missing:
-            raise urllib.error.HTTPError(url, 404, "MANIFEST_UNKNOWN", {}, None)  # type: ignore[arg-type]
+            raise urllib.error.HTTPError(
+                url, 404, "MANIFEST_UNKNOWN", Message(), io.BytesIO(b"")
+            )
         return self._json(self.manifests.get(reference, LEAF))
 
     @staticmethod
@@ -148,8 +151,13 @@ def test_closure_refuses_to_skip_an_unreadable_child() -> None:
     """The whole point: a child that will not fetch must fail, never be ignored."""
     fake = FakeRegistry([], {"0.4.0": INDEX}, missing={"sha256:arm64"})
     registry = ghcr_audit.Registry("o/p", fake)
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(urllib.error.HTTPError) as caught:
         ghcr_audit.closure(registry, ["0.4.0"])
+    # `HTTPError` is itself a file-like response, and `pytest.raises` keeps it
+    # alive past the block. Left to a finalizer it emits a ResourceWarning on
+    # 3.14, which `filterwarnings = "error"` turns into a failure of whichever
+    # test happens to be running when the collector gets to it.
+    caught.value.close()
 
 
 def test_audit_flags_a_wheel_with_no_image() -> None:
