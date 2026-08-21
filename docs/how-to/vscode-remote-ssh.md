@@ -400,8 +400,8 @@ arguments. It kills the server after exactly five minutes idle.
   [Iterate on Python](iterate-on-python.md).
 * Terminals are ordinary ssh sessions with the container's `PATH`, so every
   in-pod verb is there as `podbench <verb>` — `podbench pids`, `podbench dbg`,
-  `podbench capreport`, `podbench dev-bootstrap`, `podbench run`, `podbench
-  stop`.
+  `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
+  `podbench run`, `podbench stop`.
 
 ## What the seat configures for you
 

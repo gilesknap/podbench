@@ -66,8 +66,8 @@ The in-pod verbs are spelled the same way from a terminal in the seat:
 
 ## Common options
 
-The four launcher verbs — `attach`, `ssh-config`, `status`, `list` — take these,
-and so does `doctor`:
+The five launcher verbs — `attach`, `vscode`, `ssh-config`, `status`, `list` —
+take these, and so does `doctor`:
 
 ```
 --namespace  -n  NAMESPACE  namespace (default: the kubeconfig context's own)
@@ -92,8 +92,8 @@ credential and no client library.
 (naming-the-pod)=
 ## Naming the pod
 
-`attach`, `ssh-config` and `status` take a `POD`, and none of them needs the
-whole name. Resolution is the same in all three:
+`attach`, `vscode`, `ssh-config` and `status` take a `POD`, and none of them
+needs the whole name. Resolution is the same in all four:
 
 | you type | what happens |
 |---|---|
@@ -611,8 +611,9 @@ all, and two of these steps change it.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-`POD` and every option `attach` takes mean the same thing here; only the four
-below are its own.
+`POD` and every option `attach` takes mean the same thing here; only the two
+below are its own. (`attach --print-config` is the one option `vscode` does
+*not* take — see below.)
 
 #### Sizing the pod
 
@@ -1637,7 +1638,7 @@ stream.
 |---|---|---|
 | `PODBENCH_IMAGE` | launcher | debug image to attach; `--image` overrides. Both override the default, which is `ghcr.io/gilesknap/podbench:` plus the launcher's own version (`main` for a dev build) |
 | `PODBENCH_CONFIG_DIR` | launcher, `dev` | where the ssh config and `known_hosts` go; `--config-dir` overrides. Default `~/.podbench` |
-| `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `run` | the target container's runtime ID, injected at attach time |
+| `PODBENCH_TARGET_CID` | `pids`, `dbg`, `capreport`, `debug-config`, `run` | the target container's runtime ID, injected at attach time |
 | `PODBENCH_TARGET` | `pids` | the target container's *name*, injected at attach time. What the listing is headed with |
 | `PODBENCH_POD_CONTAINERS` | `pids` | every container in the pod, comma-separated, injected at attach time. How the listing names the containers the seat is not in |
 | `PODBENCH_SSH_PUBKEY` | agent | authorized key, injected into the seat's spec by `attach` and by `dev` |
@@ -1646,6 +1647,9 @@ stream.
 | `PODBENCH_SSH_HOST_KEY_FILE` | agent | the same from a file. Default mount `/etc/podbench/ssh/ssh_host_ed25519_key` |
 | `DEBUGINFOD_URLS` | gdb, `dbg` | symbol server. The image sets `https://debuginfod.debian.net`; the seat drops it from ssh sessions when nothing answers there |
 | `DEBUGINFOD_TIMEOUT` | gdb, `dbg` | seconds gdb will wait on that server, per file. The image sets `2`; gdb's own default is 90 |
+| `PODBENCH_OWNER` | launcher, `list`, `status` | the cluster identity `kubectl auth whoami` named, stamped into the seat's spec so a reconnect reaches only your own seat (#113) |
+| `PODBENCH_HOST_NETWORK` | `debug-config` | carries `spec.hostNetwork` into the seat, because absent means *unknown* and a loopback debug port on such a pod is the node's (#87) |
+| `PODBENCH_NODE_NAME` | `capreport` | the node the report names, since Yama differs per node |
 
 sshd leaks none of its own environment to the commands it runs, so a variable
 set on the debug container reaches `kubectl exec` and a shell but not an ssh

@@ -201,7 +201,8 @@ the same answer on both sides. Two implementations would be two answers.
   exactly the thing that outlives the command.
 * In the pod: `podbench agent` is PID 1, and the same spelling reaches every
   other in-pod verb — `podbench pids`, `podbench dbg`, `podbench capreport`,
-  `podbench dev-bootstrap`, `podbench run`, `podbench stop`. One file,
+  `podbench debug-config`, `podbench dev-bootstrap`, `podbench run`,
+  `podbench stop`. One file,
   `/usr/local/bin/podbench`, is what puts them within reach of an ssh session
   that sources no profile — sshd leaks none of the image's environment, so the
   agent's generated config carries `PATH` (and `PODBENCH_TARGET_CID`, and the
@@ -269,7 +270,7 @@ worked yesterday" is explicable.
 | Resources | none possible — shares the workload's limits | its own requests and limits |
 | Storage | the container's writable layer, against the pod's ephemeral-storage budget | an `emptyDir` workspace (4 Gi); the chart's scratch PVC exists but the launcher cannot mount it yet |
 | Risk to the workload | real: OOM, eviction | none; the origin pod is untouched |
-| Debugging | attach to the live process, or read-only inspection | gdb-launch, debugpy, the relaunch loop |
+| Debugging | attach to the live process, read-only inspection, or debugpy where `podbench vscode` provisions it into the target | gdb-launch, debugpy, the relaunch loop |
 
 Hotfix mode — a PVC mounted over the app's venv so a fix survives restarts and
 reschedules — is the one mode that requires deploy-time cooperation, because

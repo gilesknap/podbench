@@ -49,8 +49,8 @@ dev pod
   the mode is unsafe for a {term}`singleton`.
 
 launcher
-  The half of podbench that runs on your machine — the `attach`, `dev`, `hotfix`,
-  `status`, `list` and `doctor` verbs. It shells out to {term}`kubectl` rather than
+  The half of podbench that runs on your machine — the `doctor`, `attach`,
+  `vscode`, `ssh-config`, `status`, `list`, `dev` and `hotfix` verbs. It shells out to {term}`kubectl` rather than
   linking a Kubernetes client library, so authentication, contexts and exec credential
   plugins are inherited rather than reimplemented.
 
@@ -81,8 +81,8 @@ launch-only
   processes.
 
 mode
-  One of the three ways in. **Observe** is the `attach` verb, **Iterate** is `dev`,
-  and **Hotfix** is `hotfix`. The design documents use the mode names and the CLI uses
+  One of the three ways in. **Observe** is the `attach` and `vscode` verbs,
+  **Iterate** is `dev`, and **Hotfix** is `hotfix`. The design documents use the mode names and the CLI uses
   the verbs; they refer to the same things.
 
 origin
@@ -321,9 +321,11 @@ ReplicaSet
 
 resize subresource
   `pods/resize` — the in-place change of a running container's resource limits,
-  `kubectl patch pod --subresource resize`. `attach --resize` uses it to make headroom
-  for the editor, opt-in and never fatal: the raised limit lives on the pod alone, so
-  a rollout, scale, image bump or eviction regenerates it away silently.
+  `kubectl patch pod --subresource resize`. `podbench vscode` uses it to make
+  headroom for the editor by default (`--no-resize` declines); `attach --resize`
+  exposes it for a number you choose yourself. Never fatal: the raised limit lives
+  on the pod alone, so a rollout, scale, image bump or eviction regenerates it away
+  silently.
 
 RWO
   ReadWriteOnce — a volume access mode allowing one node to mount the volume for
@@ -619,6 +621,14 @@ sshd
   The OpenSSH server. Podbench runs it per-connection from the {term}`ProxyCommand`,
   against a generated config file of its own rather than the image's, so the working
   configuration is a reviewable artifact and the distro's sshd is left alone.
+
+vscode
+  The laptop verb that lands an Observe-mode seat, sizes the pod against
+  {term}`vscode-server`'s measured footprint, provisions debugpy into the target
+  and opens the editor on the seat's home. Both mutations are **on by default** —
+  `--no-resize` and `--no-provision` decline them — which makes it the only verb
+  that changes a running workload without being asked for a number. See
+  {term}`resize subresource` and {term}`mode`.
 
 vscode-server
   The server half of {term}`Remote-SSH`, unpacked into the seat's home on first
