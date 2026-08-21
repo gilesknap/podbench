@@ -1,6 +1,6 @@
 ---
 name: k3s-test-bed
-description: The persistent single-node k3s box podbench is developed against, the edit-sync-run loop it imposes, and the six ways a run on it silently tests the wrong thing. Read before reproducing a field defect, running the e2e suite outside CI, or testing anything that needs a real kernel.
+description: The persistent single-node k3s box podbench is developed against, the edit-sync-run loop it imposes, and the seven ways a run on it silently tests the wrong thing. Read before reproducing a field defect, running the e2e suite outside CI, or testing anything that needs a real kernel.
 ---
 
 # The k3s test bed
@@ -65,7 +65,7 @@ ssh podbench-bed 'cd /root/podbench && KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
 Only the *launcher* half of podbench lives in `src/` and is picked up by a sync alone.
 The other half ships inside the image.
 
-## Six ways a run here silently tests the wrong thing
+## Seven ways a run here silently tests the wrong thing
 
 ### 1. A stale side-loaded image
 
@@ -221,6 +221,32 @@ prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY);    /* take Yama out — see 2 */
 With those two in place the credential matrix is clean: uid **and** gid matching succeeds,
 and a gid mismatch alone denies in either direction (measured 2026-08-17). Without them
 every case denies and the matrix reads as though the kernel ignores credentials entirely.
+
+### 7. A synced tree with a stale git HEAD
+
+**A build can be genuinely fresh while `podbench --version` inside the image reports the
+version of whatever the bed's own clone last had checked out.** The sync excludes `.git`,
+so setuptools-scm on the bed derives the version from the bed clone's stale HEAD, not from
+the files the tar just overwrote — and it does so silently, because the exclusion is
+otherwise exactly right (`.git` has no business travelling with source).
+
+Measured 2026-08-21 01:00: a freshly built image reported `0.2.0b3.dev4+g99a3312b1` — the
+tip of PR #86, the bed clone's stale HEAD — while every module inside that image was 36
+commits newer. This defeats the exact check `.claude/plans/attach-endgame.md` §7 tells you
+to run to prove freshness: on the bed, after a plain sync, `podbench --version` certifies a
+stale build as fresh. It is not the moving-tag trap in `tests/e2e/README.md` and this repo's
+own CLAUDE.md — that one serves a stale *image layer*; this one serves a fresh layer under a
+stale *version string*, so the two traps fail in opposite directions.
+
+Prove freshness with content, not the version string: md5 a module inside the image against
+the laptop's copy (`/app/.venv/lib/python3.11/site-packages/podbench/<module>.py` in the
+image), or grep the image for a symbol that cannot exist in the old tree. Tonight
+`STREAMED_SUBCOMMANDS` and `KubectlTimeoutError` both grepped 0 on the bed before the sync
+and non-zero inside the new image.
+
+Fix for the branch in front of you: `git fetch origin <branch> && git reset <sha>` on the
+bed, leaving the working tree untouched — the sync just wrote it. That repairs `--version`
+for that branch only; a later sync from a different branch reintroduces the mismatch.
 
 ## What the bed does not model
 
