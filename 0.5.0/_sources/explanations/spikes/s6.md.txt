@@ -1,0 +1,268 @@
+# S6 — Suspending an Argo-managed workload: server-side apply field ownership
+
+**Verdict:** the proposed mechanism WORKS, but only under a precondition that
+most real Applications do not meet — and the failure mode when they do not is
+silent and has the wrong blast radius. **Do not build on it without the
+pre-flight check in Finding 6.**
+
+**Date:** 2026-08-16 (cluster: k3s v1.34.6+k3s1, kubectl v1.36.3, Argo CD with
+20 live Applications)
+
+---
+
+## Why this was run
+
+`podbench dev` clones the target pod. For a workload that can only exist once —
+an EPICS IOC holding a single-connection device, or publishing PVs by name over
+UDP — a clone is a second copy and therefore a conflict, so iterate mode needs
+the origin *suspended* for the duration of the session.
+
+Scaling the owning workload to zero is the only mechanism that does this
+properly. SIGSTOPping the process leaves its device socket open and its UDP port
+bound, so the device still sees a live connection; the brief already says as much
+(design-brief.md line 74, "a stopped process still holds its listening socket").
+
+But `spec.replicas` is a git-managed field, so Argo self-heal scales it straight
+back. The routes considered:
+
+| route | why it was rejected or kept |
+|---|---|
+| `ignoreDifferences` on `/spec/replicas` | rejected by the user: their charts expose an `enabled` value that renders `replicas: 0/1`, so start/stop *is* a replicas change from git. Ignoring the field breaks the feature. |
+| suspend the Application's `syncPolicy.automated` for the session | rejected: their Applications are app-of-apps with a single root per beamline, so this suspends GitOps for every service on the beamline, and a parent would revert the edit anyway. |
+| `ignoreDifferences` with `managedFieldsManagers: [podbench]` | **the subject of this spike.** Ignores whatever podbench currently owns, so `enabled` keeps working whenever podbench is not holding the field. |
+| NetworkPolicy isolation instead of suspension | not tested. Depends on the CNI dropping *established* conntrack entries, without which the origin keeps its device connection and the whole idea is pointless. |
+
+---
+
+## What was tested
+
+Everything ran in namespace `podbench-spike-ssa`, since deleted. The target was a
+two-replica `pause` Deployment, so that "restore" and "API default" are
+distinguishable — with `replicas: 1` the most important finding below is
+invisible.
+
+| # | Question | Result |
+|---|----------|--------|
+| 1 | Who owns `spec.replicas` when Argo applies client-side? | `argocd-controller`, operation `Update` |
+| 2 | Can podbench claim it by SSA without forcing? | no — conflict error |
+| 3 | What does `--force-conflicts` claim against a CSA baseline? | **the entire spec**; `argocd-controller` erased — Finding 1 |
+| 4 | Does the `scale` subresource record podbench as owner? | **no owner at all** — Finding 2 |
+| 5 | Can kubectl issue an apply-patch without `kubectl apply`? | no — Finding 3 |
+| 6 | What does `--force-conflicts` claim against an SSA baseline? | `f:replicas` only. Clean — Finding 4 |
+| 7 | Does relinquishing restore the recorded replica count? | **no, resets to 1** — Finding 5 |
+| 8 | How is the live cluster's Argo actually configured? | Finding 6 |
+
+---
+
+## Findings
+
+### 1. Against a client-side-apply baseline, a partial SSA swallows the whole spec
+
+This is the finding that decides the design.
+
+```console
+$ kubectl apply -f target.yaml --field-manager=argocd-controller     # simulate Argo (CSA)
+$ kubectl apply --server-side --field-manager=podbench -f suspend.yaml
+error: Apply failed with 1 conflict: conflict with "argocd-controller" using apps/v1: .spec.replicas
+```
+
+So podbench must force. Forcing does far more than take the one field:
+
+```console
+$ kubectl apply --server-side --force-conflicts --field-manager=podbench -f suspend.yaml
+Warning: failed to re-apply configuration after performing Server-Side Apply migration.
+This is non-fatal and will be retried next time you apply. Error: Deployment.apps "target"
+is invalid: [spec.selector: Required value, spec.template.metadata.labels: Invalid value:
+null: `selector` does not match template `labels`, ...]
+deployment.apps/target serverside-applied
+```
+
+`suspend.yaml` contains nothing but the object identity and `spec.replicas: 0`.
+The resulting ownership:
+
+```
+before:  argocd-controller  Update  [progressDeadlineSeconds, replicas, revisionHistoryLimit,
+                                     selector, strategy, template]
+after:   podbench           Apply   [progressDeadlineSeconds, replicas, revisionHistoryLimit,
+                                     selector, strategy, template]
+```
+
+`argocd-controller` is not reduced — its managedFields entry is **gone entirely**.
+The cause is kubectl's CSA→SSA migration, which fires because the object carries
+`kubectl.kubernetes.io/last-applied-configuration` (still present afterwards, and
+Argo's client-side apply writes it). The migration hands the whole of the
+previous manager's ownership to the new one, and the partial manifest is why the
+re-apply half of the migration then fails.
+
+**Consequence:** an `ignoreDifferences` keyed on
+`managedFieldsManagers: [podbench]` would make Argo ignore the *entire Deployment
+spec* — image, template, strategy — for the duration of a debug session, not just
+the replica count. Nothing warns; the app still reports Synced.
+
+### 2. The `scale` subresource cannot carry the ignore
+
+The natural fit for podbench — it already uses `--subresource resize` for
+`attach --resize`, and `Kubectl.patch` supports a `subresource=` argument.
+
+```console
+$ kubectl patch deploy target2 --subresource=scale --type=merge \
+    --field-manager=podbench -p '{"spec":{"replicas":0}}'
+scale.autoscaling/target2 patched
+```
+
+The value changes correctly, and `f:replicas` is removed from
+`argocd-controller`'s entry — but **no `podbench` entry is created**. The field
+ends up owned by nobody:
+
+```
+argocd-controller  Update  [progressDeadlineSeconds, revisionHistoryLimit, selector,
+                            strategy, template]      # f:replicas gone
+k3s                Update  subresource=status
+```
+
+`managedFieldsManagers: [podbench]` therefore matches nothing and self-heal
+fires as usual. This route is dead.
+
+### 3. There is no clean apply-patch inside the dependency budget
+
+```console
+$ kubectl patch deploy target3 --type=apply ...
+error: --type must be one of [json merge strategic], not "apply"
+$ kubectl patch ... --force-conflicts
+error: unknown flag: --force-conflicts
+```
+
+`kubectl --raw` has no PATCH verb either. Under the one-runtime-dependency rule
+(no Kubernetes client library — CLAUDE.md), `kubectl apply --server-side` is the
+*only* way to claim a field by SSA, and it is exactly the command that carries
+Finding 1's migration behaviour. There is no way to ask for a narrow claim.
+
+### 4. Against a server-side-apply baseline it is surgical
+
+Repeating the experiment with the baseline written by
+`kubectl apply --server-side --field-manager=argocd-controller` — i.e. an
+Application with `ServerSideApply=true`:
+
+```
+before:  argocd-controller  Apply  [replicas, selector, template]
+after:   argocd-controller  Apply  [selector, template]
+         podbench           Apply  [replicas]
+```
+
+Exactly the intended result: podbench owns one field, Argo keeps the rest, and
+`ignoreDifferences` on `managedFieldsManagers: [podbench]` would scope precisely
+to the replica count.
+
+### 5. Relinquishing resets the count to 1, and Argo does not reclaim
+
+Handing the field back means applying without it. Starting from `replicas: 2`,
+suspended to `0`:
+
+```console
+$ kubectl apply --server-side --field-manager=podbench -f release.yaml   # identity only
+$ kubectl get deploy target4 -o jsonpath='{.spec.replicas}'
+1
+```
+
+Not 2. SSA removes the field when its sole owner stops claiming it, and the
+Deployment falls back to the **API default of 1**. Ownership afterwards:
+
+```
+argocd-controller  Apply  [selector, template]      # did NOT reclaim f:replicas
+```
+
+Two consequences:
+
+* teardown must restore the recorded count explicitly — a relinquish alone
+  silently scales a 2-replica workload down to 1;
+* podbench must not simply keep ownership instead, because then `replicas` stays
+  permanently ignored by Argo and the chart's `enabled` start/stop stops working
+  after anyone's first debug session.
+
+### 6. The live cluster's configuration, and the pre-flight it implies
+
+Read-only inspection of the Argo install this spike ran against:
+
+* `application.instanceLabelKey: argocd.argoproj.io/instance` — **label** tracking.
+* 20 Applications, **all 20** with `prune: true` and `selfHeal: true`.
+* **2 of 20** set `ServerSideApply=true` (`grafana-prometheus`, `supabase`).
+
+So the safe case of Finding 4 is the minority, and the whole-spec hijack of
+Finding 1 is what would happen to 18 of 20 workloads.
+
+The saving grace is that the two cases are **distinguishable from the object
+itself before writing anything**: an `argocd-controller` managedFields entry with
+operation `Update` is client-side apply and will be hijacked; operation `Apply`
+is server-side and is safe. That makes a three-way pre-flight possible:
+
+| observed | action |
+|---|---|
+| no Argo tracking label on the workload | scale freely, no ceremony |
+| Argo present, `Apply` operation, ignore configured | SSA claim, suspend, restore, relinquish |
+| Argo present, `Update` operation | **refuse**, and say why |
+
+### 7. Confirmed, incidentally: the dev pod is prunable
+
+Finding 6's label tracking plus universal `prune: true` confirms a hazard that
+was previously only reasoned about. `spec.dev_pod_spec` copies the origin's
+labels when `take_traffic` is set, and `CONTROLLER_LABELS` does not include
+`argocd.argoproj.io/instance`. The clone therefore carries Argo's tracking label,
+has no `ownerReferences`, and does not exist in git — which is precisely Argo's
+definition of a prunable extraneous resource. It would be deleted mid-session.
+
+The label is not a Service-selector label, so removing it from the clone costs
+nothing.
+
+---
+
+## What this rules out, and what survives
+
+**Ruled out:** the `scale` subresource (Finding 2), any narrow SSA claim against
+a client-side-applied object (Findings 1 and 3), and relinquish-as-restore
+(Finding 5).
+
+**Survives:** SSA field ownership plus `ignoreDifferences.managedFieldsManagers`,
+*conditional* on the target Application setting `ServerSideApply=true`, and on
+podbench performing the Finding 6 pre-flight and refusing rather than proceeding
+when it cannot see an SSA baseline.
+
+**Superseded by a simpler answer.** During review of these results the actual
+requirement dissolved: for a singleton, the mode that gives an inner loop without
+a second copy is Hotfix mode, whose venv-on-a-PVC makes the container restart the
+relaunch mechanism. Iterate mode remains the mode for workloads that tolerate a
+clone. **No suspension feature is therefore planned**, and this report exists to
+record why the obvious-looking route was not taken, and what it would cost if
+somebody revisits it.
+
+---
+
+## Still unproven
+
+The Kubernetes half is measured; the Argo half is not. Specifically:
+
+1. Whether `argocd-application-controller` honours
+   `ignoreDifferences.managedFieldsManagers` for a field owned by a foreign
+   manager, and genuinely suppresses self-heal rather than merely hiding the diff
+   in the UI.
+2. Whether Argo reclaims ownership of `f:replicas` on its next apply after
+   podbench relinquishes, or whether the field stays unowned indefinitely
+   (Finding 5 says it does not reclaim *passively*).
+3. How `RespectIgnoreDifferences=true` interacts with a manual or
+   parent-triggered sync while podbench holds the field.
+4. Whether NetworkPolicy isolation is a viable alternative — specifically
+   whether the CNI drops established conntrack entries when the policy lands.
+
+Testing 1–3 requires a real `Application` CR, which must live in the Argo
+controller's namespace and therefore outside a `podbench-*` scratch namespace.
+It was not done for that reason.
+
+---
+
+## Cleanup
+
+* Namespace `podbench-spike-ssa` — **deleted** (`kubectl delete ns`).
+* Nothing outside that namespace was created or modified. The Argo install,
+  its Applications and its ConfigMaps were read only; no `Application` CR was
+  created, and no existing workload was scaled, patched or annotated.
+* Local scratch YAML under the session scratchpad; nothing written to the repo
+  except this report.
