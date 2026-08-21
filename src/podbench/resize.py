@@ -316,8 +316,11 @@ def explain_claim_refusal(current: Mapping[str, Any], stderr: str) -> str:
     container, which still has one. The two can never compare equal, and the
     only error that comparison knows how to raise names cpu and memory. Every
     released Kubernetes does this — checked in ``pkg/apis/core/validation`` on
-    ``release-1.32`` through ``release-1.35``; ``master`` preserves ``Claims``
-    and so will 1.36.
+    ``release-1.32`` through ``release-1.36``. Only ``master`` preserves
+    ``Claims``; the fix (kubernetes/kubernetes@9a7d0e438, merged 2026-07-23)
+    **missed the 1.36 release** and is not in v1.36.0 or v1.36.3 — re-checked
+    against the tagged source on 2026-08-21, because the earlier note here said
+    1.36 would carry it and a user acting on that would upgrade for nothing.
 
     Measured at Diamond on 2026-08-18 on an IOC holding a claim for its usbip
     device: a strategic-merge patch, a JSON patch of the single memory limit and
