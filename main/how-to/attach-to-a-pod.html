@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.4.1.dev4+g0d2d3f3c1 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.4.1.dev5+g2aa619440 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d1ee984c"></script>
+    <script src="../_static/documentation_options.js?v=4cb004be"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1021,10 +1021,13 @@ the pod rather than stamped on the container: <code class="docutils literal notr
 a pod podbench cloned, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is a seat that mounts one of the workload’s own
 volumes in a pod carrying the hotfix annotation, and <code class="docutils literal notranslate"><span class="pre">attach</span></code> is everything
 else. Two consequences are worth knowing.</p>
-<p>A <code class="docutils literal notranslate"><span class="pre">dev</span></code> seat is an <strong>ordinary</strong> container, not an ephemeral one, so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> on a dev pod does not find it — it lands a second seat beside it and
-spends a container name for the pod’s lifetime. It says so, and does not refuse:
-the sidecar gives up <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code> along with the root it does not have, so a
-full-rung ephemeral seat beside it is occasionally what is wanted.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">dev</span></code> seat is an <strong>ordinary</strong> container, not an ephemeral one. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> on a dev pod reconnects to it rather than landing an ephemeral seat
+beside it: in a dev pod the workload container is idled and the application runs
+as a child of the sidecar, so a seat in that container would see nothing — and
+would spend a permanent name to see it. The reconnect says which mode the seat
+is, since that decides what a debugger attaches to. <code class="docutils literal notranslate"><span class="pre">--new</span></code> lands an
+Observe-mode seat anyway, which is worth the name where the sidecar is non-root
+and the cluster admits <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>.</p>
 <p>A seat in a hotfixed pod that mounts none of the workload’s volumes carries a
 <code class="docutils literal notranslate"><span class="pre">note</span></code> saying so. Nothing is broken — the seat works — but the application is
 running the venv on the claim while an editor or debugger in that seat resolves

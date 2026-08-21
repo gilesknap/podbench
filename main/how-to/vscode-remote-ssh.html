@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.4.1.dev4+g0d2d3f3c1 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.4.1.dev5+g2aa619440 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d1ee984c"></script>
+    <script src="../_static/documentation_options.js?v=4cb004be"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -677,7 +677,33 @@ the raise and keeps the warning. Read <a class="reference internal" href="attach
 what an in-place resize costs — chiefly that it lives on the pod and not on its
 controller, so the next rollout takes it away.</p>
 <p><strong>It provisions the target when the target says it needs it</strong> — see the next
-section.</p>
+section. With one exception: in a dev pod it provisions nothing and says so.
+Iterate mode launches the application <em>from</em> the seat, so debugpy is already
+where the launch configuration needs it and the workload container has been
+idled to <code class="docutils literal notranslate"><span class="pre">sleep</span></code> — injecting into that would succeed against <code class="docutils literal notranslate"><span class="pre">sleep</span></code> and report
+a debugger nobody can reach.</p>
+<p><strong>It uses the seat that is already there</strong>, whichever of the three modes made
+it. A pod you have already <code class="docutils literal notranslate"><span class="pre">attach</span></code>ed is reconnected to; a <strong>dev pod</strong> is
+reconnected to through its <code class="docutils literal notranslate"><span class="pre">podbench</span></code> sidecar rather than by landing an ephemeral
+seat beside it, which is what used to happen and cost a permanent container name
+for a strictly worse view — in a dev pod the application runs as a child of the
+sidecar, so a seat in the idled workload container sees nothing. The reconnect
+says which mode the seat is, because that decides what the debugger is looking
+at. <code class="docutils literal notranslate"><span class="pre">--new</span></code> still lands an Observe-mode seat, which is worth the name only where
+the sidecar is non-root and the cluster admits <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>.</p>
+<p><strong>It names the other two modes once</strong>, on the run that landed a seat where there
+was none, and asks nothing:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  other modes are their own verbs: `podbench hotfix init` for a venv on a
+  claim that survives restarts, `podbench dev` for a clone the application
+  relaunches from. Both change the workload in ways this verb was given no
+  arguments for, so neither is offered as a choice here.
+</pre></div>
+</div>
+<p>Said rather than asked, because with no seat in the pod there is nothing
+ambiguous to resolve: <code class="docutils literal notranslate"><span class="pre">attach</span></code> is the only one of the three this verb could
+carry out, and the other two answers would both have been <em>go and run a
+different command</em>. A reconnect does not print it — the mode was settled
+whenever the seat was landed, and the <code class="docutils literal notranslate"><span class="pre">KIND</span></code> column reports it.</p>
 <p>It needs <code class="docutils literal notranslate"><span class="pre">code</span></code> on your PATH — VS Code’s Command Palette has <em>Shell Command:
 Install ‘code’ command in PATH</em> — and the local <strong>Remote - SSH</strong> extension,
 without which <code class="docutils literal notranslate"><span class="pre">--remote</span></code> cannot resolve anything. It drives <code class="docutils literal notranslate"><span class="pre">code</span></code> only;
