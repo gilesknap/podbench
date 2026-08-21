@@ -116,6 +116,10 @@ commands = [
         "{env:VIRTUAL_ENV}/bin/python",
         "src",
         "tests",
+        # CI tooling rather than shipped code, so it is not under `src` - but it
+        # imports podbench and asserts a user-facing invariant, so it is held to
+        # the same strict typing as the code it is checking.
+        ".github/scripts",
         { replace = "posargs", default = [
         ], extend = true },
     ],

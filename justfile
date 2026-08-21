@@ -23,7 +23,7 @@ lint:
 
 # pyright, over the same paths CI checks.
 types:
-    uv run --no-sync pyright --pythonpath {{ justfile_directory() }}/.venv/bin/python src tests
+    uv run --no-sync pyright --pythonpath {{ justfile_directory() }}/.venv/bin/python src tests .github/scripts
 
 # The unit suite. Cluster-free and fast by design.
 test:
