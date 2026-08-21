@@ -70,11 +70,13 @@ from .kubectl import (
 from .launcher import (
     DEFAULT_CLIENT_DIR,
     DEFAULT_IDENTITY,
+    DEV_POD_SUFFIX,
     LauncherError,
     Session,
     SshSeat,
     client_dir,
     declared_volumes,
+    dev_pod_name,
     emit_ssh_config,
     forget_ssh_config,
     kubectl_for,
@@ -156,10 +158,6 @@ __all__ = [
     "validate_workspace_layout",
     "verify_listener",
 ]
-
-DEV_POD_SUFFIX = "-podbench"
-MAX_POD_NAME = 63
-"""RFC 1123 label limit; the API server rejects a longer pod name."""
 
 DEFAULT_WORKSPACE = spec.WORKSPACE_MOUNT_PATH
 STATE_DIR = ".podbench"
@@ -1114,22 +1112,6 @@ def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
         as_dict(as_dict(pod_json.get("metadata")).get("labels")).get(spec.DEVPOD_LABEL)
         == "true"
     )
-
-
-def dev_pod_name(origin: str, *, suffix: str = DEV_POD_SUFFIX) -> str:
-    """The dev pod's name, derived from its origin and idempotent.
-
-    Idempotent so that ``dev --delete`` accepts either the origin's name or the
-    dev pod's own without the user having to remember which they typed.
-
-    >>> dev_pod_name("demo")
-    'demo-podbench'
-    >>> dev_pod_name("demo-podbench")
-    'demo-podbench'
-    """
-    if origin.endswith(suffix):
-        return origin
-    return origin[: MAX_POD_NAME - len(suffix)].rstrip("-") + suffix
 
 
 def sole_container(pod_json: Mapping[str, Any]) -> str:

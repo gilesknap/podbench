@@ -32,7 +32,7 @@ from podbench.kubectl import (
     KubectlTimeoutError,
 )
 from podbench.launcher import (
-    DEV_POD_SIDECAR_WARNING,
+    DEV_SIDECAR_REUSED_NOTE,
     NO_TARGET_CONTAINER,
     UNKNOWN_SEAT_VERSION,
     UNMOUNTED_HOTFIX_NOTE,
@@ -43,6 +43,7 @@ from podbench.launcher import (
     all_seats,
     attach,
     capability_report_from_json,
+    choose_mode,
     container_names,
     current_namespace,
     default_host_alias,
@@ -6458,11 +6459,11 @@ def test_a_listing_is_silent_about_a_seat_that_shares_the_hotfix(
     assert "hotfixed" not in text
 
 
-def test_attach_on_a_dev_pod_says_the_sidecar_is_already_a_seat() -> None:
-    """A warning and not a refusal: the sidecar gives up SYS_PTRACE with the
-    root it does not have, so a full-rung ephemeral seat beside it is a real if
-    rare want. But it spends a container name for the pod's lifetime, and
-    nothing said so."""
+def test_attach_on_a_dev_pod_reconnects_to_the_sidecar() -> None:
+    """Rather than landing an ephemeral seat beside it. In a dev pod the
+    workload container is idled and the application runs as a child of the
+    sidecar, so the seat that would land there attaches to a container with
+    nothing in it - and spends a permanent name doing so."""
     cluster = FakeCluster(dev_pod())
 
     session = attach(
@@ -6473,5 +6474,156 @@ def test_attach_on_a_dev_pod_says_the_sidecar_is_already_a_seat() -> None:
         probe=False,
     )
 
+    assert session.seat.container == "podbench"
+    assert session.reused
     flowed = [" ".join(warning.split()) for warning in session.warnings]
-    assert " ".join(DEV_POD_SIDECAR_WARNING.format(seat="podbench").split()) in flowed
+    assert " ".join(DEV_SIDECAR_REUSED_NOTE.format(seat="podbench").split()) in flowed
+
+
+# -- vscode opens the seat that is already there (issue #141) ---------------
+
+
+def seated_pod() -> dict[str, Any]:
+    return pod_document(
+        uid=1000,
+        ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+        ephemeral_statuses=[running_status("podbench-1")],
+    )
+
+
+def test_a_pod_that_already_has_a_seat_is_never_asked_which_mode() -> None:
+    """The mode is decided and readable once a seat is there, so asking would be
+    asking the user to re-state a fact the cluster is holding."""
+    assert (
+        choose_mode(
+            seated_pod(),
+            namespace="demo",
+            pod="target",
+            ask=answers("2"),
+            interactive=True,
+        )
+        is None
+    )
+
+
+def test_an_empty_answer_means_attach() -> None:
+    """Unlike `choose_pod`, where an empty line cancels. Getting this one wrong
+    costs nothing the verb was not already going to do."""
+    assert (
+        choose_mode(
+            pod_document(uid=1000),
+            namespace="demo",
+            pod="target",
+            ask=answers(""),
+            interactive=True,
+        )
+        is None
+    )
+
+
+def test_choosing_dev_prints_the_verb_rather_than_creating_a_pod() -> None:
+    """`dev` creates a pod and can be asked to take the Service's traffic, which
+    is consent that lives in a verb the user typed (#45)."""
+    answer = choose_mode(
+        pod_document(uid=1000),
+        namespace="demo",
+        pod="api",
+        ask=answers("dev"),
+        interactive=True,
+    )
+
+    assert answer is not None
+    assert "podbench dev api -n demo" in answer
+    assert "podbench vscode api-podbench -n demo" in answer
+
+
+def test_choosing_hotfix_names_the_claim_the_seat_will_need() -> None:
+    answer = choose_mode(
+        pod_document(uid=1000),
+        namespace="demo",
+        pod="api",
+        ask=answers("3"),
+        interactive=True,
+    )
+
+    assert answer is not None
+    assert "podbench hotfix init api -n demo" in answer
+    assert "--new --mount CLAIM" in answer
+
+
+def test_an_unrecognised_answer_is_asked_again() -> None:
+    assert (
+        choose_mode(
+            pod_document(uid=1000),
+            namespace="demo",
+            pod="api",
+            ask=answers("banana", "1"),
+            interactive=True,
+        )
+        is None
+    )
+
+
+def test_a_non_interactive_run_lands_an_attach_seat_as_it_always_did() -> None:
+    """Every script and every `--no-prompt` run predates the question, so the
+    silence has to mean what it used to."""
+    assert (
+        choose_mode(
+            pod_document(uid=1000),
+            namespace="demo",
+            pod="api",
+            ask=answers("2"),
+            interactive=False,
+        )
+        is None
+    )
+    assert (
+        choose_mode(
+            pod_document(uid=1000),
+            namespace="demo",
+            pod="api",
+            prompt=False,
+            ask=answers("2"),
+            interactive=True,
+        )
+        is None
+    )
+
+
+def test_new_lands_an_ephemeral_seat_in_a_dev_pod_after_all() -> None:
+    """The preference for the sidecar is a preference, not a refusal: it gives
+    up SYS_PTRACE with the root it does not have, so an Observe-mode seat beside
+    it is worth a permanent name on a cluster that admits the capability."""
+    cluster = FakeCluster(dev_pod())
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "demo-podbench",
+        image="ghcr.io/gilesknap/podbench:test",
+        public_key=None,
+        force_new=True,
+        probe=False,
+    )
+
+    assert session.seat.container == "podbench-1"
+    assert not session.reused
+
+
+def test_reconnecting_to_a_sidecar_points_re_keying_at_the_dev_verb() -> None:
+    """`--new` re-keys an ephemeral seat by landing another one. A sidecar's
+    authorized_keys is written when the pod is authored, so the same advice
+    there sends the reader to land a seat that does not fix it."""
+    cluster = FakeCluster(dev_pod())
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "demo-podbench",
+        image="ghcr.io/gilesknap/podbench:test",
+        public_key="ssh-ed25519 AAAA test",
+        probe=False,
+    )
+
+    keying = [w for w in session.warnings if "authorized_keys" in w]
+    assert keying
+    assert all("podbench dev --identity" in warning for warning in keying)
+    assert not any("needs --new" in warning for warning in keying)

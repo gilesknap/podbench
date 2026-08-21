@@ -605,11 +605,14 @@ a pod podbench cloned, `hotfix` is a seat that mounts one of the workload's own
 volumes in a pod carrying the hotfix annotation, and `attach` is everything
 else. Two consequences are worth knowing.
 
-A `dev` seat is an **ordinary** container, not an ephemeral one, so `podbench
-attach` on a dev pod does not find it — it lands a second seat beside it and
-spends a container name for the pod's lifetime. It says so, and does not refuse:
-the sidecar gives up `SYS_PTRACE` along with the root it does not have, so a
-full-rung ephemeral seat beside it is occasionally what is wanted.
+A `dev` seat is an **ordinary** container, not an ephemeral one. `podbench
+attach` on a dev pod reconnects to it rather than landing an ephemeral seat
+beside it: in a dev pod the workload container is idled and the application runs
+as a child of the sidecar, so a seat in that container would see nothing — and
+would spend a permanent name to see it. The reconnect says which mode the seat
+is, since that decides what a debugger attaches to. `--new` lands an
+Observe-mode seat anyway, which is worth the name where the sidecar is non-root
+and the cluster admits `SYS_PTRACE`.
 
 A seat in a hotfixed pod that mounts none of the workload's volumes carries a
 `note` saying so. Nothing is broken — the seat works — but the application is

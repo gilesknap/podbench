@@ -171,7 +171,38 @@ what an in-place resize costs — chiefly that it lives on the pod and not on it
 controller, so the next rollout takes it away.
 
 **It provisions the target when the target says it needs it** — see the next
-section.
+section. With one exception: in a dev pod it provisions nothing and says so.
+Iterate mode launches the application *from* the seat, so debugpy is already
+where the launch configuration needs it and the workload container has been
+idled to `sleep` — injecting into that would succeed against `sleep` and report
+a debugger nobody can reach.
+
+**It uses the seat that is already there**, whichever of the three modes made
+it. A pod you have already `attach`ed is reconnected to; a **dev pod** is
+reconnected to through its `podbench` sidecar rather than by landing an ephemeral
+seat beside it, which is what used to happen and cost a permanent container name
+for a strictly worse view — in a dev pod the application runs as a child of the
+sidecar, so a seat in the idled workload container sees nothing. The reconnect
+says which mode the seat is, because that decides what the debugger is looking
+at. `--new` still lands an Observe-mode seat, which is worth the name only where
+the sidecar is non-root and the cluster admits `SYS_PTRACE`.
+
+**It asks which mode, when the pod has no seat at all**:
+
+```
+no podbench seat in demo/api-7f9. which mode?
+  1) attach   observe this pod; touches the workload not at all  [default]
+  2) dev      clone it; the application relaunches from the seat
+  3) hotfix   edit a venv on a claim, surviving restarts
+[number or name, empty for attach]
+```
+
+`attach` is the default and is carried out here. The other two are printed as
+the command to run and nothing is opened: `dev` creates a pod and can be asked
+to take the Service's traffic, and `hotfix` needs a claim the workload was
+deployed with — each a decision that belongs in a verb you typed rather than in
+an answer to a menu. `--no-prompt`, a closed stdin and any non-tty run all take
+the default, so a script behaves exactly as it did before the question existed.
 
 It needs `code` on your PATH — VS Code's Command Palette has *Shell Command:
 Install 'code' command in PATH* — and the local **Remote - SSH** extension,
