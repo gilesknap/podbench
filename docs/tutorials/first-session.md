@@ -190,10 +190,21 @@ now — it adds the line above any `Host *` block, which is where it has to be
 $ ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1
 root@web-6c9d7f4b8b-hq2vn:~# podbench pids
 container web: the processes in its PID namespace
-PID  UID  TARGET  ST  THR  PTRACE  CONTAINER      COMM    CMDLINE
-1    0    yes     S   1    ok      87d20e23a1b4   python  python -m http.server 8080
-42   0    -       S   1    ok      7206c89bf0e1   podbench  podbench agent
+    PID  UID  TARGET  ST  THR  PTRACE  CONTAINER     COMM      CMDLINE
+ >  1    0    yes     S   1    ok      87d20e23a1b4  python    python -m http.server 8080
+    42   0    -       S   1    ok      7206c89bf0e1  podbench  podbench agent
+> is the process `podbench dbg` attaches to with no `--pid`. 2 shown, 1 in the
+target container.
 ```
+
+`>` marks the pid `podbench dbg` picks on its own, so the usual case needs no
+argument at all. Rows outside the target container are dimmed — that second one
+is this seat's own agent — and `CMDLINE` is cut to the width the other columns
+leave, since one long argv would otherwise be wrapped by the terminal and put
+the next row's `PID` under this row's `PTRACE`. The cut takes the **middle**:
+on a pod whose processes are all one interpreter every cmdline opens
+`/app/.venv/bin/python …`, so the end is the only part that tells one row from
+the next. `podbench pids --json` has the untruncated form.
 
 There is no listening socket in that pod, no port-forward and no pod IP
 involved. ssh's `ProxyCommand` is a `kubectl exec` running `sshd -i -e` on the

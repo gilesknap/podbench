@@ -211,6 +211,78 @@ and a flatpak VS Code cannot put `code` on the host PATH at all.
 
 `podbench attach` is still there and unchanged, for a seat with no editor in it.
 
+### What it prints, and where the detail went
+
+Two blocks: a checklist of what it did, and a short list of what you might do
+next.
+
+```
+editor
+  [ok] ssh reaches the seat, so Remote-SSH will too
+  [ok] wrote settings.json, launch.json, extensions.json in /root/.vscode
+  [ok] installing ms-python.python, ms-python.debugpy in the seat; the first
+       bootstraps vscode-server, so this is a download (1215 MiB measured, on
+       the workload's ephemeral-storage budget in Observe mode)
+  [ok] ms-python.python, ms-python.debugpy unpacked in the seat
+  [warn] a window already connected to this seat needs Command Palette ->
+         Developer: Reload Window, or the debug adapter stays unregistered.
+  [ok] asked VS Code to open /root over Remote-SSH
+
+next
+  ssh config written to ~/.podbench/config.d/demo-api-5f6c9b7d8-qz4tn-1.conf
+  add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
+  or let podbench check and add it:  podbench doctor --fix
+  reconnect later with:  ssh podbench-demo-api-5f6c9b7d8-qz4tn-1
+  if the window says 'could not establish connection', the local VS Code has
+  no Remote-SSH extension (ms-vscode-remote.remote-ssh); ssh itself reached
+  the seat a moment ago with the same config.
+```
+
+`[ok]` is a step that happened, `[warn]` one that wants something from you, and
+`[FAIL]` one that did not happen at all. **Every step is one line**, and the
+mechanism behind each of them is on this page rather than in the terminal —
+this block used to say all of it inline, and the reliably-skipped part of a
+report is the part written as prose.
+
+Lines with no tick are the **seat's own stderr**, relayed exactly as it
+arrived. `debug-config` is the only thing that can see the target, so its
+account of what is missing *is* the diagnosis; it also carries the injection
+command, whose first line ends in a `\` that means nothing once anything
+follows it, which is why nothing on this side rewraps or reflows it.
+
+`next` is printed whether or not the editor step succeeded. A run that ends at
+"ssh does not reach the seat" still landed a seat, and `podbench dbg` and
+`podbench pids` reach it over `kubectl exec` regardless — so the alias, the
+`Include` and the stanza's path are exactly what that reader needs.
+
+### "unpacked in the seat" is a claim about the seat, not about `code`
+
+`code --remote ssh-remote+<alias> --install-extension` exits 0 for "installed",
+for "already installed" **and** for "never reached the remote" — and it answers
+from the *laptop's* install list, so an extension you hold locally is reported
+already installed and the seat is never contacted, with or without `--force`.
+Measured at Diamond on 2026-08-21, against a seat holding no matching path
+anywhere on its filesystem. It fails worst for the people most likely to be
+here: anyone who debugs Python already has the Python extension locally.
+
+So podbench asks the seat — `ls -1 ~/.vscode-server/extensions`, matched by id
+prefix, since the directory carries a version and a platform triple — and only
+then says `unpacked in the seat`. *Unpacked*, not *installed*, because the
+listing proves presence and not that this run put it there.
+
+Whatever is still missing is installed a second time through the **seat's own**
+`code-server`, which is the code path the "Install in SSH: `<alias>`" button
+takes; that one goes via the extension service the window is connected to, so
+the adapter is live with no reload. It can only run after the window has opened,
+because until then there is no server to install through.
+
+If a `[warn]` says an extension did not land, install it from the Extensions
+view of the remote window — and check the button reads **Install in SSH:
+`<alias>`**, never the plain one. A local install runs the debug adapter on your
+laptop, where none of the `/proc/<pid>/root` paths in `launch.json` exist, and
+the failure reads as a bad configuration (`program path is missing or invalid`)
+rather than as a wrong machine.
+
 ### A stock Python workload needs debugpy, and this is where it gets it
 
 `podbench vscode` does not compute the debug configuration itself: it asks the
