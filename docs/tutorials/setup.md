@@ -30,8 +30,10 @@ $ helm version --short
 $ ls ~/.ssh/id_ed25519 || ssh-keygen -t ed25519
 ```
 
-Or let podbench check them, along with everything else on this page, once you
-have `uv`: `uvx podbench doctor`. See *Check the machine*, below.
+Or let podbench check most of them once you have `uv`: `uvx podbench doctor`
+measures kubectl and its version, the context and namespace, the ssh client,
+both halves of your key, the ssh agent, the config directory and the `Include`,
+plus RBAC. It does not check `uv` or `helm`. See *Check the machine*, below.
 
 ## Run the launcher
 
@@ -107,7 +109,8 @@ $ uvx podbench doctor -n demo
 It checks `kubectl` and its version, the context and namespace in play, the ssh
 client and both halves of your key, the `Include` below, and — one
 `kubectl auth can-i` at a time — the RBAC each podbench feature needs, reported
-as `attach OK / iterate missing / resize missing`. It exits `0` only when
+per feature — `attach`, `iterate`, `resize` and `hotfix`, each as `[ok]`,
+`[warn]` or `[FAIL]`. Only `attach` can fail; the rest warn. It exits `0` only when
 nothing blocks an attach. See the
 [command-line reference](../reference/cli.md) for the full list.
 
@@ -121,11 +124,12 @@ once. `--fix` does it:
 $ uvx podbench doctor --fix
 ```
 
-That creates `~/.podbench/config.d` and adds one line at the **top** of
-`~/.ssh/config`:
+That creates `~/.podbench/config.d` and prepends a comment and the `Include`
+line at the **top** of `~/.ssh/config`, with the path expanded:
 
 ```
-Include ~/.podbench/config.d/*.conf
+# Added by podbench doctor --fix.
+Include /home/you/.podbench/config.d/*.conf
 ```
 
 At the top because the `Include` must come **before** any `Host *` block:
@@ -178,7 +182,11 @@ Read the whole list, with the reasoning for each, in
 | `pods/exec` | `create` | the ssh transport — this is the entire network story |
 | `pods` | `create`, `delete` | Iterate mode only |
 | `services` | `get`, `list`, `patch` | Iterate mode with `--take-traffic`/`--cutover` only |
-| `pods/resize` | `get`, `patch` | `attach --resize` only |
+| `pods/resize` | `get`, `patch` | `attach --resize`, and `podbench vscode` unless `--no-resize` |
+| `persistentvolumeclaims` | `get`, `list` | Iterate mode, optional scratch claim |
+| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | Hotfix mode |
+| `apps`: `deployments`, `statefulsets` | `patch` | Hotfix mode — writes the provenance annotations, and that same edit rolls the workload |
+| `pods` | `patch`, `delete` | Hotfix mode |
 
 `podbench doctor` asks the cluster this table one verb at a time and reports it
 per feature, so you find out before the attach rather than during it.

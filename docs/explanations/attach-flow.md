@@ -286,7 +286,7 @@ their own cluster reaches for. Measured at DLS, 2026-08-18.
 ```
 
 The RBAC that adds up to — `rbac.observe` in the chart — is `get`/`list`/`watch` on
-`pods`, `get`/`patch`/`update` on `pods/ephemeralcontainers` (`update` is the one that
+`pods` and `pods/log`, `get`/`patch`/`update` on `pods/ephemeralcontainers` (`update` is the one that
 matters: the container is added by PUTting the subresource), and `create` on
 `pods/exec`. `--resize` needs `get` and `patch` on `pods/resize` — kubectl reads the
 subresource before writing it — granted separately because it changes a running
