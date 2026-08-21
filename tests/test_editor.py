@@ -399,11 +399,20 @@ the *middle*: the last line points at the ones above it."""
 
 _SUCCESS = (
     "debug-config: python target, observe mode, x86_64\n"
-    "debug-config: nothing is listening on 127.0.0.1:5678 yet. Start the server "
-    "inside the app with:\n"
+    "debug-config: nothing is listening on 127.0.0.1:5678 yet, so the "
+    "configuration above connects to a closed port. `podbench debug-config "
+    "--provision` starts the server itself; by hand it is the command below:\n"
     "PYTHONPATH=/proc/1/root/opt/podbench-debugpy \\\n"
     "  /app/.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid 1\n"
 )
+"""A live *successful* run, trimmed. It names the flag, which is the whole
+point: the prerequisites are met and there is still nothing to connect to."""
+
+_NO_DEBUGPY_WANTED = (
+    "debug-config: c++ target, observe mode, x86_64\n"
+    "debug-config: emitting cppdbg for pid 1\n"
+)
+"""A run with nothing debugpy-shaped about it, which must never provision."""
 
 
 def test_the_whole_refusal_is_relayed_not_just_its_last_line() -> None:
@@ -474,13 +483,72 @@ def test_a_refusal_naming_the_flag_is_answered_rather_than_reported() -> None:
 
 
 def test_a_target_that_needs_nothing_is_provisioned_anyway_by_nobody() -> None:
-    """`IF_NEEDED` is not `ALWAYS`. A seat that authored a configuration asked
-    for no install, and spending one on it would mutate a workload for nothing."""
-    seat = FakeSeat()
+    """`IF_NEEDED` is not `ALWAYS`. A seat that asked for nothing gets nothing,
+    and spending an install on it would mutate a workload for no reason."""
+    seat = FakeSeat(debug_config_stderr=_NO_DEBUGPY_WANTED)
     notes = run_open(seat, provision=Provision.IF_NEEDED)
 
     assert not seat.provisioned
     assert not any(note.startswith("--provision") for note in notes)
+
+
+def test_a_configuration_pointing_at_a_closed_port_is_provisioned() -> None:
+    """The trigger is the seat naming the flag, not the seat exiting non-zero.
+
+    A Python workload that ships its own debugpy meets every prerequisite, so
+    `debug-config` exits 0 and emits a configuration - and nothing is listening
+    on the port it connects to until the injection runs. Keying the retry on
+    the exit code sent exactly that target to F5 with `ECONNREFUSED`, from the
+    one verb whose contract is a debuggable target. Measured on a Diamond IOC,
+    2026-08-21.
+    """
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert seat.provisioned
+    # Relayed, then answered, then run - the same order a refusal takes, since
+    # the seat's own account of what is missing is the diagnosis either way.
+    said = next(i for i, note in enumerate(notes) if "nothing is listening" in note)
+    answered = next(i for i, note in enumerate(notes) if "provisioning it now" in note)
+    ran = next(i for i, note in enumerate(notes) if note.startswith("--provision"))
+    assert said < answered < ran
+
+
+def test_a_closed_port_offers_the_flag_to_somebody_who_declined_it() -> None:
+    """`--no-provision` is the only way to `NEVER`, so the remedy is the flag to
+    drop. It has to be offered for this blocker too: the reader has just been
+    handed a launch.json and told, four lines up, that it connects to nothing."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    notes = run_open(seat, provision=Provision.NEVER)
+
+    assert not seat.provisioned
+    assert any("without `--no-provision`" in note for note in notes)
+
+
+def test_a_failed_install_keeps_the_configuration_the_first_run_authored() -> None:
+    """Nothing to lose while the trigger was a refusal - the first run had no
+    configurations by definition. Now it has good ones whose only fault is a
+    closed port, and the command to open that port by hand was relayed with
+    them. Dropping both on a failed install would make the retry a regression
+    for the case it was widened to serve."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS, provision_rc=2)
+    run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert seat.provisioned
+    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
+    assert document["configurations"] == [DEBUGPY_CONFIG]
+
+
+def test_the_retry_cannot_loop_however_loudly_it_names_the_flag() -> None:
+    """A provisioning run narrates with `--provision:` on every line, so the
+    string it is recognised by is in its own stderr by construction. The guard
+    is `not provision`, and it is the whole of the no-loop guarantee."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    run_open(seat, provision=Provision.IF_NEEDED)
+
+    runs = [call for call in seat.calls if "debug-config" in call]
+    assert len(runs) == 2
+    assert sum(PROVISION_FLAG in call for call in runs) == 1
 
 
 def test_a_refusal_for_any_other_reason_is_not_retried() -> None:
