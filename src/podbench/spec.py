@@ -467,6 +467,13 @@ def _rung_security_context(
             **_NOT_PRIVILEGED,
         }
 
+    # This is where "admitted under the restricted Pod Security Standard"
+    # belongs, and the only place it is true: `runAsNonRoot` plus `drop: [ALL]`
+    # is what restricted asks for, and both rungs below full are *authored* to
+    # satisfy it. It used to be part of `Rung.DEGRADED`'s own docstring, where
+    # it described the wrong thing - a rung labels what a seat can do, and a
+    # root seat matching a root target measures as degraded having been
+    # admitted under nothing (issue #94).
     restricted: dict[str, Any] = {
         "capabilities": {"drop": ["ALL"]},
         "runAsNonRoot": True,

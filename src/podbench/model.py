@@ -716,8 +716,17 @@ class Rung(enum.Enum):
     """root plus CAP_SYS_PTRACE. Live attach to the workload."""
 
     DEGRADED = "degraded"
-    """The target's own UID, no added capabilities, everything dropped. Admitted
-    under the restricted Pod Security Standard."""
+    """The seat's uid matches the target's, with no added capabilities.
+
+    What the seat *can do*, not what admitted it. The credential match is the
+    whole of the rung — it is what ``__ptrace_may_access()`` checks and what
+    buys all six ``PTRACE_MODE_READ`` paths — and the kernel applies it at uid
+    0 exactly as it does at uid 1000. The sentence this used to end with,
+    "admitted under the restricted Pod Security Standard", is a fact about the
+    *authored* non-root context and now lives with the authoring: see
+    ``podbench.spec._rung_security_context``. A root seat against a root target
+    is this rung and could never have been admitted under restricted, which is
+    how one seat came to be labelled three different ways (issue #94)."""
 
     SEAT = "seat"
     """Whatever the cluster will admit. Editor, shell and git only."""
@@ -757,6 +766,20 @@ def measured_rung(
     >>> measured_rung(65532, sys_ptrace=False, target_uid=1000).name
     'SEAT'
 
+    The match is tested as a match and not as a truthy uid. Root matching root
+    is the commonest shape there is on a cluster that pins no ``runAsUser``,
+    and reading uid 0 as "nothing pinned" put every argus seat one rung below
+    what it measurably was, while the same seat read all six ``/proc`` paths
+    and ran gdb to a symbolised backtrace (issue #94, 2026-08-19):
+
+    >>> measured_rung(0, sys_ptrace=False, target_uid=0).name
+    'DEGRADED'
+
+    An unknown target uid is not a match, however: nothing was compared.
+
+    >>> measured_rung(0, sys_ptrace=False, target_uid=None).name
+    'SEAT'
+
     ``None`` means the seat could not be read at all, which is not a rung and
     must not be reported as one — the caller falls back to naming what was
     asked for, and says so.
@@ -768,7 +791,7 @@ def measured_rung(
         return None
     if sys_ptrace:
         return Rung.FULL
-    if uid and uid == target_uid:
+    if target_uid is not None and uid == target_uid:
         return Rung.DEGRADED
     return Rung.SEAT
 

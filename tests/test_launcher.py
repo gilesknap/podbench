@@ -2285,6 +2285,62 @@ def stripped_root_seat() -> FakeCluster:
     )
 
 
+def argus_shaped_pod() -> FakeCluster:
+    """A root seat beside a root target, on a pod that pins no uid at all.
+
+    argus (`hgv27681`), where no workload sets ``runAsUser`` and every target
+    runs as root. The seat landed at the full rung and a mutating policy took
+    ``capabilities.add`` off it, so the spec reads ``runAsUser: 0`` and nothing
+    added - and the seat measurably reads all six ``/proc`` paths and runs gdb
+    to a symbolised backtrace, because its uid matches the target's.
+    """
+    return FakeCluster(
+        pod_document(
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 0}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        login_user="root",
+        capreport=capreport_payload(
+            self_uid=0, self_gid=0, target_uid=0, target_gid=0, cap_sys_ptrace=False
+        ),
+    )
+
+
+def test_a_root_seat_beside_a_root_target_measures_as_degraded() -> None:
+    """Issue #94's first cause: ``uid and uid == target_uid`` read uid 0 as
+    falsy, so the one credential match the kernel honours everywhere - root
+    tracing root - fell through to the rung that claims no ``/proc`` access at
+    all. On argus that is every pod."""
+    session = attach(talking_to(argus_shaped_pod()), "target")
+
+    assert session.rung is Rung.DEGRADED
+
+
+def test_one_seat_carries_one_label_on_a_reconnect() -> None:
+    """The whole of #94's defect: the same container read ``full`` in the attach
+    header, ``degraded`` on the reconnect line and ``degraded`` in the RUNG
+    column. The header and the ladder line are both here, and they are the same
+    reading of the same seat - the *measured* one, since the ladder did not run
+    and its rung was ``rung_of_spec``'s answer about a securityContext."""
+    session = attach(talking_to(argus_shaped_pod()), "target")
+
+    assert session.reused
+    assert len(session.steps) == 1
+    assert session.steps[0].rung is session.rung is Rung.DEGRADED
+
+
+def test_a_first_attach_keeps_the_rungs_the_walk_submitted() -> None:
+    """The relabelling is a reconnect's, and only a reconnect's. A walk's steps
+    are what admission was asked for and what it said, which is a different
+    question from what the seat turned out to be - and it is the only record of
+    a refusal, whose rung never landed and can never have been measured."""
+    cluster = FakeCluster(pod_document(uid=1000), psa_denies_ptrace=True)
+    session = attach(talking_to(cluster), "target")
+
+    assert [step.rung for step in session.steps] == [Rung.FULL, Rung.DEGRADED]
+    assert [step.admitted for step in session.steps] == [False, True]
+
+
 def test_a_root_seat_read_back_as_degraded_keeps_the_root_sshd_config(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

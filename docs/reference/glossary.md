@@ -104,6 +104,13 @@ rung
   indistinguishable from the degraded rung, and a stored spec carrying thirteen
   capabilities can belong to a container with none effective.
 
+  A *measured* degraded rung is the credential match and nothing else: the seat's
+  uid equals the target's, with no capability effective. That includes a root seat
+  beside a root target, which no {term}`PSS` *restricted* namespace would have
+  admitted — the label says what the seat can do, not what let it in. The
+  authored contexts are the other half of the story and are described under
+  {term}`PSS`.
+
   A rung is still not a verdict. What a seat can *do* is measured by
   {term}`capreport`, and `status` reports that measurement — or `not probed`,
   never the rung — beside each seat it lists.
@@ -281,7 +288,10 @@ Pod Security Standards
   *Privileged* is unrestricted; *baseline* blocks known escalations; *restricted*
   additionally requires non-root, `drop: ["ALL"]`, `allowPrivilegeEscalation: false`
   and a `RuntimeDefault` seccomp profile. Podbench's degraded and seat
-  {term}`rung`s are authored to be admissible under *restricted*.
+  {term}`rung`s are authored to be admissible under *restricted*. That is a fact
+  about the context podbench writes, not about the seat that lands: a *measured*
+  degraded rung is a uid match with no capability, and a root seat matching a
+  root target wears it having been admitted under nothing of the kind.
 
 readiness probe
   A periodic check the {term}`kubelet` uses to decide whether a pod should receive

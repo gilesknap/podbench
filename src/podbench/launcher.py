@@ -1708,6 +1708,7 @@ def attach(
         credentials=credentials,
         rung=_measured_or_asked(session.rung, credentials, target_uid=wanted_uid),
     )
+    session = replace(session, steps=_relabel_reconnect(session))
 
     # Before the OOM warning, because it is about which *code* is running and
     # every other line in the report is only true of the version that is.
@@ -1761,6 +1762,21 @@ def attach(
         report, probe_warnings = run_capreport(kubectl, session.seat)
         session = replace(session, report=report)
         warnings.extend(probe_warnings)
+        # The target's uid as the seat *measured* it, in place of the manifest's.
+        # The rung below full turns on whether the seat's uid matches the
+        # target's, and a manifest that pins no `runAsUser` - which is every pod
+        # on argus - leaves `wanted_uid` None, so a root seat beside a root
+        # target was named `seat` here while the seat's own start-up report,
+        # which reads the target's `/proc/<pid>/status`, makes it `degraded`.
+        # One seat, one label (issue #94).
+        if report is not None and report.target_uid is not None:
+            session = replace(
+                session,
+                rung=_measured_or_asked(
+                    session.rung, credentials, target_uid=report.target_uid
+                ),
+            )
+            session = replace(session, steps=_relabel_reconnect(session))
         correction = (
             id_correction(report, pinned_uid=target_uid, pinned_gid=target_gid)
             if correct_ids
@@ -2451,6 +2467,25 @@ def _measured_or_asked(
         )
         or asked
     )
+
+
+def _relabel_reconnect(session: Session) -> tuple[LadderStep, ...]:
+    """A reconnect's one ladder line, carrying the rung that was measured.
+
+    The ladder says what the walk *asked* admission for, and on a reconnect the
+    walk did not run: the single step is synthesised from the container that
+    was found, so its rung was :func:`rung_of_spec`'s reading of a
+    securityContext. That is the third of the three labels one seat wore in
+    issue #94 - the header said one thing, this line said another, and neither
+    was wrong about the question it was answering. A reconnect has only one
+    question, so it gets one answer.
+
+    A first attach is left alone: its steps are refusals and a landing, and the
+    rung each names is the rung that was submitted.
+    """
+    if not session.reused or len(session.steps) != 1:
+        return session.steps
+    return (replace(session.steps[0], rung=session.rung),)
 
 
 def run_capreport(
