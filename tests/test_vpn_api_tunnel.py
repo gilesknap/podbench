@@ -137,6 +137,14 @@ def test_the_host_it_came_from_is_the_tunnels_default_exit(tmp_path: Path) -> No
         "you@ws001.example.ac.uk:beamline.kubeconfig",
         "--out",
         str(tmp_path / "o.kubeconfig"),
+        # Pinned, as every other test here pins it. The default is 6443 *or the
+        # next free port above it*, which the script decides by connecting to
+        # 127.0.0.1 - so leaving it out made this assertion a reading of
+        # whatever the machine running the suite happens to have bound. It
+        # passes on a CI runner and fails in a devcontainer with a local
+        # apiserver on 6443, which is the worst way round to find out.
+        "--local-port",
+        "6443",
         env=env,
     )
 
