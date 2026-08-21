@@ -24,6 +24,8 @@ escaped on the way in.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 
 from rich.console import Console
 from rich.text import Text
@@ -32,10 +34,14 @@ __all__ = [
     "MAX_WIDTH",
     "MIN_WIDTH",
     "WARNING_LEAD",
+    "Column",
+    "Row",
     "console",
     "emit",
     "paragraph",
     "rule",
+    "table",
+    "table_width",
     "wrap",
     "wrap_width",
 ]
@@ -290,17 +296,220 @@ def rule(title: str = "", *, char: str = "=") -> str:
     return f" {title} ".center(width, char) if title else char * width
 
 
-def emit(text: str, *, stderr: bool = False) -> None:
+_CELL_GAP = "  "
+"""What separates one cell from the next.
+
+Two spaces, which is the same two spaces :data:`_LABEL` and
+:data:`_COLUMN_WORD` read a column by. A table built here is styled from the
+data it was built from rather than by sniffing its own rendering, but it still
+travels through the same reports, gets quoted back and pasted into issues — so
+it has to *look* like every other row podbench prints, or the one vocabulary
+this module exists to keep becomes two.
+"""
+
+_ELLIPSIS = "…"
+"""What marks a cell that did not fit. One column wide, unlike ``...``, which
+matters when the budget it is spent from is the last few columns of the window."""
+
+_FILL_FLOOR = 12
+"""Columns a filling cell keeps however narrow the window.
+
+Below this the truncation says nothing at all — ``/usr/bin/pyt…`` names no
+process — so a very narrow terminal overruns instead. A row that ran off the
+edge can still be read by widening the window; one truncated to nothing cannot
+be read at all.
+"""
+
+
+@dataclass(frozen=True)
+class Column:
+    """One column of a :func:`table`, and how its cells are coloured."""
+
+    heading: str
+    """What is printed above the column. Capitals by convention, which is what
+    :data:`_COLUMN_WORD` already draws in bold."""
+
+    verdicts: Mapping[str, str] = field(default_factory=dict[str, str])
+    """Cell value → style, for the values in this column that are verdicts.
+
+    Per column rather than by the global :data:`_VERDICTS` lookup, because the
+    same word is a verdict in one column and data in another: ``ok`` under
+    ``PTRACE`` is a measurement that succeeded, and under a hypothetical
+    ``COMM`` it would be the name of somebody's binary. A value not listed is
+    left uncoloured, for :data:`_VERDICTS`' reason — a token this column has
+    not been taught must not borrow the authority of one it has.
+    """
+
+    fill: bool = False
+    """Whether this column absorbs the width the others left, and is cut to it.
+
+    At most one column should set it. That column is the one whose content has
+    no bound — a cmdline is as long as somebody's argv — and letting it overrun
+    is what breaks the *rows below it*, because the terminal's own wrap puts
+    their first cell under this one's third. Truncating one cell costs the tail
+    of one line; not truncating it costs the alignment of the whole table.
+    """
+
+
+@dataclass(frozen=True)
+class Row:
+    """One row of a :func:`table`."""
+
+    cells: Sequence[str]
+    """As many as there are columns. Rendered in order, padded to the column."""
+
+    style: str | None = None
+    """Applied to the whole row before any cell verdict is, so the two layer
+    rather than compete: ``dim`` on a row still lets a red ``DENIED`` in it
+    read as red. Used to separate rows that answer the reader's question from
+    rows that are merely also true — which is a distinction a column cannot
+    make, since it is about the row as a whole."""
+
+
+def table_width() -> int:
+    """Columns a table may fill — the window's, not :func:`wrap_width`'s.
+
+    Deliberately not the prose width. :data:`MAX_WIDTH` caps a paragraph at
+    ninety-six because past that the eye loses the start of the next line, and
+    that is a fact about *reading a sentence*. A table is not read that way: it
+    is scanned down a column and across a row that is already broken into
+    labelled cells, so a wide window buys it real information — the tail of a
+    cmdline — rather than a longer journey back to the left margin.
+
+    One column is left rather than :data:`_GUTTER`: what ends at this margin is
+    a cell that was cut on purpose and says so with :data:`_ELLIPSIS`, so the
+    "text that ends at the edge reads as text that was cut off" argument is not
+    an argument against it here. It is the intended reading.
+    """
+    return max(MIN_WIDTH, console().width - 1)
+
+
+def table(
+    columns: Sequence[Column],
+    rows: Sequence[Row],
+    *,
+    indent: str = "",
+    width: int | None = None,
+) -> list[Text]:
+    """Lay ``rows`` out under ``columns``, styled from the data they came from.
+
+    Returned as :class:`~rich.text.Text` rather than as strings for :func:`emit`
+    to sniff, and that is the whole reason this function exists. The line rules
+    in this module (:data:`_LABEL`, :data:`_SHOUT`, :data:`_COLUMN_WORD`) infer
+    meaning from a rendered line's *shape*, which is the only thing available
+    when a report is authored as prose by thirty different callers. A dense
+    table is the case they misread — every pid reads as a section heading, and
+    every single-letter process state reads as a column heading — and widening
+    them to cope would put every ``doctor`` and ``attach`` row at risk for one
+    caller's benefit. A table has its data in hand, so it styles from that and
+    is never sniffed.
+
+    >>> rendered = table(
+    ...     [Column("PID"), Column("ST", {"Z": "yellow"}), Column("CMD", fill=True)],
+    ...     [
+    ...         Row(["1", "S", "/sbin/init"]),
+    ...         Row(["7", "Z", "python3 -u app.py"], style="dim"),
+    ...     ],
+    ...     width=34,
+    ... )
+    >>> for line in rendered:
+    ...     print(line.plain)
+    PID  ST  CMD
+    1    S   /sbin/init
+    7    Z   python3 -u app.py
+
+    The filling column is cut to what is left, so one long argv cannot unalign
+    the rows under it:
+
+    >>> for line in table(
+    ...     [Column("PID"), Column("CMD", fill=True)],
+    ...     [Row(["1", "/usr/bin/python3 -u /app/server.py --port 8080"])],
+    ...     width=24,
+    ... ):
+    ...     print(line.plain)
+    PID  CMD
+    1    /usr/bin/python3 -…
+    """
+    limit = table_width() if width is None else width
+    grid = [[*(column.heading for column in columns)], *(list(r.cells) for r in rows)]
+    widths = [max(len(row[index]) for row in grid) for index in range(len(columns))]
+    # A column nothing filled in is not a narrow column, it is not a column:
+    # a marker column on a listing that marked nothing would otherwise indent
+    # the whole table by a gap that leads to an empty cell.
+    live = [index for index, width_ in enumerate(widths) if width_]
+    fills = [index for index in live if columns[index].fill]
+    if fills:
+        index = fills[0]
+        spent = sum(widths[i] for i in live if i != index)
+        gaps = len(_CELL_GAP) * (len(live) - 1) + len(indent)
+        widths[index] = max(_FILL_FLOOR, limit - spent - gaps)
+        for row in grid:
+            if len(row[index]) > widths[index]:
+                row[index] = row[index][: widths[index] - 1] + _ELLIPSIS
+    columns = [columns[index] for index in live]
+    widths = [widths[index] for index in live]
+    grid = [[row[index] for index in live] for row in grid]
+    styles = [None, *(row.style for row in rows)]
+    return [
+        _styled_row(cells, columns, widths, indent=indent, row_style=style, head=first)
+        for first, (cells, style) in enumerate(zip(grid, styles, strict=True))
+    ]
+
+
+def _styled_row(
+    cells: Sequence[str],
+    columns: Sequence[Column],
+    widths: Sequence[int],
+    *,
+    indent: str,
+    row_style: str | None,
+    head: int,
+) -> Text:
+    """One row of a :func:`table`, with every span it earns already applied."""
+    line = indent
+    spans: list[tuple[int, int, str]] = []
+    for index, (cell, column, width) in enumerate(
+        zip(cells, columns, widths, strict=True)
+    ):
+        if index:
+            line += _CELL_GAP
+        start = len(line)
+        line += cell.ljust(width)
+        if not cell:
+            continue
+        # The heading row shouts, which is what every other report in podbench
+        # does with a column heading; a body cell is coloured only where this
+        # column has been taught what the value means.
+        style = "bold" if head == 0 else column.verdicts.get(cell)
+        if style is not None:
+            spans.append((start, start + len(cell), style))
+    # Trailing padding is not content: a row whose last cells are empty would
+    # otherwise carry the alignment of a table nobody can see to the clipboard.
+    styled = Text(line.rstrip())
+    if row_style is not None:
+        styled.stylize(row_style)
+    for start, end, style in spans:
+        if start < len(styled):
+            styled.stylize(style, start, min(end, len(styled)))
+    return styled
+
+
+def emit(text: str | Iterable[Text], *, stderr: bool = False) -> None:
     """Print an already-wrapped report, colouring the leaders in it.
 
     Line by line, because that is the unit a style applies to and because
     ``soft_wrap`` then guarantees rich re-wraps none of it: the wrapping was
     done by the caller against :func:`wrap_width`, with hanging indents rich
     knows nothing about.
+
+    An iterable of :class:`~rich.text.Text` is printed as it arrives, with none
+    of the line rules applied — that is what :func:`table` returns, and a line
+    that already knows what its spans mean must not have them guessed at again.
     """
     out = console(stderr=stderr)
-    for line in text.split("\n"):
-        out.print(_styled(line))
+    lines = text.split("\n") if isinstance(text, str) else text
+    for line in lines:
+        out.print(_styled(line) if isinstance(line, str) else line)
 
 
 def _styled(line: str) -> Text:

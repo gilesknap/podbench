@@ -50,8 +50,10 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.text import Text
 
 from .cli import new_app, require_subcommand, run
+from .console import Column, Row, emit, paragraph, table
 from .elf import read_elf
 from .execfile import gdb_exec_file
 from .model import (
@@ -91,12 +93,14 @@ __all__ = [
     "attach_blocked_message",
     "attach_commands",
     "command_file_text",
+    "default_pid",
     "exec_gdb",
     "format_process_table",
     "listing_heading",
     "gdb_argv",
     "launch_commands",
     "main",
+    "picked_note",
     "pids_payload",
     "read_exe",
     "resolve_target_pid",
@@ -591,29 +595,64 @@ def _launch_alternative(report: CapabilityReport) -> str:
     )
 
 
-_HEADERS = (
-    "PID",
-    "UID",
-    "TARGET",
-    "ST",
-    "THR",
-    "PTRACE",
-    "CONTAINER",
-    "COMM",
-    "CMDLINE",
+PICKED = ">"
+"""What marks the row :func:`resolve_target_pids` would choose on its own.
+
+The listing exists because a note told the reader to "run `podbench pids` to
+choose another", and it showed every input to that choice while never showing
+its *output* — so the one question a reader actually arrives with, which pid do
+I type, was the one thing the table did not answer. The mark is a column rather
+than a colour because it has to survive being pasted into an issue, which is
+where most of these listings end up.
+"""
+
+_COLUMNS = (
+    Column(""),
+    Column("PID"),
+    Column("UID"),
+    Column("TARGET", {"yes": "green"}),
+    # `Z` is the disqualifier: a zombie is a process no seat can attach to,
+    # whatever else its row says. `D` is uninterruptible sleep, where an attach
+    # blocks rather than refuses, so it is a caution and not a denial.
+    Column("ST", {"Z": "yellow", "D": "yellow"}),
+    Column("THR"),
+    Column("PTRACE", {"ok": "green", "DENIED": "red", "?": "yellow"}),
+    Column("CONTAINER"),
+    Column("COMM"),
+    Column("CMDLINE", fill=True),
 )
 """``ST``, ``THR`` and ``PTRACE`` are the three signals the ranking added.
 
 The note this listing answers is "run `podbench pids` to choose another", so it
 has to show what the ranking ranked on — otherwise the reader who disagrees with
 the choice is picking from raw pid order with no more information than the pid.
-``ST`` in particular is the one that reads as a disqualifier: a ``Z`` there is a
-process no seat can attach to, whatever else the row says about it.
+
+``CMDLINE`` fills and is cut to what is left, which is the fix for the thing
+that actually made this listing unreadable: an argv is unbounded, so on a real
+workload it overran and the *terminal* wrapped it, putting the next row's PID
+under this row's PTRACE and destroying the alignment of every row below. One
+cut cell costs the tail of one argv; not cutting it costs the whole table.
+``--json`` carries the untruncated form.
 """
 
+_TARGET_ROW = None
+"""Style for a row in the target container: the ordinary one.
 
-def _row(process: ProcInfo) -> tuple[str, ...]:
-    return (
+Named beside :data:`_OTHER_ROW` so the pair reads as the decision it is. The
+seat's own processes and the pod's other containers are *also true* and are not
+what anybody ran this for, so they recede — but ``TARGET`` stays a column, and
+that is deliberate: dimming is a tty affordance and colour is never allowed to
+be the only place a fact is stated, since this output is read as often from a
+pasted log as from a terminal.
+"""
+
+_OTHER_ROW = "dim"
+"""Style for a row outside the target container. See :data:`_TARGET_ROW`."""
+
+
+def _cells(process: ProcInfo, *, picked: int | None) -> list[str]:
+    return [
+        PICKED if process.pid == picked else "",
         str(process.pid),
         # `-`, never `str(None)` and never `0`: ProcInfo.uid is None when
         # /proc/<pid>/status was unreadable, and the whole point of that None
@@ -630,19 +669,56 @@ def _row(process: ProcInfo) -> tuple[str, ...]:
         (process.container_id or "-")[:12],
         process.comm,
         process.cmdline,
+    ]
+
+
+def default_pid(listing: ProcessListing) -> int | None:
+    """The pid ``podbench dbg`` attaches to when given none, or ``None``.
+
+    The same two filters :func:`resolve_target_pids` applies, and deliberately
+    *not* a second ranking: this marks a row with the answer another function
+    computes, so the two agreeing is the whole value of the mark. If they ever
+    disagree the table is worse than no table, because it points at a pid the
+    verb it names will not use.
+    """
+    alive = [info for info in debug_candidates(listing.targets) if info.alive]
+    ranked = [info for info in alive if not is_shell(info)] or alive
+    return ranked[0].pid if ranked else None
+
+
+def format_process_table(
+    listing: ProcessListing, *, targets_only: bool = False
+) -> list[Text]:
+    """Render the listing as a column-aligned table, one styled line per row."""
+    processes = listing.targets if targets_only else listing.processes
+    picked = default_pid(listing)
+    return table(
+        _COLUMNS,
+        [
+            Row(
+                _cells(process, picked=picked),
+                style=_TARGET_ROW if process.is_target else _OTHER_ROW,
+            )
+            for process in processes
+        ],
     )
 
 
-def format_process_table(listing: ProcessListing, *, targets_only: bool = False) -> str:
-    """Render the listing as a column-aligned table."""
-    processes = listing.targets if targets_only else listing.processes
-    rows = [_HEADERS, *(_row(process) for process in processes)]
-    widths = [max(len(row[column]) for row in rows) for column in range(len(_HEADERS))]
-    return "\n".join(
-        "  ".join(
-            cell.ljust(width) for cell, width in zip(row, widths, strict=True)
-        ).rstrip()
-        for row in rows
+def picked_note(listing: ProcessListing, *, targets_only: bool = False) -> str | None:
+    """The line under the table that says what :data:`PICKED` means.
+
+    ``None`` where nothing was marked, rather than a sentence explaining the
+    absence of a mark: a container whose every process is dead already gets a
+    note saying exactly that from :func:`resolve_target_pids`, and this one
+    would be the second telling.
+    """
+    picked = default_pid(listing)
+    if picked is None:
+        return None
+    shown = listing.targets if targets_only else listing.processes
+    return (
+        f"{PICKED} is the process `podbench dbg` attaches to with no `--pid`. "
+        f"{len(shown)} shown, {len(listing.targets)} in the target container."
     )
 
 
@@ -928,8 +1004,13 @@ def _run_pids(
         # the sentence the table is an answer to, and a reader who stops after
         # the first screen is exactly the one it is for.
         for line in listing_heading(env_target_container(), env_pod_containers()):
-            print(line)
-        print(format_process_table(listing, targets_only=targets_only))
+            emit(line)
+        emit(format_process_table(listing, targets_only=targets_only))
+        # Under the table, because it is a legend for a column in it: read
+        # before the rows it explains, `>` is a mark with nothing yet marked.
+        note = picked_note(listing, targets_only=targets_only)
+        if note is not None:
+            emit("\n".join(paragraph(note)))
     return 0
 
 

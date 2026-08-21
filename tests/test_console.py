@@ -15,9 +15,13 @@ from podbench.console import (
     MAX_WIDTH,
     MIN_WIDTH,
     WARNING_LEAD,
+    Column,
+    Row,
     emit,
     paragraph,
     rule,
+    table,
+    table_width,
     wrap_width,
 )
 
@@ -212,3 +216,77 @@ def test_a_rule_fits_inside_what_the_report_wraps_to(
     monkeypatch.setenv("COLUMNS", "80")
     assert len(rule()) == wrap_width()
     assert len(rule("podbench doctor")) == wrap_width()
+
+
+# --- tables -----------------------------------------------------------------
+
+
+def test_a_table_is_styled_from_its_data_not_from_its_rendering() -> None:
+    """The reason :func:`table` exists rather than another line rule.
+
+    Every one of these cells is misread by the rules :func:`emit` applies to a
+    string: a bare pid matches ``_LABEL`` and is drawn as a section heading, and
+    a single-letter process state matches the all-caps test in ``_COLUMN_WORD``
+    and is drawn as a column heading. A table knows what its cells mean, so it
+    is never asked to infer it back out of its own layout.
+    """
+    lines = table(
+        [Column("PID"), Column("ST", {"Z": "yellow"})],
+        [Row(["7", "S"]), Row(["518", "Z"])],
+        width=40,
+    )
+    body = {line.plain.split()[0]: line for line in lines[1:]}
+    assert [style.style for style in body["7"].spans] == []
+    assert [style.style for style in body["518"].spans] == ["yellow"]
+    # The heading row is the one place these reports shout.
+    assert [span.style for span in lines[0].spans] == ["bold", "bold"]
+
+
+def test_a_row_style_and_a_cell_verdict_layer_rather_than_compete() -> None:
+    """A dimmed row still has to let a red cell read as red: the row says
+    "not what you asked for" and the cell says "and this one is denied"."""
+    (line,) = table(
+        [Column("PTRACE", {"DENIED": "red"})],
+        [Row(["DENIED"], style="dim")],
+        width=40,
+    )[1:]
+    assert [span.style for span in line.spans] == ["dim", "red"]
+
+
+def test_a_filling_column_is_cut_so_the_rows_below_stay_aligned() -> None:
+    lines = table(
+        [Column("PID"), Column("CMDLINE", fill=True)],
+        [Row(["1", "x" * 200]), Row(["22", "short"])],
+        width=30,
+    )
+    assert len(lines[1].plain) == 30
+    assert lines[1].plain.endswith("…")
+    # The short row is not padded out to the margin: trailing space is not
+    # content, and these listings are pasted as often as they are read.
+    assert lines[2].plain == "22   short"
+
+
+def test_a_column_nothing_filled_in_does_not_indent_the_table() -> None:
+    """A marker column on a listing that marked nothing is not a narrow
+    column, it is not a column."""
+    (head, row) = table([Column(""), Column("PID")], [Row(["", "7"])], width=40)
+    assert head.plain == "PID"
+    assert row.plain == "7"
+
+
+def test_a_table_keeps_the_brackets_in_somebody_elses_text() -> None:
+    """:func:`table`'s cells go through the same ``Text`` that :func:`emit`'s
+    lines do, so a container reference is data here too."""
+    (row,) = table([Column("SEAT")], [Row(["demo/api[podbench-1]"])], width=40)[1:]
+    assert row.plain == "demo/api[podbench-1]"
+
+
+def test_a_table_fills_the_window_where_a_paragraph_would_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A paragraph is capped at :data:`MAX_WIDTH` because past ninety columns
+    the eye loses the start of the next line. A table is scanned down a column,
+    not read across, so a wide window buys it the tail of a cmdline instead."""
+    monkeypatch.setenv("COLUMNS", "200")
+    assert wrap_width() == MAX_WIDTH
+    assert table_width() == 199

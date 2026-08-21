@@ -13,6 +13,7 @@ so the sequence is pinned exactly rather than checked for membership.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
@@ -23,6 +24,7 @@ from podbench import execfile, gdbcmd
 from podbench.gdbcmd import (
     EXIT_USAGE,
     MAX_OFFERED_PIDS,
+    PICKED,
     RUST_PRETTY_PRINTERS,
     attach_commands,
     command_file_text,
@@ -45,6 +47,36 @@ from podbench.model import (
 )
 from podbench.probe import AttachOutcome, SkippedAttacher
 from proc_samples import CID, sample, write_tree
+
+
+def table_rows(out: str) -> dict[str, dict[str, str]]:
+    """The ``pids`` table as ``{pid: {heading: cell}}``, read by column position.
+
+    By position and not by :meth:`str.split`, which is what the old assertions
+    did and what the marked row broke: a cell may be empty (a zombie has no
+    cmdline), may hold spaces (every cmdline does), and the row that
+    :data:`~podbench.gdbcmd.PICKED` marks carries one token more than the rest.
+    Splitting on whitespace reads all three as a shifted row and compares the
+    wrong cells, silently.
+
+    The mark itself is returned under ``PICKED``, since it is a column here
+    exactly so that it survives being read back as text.
+    """
+    lines = out.splitlines()
+    head = next(line for line in lines if line.split()[:2] == ["PID", "UID"])
+    spans = [(m.start(), m.group()) for m in re.finditer(r"\S+", head)]
+    bounds = [
+        (start, spans[index + 1][0] if index + 1 < len(spans) else None, name)
+        for index, (start, name) in enumerate(spans)
+    ]
+    lead = bounds[0][0]
+    rows: dict[str, dict[str, str]] = {}
+    for line in lines[lines.index(head) + 1 :]:
+        cells = {name: line[start:end].strip() for start, end, name in bounds}
+        if cells["PID"].isdigit():
+            rows[cells["PID"]] = {**cells, PICKED: line[:lead].strip()}
+    return rows
+
 
 TARGET_CID = "87d20e2380a1c0ffee0b1e5deadbeef00d15ea5e0000111122223333444455556"
 OTHER_CID = "7206c89b11111111222222223333333344444444555555556666666677777777"
@@ -477,28 +509,24 @@ def test_pids_table_marks_only_the_target(
 ) -> None:
     proc = make_proc(tmp_path)
     assert main(["pids", "--container-id", TARGET_CID], proc=proc) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == [
-        "PID",
-        "UID",
-        "TARGET",
-        "ST",
-        "THR",
-        "PTRACE",
-        "CONTAINER",
-        "COMM",
-        "CMDLINE",
+    out = capsys.readouterr().out
+    rows = table_rows(out)
+    assert [pid for pid, cells in rows.items() if cells["TARGET"] == "yes"] == [
+        str(TARGET_PID)
     ]
-    marked = [line for line in lines[1:] if line.split()[2] == "yes"]
-    assert [line.split()[0] for line in marked] == [str(TARGET_PID)]
-    assert "/app/victim --loop" in "\n".join(lines)
+    # The mark and the column agree, which is the whole value of the mark:
+    # it names the pid `dbg` will use, and `dbg` uses a target-container pid.
+    assert [pid for pid, cells in rows.items() if cells[PICKED]] == [str(TARGET_PID)]
+    # The prefix, not the whole argv: CMDLINE is cut to the width the other
+    # columns left, which at the suite's pinned 80 is not much. That the cut
+    # happens at all is pinned separately, below.
+    assert rows[str(TARGET_PID)]["CMDLINE"].startswith("/app/victim")
 
 
 def test_pids_targets_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     proc = make_proc(tmp_path)
     main(["pids", "--container-id", TARGET_CID, "--targets"], proc=proc)
-    body = capsys.readouterr().out.splitlines()[1:]
-    assert len(body) == 1
+    assert list(table_rows(capsys.readouterr().out)) == [str(TARGET_PID)]
 
 
 def test_pids_warns_rather_than_presenting_the_fallback_as_fact(
@@ -513,7 +541,31 @@ def test_pids_warns_rather_than_presenting_the_fallback_as_fact(
     assert "PODBENCH_TARGET_CID" in captured.err
     assert captured.err.startswith("warning:")
     # the sibling debug container is a false positive, which is the point
-    assert [line.split()[2] for line in captured.out.splitlines()[1:]].count("yes") == 2
+    targets = [cells["TARGET"] for cells in table_rows(captured.out).values()]
+    assert targets.count("yes") == 2
+
+
+def test_a_long_cmdline_is_cut_rather_than_left_to_wrap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An argv is unbounded and the terminal is not.
+
+    Letting it overrun does not cost the tail of one row, it costs the
+    alignment of every row below: the terminal wraps the long cell and the next
+    row's PID lands under this row's PTRACE. `--json` is where the untruncated
+    argv lives.
+    """
+    proc = make_proc(tmp_path)
+    main(["pids", "--container-id", TARGET_CID], proc=proc)
+    out = capsys.readouterr().out
+    assert max(len(line) for line in out.splitlines()) <= 80
+    cut = table_rows(out)[str(TARGET_PID)]["CMDLINE"]
+    assert cut.endswith("\u2026")
+
+    main(["pids", "--container-id", TARGET_CID, "--json"], proc=proc)
+    payload = json.loads(capsys.readouterr().out)
+    victim = next(p for p in payload["processes"] if p["pid"] == TARGET_PID)
+    assert victim["cmdline"] == "/app/victim --loop"
 
 
 def test_pids_json_carries_the_attribution(
@@ -561,7 +613,7 @@ def test_format_process_table_is_a_pure_function(tmp_path: Path) -> None:
     from podbench.proc import scan_processes
 
     listing = scan_processes(TARGET_CID, proc=make_proc(tmp_path))
-    assert format_process_table(listing, targets_only=True).count("\n") == 1
+    assert len(format_process_table(listing, targets_only=True)) == 2
 
 
 # --- dbg --------------------------------------------------------------------
@@ -1064,11 +1116,16 @@ def test_the_pids_table_marks_the_disqualified(
     """
     proc = write_tree(tmp_path / "proc", sample("blueapi"))
     assert main(["pids", "--container-id", CID, "--targets"], proc=proc) == 0
-    rows = {
-        line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()
-    }
-    assert rows["1"][3:6] == ["S", "195", "ok"]
-    assert rows["518"][3:6] == ["Z", "1", "DENIED"]
+    rows = table_rows(capsys.readouterr().out)
+    assert [rows["1"][name] for name in ("ST", "THR", "PTRACE")] == ["S", "195", "ok"]
+    assert [rows["518"][name] for name in ("ST", "THR", "PTRACE")] == [
+        "Z",
+        "1",
+        "DENIED",
+    ]
+    # The zombie is the disqualified row, so it must not also be the marked one.
+    assert rows["518"][PICKED] == ""
+    assert rows["1"][PICKED] == PICKED
 
 
 def test_pids_json_carries_the_new_measurements(
