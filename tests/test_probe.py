@@ -13,12 +13,14 @@ import ctypes
 import errno
 import json
 import os
+import re
 import signal
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from podbench.console import emit
 from podbench.model import (
     ATTACH_PROBE,
     SEIZE_PROBE,
@@ -73,6 +75,17 @@ CAP_WITHOUT_PTRACE = "00000000a80425fb"
 # sides identical, ptrace permitted. A matching pair is the normal case at DLS.
 SPC_T = "system_u:system_r:spc_t:s0"
 CONTAINER_T = "system_u:system_r:container_t:s0:c34,c721"
+
+
+def flowed(text: str) -> str:
+    """``capreport``'s human report with its wrapping undone.
+
+    Its values wrap under their key now, so a sentence it prints is not a
+    contiguous substring of what it printed. A test that cares *what* was said
+    collapses the whitespace and matches the sentence; the ones that care how
+    it is laid out live in ``tests/test_console.py``.
+    """
+    return " ".join(text.split())
 
 
 def write(path: Path, text: str) -> None:
@@ -1369,7 +1382,9 @@ def test_human_report_names_the_mechanism(tmp_path: Path) -> None:
     assert "capreport" in text
     assert "yama-scope" in text
     assert Blocker.YAMA_SCOPE.explanation.split(":")[0] in text
-    assert "scratch attach (own child) OK" in text
+    # Flattened: the value is wrapped under its key now, so the gap between
+    # them is layout rather than content.
+    assert "scratch attach (own child) OK" in " ".join(text.split())
     assert "live attach (pid 1)" in text
 
 
@@ -1389,7 +1404,7 @@ def test_the_report_names_the_primitive_and_states_the_pause(
     text = format_report(report, False)
     assert "OK via PTRACE_SEIZE" in text
     assert "workload pause" in text
-    assert "none - PTRACE_SEIZE does not stop the tracee" in text
+    assert "none - PTRACE_SEIZE does not stop the tracee" in flowed(text)
     assert json.loads(format_report(report, True))["attach_method"] == SEIZE_PROBE
 
 
@@ -1403,7 +1418,7 @@ def test_a_fallback_attach_admits_the_pause_it_cost(tmp_path: Path) -> None:
     )
     text = format_report(report, False)
     assert "OK via PTRACE_ATTACH" in text
-    assert "brief - PTRACE_ATTACH stopped it until the probe detached" in text
+    assert "brief - PTRACE_ATTACH stopped it until the probe detached" in flowed(text)
 
 
 def test_the_report_names_the_lsm_that_is_there_and_prints_both_labels(
@@ -1429,21 +1444,21 @@ def test_the_report_names_the_lsm_that_is_there_and_prints_both_labels(
         return format_report(probe(1, proc=proc, attacher=attacher()), False)
 
     matching = rows(Lsm.SELINUX, SPC_T)
-    assert f"SELinux                    {SPC_T}" in matching
-    assert f"SELinux                    {SPC_T} (same as tracer)" in matching
+    assert f"SELinux {SPC_T}" in flowed(matching)
+    assert f"SELinux {SPC_T} (same as tracer)" in flowed(matching)
     assert "AppArmor" not in matching
 
     differing = rows(Lsm.SELINUX, SPC_T, CONTAINER_T)
-    assert f"SELinux                    {CONTAINER_T} (MISMATCH)" in differing
+    assert f"SELinux {CONTAINER_T} (MISMATCH)" in flowed(differing)
 
     apparmor = rows(Lsm.APPARMOR, "cri-containerd.apparmor.d (enforce)")
-    assert "AppArmor                   cri-containerd.apparmor.d (enforce)" in apparmor
+    assert "AppArmor cri-containerd.apparmor.d (enforce)" in flowed(apparmor)
     assert "SELinux" not in apparmor
 
     # The bed's shape, and the one the old report could not express: no LSM row
     # for the target, because there is no label to compare.
     neither = rows(Lsm.NONE, None)
-    assert "LSM                        none - neither SELinux nor AppArmor" in neither
+    assert "LSM none - neither SELinux nor AppArmor" in flowed(neither)
     assert "AppArmor  " not in neither
 
 
@@ -1546,3 +1561,62 @@ def test_an_unreadable_best_candidate_says_so_beside_its_score(
     payload = json.loads(capsys.readouterr().out)
     assert payload["target_pid"] is not None
     assert any("not ptrace-readable from this seat" in n for n in payload["notes"])
+
+
+def test_the_human_report_wraps_to_the_terminal_rather_than_to_72(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bars and the values follow the window, like every other report.
+
+    72 was hardcoded here long after `console` retired it everywhere else,
+    which on a narrow terminal folded the Yama explanation and the read matrix
+    into the *next row's* key column.
+    """
+    proc = make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=1)
+    monkeypatch.setenv("COLUMNS", "60")
+    narrow = format_report(probe(1, proc=proc, attacher=attacher()), False)
+    monkeypatch.setenv("COLUMNS", "120")
+    wide = format_report(probe(1, proc=proc, attacher=attacher()), False)
+
+    assert max(len(line) for line in narrow.splitlines()) <= 60
+    assert max(len(line) for line in wide.splitlines()) <= 120
+
+    def facts(report: str) -> str:
+        """The report with everything that is layout taken out of it: the
+        bars are drawn to the window, so they differ by construction."""
+        return flowed(
+            "\n".join(
+                line for line in report.splitlines() if not line.startswith(("=", "-"))
+            )
+        )
+
+    # Same facts, different layout - which is the whole claim.
+    assert facts(narrow) == facts(wide)
+
+
+def test_every_key_in_the_report_is_drawn_as_a_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Half the keys bold and half plain reads as a broken report.
+
+    `console` finds a key by the run of two or more spaces after it, so a key
+    padded to exactly the column width leaves one space and vanishes.
+    `scratch attach (own child)` is twenty-six characters and was that key.
+
+    Asserted through what is drawn rather than against the rule that draws it:
+    the report's contract is that its keys *look* like keys, and which regex
+    decides that is `console`'s business.
+    """
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    proc = make_proc(tmp_path, self_uid=1000, target_uid=1000, yama=0)
+    emit(format_report(probe(1, proc=proc, attacher=attacher(target=OK)), False))
+
+    for line in capsys.readouterr().out.splitlines():
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        # A key row is an indented line whose key is separated from its value
+        # by the two spaces that mean "a column was intended"; anything else
+        # here is a wrapped value's continuation, which is one run of prose.
+        if plain.startswith("  ") and "  " in plain.strip():
+            assert "\x1b[" in line, plain

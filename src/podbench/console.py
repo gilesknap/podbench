@@ -88,13 +88,25 @@ so the same shape two columns in means the opposite thing and must not be read
 as a heading.
 """
 
-_LABEL = re.compile(r"^(\s*)(\S+) {2,}(?=\S)")
+_LABEL = re.compile(r"^(\s*)(\S+(?: \S+)*?) {2,}(?=\S)")
 """The key of a row that has a value: ``seat        demo/api[podbench-1]``, or
 the leading cell of a table (``podbench-1   running   full   …``).
 
 Two spaces *followed by something* is the whole rule. Two spaces mean a column
 was intended and one means an ordinary sentence, so colouring the word a
 sentence happens to open with would say "heading" about a line that is not one.
+
+The key may be several words — ``CAP_SYS_PTRACE (eff)``, ``scratch attach (own
+child)``, ``add this to ~/.ssh/config once:`` — and the match is non-greedy, so
+it still ends at the *first* run of two. Single-token was an assumption rather
+than a rule, and where it was wrong the damage was to a whole block at once:
+``capreport`` sets half its keys in bold and half in plain, which reads as a
+report that is broken rather than as one making a distinction.
+
+Safe because of :func:`wrap`: it splits on ``str.split``, so a paragraph it
+laid out **cannot** contain an internal run of two spaces. A line that reaches
+here holding one was authored as a row by a caller that owns the whole line,
+which is exactly the population this is trying to recognise.
 """
 
 _TOKEN = re.compile(r"[^\s`]*`[^`\n]*`[^\s`]*|\S+")
@@ -182,6 +194,12 @@ _VERDICTS = {
     "landed": "green",
     "running": "green",
     "succeeded": "green",
+    # `capreport`'s probe rows, which are the three lines in that report a
+    # reader is actually looking for. Safe as cell values because they are only
+    # ever looked up in column position: "ok" and "denied" are ordinary English
+    # and appear in the prose all round them, where a colour would be a claim.
+    "ok": "green",
+    "denied": "yellow",
     "refused": "yellow",
     "pending": "yellow",
     "waiting": "yellow",

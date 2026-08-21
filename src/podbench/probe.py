@@ -40,6 +40,7 @@ from typing import Annotated, Protocol
 import typer
 
 from .cli import new_app, run
+from .console import emit, paragraph, rule
 from .flavour import Debugger, format_inventory, inventory
 from .model import (
     ATTACH_PROBE,
@@ -971,11 +972,32 @@ def _json_payload(
 
 
 def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) -> str:
-    width = 72
-    lines = [" capreport ".center(width, "=")]
+    """The report as a person reads it.
+
+    Laid out in the shapes :func:`podbench.console.emit` already recognises, so
+    the colouring is the same one every laptop verb gets and there is no second
+    vocabulary for a reader to learn: the flush-left ``TRACER``/``PROBES``/
+    ``VERDICT:`` lines are headings by ``_SHOUT``, the two-space ``kv`` rows are
+    labels by ``_LABEL``, and the bars are dividers.
+    """
+    # The bars were a hardcoded 72 - a narrow ribbon on a wide terminal and a
+    # folded mess on a narrow one, which is the defect `console` was written to
+    # retire everywhere else and this was the last caller still carrying.
+    # `rule` asks per call, so they line up with the prose beneath them.
+    lines = [rule("capreport")]
 
     def kv(key: str, value: object) -> None:
-        lines.append(f"  {key:<26} {value}")
+        # Twenty-eight, and the two extra columns are load-bearing rather than
+        # taste: `scratch attach (own child)` is twenty-six characters, so at
+        # the old width its value sat one space away and `console._LABEL` -
+        # which reads a key by the run of two or more spaces after it - did not
+        # recognise the one row in this block that most looks like a heading.
+        #
+        # Wrapped under a hanging indent for `format_session`'s reason: two of
+        # these values are a sentence (Yama's meaning, the read matrix), and
+        # they used to run off the terminal and be folded by it, which put the
+        # tail of a value under the next row's key.
+        lines.extend(paragraph(f"{value}", first=f"  {key:<28} ", indent=" " * 31))
 
     lines.append("TRACER")
     kv("uid", report.self_uid)
@@ -1040,14 +1062,23 @@ def _human_report(report: CapabilityReport, debuggers: Sequence[Debugger] = ()) 
         lines.append("DEBUGGERS (what this image ships)")
         lines.extend(f"  {line}" for line in format_inventory(debuggers))
 
-    lines.append("-" * width)
-    lines.append(f"VERDICT: {report.verdict.summary} (exit {report.verdict.value})")
+    lines.append(rule(char="-"))
+    # Wrapped like the rows above it: this is the line the whole report exists
+    # to deliver, and on a narrow terminal it was the one the terminal folded.
+    lines.extend(
+        paragraph(
+            f"{report.verdict.summary} (exit {report.verdict.value})",
+            first="VERDICT: ",
+            indent=" " * 9,
+        )
+    )
     lines.append(f"BLOCKER: {report.blocker.value}")
-    lines.append(f"         {report.blocker.explanation}")
+    lines.extend(paragraph(report.blocker.explanation, indent=" " * 9, first=" " * 9))
     if report.notes:
         lines.append("NOTES:")
-        lines.extend(f"  - {note}" for note in report.notes)
-    lines.append("=" * width)
+        for note in report.notes:
+            lines.extend(paragraph(note, first="  - ", indent="    "))
+    lines.append(rule())
     return "\n".join(lines)
 
 
@@ -1156,7 +1187,14 @@ def _run(
         notes.extend(discovery_notes)
 
     report = probe(pid, proc=proc, sysfs=sysfs, attacher=attacher, extra_notes=notes)
-    print(format_report(report, json_output, inventory()))
+    rendered = format_report(report, json_output, inventory())
+    # `print` for the JSON, never `emit`: the launcher parses what this prints
+    # (`_json_payload`), and a report that went through the styling path would
+    # be at the mercy of whatever rich decides about the terminal it is in.
+    if json_output:
+        print(rendered)
+    else:
+        emit(rendered)
     return report.verdict.value
 
 
