@@ -94,9 +94,9 @@ cycle. When the fix has to survive the pod, `podbench hotfix` moves the venv
 onto a claim so a restart no longer restores the image's code, and records
 where the change came from.
 
-> **The PyPI name is not published yet**, so `uvx podbench` will not resolve
-> until the first release. Until then, run every command as
-> `uvx --from git+https://github.com/gilesknap/podbench podbench <verb>`.
+> Only prereleases are published so far, so `uvx podbench` resolves the newest
+> beta today. To run an unreleased checkout instead, put
+> `--from git+https://github.com/gilesknap/podbench` in front of the verb.
 
 ## Read this before you attach to a live pod
 
@@ -138,7 +138,7 @@ bound, and Hotfix mode has never been run against a cluster.
 What            | Where
 :---:           | :---:
 Source          | <https://github.com/gilesknap/podbench>
-Launcher        | <https://pypi.org/project/podbench> (not published yet)
+Launcher        | <https://pypi.org/project/podbench> (prereleases only)
 Image           | `ghcr.io/gilesknap/podbench`
 Chart           | `oci://ghcr.io/gilesknap/charts/podbench`
 Documentation   | <https://gilesknap.github.io/podbench>

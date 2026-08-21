@@ -57,7 +57,7 @@ choice, and all three run the same code:
 | `uv tool install podbench` (or pipx, or pip) | for `podbench` permanently on `PATH` |
 
 See [Setup](../tutorials/setup.md) for the details, including how
-to run it before the first PyPI release.
+to pin a version and how to run an unreleased checkout.
 
 The in-pod verbs are spelled the same way from a terminal in the seat:
 `podbench pids`, `podbench dbg`, and so on. There are no shorter aliases on
