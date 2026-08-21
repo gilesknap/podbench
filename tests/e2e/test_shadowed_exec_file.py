@@ -105,7 +105,9 @@ def seat(kube: Kubectl, target: str, podbench_image: str) -> Session:
 
 
 @pytest.fixture(scope="module")
-def dry_run(kubectl: KubectlCli, target: str, seat: Session) -> list[str]:
+def dry_run(
+    kubectl: KubectlCli, target: str, seat: Session, shadowed_exe: str
+) -> list[str]:
     """``podbench dbg --dry-run``, run in the seat, with no pid given.
 
     No pid on purpose: the discovery is part of what is under test here, and it
@@ -153,7 +155,7 @@ where the seat's interpreter and the target's are the same upstream build.
 
 
 @pytest.fixture(scope="module")
-def shadowed_exe(kubectl: KubectlCli, target: str, seat: Session, app_pid: int) -> str:
+def shadowed_exe(kubectl: KubectlCli, target: str, seat: Session) -> str:
     """Guarantee two different files at the target's interpreter path.
 
     #90 needs one absolute path to name a different file in each mount
@@ -175,8 +177,18 @@ def shadowed_exe(kubectl: KubectlCli, target: str, seat: Session, app_pid: int) 
     running interpreter — ``cp`` onto a mapped executable is ``ETXTBSY``, and
     succeeding would be worse than failing.
     """
+    # Asked of the *target container*, not of /proc/<pid>/exe, and that is the
+    # whole reason this fixture takes no pid: the pid comes from `dry_run`, and
+    # `dry_run` has to run with the collision already in place. `gdb_exec_file`
+    # stages a copy only where it finds a shadowing file, so a dry run taken
+    # first correctly decides that no staging is needed and prints a sequence
+    # that is unsafe by the time anything replays it - measured, and the only
+    # test of the four that failed. `test_this_seat_shadows_the_targets_exe`
+    # checks this path against /proc/<pid>/exe once there is a pid to check.
     exe = kubectl.exec(
-        target, ["readlink", f"/proc/{app_pid}/exe"], container=seat.seat.container
+        target,
+        ["readlink", "-f", "/app/.venv/bin/python"],
+        container=TARGET_CONTAINER,
     ).stdout.strip()
     assert exe.startswith("/python/cpython-"), (
         f"the IOC's interpreter is no longer a uv-managed one at /python: {exe}. "
@@ -269,6 +281,15 @@ def test_this_seat_shadows_the_targets_exe(
     the two files exist and differ — which is not the same statement and is the
     one the tests below depend on.
     """
+    running = kubectl.exec(
+        target, ["readlink", f"/proc/{app_pid}/exe"], container=seat.seat.container
+    ).stdout.strip()
+    assert running == shadowed_exe, (
+        f"the app runs {running} but the collision was planted at "
+        f"{shadowed_exe}, so gdb has nothing to misread and every assertion "
+        "below is vacuous. `shadowed_exe` reads the target container's own "
+        "interpreter rather than /proc/<pid>/exe, and the two have diverged"
+    )
     listing = _in_seat(
         kubectl,
         target,
