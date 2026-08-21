@@ -548,6 +548,8 @@ class Kubectl:
         self.kubeconfig = kubeconfig
         self.binary = binary
         self._runner: Runner = runner if runner is not None else run_subprocess
+        self._whoami: str | None = None
+        self._whoami_asked = False
 
     # -- plumbing ---------------------------------------------------------
 
@@ -722,6 +724,44 @@ class Kubectl:
         if result.returncode != 0:
             return None
         return result.stdout
+
+    def whoami(self) -> str | None:
+        """Which user the API server attributes this kubeconfig to, or ``None``.
+
+        Asked of the cluster rather than of the laptop, because the answer has
+        to mean the same thing to everyone reading it back: ``$USER`` is a fact
+        about a machine, and two people on one workstation - or one person on
+        two - would collide or split under it. This is the identity that
+        actually authored the container, spelled the way every other party to
+        the pod already spells it.
+
+        ``check=False`` and ``None`` rather than an error, in the shape
+        :meth:`top_pod` sets: ``SelfSubjectReview`` is a 1.28 resource, an exec
+        credential plugin can decline to run, and a role that grants
+        ``pods/ephemeralcontainers`` need not grant ``create
+        selfsubjectreviews``. None of those is a reason to refuse an attach -
+        they are a reason for the seat to carry no owner and to be reported as
+        having none.
+
+        Cached because the answer cannot change within a run and every verb
+        that picks a seat wants it; a failure is cached too, so a cluster
+        without the resource costs one subprocess rather than one per pod.
+        """
+        if not self._whoami_asked:
+            self._whoami = self._read_whoami()
+            self._whoami_asked = True
+        return self._whoami
+
+    def _read_whoami(self) -> str | None:
+        result = self.run("auth", "whoami", "-o", "json", check=False)
+        if result.returncode != 0:
+            return None
+        try:
+            review = _parse_json_object(result.stdout, result.argv)
+        except (KubectlError, json.JSONDecodeError):
+            return None
+        name = as_dict(as_dict(review.get("status")).get("userInfo")).get("username")
+        return name.strip() or None if isinstance(name, str) else None
 
     def get_pod_subresource(self, name: str, subresource: str) -> dict[str, Any]:
         """A pod subresource's JSON, e.g. ``ephemeralcontainers``."""

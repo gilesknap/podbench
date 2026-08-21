@@ -349,6 +349,37 @@ def test_a_dry_run_asks_the_api_server_to_store_nothing() -> None:
     assert containers[0]["securityContext"]["capabilities"]["add"] == ["CHOWN"]
 
 
+def test_whoami_reads_the_username_the_api_server_answered_with() -> None:
+    runner = FakeRunner(ok('{"status": {"userInfo": {"username": "system:admin"}}}'))
+    assert Kubectl("demo", runner=runner).whoami() == "system:admin"
+    assert runner.argv[-3:] == ("auth", "whoami", "-o", "json")[1:]
+
+
+def test_whoami_is_asked_once_per_run() -> None:
+    """Cached, including the failure: every verb that picks a seat wants it.
+
+    A cluster whose API server has no ``SelfSubjectReview`` would otherwise pay
+    a subprocess per pod, on a listing, to be told the same nothing each time.
+    """
+    runner = FakeRunner(fail("the server doesn't have that resource"))
+    kube = Kubectl("demo", runner=runner)
+
+    assert kube.whoami() is None
+    assert kube.whoami() is None
+    assert len(runner.calls) == 1
+
+
+def test_a_cluster_that_answers_with_no_username_is_unknown_not_empty() -> None:
+    """``None`` rather than ``""``: the caller compares owners for equality."""
+    runner = FakeRunner(ok(json.dumps({"status": {"userInfo": {"username": " "}}})))
+    assert Kubectl("demo", runner=runner).whoami() is None
+
+
+def test_whoami_that_answers_with_nonsense_is_unknown_rather_than_fatal() -> None:
+    runner = FakeRunner(ok("<html>gateway timeout</html>"))
+    assert Kubectl("demo", runner=runner).whoami() is None
+
+
 def test_a_create_that_answers_with_nothing_parseable_is_not_an_error() -> None:
     """Only a dry run reads the response, and a real create must not start
     failing because a server said something this code cannot parse."""
