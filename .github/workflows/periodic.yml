@@ -2,6 +2,11 @@ name: Periodic
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        description: Report what the prune would delete without deleting it
+        default: true
   schedule:
     # Run weekly to check URL links still resolve
     - cron: "0 8 * * WED"
@@ -41,3 +46,47 @@ jobs:
       # second copy of that rule where it could drift.
       - name: Audit the registry
         run: uv run --locked python .github/scripts/ghcr_audit.py
+
+  # Reaps the images a branch generated once that branch is gone. Runs after the
+  # audit rather than beside it, so a registry that is already broken is not swept
+  # further; `needs` plus the reaper's own post-sweep re-audit means a protected
+  # image has to survive two independent checks either side of every deletion.
+  #
+  # The token is the open question and the reason for `PACKAGES_TOKEN`. Deleting a
+  # version of a *user-owned* package is not something the workflow's own
+  # `GITHUB_TOKEN` is documented to do - `packages: write` covers publishing, and
+  # the delete endpoints for a user namespace expect a classic PAT with
+  # `delete:packages`. Rather than guess, the job takes a secret when one exists
+  # and falls back to `GITHUB_TOKEN`; the script reports a 401/403 as a token
+  # problem naming the scope, instead of as an empty sweep.
+  #
+  # `dry_run` defaults to true, including on the schedule, and stays that way
+  # until somebody has read a run and armed it deliberately. Nothing here is
+  # recoverable outside GHCR's 30-day window.
+  registry-prune:
+    name: Reap generated container tags
+    needs: registry-audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Prune generated tags
+        env:
+          # `secrets` is not available in an `if:`, so the choice is made here.
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'schedule' || inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--token "${PACKAGES_TOKEN}" --min-age-hours 24)
+          if [[ ${DRY_RUN} != true ]]; then
+            args+=(--apply)
+          fi
+          uv run --locked python .github/scripts/ghcr_prune.py "${args[@]}"
