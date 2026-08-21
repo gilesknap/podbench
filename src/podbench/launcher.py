@@ -2748,8 +2748,23 @@ def _measured_rung_of(
     comes from the image, so it lives only in the target's own ``/proc``
     (:func:`podbench.spec.target_uid_gid`). Where a capreport ran, its measured
     pair replaces both.
+
+    An unknown target *uid* is unmeasured here, which is not what
+    :func:`podbench.model.measured_rung` answers on its own.  That function
+    names the floor for it "because its caller has the manifest to fall back on
+    and says which it used" - and this caller *is* the manifest: ``None`` means
+    the pod states no ``runAsUser``, which is every pod on argus, so there is
+    nothing behind it to fall back to. Passing the floor off as measured made
+    ``ssh-config`` and a ``--no-probe`` attach call a root seat beside a root
+    target ``seat``, while a capreport on the same two containers reads
+    ``degraded`` - one seat, two labels, which is issue #94 itself.
+    :attr:`podbench.model.SeatReport.rung` guards its own reading in these
+    words and for this reason, and the capability is exempt in both: it is the
+    whole of the full rung and is compared against no target at all.
     """
     if credentials is None:
+        return None
+    if target_uid is None and not credentials.capabilities.sys_ptrace_effective:
         return None
     return measured_rung(
         credentials.uid,

@@ -3429,6 +3429,59 @@ def test_an_unread_target_gid_is_not_a_rung_either() -> None:
     assert "the target unread" in format_session(session)
 
 
+def test_an_unread_target_uid_is_not_a_rung_at_all() -> None:
+    """The same rule, one number earlier, on the manifest shape argus is made of.
+
+    A pod that states no ``runAsUser`` leaves the launcher with no target uid
+    to compare against, so the credential match the rung below full *is* was
+    never made at all - which is weaker evidence than the unread gid above, not
+    stronger. ``measured_rung`` names the floor there for a caller with a
+    second source to fall back on, and the launcher is that source: it reports
+    ``seat``, measured, for a root seat beside a root target that the very next
+    capreport calls ``degraded``. One seat, two labels, which is issue #94.
+
+    ``ssh-config`` builds its session through the same helper on the same
+    shape, so this holds it for both verbs.
+    """
+    session = attach(talking_to(argus_shaped_pod()), "target", probe=False)
+
+    assert not session.rung_measured
+    assert "the target unread" in format_session(session)
+    # And the probe still settles it: the capreport reads the target's own
+    # `/proc/<pid>/status`, which is where an unstated uid actually lives.
+    probed = attach(talking_to(argus_shaped_pod()), "target")
+    assert probed.rung_measured
+    assert probed.rung is Rung.DEGRADED
+
+
+def test_a_capability_is_measured_without_any_target_at_all() -> None:
+    """The full rung is exempt from the credential check, so it needs no target.
+
+    Guarding the unknown target uid must not take this with it: an effective
+    ``CAP_SYS_PTRACE`` is the whole of the full rung and is compared against
+    nothing (report 3.10).
+    """
+    cluster = FakeCluster(
+        pod_document(
+            ephemeral=[
+                {
+                    "name": "podbench-1",
+                    "securityContext": {
+                        "runAsUser": 0,
+                        "capabilities": {"add": ["SYS_PTRACE"]},
+                    },
+                }
+            ],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        login_user="root",
+    )
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert session.rung_measured
+    assert session.rung is Rung.FULL
+
+
 def test_a_pinned_gid_is_not_overridden_by_the_measurement() -> None:
     """``--target-gid`` is an instruction, not a hint.
 
