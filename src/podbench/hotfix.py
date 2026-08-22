@@ -97,11 +97,11 @@ __all__ = [
     "HotfixError",
     "HotfixHealth",
     "HotfixManifest",
+    "Hold",
     "HotfixRow",
     "HotfixStore",
     "HotfixTarget",
     "PodStore",
-    "annotate",
     "apply_hotfix",
     "assess",
     "changed_paths",
@@ -116,7 +116,10 @@ __all__ = [
     "seeded_python",
     "interpreter_warning",
     "main",
+    "claim_container",
     "manifest_annotations",
+    "STATE_SEPARATOR",
+    "read_pod_state",
     "require_supervisor",
     "manifest_from_pod",
     "manifest_path",
@@ -1084,7 +1087,17 @@ class HotfixHealth(Enum):
     the claim's venv and not the new image's."""
 
     UNREADABLE = "unreadable"
-    """The pod says it is hotfixed and its manifest cannot be read."""
+    """There is a manifest on the claim and it cannot be parsed."""
+
+    NOT_HOTFIXED = "not-hotfixed"
+    """No manifest on the claim at all.
+
+    Not a fault, and the reason this is a value rather than an absence: a pod
+    reaches this listing by being *held*, and a hold with no fix behind it is a
+    real and reportable state - the supervisor is relaunching without backoff
+    and the liveness probe is short-circuited. Calling it "unreadable" would
+    blame a manifest that was never written.
+    """
 
     @property
     def summary(self) -> str:
@@ -1094,7 +1107,8 @@ class HotfixHealth(Enum):
             HotfixHealth.INTERPRETER_MISMATCH: "venv interpreter no longer matches",
             HotfixHealth.SUPERSEDED: "consolidated; claim is probably stale",
             HotfixHealth.IMAGE_CHANGED: "image upgraded under the hotfix mount",
-            HotfixHealth.UNREADABLE: "marked hotfixed, manifest unreadable",
+            HotfixHealth.UNREADABLE: "manifest on the claim is unreadable",
+            HotfixHealth.NOT_HOTFIXED: "held, but nothing hotfixed here",
         }[self]
 
     @property
@@ -1108,6 +1122,7 @@ def assess(
     *,
     current_digest: str,
     probe: InterpreterProbe | None = None,
+    unreadable: bool = False,
 ) -> tuple[HotfixHealth, str]:
     """Judge one hotfixed pod. Pure, because this is the whole feature.
 
@@ -1117,10 +1132,17 @@ def assess(
     remedy (retire the claim).
     """
     if manifest is None:
+        if unreadable:
+            return (
+                HotfixHealth.UNREADABLE,
+                "there is a manifest on the claim and it cannot be parsed; "
+                "provenance for whatever is running has been lost",
+            )
         return (
-            HotfixHealth.UNREADABLE,
-            "the pod carries the hotfixed annotation but no readable manifest; "
-            "provenance for whatever is on the claim has been lost",
+            HotfixHealth.NOT_HOTFIXED,
+            "this pod is held but carries no hotfix. Its supervisor is "
+            "relaunching without backoff and its liveness probe is "
+            "short-circuited, so release the hold or let its deadline pass",
         )
     if probe is not None and not probe.ok:
         return (
@@ -1158,6 +1180,130 @@ def assess(
 
 
 @dataclass(frozen=True)
+class Hold:
+    """A pod told to relaunch its child rather than exit with its status.
+
+    Orthogonal to :class:`HotfixHealth` on purpose (decision 6). A hold is a
+    fact about the *pod's supervisor*, not about the fix: a perfectly healthy
+    hotfix can sit in a pod nobody released, and a pod that was never hotfixed
+    at all can be held by an `apply` that died mid-flight. Folding it into
+    health would make one of those two invisible.
+    """
+
+    deadline: int | None
+    """The epoch second the hold stops being honoured, or ``None`` if unreadable.
+
+    ``None`` is *unmeasured*, never "no deadline": a hold file podbench cannot
+    parse is one written by something else, or truncated, and either way the
+    honest report is that the expiry is unknown.
+    """
+
+    now: int
+    """When the hold was read, so :attr:`expired` does not consult a clock."""
+
+    @property
+    def expired(self) -> bool:
+        """Whether the supervisor should already have stopped honouring it.
+
+        >>> Hold(deadline=100, now=101).expired
+        True
+        >>> Hold(deadline=100, now=99).expired
+        False
+        >>> Hold(deadline=None, now=99).expired
+        False
+        """
+        return self.deadline is not None and self.now > self.deadline
+
+    def summary(self) -> str:
+        """One column's worth, for the row line.
+
+        >>> Hold(deadline=160, now=100).summary()
+        'held 60s left'
+        >>> Hold(deadline=100, now=160).summary()
+        'held EXPIRED'
+        >>> Hold(deadline=None, now=100).summary()
+        'held expiry unmeasured'
+        """
+        if self.deadline is None:
+            return "held expiry unmeasured"
+        if self.expired:
+            return "held EXPIRED"
+        return f"held {self.deadline - self.now}s left"
+
+
+def claim_container(pod_json: Mapping[str, Any]) -> str | None:
+    """The container mounting a hotfix claim, or ``None`` if no container does.
+
+    This is the listing's whole filter. A volume is something a GitOps
+    controller reconciles *towards*, not something it strips, which is exactly
+    what an annotation on the pod template was not.
+
+    >>> claim_container({"spec": {"containers": [
+    ...     {"name": "app", "volumeMounts": [{"mountPath": "/podbench/app"}]}]}})
+    'app'
+    >>> claim_container({"spec": {"containers": [{"name": "app"}]}}) is None
+    True
+    """
+    spec = as_dict(pod_json.get("spec"))
+    for entry in _as_list(spec.get("containers")):
+        container = as_dict(entry)
+        for mount in _as_list(container.get("volumeMounts")):
+            if _as_str(as_dict(mount).get("mountPath")) == HOTFIX_APP_PATH:
+                return _as_str(container.get("name"))
+    return None
+
+
+def read_pod_state(
+    kube: Kubectl, pod: str, container: str
+) -> tuple[HotfixManifest | None, Hold | None, bool]:
+    """The manifest on the claim and the hold in the container, in one exec.
+
+    One exec and not two, because ``status`` is meant to be run habitually and
+    two round trips per pod is how a command becomes one nobody runs. The two
+    files are printed with a separator rather than parsed apart in the shell,
+    so a missing one is an empty section and not an error.
+    """
+    script = (
+        f"cat {manifest_path(HOTFIX_APP_PATH)} 2>/dev/null; "
+        f'echo "{STATE_SEPARATOR}"; '
+        f"cat {HOTFIX_HOLD_PATH} 2>/dev/null; "
+        f'echo "{STATE_SEPARATOR}"; date -u +%s'
+    )
+    result = kube.exec_(pod, ["sh", "-c", script], container=container, check=False)
+    if result.returncode != 0:
+        return None, None, False
+    parts = result.stdout.split(STATE_SEPARATOR)
+    if len(parts) < 3:
+        return None, None, False
+    manifest: HotfixManifest | None = None
+    unreadable = False
+    if parts[0].strip():
+        try:
+            manifest = HotfixManifest.from_json(parts[0].strip())
+        except (HotfixError, ValueError):
+            # A manifest that is present and will not parse is a different
+            # answer from no manifest: one has lost its provenance, the other
+            # never had any.
+            unreadable = True
+    hold: Hold | None = None
+    if parts[1].strip():
+        now = int(parts[2].strip() or 0)
+        try:
+            deadline = int(parts[1].strip())
+        except ValueError:
+            deadline = None
+        hold = Hold(deadline=deadline, now=now)
+    return manifest, hold, unreadable
+
+
+STATE_SEPARATOR = "--podbench--"
+"""Separates the manifest, the hold and the clock in one exec's output.
+
+Deliberately not something a manifest or a deadline could contain.
+"""
+
+
+@dataclass(frozen=True)
 class HotfixRow:
     """One hotfixed pod, as ``status`` reports it."""
 
@@ -1167,40 +1313,66 @@ class HotfixRow:
     detail: str
     current_image: str = ""
     notes: tuple[str, ...] = ()
+    hold: Hold | None = None
+    """The pod's hold, if it has one. ``None`` is *not held*, and is orthogonal
+    to :attr:`health` - see :class:`Hold`."""
+
+    @property
+    def ok(self) -> bool:
+        """Whether this row needs no attention, hold included.
+
+        The hold moves the exit code (decision 6). A held pod is not a healthy
+        one however healthy its fix: its liveness probe is short-circuited and
+        its supervisor has no backoff, so "no unretired hotfixes" must not come
+        back true while one is still held.
+
+        >>> row = HotfixRow(PodRef("d", "p"), None, HotfixHealth.ACTIVE, "")
+        >>> row.ok
+        True
+        >>> replace(row, hold=Hold(deadline=None, now=0)).ok
+        False
+        """
+        return self.health.ok and self.hold is None
 
 
 def status_rows(
     kube: Kubectl, *, probe: bool = True, python: str = DEFAULT_PYTHON
 ) -> list[HotfixRow]:
-    """Every hotfixed pod in the namespace, with its drift and its risks.
+    """Every pod carrying a hotfix claim, with its drift, its risks and its hold.
 
-    The manifest travels in an annotation so this is one ``get pods`` for the
-    whole namespace. The interpreter is only probed when the image has moved,
-    which is the one case where it can have broken — an exec per pod on every
-    status call would make the command too slow to run habitually, and a status
-    command nobody runs is how silently-diverged pods happen.
+    Keyed on the **claim**, not on an annotation. Provenance used to ride on the
+    pod template, where Argo self-heal strips it: a hotfixed pod under a GitOps
+    controller went quiet within one sync interval, which is the precise failure
+    this command exists to prevent. What cannot be stripped is the volume, so
+    that is what the listing looks for.
+
+    The cost is an exec per *candidate* pod rather than one ``get pods`` for the
+    namespace. It is affordable because the claim is the filter: only pods that
+    actually mount one are exec'd, and a namespace has a handful at most. The
+    interpreter is still only probed when the image has moved, which is the one
+    case where it can have broken.
+
+    A held pod is listed **whether or not it was ever hotfixed**. A hold with no
+    hotfix behind it is not a curiosity - it is a pod whose liveness probe is
+    short-circuited and whose supervisor is spinning without backoff, and the
+    only thing that will notice is this command.
     """
     result = kube.run("get", "pods", "-o", "json")
     rows: list[HotfixRow] = []
     for item in _as_list(_load_json(result.stdout).get("items")):
         pod_json = as_dict(item)
         metadata = as_dict(pod_json.get("metadata"))
-        annotations = as_dict(metadata.get("annotations"))
-        if _as_str(annotations.get(HOTFIXED_ANNOTATION)) != "true":
-            continue
         name = _as_str(metadata.get("name"))
         if name is None:
             continue
+        container = claim_container(pod_json)
+        if container is None:
+            continue
         pod = PodRef(kube.namespace, name)
         notes: list[str] = []
-        manifest: HotfixManifest | None
-        try:
-            manifest = manifest_from_pod(pod_json)
-        except (HotfixError, ValueError) as error:
-            manifest = None
-            notes.append(str(error))
-        container = manifest.container if manifest is not None else ""
-        container = container or _application_container(pod_json, None)
+        manifest, hold, unreadable = read_pod_state(kube, name, container)
+        if manifest is None and hold is None and not unreadable:
+            continue
         image, digest = _image_of(pod_json, container)
         measured: InterpreterProbe | None = None
         if (
@@ -1211,7 +1383,9 @@ def status_rows(
             and manifest.base_image_digest != digest
         ):
             measured = probe_interpreter(kube, name, container, python=python)
-        health, detail = assess(manifest, current_digest=digest, probe=measured)
+        health, detail = assess(
+            manifest, current_digest=digest, probe=measured, unreadable=unreadable
+        )
         if manifest is not None and manifest.stale_schema:
             notes.append(
                 f"manifest is schema version {manifest.schema_version}; it was "
@@ -1225,6 +1399,7 @@ def status_rows(
                 detail=detail,
                 current_image=image,
                 notes=tuple(notes),
+                hold=hold,
             )
         )
     return rows
@@ -1255,10 +1430,13 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
         manifest = row.manifest
         ahead = manifest.ahead if manifest is not None else 0
         commit = manifest.commit[:7] if manifest is not None else "unknown"
-        flag = "[ok]" if row.health.ok else "[!]"
+        flag = "[ok]" if row.ok else "[!]"
+        # A column, not a clause in the health sentence: a held pod and an
+        # unhealthy fix are different questions and either can be true alone.
+        held = f"  {row.hold.summary()}" if row.hold is not None else ""
         lines.append(
             f"  {flag}".ljust(_FLAG) + f"{row.pod}  +{ahead} commit(s)  {commit}  "
-            f"{row.health.value} — {row.health.summary}"
+            f"{row.health.value} — {row.health.summary}{held}"
         )
         lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
         if manifest is not None:
@@ -1289,39 +1467,6 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
 
 
 # -- the workflow ----------------------------------------------------------
-
-
-def annotate(kube: Kubectl, target: HotfixTarget, manifest: HotfixManifest) -> str:
-    """Record the provenance where the reschedule cannot lose it.
-
-    A *merge* patch, and deliberately the opposite choice from the Service
-    cutover in :mod:`podbench.dev`: there a merge unioned two selectors and
-    silently kept the old pod in the endpointslice, whereas here union is
-    exactly right — podbench is adding three annotations to whatever else the
-    object carries, not replacing the map.
-    """
-    annotations = manifest_annotations(manifest)
-    if target.workload_kind in ("deployment", "statefulset"):
-        kube.patch(
-            cast(str, target.workload_kind),
-            cast(str, target.workload_name),
-            {"spec": {"template": {"metadata": {"annotations": annotations}}}},
-            patch_type="merge",
-        )
-        return (
-            f"annotated {target.workload} pod template; the edit rolls the "
-            "workload, which is how the hotfix is picked up"
-        )
-    kube.patch(
-        "pod",
-        target.pod.name,
-        {"metadata": {"annotations": annotations}},
-        patch_type="merge",
-    )
-    return (
-        f"annotated pod {target.pod.name} directly — it has no pod template, so "
-        "this provenance is lost if the pod is ever replaced"
-    )
 
 
 def seeded_python(store: HotfixStore) -> str:
@@ -1552,7 +1697,6 @@ def init(
     )
     write_manifest(store, manifest)
     actions.append(f"wrote {manifest_path(venv)}")
-    actions.append(annotate(kube, target, manifest))
     return manifest, actions
 
 
@@ -1666,7 +1810,6 @@ def apply_hotfix(
     )
     write_manifest(store, manifest)
     actions.append(f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}")
-    actions.append(annotate(kube, target, manifest))
 
     if bounce:
         actions.append(_relaunch(kube, target))
@@ -1840,7 +1983,6 @@ def consolidate(
         schema_version=MANIFEST_VERSION,
     )
     write_manifest(store, manifest)
-    actions.append(annotate(kube, target, manifest))
     actions.append(_retirement_checklist(branch, manifest, target))
     return manifest, actions
 
@@ -2385,7 +2527,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         rows = status_rows(kube, probe=not no_probe, python=python)
         emit(format_status(rows))
-        raise typer.Exit(0 if all(row.health.ok for row in rows) else 1)
+        raise typer.Exit(0 if all(row.ok for row in rows) else 1)
 
     @app.command(
         name="consolidate",
