@@ -1,0 +1,613 @@
+# S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand
+
+**Verdict:** PASS
+**Date:** 2026-08-15  (cluster: k3s v1.34, mixed arm64/amd64)
+
+## What was tested
+
+The headline Podbench connection path — a full OpenSSH transport whose only carrier is
+`kubectl exec`, with no port-forward, no Service, and no pod IP reachability:
+
+```
+Host podbench-target
+  ProxyCommand kubectl -n podbench-s1 exec -i podbench-target -c podbench -- /usr/sbin/sshd -i -e
+  User root
+```
+
+Everything ran in namespace `podbench-s1` against one pod, `podbench-target`
+(`debian:bookworm-slim`, `sleep infinity`, `nodeSelector: kubernetes.io/arch=amd64`,
+scheduled to `nuc2`), with an **ephemeral** debug container `podbench` attached via
+`kubectl debug --target=app`. openssh-server `1:9.2p1-2+deb12u10` was `apt-get`-installed
+into the running ephemeral container. Local client: OpenSSH 9.6p1 in the devcontainer.
+
+Tested, in order:
+
+1. Remote command execution, exit-code propagation.
+2. Interactive PTY session (`ssh -tt`), full login banner + `/dev/pts/0`.
+3. Binary-clean transfer: `scp`, `sftp`, `ssh 'cat > f'` (stdin), `ssh 'cat f'` (stdout) — 3 MiB random.
+4. Concurrency: 3-way and 8-way simultaneous sessions, each over its own `kubectl exec`.
+5. **stdio framing matrix** — 8 ProxyCommand variants isolating why `-e` is required, plus a
+   sshd-free minimal experiment that identifies the actual mechanism (see Findings §2).
+6. Latency (8 cold connections) and throughput (64 MiB each way), plus `ControlMaster` reuse.
+7. Robustness: 90 s and 600 s idle; hard transport kill; **stalled** transport with and without
+   `ServerAliveInterval`.
+8. VS Code Remote-SSH requirements: >1 MiB `bash -c` stdout streaming (8 MiB + a 14.9 MiB
+   byte-exact hash check), plus a **real** end-to-end bootstrap — downloaded and ran
+   `vscode-server` 1.133.0 inside the pod through the ssh transport, reached its HTTP endpoint
+   and completed a **WebSocket 101 upgrade** over `ssh -L`.
+9. `ssh -L`, `ssh -R`, `ssh -D` (SOCKS) and agent forwarding (`-A`) over the transport.
+10. Minimal working `sshd_config`; `/run/sshd`, `UsePAM`, `PidFile`, `LogLevel` behaviour.
+11. `sshd -i` under a **non-root** uid (uid 1000 via `setpriv`).
+
+## Exact commands that worked
+
+### Namespace, target pod, ephemeral debug container
+
+```bash
+kubectl create ns podbench-s1
+```
+
+`target.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: podbench-target
+  namespace: podbench-s1
+  labels: {app: podbench-target}
+spec:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  containers:
+    - name: app
+      image: debian:bookworm-slim
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh","-c","sleep infinity"]
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: "2", memory: 1Gi}
+```
+
+```bash
+kubectl apply -f target.yaml
+timeout 180 kubectl -n podbench-s1 wait --for=condition=Ready pod/podbench-target --timeout=170s
+
+# --custom takes a FILE PATH, not inline JSON (see Deviations)
+cat > custom-profile.json <<'EOF'
+{"securityContext":{"capabilities":{"add":["SYS_PTRACE"]}}}
+EOF
+
+timeout 240 kubectl -n podbench-s1 debug podbench-target \
+  --image=debian:bookworm-slim \
+  --image-pull-policy=IfNotPresent \
+  --container=podbench \
+  --target=app \
+  --profile=general \
+  --custom=custom-profile.json \
+  -- sleep infinity
+```
+
+### Provision sshd inside the ephemeral container
+
+```bash
+ssh-keygen -t ed25519 -N "" -f ./s1_id_ed25519 -C podbench-s1
+
+timeout 300 kubectl -n podbench-s1 exec podbench-target -c podbench -- sh -c '
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq && apt-get install -y -qq openssh-server'
+
+PUB=$(cat s1_id_ed25519.pub)
+timeout 120 kubectl -n podbench-s1 exec podbench-target -c podbench -- sh -c "
+  ssh-keygen -A
+  mkdir -p /root/.ssh /run/sshd          # /run/sshd is MANDATORY (privsep dir)
+  chmod 700 /root/.ssh; chmod 0755 /run/sshd
+  printf '%s\n' '$PUB' > /root/.ssh/authorized_keys
+  chmod 600 /root/.ssh/authorized_keys"
+```
+
+### Minimal working sshd_config
+
+```bash
+kubectl -n podbench-s1 exec -i podbench-target -c podbench -- \
+  sh -c 'cat > /etc/ssh/sshd_config.minimal' <<'EOF'
+HostKey /etc/ssh/ssh_host_ed25519_key
+PermitRootLogin prohibit-password
+AuthorizedKeysFile /root/.ssh/authorized_keys
+UsePAM no
+Subsystem sftp /usr/lib/openssh/sftp-server
+EOF
+
+kubectl -n podbench-s1 exec podbench-target -c podbench -- \
+  /usr/sbin/sshd -t -f /etc/ssh/sshd_config.minimal   # -> CONFIG_OK
+```
+
+Five lines. No `PidFile` directive is needed (`-i` mode never writes one — verified:
+`/run/sshd.pid` absent after many sessions). `UsePAM no` works and removes the PAM
+dependency entirely. Debian's stock `/etc/ssh/sshd_config` also works unmodified.
+
+### The ssh client config that works
+
+```
+Host podbench-target
+  HostName podbench-target
+  User root
+  IdentityFile /abs/path/s1_id_ed25519
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /abs/path/s1_known_hosts
+  ProxyCommand kubectl -n podbench-s1 exec -i podbench-target -c podbench -- /usr/sbin/sshd -i -e -f /etc/ssh/sshd_config.minimal -o LogLevel=ERROR
+```
+
+### (a) remote command, (b) PTY, exit codes
+
+```bash
+$ ssh -F s1_cfg_min podbench-target hostname
+podbench-target
+$ ssh -F s1_cfg_min podbench-target hostname 2>/dev/null | od -c   # stdout is clean
+0000000   p   o   d   b   e   n   c   h   -   t   a   r   g   e   t  \n
+
+$ printf 'tty\nexit\n' | ssh -tt -F s1_cfg_min podbench-target
+... full Debian login banner ...
+root@podbench-target:~# tty
+/dev/pts/0
+root@podbench-target:~# exit
+logout
+
+$ ssh -F s1_cfg_e podbench-target 'exit 42'; echo $?
+42
+```
+
+### (c) binary-clean transfer — all four paths, identical sha256
+
+```bash
+head -c 3145728 /dev/urandom > blob.bin        # b2df03aa...c87df
+scp -F s1_cfg_e blob.bin podbench-target:/tmp/blob.bin
+ssh -F s1_cfg_e podbench-target 'sha256sum /tmp/blob.bin'      # b2df03aa...c87df
+
+sftp -F s1_cfg_e -b - podbench-target <<'EOF'
+get /tmp/blob.bin blob.down.bin
+EOF
+sha256sum blob.down.bin                                        # b2df03aa...c87df
+
+ssh -F s1_cfg_e podbench-target 'cat > /tmp/blob2.bin' < blob.bin
+ssh -F s1_cfg_e podbench-target 'sha256sum /tmp/blob2.bin'     # b2df03aa...c87df
+
+ssh -F s1_cfg_e podbench-target 'cat /tmp/blob.bin' > blob3.bin
+sha256sum blob3.bin                                            # b2df03aa...c87df
+```
+
+### (d) concurrency — 8 simultaneous sessions
+
+```bash
+for i in $(seq 1 8); do
+  ( ssh -F s1_cfg_min podbench-target "echo S$i-\$\$; sleep 8; echo E$i" > conc_$i.txt ) &
+done
+sleep 4
+kubectl -n podbench-s1 exec podbench-target -c podbench -- \
+  sh -c 'ps -eo args --no-headers | grep -c "[s]shd:"'    # -> 9 (8 sessions + the probe's own)
+wait
+# all 8 files contain both their S and E lines: 8/8
+```
+
+### Latency and throughput
+
+```bash
+for i in $(seq 1 8); do
+  s=$(date +%s.%N); ssh -F s1_cfg_e podbench-target true; e=$(date +%s.%N)
+  echo "$e - $s" | bc
+done
+```
+
+### ControlMaster (6x speedup, one kubectl exec for many sessions)
+
+```
+  ControlMaster auto
+  ControlPath /tmp/s1cm/%C          # MUST be short: sun_path limit is 108 bytes
+  ControlPersist 120
+```
+
+### Robustness probes
+
+```bash
+# 90 s and 600 s idle, keepalives explicitly disabled
+ssh -F s1_cfg_e -o ServerAliveInterval=0 -o TCPKeepAlive=no podbench-target \
+  'echo START_$(date +%s); sleep 600; echo AFTER_IDLE600_$(date +%s)'
+
+# hard transport kill: SIGKILL the ProxyCommand mid-session
+kill -9 "$(cat /tmp/s1_proxy.pid)"
+
+# stalled transport: SIGSTOP the ProxyCommand mid-session
+kill -STOP "$(cat /tmp/s1_proxy.pid)"
+ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 ...
+```
+
+### VS Code Remote-SSH end-to-end (real vscode-server, not a simulation)
+
+```bash
+# 1. large stdout through a non-interactive `bash -c` — byte-exact
+ssh -F s1_cfg_e podbench-target 'bash -c "seq 1 2000000"' > s1_seq.txt
+sha256sum s1_seq.txt ; seq 1 2000000 | sha256sum
+# d2d7c0abc3eb76d91b0b5a2702e92a9f2908269c9c1b3604bdfe2521c71d6274  (both) - 14,888,896 bytes
+
+# 2. server bootstrap, piped script over ssh — exactly the Remote-SSH shape
+cat > bootstrap.sh <<'EOS'
+set -e
+export DEBIAN_FRONTEND=noninteractive
+command -v curl >/dev/null || apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+mkdir -p /root/.vscode-server/bin && cd /root/.vscode-server
+curl -fsSL -o server.tar.gz "https://update.code.visualstudio.com/latest/server-linux-x64/stable"
+tar -xzf server.tar.gz
+./vscode-server-linux-x64/bin/code-server --version
+EOS
+ssh -F s1_cfg_min podbench-target 'bash -s' < bootstrap.sh
+# -> 224,027,728 byte tarball downloaded from inside the pod; version 1.133.0
+#    commit a5b500951314efd502d07465bd138dfbd714a960
+
+# 3. start it, detached, on pod loopback
+COMMIT=a5b500951314efd502d07465bd138dfbd714a960
+ssh -F s1_cfg_min podbench-target "
+  mv /root/.vscode-server/vscode-server-linux-x64 /root/.vscode-server/bin/$COMMIT
+  nohup /root/.vscode-server/bin/$COMMIT/bin/code-server \
+    --accept-server-license-terms --telemetry-level off \
+    --host 127.0.0.1 --port 9922 --without-connection-token --start-server \
+    >/tmp/vscode-server.log 2>&1 &
+  sleep 12; tail -20 /tmp/vscode-server.log"
+# -> "Server bound to 127.0.0.1:9922 (IPv4)" / "Extension host agent started."
+#    and it SURVIVES session close (still listening on a later connection)
+
+# 4. reach it through the ssh tunnel — HTTP and WebSocket
+ssh -F s1_cfg_min -N -L 19922:127.0.0.1:9922 podbench-target &
+curl -s http://127.0.0.1:19922/version
+# a5b500951314efd502d07465bd138dfbd714a960     (HTTP 200)
+curl -s -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+     -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+     'http://127.0.0.1:19922/?reconnectionToken=x&reconnection=false&skipWebSocketFrames=false'
+# HTTP/1.1 101 Switching Protocols
+# Upgrade: websocket
+# Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+### -R, -D and agent forwarding
+
+```bash
+ssh -F s1_cfg_min -N -D 11080 podbench-target &
+curl -s --socks5-hostname 127.0.0.1:11080 http://127.0.0.1:9911/     # HELLO_FROM_POD_HTTP
+
+python3 -m http.server 18099 --bind 127.0.0.1 &                       # on the devcontainer
+ssh -F s1_cfg_min -N -R 18100:127.0.0.1:18099 podbench-target &
+ssh -F s1_cfg_min podbench-target \
+  'python3 -c "import urllib.request;print(urllib.request.urlopen(\"http://127.0.0.1:18100/\",timeout=8).status)"'
+# 200
+
+eval "$(ssh-agent -s)"; ssh-add s1_id_ed25519
+ssh -A -F s1_cfg_min podbench-target 'echo $SSH_AUTH_SOCK; ls -l $SSH_AUTH_SOCK'
+# SSH_AUTH_SOCK=/tmp/ssh-RPH4ceNbtL/agent.5365   srwxr-xr-x 1 root root 0 ...
+```
+
+## Findings
+
+### 1. The headline path works, exactly as the brief writes it
+
+Every task in the brief passed. Remote commands, PTY sessions, `scp`/`sftp`, stdin/stdout
+binary pipes, exit codes, 8-way concurrency, `-L`/`-R`/`-D` forwarding, agent forwarding,
+`ControlMaster` multiplexing, and a real vscode-server bootstrap all work over a transport
+whose entire carrier is `kubectl exec`. `stdout` is byte-exact in both directions
+(sha256 verified on 3 MiB random and 14.9 MiB deterministic payloads).
+
+### 2. `-e` IS required — and the reason is NOT what the brief implies
+
+The brief treats `-e` as "log to stderr so stderr noise does not pollute the SSH stream".
+That framing is wrong in an important way. The measured behaviour:
+
+| ProxyCommand | result |
+|---|---|
+| `-- /usr/sbin/sshd -i -e` | **works** |
+| `-- /usr/sbin/sshd -i -E /tmp/sshd.log` | **works** |
+| `-- /usr/sbin/sshd -i` (syslog) | **FAILS**, reproducibly |
+| `-- sh -c '/usr/sbin/sshd -i'` (shell **forks**, stays alive) | **works** |
+| `-- sh -c 'exec /usr/sbin/sshd -i'` | **FAILS** |
+| `-- sh -c 'exec /usr/sbin/sshd -i -e 2>&1'` (stderr merged into stdout) | **FAILS** |
+| `-- sh -c 'echo hello; exec /usr/sbin/sshd -i -e'` (pre-banner stdout noise) | **works** |
+
+Failure text in every failing case, identical:
+
+```
+command terminated with exit code 255
+ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Broken pipe
+```
+
+`ssh -vv` shows the handshake dying at `debug1: expecting SSH2_MSG_KEX_ECDH_REPLY` — i.e. the
+server side vanishes immediately after KEXINIT, before any auth.
+
+**Root cause, isolated with a sshd-free experiment.** The CRI exec stream is torn down when
+the exec'd process closes or replaces its **stderr**:
+
+```bash
+# A: control — stderr left alone
+( echo one; sleep 4; echo two ) | kubectl -n podbench-s1 exec -i podbench-target -c podbench -- sh -c 'exec cat'
+one
+two                # both arrive
+
+# B: stderr replaced with /dev/null  (exactly what sshd does without -e/-E)
+( echo one; sleep 4; echo two ) | kubectl -n podbench-s1 exec -i podbench-target -c podbench -- sh -c 'exec 2>/dev/null; exec cat'
+one                # "two" is SILENTLY LOST, rc=0
+
+# C: stderr closed outright
+( echo one; sleep 4; echo two ) | kubectl -n podbench-s1 exec -i podbench-target -c podbench -- sh -c 'exec 2>&-; exec cat'
+one                # same silent truncation, rc=0
+```
+
+**Measured:** closing/replacing fd 2 in an exec'd process silently kills the exec stream on
+this cluster (experiments A/B/C above, plus the full matrix).
+**Inferred (consistent with every observation, from OpenSSH's inetd path):** sshd's
+`server_accept_inetd()` calls `stdfd_devnull(1, 1, !log_stderr)`, so without `-e`/`-E` it
+points fd 2 at `/dev/null`; the CRI stderr pipe reaches EOF and containerd tears the *whole*
+exec session down, killing stdin/stdout mid-KEX. `-E <file>` works because sshd's option
+parser falls `-E` through to `-e`, also setting `log_stderr = 1`, so fd 2 survives.
+`sh -c 'sshd -i'` (no `exec`) works because the parent shell keeps fd 2 open on sshd's behalf.
+
+Two consequences the brief does not anticipate:
+
+* **`-e` is load-bearing for fd-2 *ownership*, not for log routing.** Any future change that
+  "cleans up" the logging (e.g. `>/dev/null 2>&1` in a wrapper, or a wrapper that closes stderr)
+  will break the transport in a way that looks like a network fault.
+* **Case B/C fail silently with rc=0 and no diagnostic.** This exact mode — an exec whose
+  stderr gets closed — will silently truncate any `kubectl exec` stream, not just ssh.
+
+### 3. What actually pollutes the stream, and what does not
+
+* **Merging sshd's stderr into stdout is fatal** (`sh -c 'exec sshd -i -e 2>&1'`) — log lines land
+  mid-protocol and the client dies with the same `Broken pipe`.
+* **Pre-banner stdout noise is tolerated**, per RFC 4253 §4.2. Measured exactly:
+
+  | lines printed before sshd starts | result |
+  |---|---|
+  | 1 / 10 / 1023 | works |
+  | 1024 | `banner exchange: Connection to UNKNOWN port 65535: invalid format` |
+  | 2000 | same |
+
+  So a debug image whose entrypoint prints a MOTD is fine up to 1023 lines. Anything a
+  wrapper writes to stdout *after* sshd starts is fatal.
+* **`kubectl exec -it` (with `-t`) did not break here — but only by luck.** In a non-tty
+  context kubectl printed `Unable to use a TTY - input is not a terminal or the right kind of
+  file` on stderr and fell back to non-tty, so the session worked. When a **real** TTY was
+  forced onto the ProxyCommand (`script -q -c "kubectl exec -it ..." /dev/null`), the ssh
+  client **hung indefinitely** and had to be killed at the 2-minute mark. `-t` must never
+  appear in the ProxyCommand.
+* With `-e`, sshd's own log lines appear on the *ssh client's* stderr
+  (`Accepted publickey for root from UNKNOWN port 65535 ...`). This is harmless for a human
+  but is noise a Remote-SSH client parses. `-e -o LogLevel=ERROR` (or `QUIET`/`FATAL`) gives
+  **zero** stderr bytes and still keeps fd 2 open — verified.
+
+### 4. Latency and throughput are good enough for interactive work
+
+| measurement | value |
+|---|---|
+| `ssh ... true`, cold connection, 8 runs | 0.320 – 0.377 s (median ≈ 0.345 s) |
+| bare `kubectl exec ... true`, 3 runs | 0.151 – 0.157 s |
+| ssh overhead over raw exec | ≈ 0.19 s |
+| `ssh ... true` over an established `ControlMaster` | **0.058 – 0.062 s** |
+| 64 MiB pod → client | 2.50 s (≈ 26 MB/s) |
+| 64 MiB client → pod | 4.94 s (≈ 13 MB/s) |
+| RSS per live session (`sshd: root@notty`) | ≈ 10–11 MB |
+| 30 sequential cold connections (churn) | **0/30 failures**, mean 0.323 s |
+
+No process leaks: after ~60 sessions (churn + concurrency + forwarding tests) the devcontainer
+had zero orphaned `kubectl exec` processes beyond the ones still intentionally running, and the
+pod had exactly one `sshd:` process (the still-open idle test). Sessions tear down cleanly on
+both sides.
+
+`ControlMaster` is a ~6x win on connection setup and collapses N sessions onto **one**
+`kubectl exec`, which also removes N-fold apiserver exec load.
+
+### 5. Robustness
+
+* **Idle:** a session with `ServerAliveInterval=0` and `TCPKeepAlive=no` survived **90 s**
+  and **600 s** of complete silence and then delivered its trailing output. There is no
+  short idle timeout on the k3s exec path. Observed:
+  ```
+  START_1786791739
+  AFTER_IDLE600_1786792339      # exactly 600 s later, rc=0, no reconnect
+  ```
+* **Hard transport loss** (SIGKILL the ProxyCommand): detected **instantly** (0 s),
+  `client_loop: send disconnect: Broken pipe`, `rc=255`. Clean failure, no hang.
+* **Stalled transport** (SIGSTOP the ProxyCommand — the pipe stays open but nothing flows,
+  which is what an apiserver/konnectivity hiccup looks like):
+  * without keepalives: **ssh hangs forever** (killed by an external 100 s timeout, `rc=124`).
+  * with `ServerAliveInterval=5 ServerAliveCountMax=3`: detected in **19 s**,
+    `Timeout, server podbench-target not responding.`, `rc=255`.
+
+  So `ServerAliveInterval` is not optional — it is the *only* thing that distinguishes a
+  wedged transport from a long-running quiet command.
+* **Pod deleted mid-session:** detected **instantly** (0 s) and cleanly —
+  `command terminated with exit code 137` from kubectl, then
+  `client_loop: send disconnect: Broken pipe`, `rc=255`. No hang, no zombie exec.
+* Sessions are fully independent: each one is its own `kubectl exec` and its own `sshd`
+  process, so there is no shared `MaxStartups`/`MaxSessions` ceiling and one dead session
+  cannot take out another. (With `ControlMaster` this is traded away deliberately — one
+  transport death takes all multiplexed channels.)
+
+### 6. VS Code Remote-SSH needs more than plain ssh, and it all works
+
+Beyond a working `ssh`, Remote-SSH needs (a) a large non-interactive `bash -c` stdout stream
+for the bootstrap script, (b) working **local port forwarding** to reach the server it starts,
+and (c) `ControlMaster` reuse. All three verified:
+
+* 8 MiB base64 and a 14.9 MiB `seq 1 2000000` both streamed byte-exact through
+  `ssh 'bash -c "..."'`.
+* The real `vscode-server` 1.133.0 (224 MB tarball, downloaded by the pod itself over cluster
+  egress) started on pod loopback, **survived session close** (`nohup`+`&` detaches cleanly
+  from the dying exec session), served `GET /version` → 200 through `ssh -L`, and completed a
+  **WebSocket `101 Switching Protocols`** handshake through the same tunnel. That is the exact
+  channel the VS Code UI uses.
+* `ssh -R` and `ssh -D` also work, so VS Code's "forward a port from the remote" feature and
+  any SOCKS-based tooling are available too.
+
+### 7. `sshd -i` prerequisites in a scratch container
+
+* **`/run/sshd` must exist.** Without it every connection dies with
+  `Missing privilege separation directory: /run/sshd` (also `sshd -t` fails). This is the
+  single most likely image-build omission — `apt-get install openssh-server` creates it, but
+  a `mkdir /run` tmpfs remount or a distroless/scratch layout will not.
+* **Host keys must exist** (`ssh-keygen -A`), otherwise there is nothing to offer at KEX.
+* **No PidFile is written** in `-i` mode — `PidFile none` is unnecessary.
+* **`UsePAM no` works**, so the image needs no PAM stack. Debian's default `UsePAM yes` also
+  works when the package's PAM files are present.
+* `PermitRootLogin prohibit-password` (Debian's default) is sufficient for key auth as root.
+* RBAC needed: `create pods/exec` plus `get pods` in the namespace. Nothing else — no
+  Services, no NetworkPolicy holes, no pod IP reachability.
+
+### 8. `sshd -i` works as a NON-ROOT uid, and then needs no privsep dir at all
+
+Tested by running sshd under uid 1000 via `setpriv` (approximating a debug container with
+`runAsUser: 1000`, i.e. a PSA-`restricted` namespace):
+
+```
+ProxyCommand kubectl -n podbench-s1 exec -i podbench-target -c podbench -- \
+  setpriv --reuid=1000 --regid=1000 --clear-groups \
+  /usr/sbin/sshd -i -e -f /home/dev/etc/sshd_config
+```
+
+with a user-owned config:
+
+```
+HostKey /home/dev/etc/ssh_host_ed25519_key
+AuthorizedKeysFile /home/dev/.ssh/authorized_keys
+UsePAM no
+StrictModes no
+PidFile none
+Subsystem sftp /usr/lib/openssh/sftp-server
+```
+
+Result: remote command (`uid=1000(dev) gid=1000(dev)`, `pwd=/home/dev`), `scp` (rc=0) and a
+PTY session (`/dev/pts/0`) all worked — **with `/run/sshd` deleted**. sshd skips privilege
+separation when it is not root, so the privsep directory is a root-only requirement.
+Re-verified in the same breath: with `/run/sshd` still absent, the **root** ProxyCommand
+failed immediately (`Connection closed by UNKNOWN port 65535`).
+
+This matters a lot for the product: Podbench does not need a root debug container to provide
+the ssh transport. Root is only needed for the *debugging* capabilities (ptrace, `/proc/<pid>/root`),
+not for the connection path.
+
+## Deviations from the brief
+
+1. **`kubectl debug --custom` takes a file path, not inline JSON.** The brief's phrasing
+   ("`--custom` profile JSON `{...}`") reads as inline. It is not:
+   ```
+   error: must pass a container spec json file for custom profile:
+   open {"securityContext":{"capabilities":{"add":["SYS_PTRACE"]}}}: no such file or directory
+   ```
+   Podbench's CLI must write the profile to a temp file (or use `--profile=` + a manifest patch).
+
+2. **`-e` is not about log tidiness — it is about keeping fd 2 open so the CRI exec stream
+   stays alive.** See Findings §2. `-E <file>` is equally valid (it implies `log_stderr=1`),
+   and `-e -o LogLevel=ERROR` gives both a live fd 2 and a silent stderr. Any implementation
+   that wraps sshd and redirects/closes stderr will break the transport with a misleading
+   "Broken pipe". This is the single most valuable thing this spike found.
+
+3. **A wrapper shell that does not `exec` masks the bug.** `sh -c '/usr/sbin/sshd -i'` works
+   even without `-e`, purely because the parent shell holds fd 2. If Podbench ships a wrapper
+   script, this will hide the fd-2 requirement in testing and then surface it the day someone
+   adds `exec` for tidiness. Pin the invocation and add a regression test.
+
+4. **The brief's ProxyCommand omits `-n <namespace>` and `-f <sshd_config>`.** In practice the
+   generated config needs at least the namespace; and pointing at a dedicated
+   `sshd_config` (rather than mutating the distro one) keeps the image's normal sshd usable.
+
+5. **`ControlPath` length matters.** `ControlPath` under a long scratch path failed with
+   `ControlPath too long ('...' >= 108 bytes)` — the AF_UNIX `sun_path` limit. Podbench must
+   put control sockets somewhere short (`/tmp/<short>/%C`), not next to the kubeconfig or in a
+   workspace directory.
+
+6. **`kubectl exec -t` is a latent footgun, not an obvious error.** It "works" from a script
+   (kubectl silently degrades to non-tty) and hangs forever from a terminal. Users
+   hand-editing the generated ssh config will hit this. Podbench should refuse `-t`.
+
+7. **The brief assumes plain ssh is the bar; VS Code additionally needs port forwarding.**
+   `-L` is mandatory (that is how the UI reaches the server) and it works — which is what makes
+   the "no port-forward, no pod IP" claim hold: the *ssh* connection carries the VS Code
+   traffic, so `kubectl port-forward` is genuinely unnecessary.
+
+8. **Everything here lives in an ephemeral container, which cannot be restarted or removed.**
+   The apt-installed sshd, host keys and `authorized_keys` are lost if the pod restarts, and
+   the ephemeral container spec is immutable. Fine for a spike; for the product this argues for
+   a purpose-built image rather than runtime `apt-get`, and for accepting that a pod restart
+   means re-attaching a new debug container (with **new host keys** — see below).
+
+9. **Host key identity is unsolved.** `ssh-keygen -A` generates fresh keys per attach, and the
+   `Host` alias is arbitrary, so `known_hosts` either warns on every new pod or must be
+   bypassed. This spike used `StrictHostKeyChecking no` + a throwaway `UserKnownHostsFile`.
+   A real design needs either a per-pod `HostKeyAlias` keyed on pod UID, or a host key
+   delivered from a Secret so it is stable across re-attaches. Not covered by the brief.
+
+## Recommendations for implementation
+
+1. **Ship this ProxyCommand shape:**
+   ```
+   ProxyCommand kubectl -n <ns> exec -i <pod> -c podbench -- \
+     /usr/sbin/sshd -i -e -f /etc/podbench/sshd_config -o LogLevel=ERROR
+   ```
+   `-i` and `-e` are both mandatory. `-o LogLevel=ERROR` keeps the client's stderr clean for
+   Remote-SSH while preserving the fd-2 lifeline. Never `-t`. Never redirect sshd's stderr.
+   Add a unit/e2e test that asserts the transport dies without `-e`, so the reason is documented
+   in code.
+
+2. **Bake into the image, do not `apt-get` at runtime:** `openssh-server`, `/run/sshd`
+   (created at container start, since `/run` is often tmpfs), a 5-line
+   `/etc/podbench/sshd_config`, and the sftp subsystem binary (needed for `scp`/`sftp`, which
+   VS Code also uses for file upload).
+
+3. **Default the generated ssh config to:**
+   ```
+   ServerAliveInterval 15
+   ServerAliveCountMax 3
+   ControlMaster auto
+   ControlPath /tmp/podbench-cm/%C
+   ControlPersist 10m
+   IdentitiesOnly yes
+   ```
+   `ServerAliveInterval` converts an invisible hang into a 45 s failure; `ControlMaster` cuts
+   per-command latency from 345 ms to 58 ms and collapses apiserver exec load. Create
+   `/tmp/podbench-cm` (mode 0700) at config-generation time and keep the path short.
+
+4. **Deliver the host key from a Secret**, mounted into the debug container, so the pod's
+   identity is stable across re-attaches; then `StrictHostKeyChecking yes` becomes usable and
+   the tool stops teaching users to disable host verification. Failing that, set
+   `HostKeyAlias` to the pod UID and manage `known_hosts` entries programmatically.
+
+5. **Do not expose a Service or port-forward for the VS Code server.** `ssh -L` over this
+   transport carries both HTTP and WebSocket correctly, which is the whole security argument
+   of the design; it is empirically sound.
+
+6. **Treat "no stderr" as the tripwire.** Because a closed CRI stderr silently truncates the
+   stream with `rc=0`, add a startup self-check: run `kubectl exec -i ... -- sh -c 'exec cat'`
+   with a delayed second line and confirm both lines return before declaring the pod ready.
+
+7. **Do not require a root debug container for the transport.** Findings §8 shows `sshd -i`
+   works fine as uid 1000 with a user-owned host key and config, and then does not need
+   `/run/sshd` at all. Make the sshd config path and host-key location user-relative
+   (`$HOME/.podbench/`) so the same image serves both root and PSA-`restricted` deployments;
+   gate only the ptrace/`/proc` features on root.
+
+8. **Follow-up spikes worth running:** (a) an actual PSA-`restricted` namespace end-to-end
+   (this namespace carried no PSA labels, so `runAsNonRoot`/`seccompProfile` admission was
+   never exercised — only the non-root *runtime* behaviour was); (b) behaviour when the pod is
+   deleted or evicted mid-session and how Remote-SSH's reconnect handles it; (c) whether
+   `kubectl exec` through konnectivity/an API gateway (rather than this flat k3s path) changes
+   the stall/idle numbers in §5.
+
+## What was left behind
+
+* Namespace `podbench-s1` — **left in place**, as instructed. Verified empty:
+  `kubectl -n podbench-s1 get all` → `No resources found`. It has no PSA labels.
+* Pod `podbench-target` (and its ephemeral `podbench` container) — **deleted**. It was the only
+  object ever created. Nothing else in the cluster was created, modified or deleted; no other
+  namespace, no node setting, no ArgoCD-managed resource was touched. Only read-only
+  `kubectl get/auth can-i/top` and `kubectl exec` into my own pod were used elsewhere.
+* No leftover local `kubectl exec` processes; `/tmp/s1cm` (ControlMaster sockets) removed.
+* Local scratch artifacts under
+  `/tmp/claude-0/.../scratchpad/spikes/` prefixed `s1_` (keypair `s1_id_ed25519{,.pub}`,
+  ssh configs `s1_cfg_*`, logs). Note: this scratchpad is shared with other concurrent spikes
+  and a non-prefixed `ssh_config` written early on was clobbered by another agent mid-run —
+  all S1 files were renamed with an `s1_` prefix afterwards.
