@@ -13,11 +13,21 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 description = "debugging container for kubernetes pods"
-# The one runtime dependency, and it is the CLI. typer pulls click and rich,
-# which is the whole point: the help a developer reads at 3 a.m. is part of the
-# product. Everything podbench does to a cluster still goes through `kubectl`,
-# so this buys no opinion about how to talk to Kubernetes.
-dependencies = ["typer>=0.12"]
+# Two runtime dependencies, and neither buys an opinion about Kubernetes.
+#
+# typer is the CLI. It pulls click and rich, which is the whole point: the help
+# a developer reads at 3 a.m. is part of the product. Everything podbench does
+# to a cluster still goes through `kubectl`.
+#
+# ruamel.yaml is for exactly one thing: `hotfix --print-values --values` reads a
+# service's own values file and emits it back whole, and a values file is mostly
+# comments explaining why each key is there. A parse-and-redump would hand the
+# user back a file that is no longer recognisably theirs, and hand-splicing YAML
+# text would put a block editor - flow style, anchors, tabs - between podbench
+# and a beamline's `volumes:` list, where the failure mode is a silently
+# unmounted data directory. Round-tripping is the only honest way to edit
+# somebody else's file. See docs/explanations/decisions/0005.
+dependencies = ["ruamel.yaml>=0.18", "typer>=0.12"]
 dynamic = ["version"]
 license.file = "LICENSE"
 readme = "README.md"

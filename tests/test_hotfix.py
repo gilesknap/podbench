@@ -1040,7 +1040,11 @@ def test_consolidate_pushes_and_records_the_branch() -> None:
     assert reread.consolidated_branch == "patch/beamtime-14"
     checklist = "\n".join(actions)
     assert "gh pr create" in checklist
+    # Both routes named, because a site is on one or the other and the claim
+    # outlives the boolean either way (#190).
+    assert f"{hotfix.SUBCHART_VALUES_KEY}.enabled=false" in checklist
     assert "hotfixProject.enabled=false" in checklist
+    assert "delete the claim" in checklist
 
 
 def test_consolidate_dry_run_pushes_nothing() -> None:
@@ -1936,6 +1940,306 @@ def test_no_from_pod_asks_the_cluster_nothing_at_all() -> None:
 
     assert code == 0
     assert runner.calls == []
+
+
+# -- --values: the whole file, not fragments to merge (#192) ---------------
+
+
+CHILD = """\
+# yaml-language-server: $schema=../../.helm-shared/values.schema.json
+
+ioc-instance:
+  # the image is the one thing this service really owns
+  image: ghcr.io/example/fastcs:2025.10.1
+  livenessExecutable: ""
+"""
+
+PARENT = """\
+global:
+  domain: p47
+
+# shared settings for every IOC on this beamline
+ioc-instance:
+  hostNetwork: true
+  volumes:
+    - name: beamline-data
+      hostPath:
+        path: /exports/mybeamline/data/
+  volumeMounts:
+    - name: beamline-data
+      mountPath: /exports/mybeamline/data/
+
+# shared setting for all legacy IOCs using the dev-c7 helm chart
+dev-c7:
+  hostNetwork: true
+"""
+
+
+def merged(child: str = CHILD, **kwargs: Any) -> tuple[dict[str, Any], list[str]]:
+    """``merged_values`` over the fixtures, parsed, with its notes."""
+    text, notes = hotfix.merged_values(
+        child, hotfix.values_snippet("api", ENTRY, gid="37887"), **kwargs
+    )
+    parsed = yaml.safe_load(text)
+    assert isinstance(parsed, dict)
+    return cast(dict[str, Any], parsed), notes
+
+
+def test_the_emitted_file_loses_nothing_the_input_had() -> None:
+    """The plan's first falsification, and the point of the whole mode: this is
+    pasted over the file it came from, so anything it drops is deployed gone."""
+    document, _ = merged()
+    before = yaml.safe_load(CHILD)
+    for key, value in before["ioc-instance"].items():
+        assert document["ioc-instance"][key] == value
+
+
+def test_the_comments_the_user_wrote_are_still_there() -> None:
+    """Which is why this reads YAML rather than re-dumping it. A values file is
+    mostly the reasons for its keys, and a file handed back without them is not
+    the file."""
+    text, _ = hotfix.merged_values(
+        CHILD, hotfix.values_snippet("api", ENTRY, gid="37887")
+    )
+    assert "# the image is the one thing this service really owns" in text
+    assert "# yaml-language-server:" in text
+
+
+def test_a_service_declaring_volumes_for_the_first_time_absorbs_the_shared_ones() -> (
+    None
+):
+    """The whole difficulty of #192, and it cost a cluster run to find.
+
+    A helm list *replaces* across the parent/child values merge; it does not
+    merge. `bl47p-ea-fastcs-01` declared no `volumes:` and so inherited
+    `beamline-data`; the moment podbench's values give it one, the inheritance
+    is gone. The live proof is `bl47p-mo-ioc-01`, which declares `dev-shm` and
+    whose running pod carries no `beamline-data` at all.
+    """
+    document, notes = merged(parent=PARENT)
+    volumes = document["ioc-instance"]["volumes"]
+    assert [entry["name"] for entry in volumes] == [
+        "beamline-data",
+        model.HOTFIX_CLAIM_VOLUME,
+        model.SEAT_HOME_VOLUME,
+    ]
+    assert document["ioc-instance"]["volumeMounts"][0]["name"] == "beamline-data"
+    # Absorbed, not silently: the emitted file now owns a key it used to inherit.
+    assert any("beamline-data" in note and "copied" in note for note in notes)
+
+
+def test_the_shared_files_comments_do_not_come_with_its_entries() -> None:
+    """Measured on p47-services. A ruamel comment attaches to the node *after*
+    it, so copying one entry out of the parent's list brought "shared setting
+    for all legacy IOCs" along and landed it in the middle of volumeMounts."""
+    text, _ = hotfix.merged_values(
+        CHILD, hotfix.values_snippet("api", ENTRY, gid="37887"), parent=PARENT
+    )
+    assert "legacy IOCs" not in text
+
+
+def test_no_parent_file_is_not_evidence_that_there_is_no_parent() -> None:
+    """The one thing the merge cannot decide, so the one thing it says out loud.
+
+    Absence of `--parent-values` looks exactly like a service with nothing to
+    inherit, and getting it wrong unmounts a beamline directory.
+    """
+    _, notes = merged()
+    assert any("--parent-values" in note for note in notes)
+
+
+def test_a_service_that_already_declares_volumes_keeps_its_own() -> None:
+    """Its own wins over the parent's - that is what declaring one means."""
+    child = CHILD + "  volumes:\n    - name: dev-shm\n      emptyDir: {}\n"
+    document, notes = merged(child, parent=PARENT)
+    names = [entry["name"] for entry in document["ioc-instance"]["volumes"]]
+    assert names[0] == "dev-shm"
+    assert "beamline-data" not in names
+    assert not any("volumes came from" in note for note in notes)
+    # volumeMounts is a separate key and this service still declares none, so
+    # that one is absorbed - the precedence is per key, not per file.
+    assert any("volumeMounts came from" in note for note in notes)
+    assert [e["name"] for e in document["ioc-instance"]["volumeMounts"]][0] == (
+        "beamline-data"
+    )
+
+
+def test_running_the_merge_twice_changes_nothing() -> None:
+    """Matched on `name`, which is what Kubernetes matches these on. A merge
+    that duplicated its own entries would be unusable on a values file that has
+    already been through it once - which is every re-run."""
+    snippet = hotfix.values_snippet("api", ENTRY, gid="37887")
+    once, _ = hotfix.merged_values(CHILD, snippet, parent=PARENT)
+    twice, _ = hotfix.merged_values(once, snippet, parent=PARENT)
+    assert yaml.safe_load(once) == yaml.safe_load(twice)
+
+
+def test_where_the_keys_go_is_read_from_the_files_and_then_named() -> None:
+    """Chart-agnostic: podbench does not know the target's chart. The shared
+    file declares `volumes:` under `ioc-instance`, which answers the question
+    for every service that inherits it."""
+    _, notes = merged(parent=PARENT)
+    assert any("ioc-instance" in note and "went under" in note for note in notes)
+
+
+def test_values_under_overrides_what_was_read() -> None:
+    document, notes = merged(under=["some-other-chart"])
+    assert "volumes" in document["some-other-chart"]
+    assert "volumes" not in document.get("ioc-instance", {})
+    assert any("--values-under" in note for note in notes)
+
+
+def test_the_merge_uses_the_key_names_it_was_given_and_not_the_convention() -> None:
+    """The plan's third falsification. `values_snippet` lets a chart rename all
+    five, so a merge that looked for `volumes` would quietly fail to absorb the
+    parent's on a chart that calls it something else."""
+    text, notes = hotfix.merged_values(
+        CHILD,
+        hotfix.values_snippet(
+            "api", ENTRY, gid="37887", volumes_key="disks", mounts_key="diskMounts"
+        ),
+        parent=PARENT.replace("volumes:", "disks:").replace(
+            "volumeMounts:", "diskMounts:"
+        ),
+        volumes_key="disks",
+        mounts_key="diskMounts",
+    )
+    document = yaml.safe_load(text)
+    assert [e["name"] for e in document["ioc-instance"]["disks"]][0] == "beamline-data"
+    assert any("disks" in note and "copied" in note for note in notes)
+
+
+def test_the_claim_key_goes_to_the_root_whatever_under_says() -> None:
+    """It is a subchart's values, and helm looks for those by chart name at the
+    root - not inside whatever mapping the target's pod template lives in."""
+    document, _ = merged(parent=PARENT)
+    assert document[hotfix.SUBCHART_VALUES_KEY] == {"enabled": True, "size": "2Gi"}
+    assert hotfix.SUBCHART_VALUES_KEY not in document["ioc-instance"]
+
+
+def test_the_central_route_still_reaches_the_root_too() -> None:
+    """`--central-claim` is the older namespace-wide list, and a site already on
+    it must still get a complete file."""
+    text, _ = hotfix.merged_values(
+        CHILD,
+        hotfix.values_snippet("api", ENTRY, gid="37887", central_claim=True),
+        parent=PARENT,
+    )
+    document = yaml.safe_load(text)
+    assert document["hotfixProject"]["claims"][0]["name"] == "api"
+    assert hotfix.SUBCHART_VALUES_KEY not in document
+
+
+def test_merged_values_reads_no_file_and_no_cluster() -> None:
+    """Strings in, a string out, for the same reason `values_snippet` takes no
+    cluster: it is what makes every shape of the output assertable without
+    either. `--values` is a wrapper, exactly as `--from-pod` is."""
+    parameters = inspect.signature(hotfix.merged_values).parameters
+    assert not [n for n in parameters if "pod" in n or "kube" in n]
+    referenced = set(hotfix.merged_values.__code__.co_names)
+    assert not {n for n in referenced if "kube" in n.lower()}
+    assert not referenced & {"open", "read_text", "Path", "write_text"}
+
+
+def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End to end through the CLI, and `--no-from-pod` so the run is offline."""
+    child = tmp_path / "values.yaml"
+    child.write_text(CHILD)
+    parent = tmp_path / "shared.yaml"
+    parent.write_text(PARENT)
+    runner = FakeRunner()
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "--no-from-pod",
+            "--entrypoint",
+            ENTRY,
+            "--gid",
+            "37887",
+            "--values",
+            str(child),
+            "--parent-values",
+            str(parent),
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 0
+    assert runner.calls == []
+    captured = capsys.readouterr()
+    document = yaml.safe_load(captured.out)
+    assert document["ioc-instance"]["image"] == "ghcr.io/example/fastcs:2025.10.1"
+    assert [e["name"] for e in document["ioc-instance"]["volumes"]][0] == (
+        "beamline-data"
+    )
+    assert document[hotfix.SUBCHART_VALUES_KEY]["enabled"] is True
+    # The notes are stderr, so stdout stays something a shell can redirect over
+    # the file it came from.
+    assert "beamline-data" in captured.err
+    assert "ioc-instance" in captured.err
+
+
+def test_the_merge_flags_mean_nothing_without_the_file_they_merge_into(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "--no-from-pod",
+            "--entrypoint",
+            ENTRY,
+            "--parent-values",
+            str(tmp_path / "shared.yaml"),
+        ],
+        # fmt: on
+        runner=FakeRunner(),
+    )
+    assert code == 2
+    assert "without it" in capsys.readouterr().err
+
+
+def test_a_values_file_that_is_not_there_is_refused_by_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "--no-from-pod",
+            "--entrypoint",
+            ENTRY,
+            "--values",
+            str(tmp_path / "nope.yaml"),
+        ],
+        # fmt: on
+        runner=FakeRunner(),
+    )
+    assert code == 2
+    assert "nope.yaml" in capsys.readouterr().err
+
+
+def test_values_snippet_has_no_file_dependency_either() -> None:
+    """#192's second falsification. The emitter stays pure; the merge is a
+    separate pure function and the reading is a wrapper over both."""
+    parameters = inspect.signature(hotfix.values_snippet).parameters
+    assert not [n for n in parameters if n in {"values", "path", "file", "parent"}]
+    referenced = set(hotfix.values_snippet.__code__.co_names)
+    assert not referenced & {"open", "read_text", "Path", "write_text"}
 
 
 def test_values_snippet_has_no_cluster_dependency() -> None:

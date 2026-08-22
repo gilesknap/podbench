@@ -1038,7 +1038,6 @@ seat, where the claim is already in this process's own mount namespace.
 
 ```
 
-
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
  Durable in-place fixes: the project on a claim beside the application, every change a commit, and
@@ -1070,6 +1069,18 @@ seat, where the claim is already in this process's own mount namespace.
 │                                      --no-from-pod turns it off)                                 │
 │ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
 │                                      offline machine, or a pod that does not exist yet           │
+│ --values                  PATH       the target service's own values file: emit it back whole    │
+│                                      with podbench's keys merged in, rather than a fragment to   │
+│                                      merge by hand                                               │
+│ --parent-values           PATH       a shared values file the service inherits from. A helm list │
+│                                      replaces rather than merges, so this is what stops a        │
+│                                      service declaring `volumes:` for the first time silently    │
+│                                      dropping the shared ones                                    │
+│ --values-under            KEY        dotted path to the mapping the target chart keeps its pod   │
+│                                      template keys under (`ioc-instance`). Read from the files   │
+│                                      when not given, and the output says where they went         │
+│ --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`      │
+│                                      entry instead of the podbench-hotfix-claim chart dependency │
 │ --claim-venv              NAME       the venv's directory name on the claim, which the emitted   │
 │                                      runtime switch looks for (default: .venv). Must match       │
 │                                      `hotfix init --claim-venv`                                  │
@@ -1086,7 +1097,6 @@ seat, where the claim is already in this process's own mount namespace.
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 ```
 
 | Sub-verb | Does |
@@ -1194,6 +1204,34 @@ Notes on `--print-values`:
   `failureThreshold` × `periodSeconds`. Without the warning that absence looks
   identical to the fastcs case, and the difference is whether a held pod
   survives.
+* **`--values PATH` emits the whole file, not a fragment.** Given the service's
+  own values file, podbench merges its keys into it and prints the result — the
+  same file, its comments intact, ready to be pasted back or redirected over
+  itself. The notes go to stderr so stdout stays exactly the file.
+
+  Three things it decides, and it says which on stderr each time:
+
+  * **where the keys go.** `ioc-instance` nests all five under an
+    `ioc-instance:` key; a chart with no subchart of its own has them at the
+    root. Read from the files — a file that already declares one of these keys
+    has answered the question, and a shared file that declares one has answered
+    it for every service that inherits it. `--values-under KEY` overrides.
+  * **what the service would otherwise have inherited.** A helm list *replaces*
+    across the parent/child values merge; it does not merge. A service declaring
+    `volumes:` for the first time therefore takes the shared one over completely,
+    and anything it inherited is silently gone. Pass the shared file with
+    `--parent-values PATH` and those entries are absorbed, with a comment in the
+    output saying why they are repeated. Without it, podbench says it cannot
+    tell — absence of a parent file looks exactly like a service with nothing to
+    inherit, and that is the one thing this cannot decide for you.
+  * **which claim route.** The `podbench-hotfix-claim` dependency by default;
+    `--central-claim` for the older namespace-wide `hotfixProject.claims[]`. The
+    claim's key goes to the root of the file either way, because it is a
+    subchart's values and helm looks for those by chart name.
+
+  Matching is by `name`, which is what Kubernetes matches volumes and mounts on,
+  so running it again over its own output changes nothing.
+
 * **A container already carrying the layout is unwrapped, not wrapped twice.**
   Re-emitting the values for a pod that is already hotfixed — after a chart bump,
   or to see what is deployed — is a normal thing to do, and a supervisor nested
@@ -1210,9 +1248,14 @@ Notes on `--print-values`:
   declare `dev-shm` alone and its pod carries six volumes — the chart's five and
   that one. A chart appends what the values give it, so what the chart generates
   for itself is unaffected either way and **must not be copied in here**;
-  doing so declares it twice. Podbench cannot do the merge itself and does not
-  pretend to: read from a live pod, a chart-generated volume and one the service
-  declared are indistinguishable.
+  doing so declares it twice. Read from a live pod podbench cannot do the merge
+  itself and does not pretend to: a chart-generated volume and one the service
+  declared for itself are indistinguishable from there.
+
+  **Read from the values file it is decidable, and `--values` does it.** The file
+  says exactly what the service declares and everything else came from the chart,
+  so there is nothing left to guess. Prefer it; the warning above is what is left
+  for a target whose values file you do not have.
 * `fsGroup` stays the literal placeholder `<the application's runAsGroup>` only
   where nothing could say what it should be: under `--no-from-pod` with no
   `--gid`, or against a pod that states `runAsUser` and no `runAsGroup`, which a

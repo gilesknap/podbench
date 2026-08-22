@@ -1,9 +1,20 @@
 """What is allowed to arrive on a cold ``uvx podbench`` start, and what is not.
 
-The rule used to be ``dependencies = []``. It is now "the CLI, and nothing else":
+The rule used to be ``dependencies = []``, then "the CLI, and nothing else".
 typer earns its place because the help a developer reads at 3 a.m. is part of the
 product, and it costs one resolve of four small pure-Python wheels on a machine
 whose only promised tools are uv, helm, kubectl and VS Code.
+
+``ruamel.yaml`` is the second, and it was argued for here before it shipped
+(#192). ``hotfix --print-values --values`` reads a service's own values file and
+emits it back **whole**, and a values file is mostly comments explaining why each
+key is there. A parse-and-redump hands the user a file that is no longer
+recognisably theirs; splicing YAML *text* puts a block editor - flow style,
+anchors, tabs, comments between entries - between podbench and a beamline's
+``volumes:`` list, where the failure mode is a silently unmounted data directory.
+Round-tripping is the only honest way to edit somebody else's file, and nothing
+in the standard library does it. It is pure Python and it buys no opinion about
+Kubernetes, which is the part the rule is really protecting.
 
 What has not changed is the part the rule was really protecting. podbench talks
 to Kubernetes by shelling out to ``kubectl``, which is what makes kubeconfig
@@ -22,8 +33,11 @@ from __future__ import annotations
 import re
 from importlib.metadata import requires
 
-ALLOWED = {"typer"}
-"""Direct runtime requirements, by distribution name. See the module docstring."""
+ALLOWED = {"ruamel.yaml", "typer"}
+"""Direct runtime requirements, by distribution name. See the module docstring.
+
+The whole set and not a blocklist, deliberately: a new entry fails this test
+until somebody has written down why it is allowed."""
 
 
 def distribution_name(requirement: str) -> str:

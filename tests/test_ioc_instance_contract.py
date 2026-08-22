@@ -31,7 +31,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from podbench.hotfix import hotfix_claim, values_snippet
+from podbench.hotfix import hotfix_claim, merged_values, values_snippet
 from podbench.model import (
     HOTFIX_APP_PATH,
     HOTFIX_CLAIM_VOLUME,
@@ -180,3 +180,136 @@ def test_the_wrapped_probe_survives_the_render(statefulset: dict[str, Any]) -> N
 
 def test_fsgroup_reaches_the_pod_security_context(statefulset: dict[str, Any]) -> None:
     assert pod_spec(statefulset)["securityContext"]["fsGroup"] == GID
+
+
+# -- --values, rendered the way Argo renders it (#192) ----------------------
+
+
+SHARED = """\
+global:
+  domain: p47
+  location: bl47p
+
+ioc-instance:
+  hostNetwork: true
+  volumes:
+    - name: beamline-data
+      hostPath:
+        path: /exports/mybeamline/data/
+  volumeMounts:
+    - name: beamline-data
+      mountPath: /exports/mybeamline/data/
+"""
+"""What `p47-services/services/values.yaml` gives every IOC on the beamline."""
+
+SERVICE = """\
+ioc-instance:
+  image: ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1
+  livenessExecutable: ""
+  preStopExecutable: ""
+"""
+"""`bl47p-ea-fastcs-01` before podbench touched it: it declares no `volumes:`,
+which is exactly why it inherits `beamline-data` and exactly why declaring one
+for the first time is the dangerous move."""
+
+
+@pytest.fixture(scope="module")
+def merged_statefulset(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """`ioc-instance` rendered from a values file `--values` produced, whole.
+
+    Rendered the way `argocd-apps` 5.5.0 renders it - `-f ../values.yaml -f
+    values.yaml`, in that order, the service's own winning
+    (`Charts/argocd-apps/templates/_apps.tpl`). Rendering it any other way would
+    hide the very thing this is checking, because the failure mode is a list
+    that replaces rather than merges across exactly that boundary.
+    """
+    chart = tmp_path_factory.mktemp("merged")
+    (chart / "templates").mkdir()
+    (chart / "Chart.yaml").write_text(
+        "apiVersion: v2\n"
+        "name: ec-service\n"
+        "version: 1.0.0\n"
+        "type: application\n"
+        "dependencies:\n"
+        "  - name: ioc-instance\n"
+        f"    version: {CHART_VERSION}\n"
+        f'    repository: "{CHART_REPO}"\n'
+        "    import-values:\n"
+        "      - child: ioc-instance\n"
+        "        parent: ioc-instance\n"
+    )
+    (chart / "templates" / "ioc_instance.yaml").write_text(
+        '{{ include "ioc-instance" . }}\n'
+    )
+    (chart / "shared.yaml").write_text(SHARED)
+    emitted, _ = merged_values(
+        SERVICE,
+        values_snippet(APP, ENTRYPOINT, gid=str(GID), liveness_exec=LIVENESS),
+        parent=SHARED,
+    )
+    (chart / "values.yaml").write_text(emitted)
+
+    built = subprocess.run(
+        ["helm", "dependency", "build", str(chart)],
+        capture_output=True,
+        text=True,
+        cwd=chart,
+    )
+    if built.returncode != 0:
+        pytest.skip(f"cannot fetch {CHART_REPO}/ioc-instance: {built.stderr.strip()}")
+    rendered = subprocess.run(
+        # The service's own file last, as argocd-apps orders them.
+        ["helm", "template", APP, str(chart), "-f", "shared.yaml", "-f", "values.yaml"],
+        capture_output=True,
+        text=True,
+        cwd=chart,
+        check=True,
+    ).stdout
+    for doc in yaml.safe_load_all(rendered):
+        if doc and doc.get("kind") == "StatefulSet":
+            return cast(dict[str, Any], doc)
+    raise AssertionError("ioc-instance rendered no StatefulSet")
+
+
+def test_the_emitted_file_keeps_the_beamline_directory_it_inherited(
+    merged_statefulset: dict[str, Any],
+) -> None:
+    """The measurement #192 exists for, now asserted against the real chart.
+
+    `bl47p-ea-fastcs-01` declared no `volumes:` and inherited `beamline-data`
+    wholesale. A helm list replaces across the parent/child merge rather than
+    merging, so the emitted file declaring one takes that inheritance over
+    completely - and if it did not absorb the shared entry first, the IOC comes
+    back with its data directory silently unmounted.
+    """
+    volumes = {v["name"] for v in pod_spec(merged_statefulset)["volumes"]}
+    mounts = {m["name"] for m in container(merged_statefulset)["volumeMounts"]}
+    assert "beamline-data" in volumes
+    assert "beamline-data" in mounts
+
+
+def test_the_emitted_file_still_carries_everything_podbench_needs(
+    merged_statefulset: dict[str, Any],
+) -> None:
+    """Deployed as emitted, with no hand-editing - which is the acceptance test
+    for the whole workflow, not just for this merge."""
+    volumes = {v["name"] for v in pod_spec(merged_statefulset)["volumes"]}
+    assert {HOTFIX_CLAIM_VOLUME, SEAT_HOME_VOLUME} <= volumes
+    main = container(merged_statefulset)
+    assert main["command"] == ["bash", "-c"]
+    assert HOTFIX_HOLD_PATH in "\n".join(cast(list[str], main["args"]))
+    assert {
+        m["mountPath"] for m in main["volumeMounts"] if m["name"] == HOTFIX_CLAIM_VOLUME
+    } == {HOTFIX_APP_PATH}
+    assert pod_spec(merged_statefulset)["securityContext"]["fsGroup"] == GID
+
+
+def test_the_service_keeps_the_keys_it_had_before_podbench_touched_it(
+    merged_statefulset: dict[str, Any],
+) -> None:
+    """The plan's first falsification, through a real render rather than a diff."""
+    assert (
+        container(merged_statefulset)["image"]
+        == "ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1"
+    )
+    assert pod_spec(merged_statefulset)["hostNetwork"] is True
