@@ -2713,11 +2713,13 @@ the whole of whether a held pod survives.
 
 
 EXISTING_MOUNTS_WARNING = (
-    "podbench: {pod}'s {container!r} already mounts {mounts}. The `volumeMounts:` "
-    "and `volumes:` keys below *replace* the ones your chart renders, they do not "
-    "add to them - so merge these entries into what the service's values.yaml "
-    "already has rather than pasting over it. Anything chart-generated will come "
-    "back on its own; anything the service declares for itself will not."
+    "podbench: {pod}'s {container!r} already mounts {mounts}. Some of those come "
+    "from your chart and some from the service's own values; podbench cannot "
+    "tell which from here. The `volumes:` and `volumeMounts:` keys below are a "
+    "whole key each, so pasting them over a values file that already sets one "
+    "drops whatever it declared - merge into it rather than replacing it. What "
+    "the chart generates for itself is not affected either way, and must not be "
+    "copied in here."
 )
 """Said when the target carries volumes that are not podbench's.
 
@@ -2726,11 +2728,18 @@ Found by diffing `--from-pod`'s output against the hand-written values for
 and nothing else, so pasting it verbatim would have dropped that IOC's `dev-shm`
 and left it without `/dev/shm`.
 
-Podbench cannot merge them itself and must not pretend to: read from a live pod,
-a chart-generated volume and one the service declared for itself are
-indistinguishable, and emitting the chart's own back to it would duplicate what
-the next render produces anyway. Naming them and saying which way the key
-resolves is the whole of what can honestly be done here.
+The hazard is the *values file*, not the chart. Measured against `ioc-instance`
+5.6.1 on the same day: `bl47p-mo-ioc-01`'s values declare `dev-shm` alone, and
+its pod carries six volumes - the chart's five and that one. So a chart appends
+what the values give it, and what a paste destroys is the service's own key.
+Saying "replaces the ones your chart renders", as this warning first did, would
+send a reader to copy five chart-generated volumes into their values file and
+end up with them declared twice.
+
+Podbench cannot do the merge itself and must not pretend to: read from a live
+pod, a chart-generated volume and one the service declared are
+indistinguishable. Naming them and saying which key is at risk is the whole of
+what can honestly be done here.
 """
 
 
