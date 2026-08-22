@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.5.1.dev10+g0a65786c4 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.5.1.dev12+gdd69f722e documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=b1cf63ed"></script>
+    <script src="../_static/documentation_options.js?v=aa35fa67"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1601,12 +1601,16 @@ venv is shared but its interpreter is not. <code class="docutils literal notrans
 <li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired hotfixes” is
 a testable shutdown assertion.</p></li>
 </ul>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --venv-path /opt/venv
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --entrypoint &#39;myapp serve&#39;
 </pre></div>
 </div>
-<p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">hotfixVenv</span></code> values for the podbench
-release, and the volume, volumeMount and seeding initContainer for the
-application’s own chart.</p>
+<p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">hotfixProject</span></code> values for the podbench
+release, and five ordinary passthroughs for the application’s own chart — the
+claim and the seat’s home under <code class="docutils literal notranslate"><span class="pre">volumes</span></code>, the claim mounted <em>beside</em> the
+project at <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code> under <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code>, the supervisor as
+<code class="docutils literal notranslate"><span class="pre">command</span></code>/<code class="docutils literal notranslate"><span class="pre">args</span></code>, <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> under <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code>, and — when the target
+has one, named with <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> — its <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wrapped to honour the
+hold.</p>
 </section>
 </section>
 <hr class="docutils" />

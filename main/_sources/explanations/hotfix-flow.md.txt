@@ -282,7 +282,7 @@ podbench hotfix consolidate TARGET --branch fix/thing --venv /opt/venv [--dry-ru
      2. merge; let CI build and publish the image
      3. roll the workload onto it and confirm it is healthy
      4. remove the volume/volumeMount from the application's values
-     5. set hotfixVenv.enabled=false and delete the claim
+     5. set hotfixProject.enabled=false and delete the claim
 ```
 
 The PR is not opened here: that needs a forge client podbench does not depend on, and
