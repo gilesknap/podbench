@@ -51,10 +51,12 @@ the whole mode: silently-diverged pods are the risk it must never create.
 
 from __future__ import annotations
 
+import io
 import json
 import shlex
 import sys
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -62,6 +64,8 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
 
 import typer
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .cli import new_app, require_subcommand, run
 from .console import emit, paragraph
@@ -137,6 +141,12 @@ __all__ = [
     "pod_gid",
     "FROM_POD_ESCAPE",
     "EXISTING_MOUNTS_WARNING",
+    "SUBCHART_VALUES_KEY",
+    "merged_values",
+    "locate_keys",
+    "ABSORBED_FROM_PARENT_NOTE",
+    "NO_PARENT_NOTE",
+    "MERGED_UNDER_NOTE",
     "DEFAULT_GID_PLACEHOLDER",
     "metadata_changed",
     "normalise_interpreter",
@@ -2160,9 +2170,13 @@ def _retirement_checklist(
             "  2. merge, and let CI build and publish the image",
             f"  3. roll {workload} onto the new image and confirm it is healthy",
             "  4. remove the volume/volumeMount from the application's values",
-            "  5. set hotfixProject.enabled=false and delete the claim",
+            f"  5. turn the claim off: {SUBCHART_VALUES_KEY}.enabled=false, or "
+            "hotfixProject.enabled=false on the central route",
+            "  6. delete the claim. It is annotated Prune=false, so turning it "
+            "off leaves the object standing - which is the point, and makes "
+            "this a deliberate act rather than a side effect of a sync",
             "",
-            "until step 5 the claim keeps shadowing the image's venv, and "
+            "until step 6 the claim keeps shadowing the image's project, and "
             "`hotfix status` will report this pod as superseded.",
         ]
     )
@@ -2424,6 +2438,15 @@ def pod_gid(pod_json: Mapping[str, Any], container: str) -> str | None:
     return None if gid is None else str(gid)
 
 
+SUBCHART_VALUES_KEY = "podbench-hotfix-claim"
+"""The values key the ``podbench-hotfix-claim`` chart dependency reads.
+
+A subchart's values live under its chart name, so this is the name of the chart
+and not a choice - unless the target aliases the dependency, which is why every
+function that uses it takes it as an argument rather than reaching for the
+constant."""
+
+
 def values_snippet(
     app: str,
     entrypoint: str,
@@ -2441,6 +2464,8 @@ def values_snippet(
     args_key: str = "args",
     probe_key: str = "livenessProbe",
     security_key: str = "podSecurityContext",
+    claim_key: str = SUBCHART_VALUES_KEY,
+    central_claim: bool = False,
 ) -> str:
     """The values an application's chart needs, ready to paste.
 
@@ -2470,13 +2495,26 @@ def values_snippet(
     )
     probe = wrapped_liveness_probe(exec_command) if exec_command else None
     timings = probe_timings(liveness_probe)
-    header = [
-        f"# 1. values for the podbench release - creates the claim {claim}",
-        "hotfixProject:",
-        "  enabled: true",
-        "  claims:",
-        f"    - name: {app}",
-        f"      size: {size}",
+    header = (
+        [
+            f"# 1. values for the podbench release - creates the claim {claim}",
+            "hotfixProject:",
+            "  enabled: true",
+            "  claims:",
+            f"    - name: {app}",
+            f"      size: {size}",
+        ]
+        if central_claim
+        else [
+            f"# 1. the claim {claim}, from the podbench-hotfix-claim chart",
+            "#    dependency. The name is the release's, so this key is all the",
+            "#    service says; --central-claim emits the older namespace-wide",
+            "#    hotfixProject list instead.",
+            f"{claim_key}:",
+            "  enabled: true",
+            f"  size: {size}",
+        ]
+    ) + [
         "",
         f"# 2. values for {app}'s own chart. All five are ordinary passthroughs;",
         "#    the names below are the common convention, not a requirement.",
@@ -2561,6 +2599,394 @@ def values_snippet(
     )
 
 
+# -- merging into a target's own values file --------------------------------
+
+
+ABSORBED_FROM_PARENT_NOTE = (
+    "podbench: {key} came from {parent} and has been copied into this file. A "
+    "helm list replaces across the parent/child values merge, it does not merge "
+    "- so a service declaring {key} for the first time takes the shared one over "
+    "completely and anything it declared is silently gone. Copied: {names}."
+)
+"""Said when the merge absorbs the shared file's entries into the target's own.
+
+The live proof is ``bl47p-mo-ioc-01``, which declares ``dev-shm`` and whose
+running pod carries no ``beamline-data`` at all - the shared entry every other
+IOC on that beamline inherits. This is the difference between output that is
+correct and output that silently unmounts a beamline directory, so it is said
+out loud rather than done quietly."""
+
+NO_PARENT_NOTE = (
+    "podbench: {path} declares no {key} of its own, and no shared values file "
+    "was given. If this service inherits {key} from one, pass it with "
+    "--parent-values: the emitted file declares {key} for the first time, and a "
+    "helm list replaces across the parent/child merge rather than merging, so "
+    "an inherited entry would be silently dropped."
+)
+"""Said when the target declares no list and podbench cannot see whether one
+was inherited.
+
+Absence of a parent file is not evidence that there is no parent, and this is
+the one thing the merge genuinely cannot decide. It is the only case where the
+output may be wrong, so it is the only case that says so."""
+
+MERGED_UNDER_NOTE = (
+    "podbench: the application's keys went under {where}, {why}. "
+    "--values-under puts them somewhere else."
+)
+"""Where the five passthroughs were put, and why.
+
+An answer the user did not ask for is only acceptable if the output names it -
+the rule the auto-mount and the editor's folder choice already follow."""
+
+TOP_LEVEL = "the top level"
+"""How :data:`MERGED_UNDER_NOTE` spells an empty key path."""
+
+
+def _round_trip() -> YAML:
+    """A YAML round-tripper configured to leave somebody else's file alone.
+
+    Comments are why this is ``ruamel.yaml`` and not a parse-and-redump: a
+    values file is mostly comments explaining why each key is there, and handing
+    one back without them is not "the whole file". Round-tripping keeps the
+    comments and the quoting but re-emits the layout, so the indent is set to
+    what helm values files are conventionally written with, and the width is set
+    high enough that a long ``args:`` line or a hostPath is not ours to re-wrap.
+    """
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.width = 4096
+    return yaml
+
+
+# ruamel.yaml ships no complete type information, so the four calls into it
+# are annotated here and narrowed immediately. The ignores are deliberately on
+# these lines and nowhere else: everything past them is ordinary dicts and
+# lists, which is what keeps the rest of this section strict-checkable.
+def _load_yaml(text: str) -> dict[str, Any]:
+    loaded: object = _round_trip().load(text)  # pyright: ignore[reportUnknownMemberType]
+    return cast(dict[str, Any], loaded) if isinstance(loaded, dict) else CommentedMap()
+
+
+def _dump_yaml(document: Any) -> str:
+    stream = io.StringIO()
+    _round_trip().dump(document, stream)  # pyright: ignore[reportUnknownMemberType]
+    return stream.getvalue()
+
+
+def _mapping_at(document: Any, path: Sequence[str]) -> dict[str, Any] | None:
+    """The mapping at *path*, or ``None`` where the path is not one."""
+    node: Any = document
+    for step in path:
+        if not isinstance(node, dict) or step not in cast(dict[str, Any], node):
+            return None
+        node = cast(dict[str, Any], node)[step]
+    return cast(dict[str, Any], node) if isinstance(node, dict) else None
+
+
+def _mappings(document: Any) -> list[tuple[str, ...]]:
+    """Every mapping in *document* as a key path, shallowest first.
+
+    Two levels and no further. A chart nests its passthroughs under its own name
+    and an umbrella nests one deeper; nothing sensible puts a pod template three
+    mappings down, and searching further only invents candidates.
+    """
+    found: list[tuple[str, ...]] = [()]
+    if not isinstance(document, dict):
+        return found
+    for key, value in cast(dict[str, Any], document).items():
+        if not isinstance(value, dict):
+            continue
+        found.append((str(key),))
+        for inner, deeper in cast(dict[str, Any], value).items():
+            if isinstance(deeper, dict):
+                found.append((str(key), str(inner)))
+    return found
+
+
+def locate_keys(
+    document: Mapping[str, Any],
+    keys: Sequence[str],
+    parent: Mapping[str, Any] | None = None,
+) -> tuple[tuple[str, ...], str]:
+    """Where the application's keys belong in this file, and why.
+
+    Read from the files rather than assumed, because podbench does not know the
+    target's chart and #192 will not let it guess: ``ioc-instance`` nests all
+    five under an ``ioc-instance:`` key, and a chart with no subchart of its own
+    has them at the root.
+
+    A file that already declares one of these keys has answered the question. A
+    shared file that declares one has answered it for every service that
+    inherits it - which is the ``bl47p-ea-fastcs-01`` case exactly, since it
+    declares none of them itself. Failing both, the top level, which is right
+    often enough to be the default and wrong quietly enough that the caller has
+    to say so.
+    """
+    wanted = set(keys)
+    sources = (
+        (document, "where this file already declares them"),
+        (parent, "where the shared values file declares them"),
+    )
+    for source, why in sources:
+        if source is None:
+            continue
+        for path in _mappings(source):
+            node = _mapping_at(source, path)
+            if node is not None and wanted & set(node):
+                return path, why
+    return (), "with nothing else to go on"
+
+
+def _strip_comments(node: Any) -> Any:
+    """Every comment out of a parsed tree, in place, and the tree back.
+
+    Two sources of comments have no business in somebody else's values file.
+
+    The **snippet's** are written for a reader deciding what to paste; pasted,
+    they are twenty lines of podbench prose in a service's values file, and
+    ruamel re-emits them at the column they were parsed at, which is not the
+    column they end up in. The merge writes a short deliberate set instead - see
+    :data:`CLAIM_COMMENT` and its neighbours.
+
+    The **shared file's** are worse than noise: a comment sits on the node
+    *after* it, so copying one entry out of a parent's list brings the sentence
+    that introduced the next key with it, and it lands mid-list under a heading
+    it has nothing to do with. Measured on `p47-services`, where absorbing
+    `beamline-data` dragged "shared setting for all legacy IOCs" into the
+    middle of `volumeMounts`.
+    """
+    if isinstance(node, (CommentedMap, CommentedSeq)):
+        node.ca.comment = None  # pyright: ignore[reportUnknownMemberType]
+        node.ca.items.clear()  # pyright: ignore[reportUnknownMemberType]
+    if isinstance(node, dict):
+        for value in cast(dict[str, Any], node).values():
+            _strip_comments(value)
+    elif isinstance(node, list):
+        for item in cast(list[Any], node):
+            _strip_comments(item)
+    return cast(Any, node)
+
+
+SEAT_HOME_COMMENT = (
+    "Declared and deliberately *not mounted* by the application. An ephemeral\n"
+    "container may only mount volumes its pod already declares, and pod volumes\n"
+    "cannot be added after the pod is created - so the seat's home is here at\n"
+    "deploy time or the seat does without one.\n"
+)
+"""Written above the seat's home volume, which otherwise reads as a mistake.
+
+It is the one entry in the emitted `volumes:` that nothing in the same file
+mounts, so a reader who is not told assumes it was left half-finished."""
+
+CLAIM_COMMENT = (
+    "\npodbench Hotfix mode: a claim carrying the project, mounted beside the\n"
+    "application's own and never over it. The claim's name comes from the\n"
+    "release, and `podbench hotfix --print-values` wrote the matching\n"
+    "volume into the application's own values.\n"
+)
+"""Written above the claim's key in a merged file."""
+
+ABSORBED_COMMENT = (
+    "{names} {verb} repeated from the shared values file, and must be: a helm\n"
+    "list does not merge across the parent/child values merge, it replaces.\n"
+    "This service declared no `{key}` of its own before, so it inherited the\n"
+    "shared one wholesale; declaring one here takes that over completely.\n"
+)
+"""Written above a list the merge absorbed the shared file's entries into.
+
+The same sentence a human wrote by hand on `p47-services` after working it out
+the expensive way, which is the argument for podbench writing it instead."""
+
+FSGROUP_COMMENT = (
+    "Not optional. The claim is created root:root and the application does not\n"
+    "run as root; without this the mount path is present and unwritable, which\n"
+    "is worse than absent - everything starts, then fails.\n"
+)
+"""Written above ``podSecurityContext`` in a merged file."""
+
+
+def _comment_before(scope: Any, key: str, text: str, indent: int) -> None:
+    """Attach *text* above *key*, or do nothing if the node cannot carry it."""
+    if isinstance(scope, CommentedMap) and key in scope:
+        scope.yaml_set_comment_before_after_key(  # pyright: ignore[reportUnknownMemberType]
+            key, before=text, indent=indent
+        )
+
+
+def _comment_before_entry(entries: Any, name: str, text: str, indent: int) -> None:
+    """Attach *text* above the list entry called *name*, if it is there."""
+    if not isinstance(entries, CommentedSeq):
+        return
+    for index, entry in enumerate(cast(list[Any], entries)):
+        if isinstance(entry, dict) and cast(dict[str, Any], entry).get("name") == name:
+            entries.yaml_set_comment_before_after_key(  # pyright: ignore[reportUnknownMemberType]
+                index, before=text, indent=indent
+            )
+            return
+
+
+def _entry_names(entries: Any) -> list[str]:
+    return [
+        str(cast(dict[str, Any], entry)["name"])
+        for entry in _as_list(entries)
+        if isinstance(entry, dict) and "name" in cast(dict[str, Any], entry)
+    ]
+
+
+@dataclass(frozen=True)
+class _ListMerge:
+    """One list key merged, and the two things the caller has to say about it."""
+
+    entries: Any
+    absorbed: Sequence[str]
+    declared_first_time: bool
+
+
+def _merge_list(existing: Any, ours: Any, inherited: Any) -> _ListMerge:
+    """Three sources, strict precedence, matched on ``name``.
+
+    What the service already declares wins, then what it would otherwise have
+    inherited, then podbench's own. ``name`` is what Kubernetes matches volumes
+    and mounts on, so running the merge twice is a no-op rather than a
+    duplicate.
+    """
+    absorbed: Sequence[str] = ()
+    if existing is not None:
+        base = existing
+    elif inherited is not None:
+        base = _strip_comments(deepcopy(inherited))
+        absorbed = _entry_names(inherited)
+    else:
+        base = CommentedSeq()
+    taken = set(_entry_names(base))
+    for entry in _as_list(ours):
+        name = (
+            cast(dict[str, Any], entry).get("name") if isinstance(entry, dict) else None
+        )
+        if name is not None and str(name) in taken:
+            continue
+        cast(list[Any], base).append(entry)
+    return _ListMerge(base, absorbed, existing is None)
+
+
+def merged_values(
+    document: str,
+    snippet: str,
+    *,
+    parent: str | None = None,
+    under: Sequence[str] | None = None,
+    claim_key: str = SUBCHART_VALUES_KEY,
+    volumes_key: str = "volumes",
+    mounts_key: str = "volumeMounts",
+    security_key: str = "podSecurityContext",
+    path: str = "the values file",
+    parent_path: str = "the shared values file",
+) -> tuple[str, list[str]]:
+    """*document*, whole, with *snippet*'s keys merged into it.
+
+    Pure, and deliberately: strings in, a string and its notes out. Reading the
+    files is a wrapper's job for the same reason :func:`values_snippet` takes no
+    cluster - it is what makes every shape of this assertable without a
+    filesystem or a kubeconfig.
+
+    This is the whole of #192. Read from a live pod, a chart-generated volume
+    and one the service declared for itself are indistinguishable, so
+    ``--from-pod`` can only warn and ask for a hand-merge
+    (:data:`EXISTING_MOUNTS_WARNING`). Read from the values file it is
+    decidable: the file says exactly what the service declares, and everything
+    else came from the chart.
+
+    The claim's key is set at the **top level** whatever *under* says, because
+    it is a subchart's values and helm looks for those by chart name at the root.
+    Everything else goes wherever :func:`locate_keys` finds the chart keeps them.
+    """
+    target = _load_yaml(document)
+    inherited = _load_yaml(parent) if parent is not None else None
+    ours = cast(dict[str, Any], _strip_comments(_load_yaml(snippet)))
+    notes: list[str] = []
+
+    claim, claim_key = _take_claim(ours, claim_key)
+    if claim is not None:
+        target[claim_key] = claim
+        _comment_before(target, claim_key, CLAIM_COMMENT, 0)
+
+    if under is not None:
+        where, why = tuple(under), "where --values-under put them"
+    else:
+        where, why = locate_keys(target, list(ours), inherited)
+    notes.append(MERGED_UNDER_NOTE.format(where=".".join(where) or TOP_LEVEL, why=why))
+
+    scope: dict[str, Any] = target
+    for step in where:
+        if not isinstance(scope.get(step), dict):
+            scope[step] = CommentedMap()
+        scope = cast(dict[str, Any], scope[step])
+    from_parent = _mapping_at(inherited, where) if inherited is not None else None
+
+    for key, value in ours.items():
+        if key in (volumes_key, mounts_key):
+            merge = _merge_list(
+                scope.get(key),
+                value,
+                None if from_parent is None else from_parent.get(key),
+            )
+            scope[key] = merge.entries
+            if key == volumes_key:
+                _comment_before_entry(
+                    merge.entries,
+                    SEAT_HOME_VOLUME,
+                    SEAT_HOME_COMMENT,
+                    2 * len(where) + 4,
+                )
+            if merge.absorbed:
+                notes.append(
+                    ABSORBED_FROM_PARENT_NOTE.format(
+                        key=key, parent=parent_path, names=", ".join(merge.absorbed)
+                    )
+                )
+                _comment_before(
+                    scope,
+                    key,
+                    ABSORBED_COMMENT.format(
+                        names=", ".join(merge.absorbed),
+                        verb="is" if len(merge.absorbed) == 1 else "are",
+                        key=key,
+                    ),
+                    2 * len(where),
+                )
+            elif merge.declared_first_time and inherited is None:
+                notes.append(NO_PARENT_NOTE.format(path=path, key=key))
+        elif isinstance(value, dict) and isinstance(scope.get(key), dict):
+            # podSecurityContext, and a probe the service already has opinions
+            # inside: ours adds to it rather than replacing the lot.
+            for inner, deeper in cast(dict[str, Any], value).items():
+                cast(dict[str, Any], scope[key])[inner] = deeper
+        else:
+            scope[key] = value
+
+    _comment_before(scope, security_key, FSGROUP_COMMENT, 2 * len(where))
+    return _dump_yaml(target), notes
+
+
+def _take_claim(ours: dict[str, Any], claim_key: str) -> tuple[Any, str]:
+    """Lift the claim's own half out of the snippet, whichever route emitted it.
+
+    ``values_snippet`` emits either the subchart's key or the central
+    ``hotfixProject``, and the merge has to put whichever it got at the root
+    rather than under the chart's key. The central shape is recognised by its
+    ``claims`` list rather than by name, so renaming it does not lose it.
+    """
+    if claim_key in ours:
+        return ours.pop(claim_key), claim_key
+    for key in list(ours):
+        value = ours[key]
+        if isinstance(value, dict) and "claims" in cast(dict[str, Any], value):
+            return ours.pop(key), str(key)
+    return None, claim_key
+
+
 # -- JSON helpers ----------------------------------------------------------
 
 
@@ -2585,6 +3011,51 @@ def _as_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     return value if isinstance(value, int) else None
+
+
+def _read_values_file(path: str, what: str) -> str:
+    """*path*'s text, or a refusal naming what it was for.
+
+    Read here and not in :func:`merged_values` for the reason the pod is read in
+    :func:`_read_print_values_from_pod` and not in :func:`values_snippet`: the
+    thing that decides the output has to be assertable with no filesystem.
+    """
+    try:
+        return Path(path).read_text()
+    except OSError as exc:
+        _print_values_failure(f"could not read {what} {path}: {exc}")
+
+
+def _merge_print_values_into_file(
+    snippet: str,
+    *,
+    values: str,
+    parent_values: str | None,
+    values_under: str | None,
+    claim_key: str,
+) -> str:
+    """``--values``: the target's own file, whole, with the snippet merged in.
+
+    A wrapper, exactly as ``--from-pod`` is. Notes go to stderr and the file
+    goes to stdout, so the output stays something a shell can redirect over the
+    file it came from.
+    """
+    merged, notes = merged_values(
+        _read_values_file(values, "the values file"),
+        snippet,
+        parent=(
+            None
+            if parent_values is None
+            else _read_values_file(parent_values, "the shared values file")
+        ),
+        under=None if values_under is None else values_under.split("."),
+        claim_key=claim_key,
+        path=values,
+        parent_path=parent_values or "the shared values file",
+    )
+    for note in notes:
+        print("\n".join(paragraph(note)), file=sys.stderr)
+    return merged
 
 
 # -- CLI -------------------------------------------------------------------
@@ -2953,6 +3424,45 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "offline machine, or a pod that does not exist yet",
             ),
         ] = False,
+        values: Annotated[
+            str | None,
+            typer.Option(
+                "--values",
+                metavar="PATH",
+                help="the target service's own values file: emit it back whole "
+                "with podbench's keys merged in, rather than a fragment to "
+                "merge by hand",
+            ),
+        ] = None,
+        parent_values: Annotated[
+            str | None,
+            typer.Option(
+                "--parent-values",
+                metavar="PATH",
+                help="a shared values file the service inherits from. A helm "
+                "list replaces rather than merges, so this is what stops a "
+                "service declaring `volumes:` for the first time silently "
+                "dropping the shared ones",
+            ),
+        ] = None,
+        values_under: Annotated[
+            str | None,
+            typer.Option(
+                "--values-under",
+                metavar="KEY",
+                help="dotted path to the mapping the target chart keeps its pod "
+                "template keys under (`ioc-instance`). Read from the files when "
+                "not given, and the output says where they went",
+            ),
+        ] = None,
+        central_claim: Annotated[
+            bool,
+            typer.Option(
+                "--central-claim",
+                help="emit the older namespace-wide `hotfixProject.claims[]` "
+                "entry instead of the podbench-hotfix-claim chart dependency",
+            ),
+        ] = False,
         claim_venv: Annotated[
             str,
             typer.Option(
@@ -3016,17 +3526,31 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                     file=sys.stderr,
                 )
                 raise typer.Exit(2)
-            print(
-                values_snippet(
-                    app_name,
-                    entrypoint,
-                    size=size,
-                    gid=gid,
-                    venv=claim_venv,
-                    liveness_exec=shlex.split(liveness) if liveness else None,
-                    liveness_probe=parsed_probe,
-                )
+            snippet = values_snippet(
+                app_name,
+                entrypoint,
+                size=size,
+                gid=gid,
+                venv=claim_venv,
+                liveness_exec=shlex.split(liveness) if liveness else None,
+                liveness_probe=parsed_probe,
+                central_claim=central_claim,
             )
+            if values is not None:
+                snippet = _merge_print_values_into_file(
+                    snippet,
+                    values=values,
+                    parent_values=parent_values,
+                    values_under=values_under,
+                    claim_key=SUBCHART_VALUES_KEY,
+                )
+            elif parent_values is not None or values_under is not None:
+                _print_values_failure(
+                    "--parent-values and --values-under are what --values does "
+                    "with the file it is given, so neither means anything "
+                    "without it."
+                )
+            print(snippet, end="" if values is not None else "\n")
             raise typer.Exit(0)
         # `hotfix --print-values` is a legitimate whole command line, so the
         # subcommand is only required once that flag has been ruled out.

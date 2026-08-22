@@ -132,13 +132,41 @@ podbench hotfix --print-values --app NAME --from-pod POD [-n NS]
 │   the target's own   volumes: and volumeMounts: *replace* the    │
 │   volumes            chart's keys rather than adding to them, so │
 │                      they are named and the resolution is spelt  │
-│                      out. Podbench cannot merge them itself:     │
-│                      from a live pod, a chart-generated volume   │
-│                      and one the service declared for itself are │
-│                      indistinguishable.                          │
+│                      out. From a live pod podbench cannot merge  │
+│                      them itself: a chart-generated volume and   │
+│                      one the service declared for itself are     │
+│                      indistinguishable from there. --values is   │
+│                      the way out - see below.                    │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
                                   the five keys, needing no hand-editing
+```
+
+`--values PATH` is the other read, and it closes the one thing `--from-pod`
+cannot. A pod cannot say which of its volumes the service asked for; the
+service's **values file** can, and says nothing else. Given it, podbench merges
+its own keys in and emits the file whole:
+
+```text
+  ../values.yaml   ─┐
+  (--parent-values) │   a helm list REPLACES across the parent/child merge.
+                    │   A service declaring volumes: for the first time takes
+                    │   the shared one over completely, so the shared entries
+                    │   are absorbed first or a beamline directory is silently
+                    ├─► unmounted. Without this file podbench says so rather
+                    │   than assuming there is nothing to inherit.
+                    │
+  values.yaml      ─┤   what this service declares, and nothing else. Its own
+  (--values)        │   entries win; its comments survive; matching is by
+                    │   `name`, so re-running changes nothing.
+                    │
+  values_snippet   ─┘   the claim's key, at the root, and the five
+                        passthroughs wherever the chart keeps them.
+                        --values-under names that; otherwise it is read.
+                                  │
+                                  ▼
+                        the whole file, on stdout. Every note on stderr, so
+                        stdout can be redirected straight over the input.
 ```
 
 `--no-from-pod` is the escape, for CI, an offline machine, or a pod that does not
@@ -149,10 +177,12 @@ missing kubeconfig, an absent pod and a forbidden `get pods` apart only in the
 text of its own message, so podbench relays that verbatim rather than guessing at
 a category and getting it wrong.
 
-`values_snippet` itself takes no cluster: `--from-pod` is a thin reading wrapper
-that fills the arguments the emitter already had, and a test asserts the emitter
-acquires no cluster dependency. That is what lets every shape of the output be
-asserted without one.
+`values_snippet` itself takes no cluster **and no file**: `--from-pod` and
+`--values` are both thin reading wrappers, and `merged_values` — which does the
+whole of the merge — takes two strings and returns one. Tests assert both
+functions acquire neither dependency. That is what lets every shape of the
+output be asserted without a cluster or a filesystem, and it is why the one
+thing this mode cannot get wrong from a desk is checked from one.
 
 ### The supervisor
 
