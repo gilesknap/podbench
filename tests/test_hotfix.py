@@ -26,11 +26,14 @@ from podbench import hotfix, model
 from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
 
 VENV = "/opt/venv"
-CHECKOUT = "/opt/venv/src"
+CHECKOUT = "/podbench/app"
+PROJECT_SRC = "/proc/1/root/app"
 BASE_SHA = "1111111111111111111111111111111111111111"
 HEAD_SHA = "2222222222222222222222222222222222222222"
 BASE_DIGEST = "ghcr.io/acme/api@sha256:aaaa"
 NEW_DIGEST = "ghcr.io/acme/api@sha256:bbbb"
+
+SEEDED_PYTHON = "/podbench/app/.python/cpython-3.11.13-linux-x86_64-gnu/bin/python3"
 
 PYVENV_CFG = (
     "home = /usr/local/bin\ninclude-system-site-packages = false\nversion = 3.12.7\n"
@@ -151,6 +154,7 @@ class FakeStore:
     def run(self, argv: Sequence[str], *, check: bool = True) -> CommandResult:
         self.calls.append(tuple(argv))
         line = " ".join(argv)
+
         for prefix, message in self.failures.items():
             if line.startswith(prefix):
                 if check:
@@ -159,6 +163,10 @@ class FakeStore:
         for prefix, payload in self.outputs.items():
             if line.startswith(prefix):
                 return CommandResult(tuple(argv), 0, payload, "")
+        # uv nests its interpreters, so seeded_python discovers rather than
+        # assumes; a store that says nothing answers with the real shape.
+        if line.startswith("bash -c ls -d") and "bin/python3" in line:
+            return CommandResult(tuple(argv), 0, SEEDED_PYTHON + "\n", "")
         return CommandResult(tuple(argv), 0, "", "")
 
     def read_text(self, path: str) -> str | None:
@@ -179,7 +187,12 @@ def kube(runner: FakeRunner) -> Kubectl:
 
 
 def seeded_store(**extra: str) -> FakeStore:
-    files = {f"{VENV}/pyvenv.cfg": PYVENV_CFG, f"{CHECKOUT}/.git": ""}
+    files = {
+        CHECKOUT: "",
+        f"{CHECKOUT}/pyproject.toml": "",
+        f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+        f"{CHECKOUT}/.git": "",
+    }
     files.update(extra)
     return FakeStore(
         files=files,
@@ -288,16 +301,33 @@ def test_manifest_from_pod_is_none_without_the_annotation() -> None:
 # -- paths and small pure helpers ------------------------------------------
 
 
-def test_checkout_and_manifest_live_on_the_claim() -> None:
-    assert hotfix.checkout_path(VENV) == CHECKOUT
-    assert hotfix.manifest_path(VENV) == f"{VENV}/{hotfix.MANIFEST_FILENAME}"
+def test_the_checkout_is_the_claim_itself() -> None:
+    """No longer buried in the venv: the claim mounts beside the project."""
+    assert hotfix.checkout_path() == CHECKOUT == model.HOTFIX_APP_PATH
+    assert not hotfix.checkout_path().endswith("/src")
 
 
-def test_install_runs_the_venvs_own_interpreter() -> None:
-    argv = hotfix.install_argv(VENV, CHECKOUT)
-    assert argv[0] == f"{VENV}/bin/python"
-    assert "--no-deps" in argv
-    assert argv[-1] == CHECKOUT
+def test_install_pins_the_interpreter_on_the_claim() -> None:
+    """Left to itself uv finds the image's, and the venv names a path that goes
+    away on the next restart - the fix reverting rather than an error."""
+    argv = hotfix.install_argv(SEEDED_PYTHON, CHECKOUT)
+    assert argv[:2] == ["uv", "sync"]
+    assert CHECKOUT in argv
+    assert SEEDED_PYTHON in argv
+
+
+def test_the_interpreter_is_discovered_because_uv_nests_it() -> None:
+    """``<root>/bin/python3`` does not exist: uv installs one level down."""
+    store = FakeStore()
+    assert hotfix.seeded_python(store).startswith(model.HOTFIX_INTERPRETER_PATH)
+    assert "/cpython-" in hotfix.seeded_python(store)
+
+
+def test_a_seed_with_no_interpreter_refuses_rather_than_guessing() -> None:
+    store = FakeStore()
+    store.outputs["bash -c ls -d"] = "\n"
+    with pytest.raises(hotfix.HotfixError, match="no interpreter under"):
+        hotfix.seeded_python(store)
 
 
 def test_metadata_changed_only_for_packaging_files() -> None:
@@ -614,9 +644,28 @@ def test_annotating_an_unowned_pod_says_what_it_costs() -> None:
 # -- init ------------------------------------------------------------------
 
 
-def test_init_refuses_an_unseeded_claim() -> None:
-    """Seeding cannot be done after the fact: the mount hides what to copy."""
+def test_init_refuses_when_the_claim_is_not_mounted() -> None:
+    """Nothing to seed onto is a deployment mistake, not a seeding one."""
     store = FakeStore()
+    with pytest.raises(hotfix.HotfixError, match="the claim is not mounted"):
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=VENV,
+            repo="https://example.invalid/acme/api.git",
+        )
+    assert not store.ran("cp -a")
+
+
+def test_init_refuses_an_unreachable_target_root_naming_the_ptrace_rung() -> None:
+    """The seat cannot see the target's filesystem, and must not paper over it.
+
+    Falling back to the seat's own /app would seed the claim with podbench's
+    dependencies and none of the application's - a claim that looks seeded and
+    runs the wrong code.
+    """
+    store = FakeStore(files={CHECKOUT: ""})
     with pytest.raises(hotfix.HotfixError) as caught:
         hotfix.init(
             kube(FakeRunner()),
@@ -625,14 +674,45 @@ def test_init_refuses_an_unseeded_claim() -> None:
             venv=VENV,
             repo="https://example.invalid/acme/api.git",
         )
-    assert "initContainer" in str(caught.value)
-    assert not store.ran("git clone")
+    message = str(caught.value)
+    assert "ptrace rung" in message
+    assert "podbench doctor" in message
+    assert not store.ran("cp -a")
+
+
+def test_init_seeds_the_project_and_the_interpreter() -> None:
+    """Both halves. The interpreter is the one that looks redundant.
+
+    A rebuilt venv's console scripts carry an absolute shebang, so an
+    interpreter left in the image is one the next restart takes away - silently,
+    as the fix reverting.
+    """
+    store = FakeStore(
+        files={CHECKOUT: "", PROJECT_SRC: "", "/proc/1/root/python": ""},
+        outputs={f"git -C {CHECKOUT} rev-parse HEAD": BASE_SHA},
+    )
+    _, actions = hotfix.init(
+        kube(FakeRunner()),
+        store,
+        deployment_target(),
+        venv=VENV,
+        repo="https://example.invalid/acme/api.git",
+        install=False,
+    )
+    assert store.ran(f"bash -c shopt -s dotglob; cp -a {PROJECT_SRC}/* {CHECKOUT}/")
+    assert store.ran(f"cp -a /proc/1/root/python {model.HOTFIX_INTERPRETER_PATH}")
+    assert any("seeded" in action for action in actions)
 
 
 def test_init_clones_installs_and_records_the_base_commit() -> None:
     runner = FakeRunner()
     store = FakeStore(
-        files={f"{VENV}/pyvenv.cfg": PYVENV_CFG},
+        files={
+            CHECKOUT: "",
+            PROJECT_SRC: "",
+            "/proc/1/root/python": "",
+            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+        },
         outputs={f"git -C {CHECKOUT} rev-parse HEAD": BASE_SHA},
     )
     manifest, actions = hotfix.init(
@@ -652,10 +732,10 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert manifest.interpreter == "3.12.7"
     assert manifest.base_image_digest == BASE_DIGEST
     assert store.read_text(hotfix.manifest_path(VENV)) is not None
-    # The install runs in the application container, not in the seat.
-    assert runner.matching(f"exec -c app api-7f9-abc -- {VENV}/bin/python")
+    # The rebuild runs in the application container, not in the seat.
+    assert runner.matching("exec -c app api-7f9-abc -- uv sync")
     assert runner.matching("patch deployment api")
-    assert any("editable install" in action for action in actions)
+    assert any("rebuilt the venv" in action for action in actions)
 
 
 def test_init_is_idempotent_about_an_existing_checkout() -> None:
@@ -669,18 +749,23 @@ def test_init_is_idempotent_about_an_existing_checkout() -> None:
         repo="https://example.invalid/acme/api.git",
         install=False,
     )
-    assert not store.ran("git clone")
-    assert any("already present" in action for action in actions)
+    assert not store.ran("cp -a")
+    assert any("already seeded" in action for action in actions)
 
 
 def test_init_explains_a_failed_install() -> None:
     runner = FakeRunner()
-    runner.failures["exec -c app"] = "no module named pip"
+    runner.failures["exec -c app"] = "no index reachable"
     store = FakeStore(
-        files={f"{VENV}/pyvenv.cfg": PYVENV_CFG},
+        files={
+            CHECKOUT: "",
+            PROJECT_SRC: "",
+            "/proc/1/root/python": "",
+            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+        },
         outputs={f"git -C {CHECKOUT} rev-parse HEAD": BASE_SHA},
     )
-    with pytest.raises(hotfix.HotfixError, match="symlink into the application image"):
+    with pytest.raises(hotfix.HotfixError, match="pre-build the venv"):
         hotfix.init(
             kube(runner),
             store,
@@ -746,7 +831,7 @@ def test_apply_skips_the_reinstall_when_only_code_changed() -> None:
         venv=VENV,
         message="fix",
     )
-    assert not runner.matching(f"exec -c app api-7f9-abc -- {VENV}/bin/python")
+    assert not runner.matching("exec -c app api-7f9-abc -- uv sync")
 
 
 def test_apply_reinstalls_when_packaging_metadata_changed() -> None:
@@ -758,8 +843,8 @@ def test_apply_reinstalls_when_packaging_metadata_changed() -> None:
         venv=VENV,
         message="new entry point",
     )
-    assert runner.matching(f"exec -c app api-7f9-abc -- {VENV}/bin/python")
-    assert any("editable install" in action for action in actions)
+    assert runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert any("rebuilt the venv" in action for action in actions)
 
 
 def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
@@ -780,8 +865,8 @@ def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
         message="new entry point",
     )
     assert not store.ran(f"git -C {CHECKOUT} add")
-    assert runner.matching(f"exec -c app api-7f9-abc -- {VENV}/bin/python")
-    assert any("editable install" in action for action in actions)
+    assert runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert any("rebuilt the venv" in action for action in actions)
 
 
 def test_apply_after_a_code_only_hand_commit_does_not_reinstall() -> None:
@@ -794,7 +879,7 @@ def test_apply_after_a_code_only_hand_commit_does_not_reinstall() -> None:
         venv=VENV,
         message="already committed by hand",
     )
-    assert not runner.matching(f"exec -c app api-7f9-abc -- {VENV}/bin/python")
+    assert not runner.matching("exec -c app api-7f9-abc -- uv sync")
     assert any("still valid" in action for action in actions)
 
 
@@ -1253,9 +1338,9 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
             "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
             f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
-            f"{seat} git -C /opt/venv/src rev-parse": HEAD_SHA,
-            f"{seat} git -C /opt/venv/src log": f"{HEAD_SHA}\x1ffix\n",
-            f"{seat} git -C /opt/venv/src status": " M a.py\n",
+            f"{seat} git -C {CHECKOUT} rev-parse": HEAD_SHA,
+            f"{seat} git -C {CHECKOUT} log": f"{HEAD_SHA}\x1ffix\n",
+            f"{seat} git -C {CHECKOUT} status": " M a.py\n",
         }
     )
     code = hotfix.main(
@@ -1273,7 +1358,7 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
         runner=runner,
     )
     assert code == 0
-    assert runner.matching("exec -c podbench-1 api-7f9-abc -- git -C /opt/venv/src add")
+    assert runner.matching(f"exec -c podbench-1 api-7f9-abc -- git -C {CHECKOUT} add")
     # The manifest is written back through the same seat, over stdin.
     assert any(
         "cat > /opt/venv/.podbench-hotfix.json" in " ".join(argv)

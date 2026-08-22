@@ -73,6 +73,7 @@ from .model import (
     HOTFIX_CHILD_PID_PATH,
     HOTFIX_CLAIM_VOLUME,
     HOTFIX_HOLD_PATH,
+    HOTFIX_INTERPRETER_PATH,
     HOTFIXED_ANNOTATION,
     SEAT_HOME_VOLUME,
     PodRef,
@@ -111,6 +112,8 @@ __all__ = [
     "identity_configmap",
     "init",
     "install_argv",
+    "seed_source",
+    "seeded_python",
     "interpreter_warning",
     "main",
     "manifest_annotations",
@@ -383,18 +386,45 @@ def manifest_path(venv: str) -> str:
     return f"{venv.rstrip('/')}/{MANIFEST_FILENAME}"
 
 
-def checkout_path(venv: str) -> str:
+def checkout_path(project: str = HOTFIX_APP_PATH) -> str:
     """Where the source checkout lives on the claim.
 
-    Inside the venv directory, which looks odd until you remember the claim is
-    mounted *over* the venv path and so there is no other directory on the
-    volume. Being on the volume is the whole requirement: the editable install's
-    path redirection has to survive the restart too.
+    The claim *is* the checkout now. It mounts beside the application, so the
+    project sits at the root of the volume exactly as it sits in the image, and
+    a rebuilt venv underneath it resolves the same relative paths it would have
+    resolved there.
 
-    >>> checkout_path("/opt/venv/")
-    '/opt/venv/src'
+    It used to be ``<venv>/src``, which looked odd and was: the claim was
+    mounted *over* the venv path, so the venv directory was the only directory
+    on the volume and the checkout had to be buried inside it.
+
+    >>> checkout_path()
+    '/podbench/app'
+    >>> checkout_path("/podbench/app/")
+    '/podbench/app'
     """
-    return f"{venv.rstrip('/')}/src"
+    return project.rstrip("/")
+
+
+def seed_source(container_root: str = "/proc/1/root") -> tuple[str, str]:
+    """The two paths a seed copies out of the *running* application container.
+
+    The project and the interpreter, and the interpreter is the half that looks
+    redundant. A rebuilt venv's console scripts carry an absolute shebang, so an
+    interpreter left behind in the image is one that a restart takes away -
+    ``head -1 <venv>/bin/<script>`` would point back into ``/app`` and the fix
+    would vanish on the next restart without a word.
+
+    Read through PID 1's root rather than from the seat's own filesystem: the
+    seat is a *different image* - a python-copier-template one with its own
+    ``/app/.venv`` - so copying its copy would seed the claim with podbench's
+    dependencies and none of the application's.
+
+    >>> seed_source()
+    ('/proc/1/root/app', '/proc/1/root/python')
+    """
+    root = container_root.rstrip("/")
+    return f"{root}/app", f"{root}/python"
 
 
 def manifest_annotations(manifest: HotfixManifest) -> dict[str, str]:
@@ -765,24 +795,34 @@ def _paths(text: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in text.splitlines() if line.strip())
 
 
-def install_argv(venv: str, checkout: str) -> list[str]:
-    """The editable reinstall, run in the *application* container.
+def install_argv(interpreter: str, checkout: str) -> list[str]:
+    """The venv rebuild, run in the *application* container.
 
-    Not in the seat: the venv's ``bin/python`` is a symlink to an interpreter
-    that lives in the application image and is therefore not resolvable from
-    podbench's own image, even though the venv itself is on a volume both can
-    see. ``--no-deps`` because a hotfix is a code change; pulling new
-    dependencies mid-run is a release, and releases go through the pipeline.
+    ``uv sync`` rather than a pip editable install, because the claim now holds
+    the whole project and ``uv`` is what built it in the image. Building it in
+    place is what makes the console scripts' absolute shebangs name the
+    interpreter on the *claim*, which is the one that survives a restart.
+
+    ``--python`` pins that interpreter explicitly, and *interpreter* is the
+    binary itself rather than the directory the copy landed in: a uv-managed
+    install nests one level down, at
+    ``<root>/cpython-<version>-<triple>/bin/python3``, so the obvious
+    ``<root>/bin/python3`` does not exist. Left to its own devices uv would find
+    the image's, and the venv would come out naming a path the next restart
+    takes away - a failure that shows up as the fix silently reverting rather
+    than as an error.
+
+    >>> install_argv("/x/bin/python3", "/podbench/app")[:3]
+    ['uv', 'sync', '--project']
     """
     return [
-        f"{venv.rstrip('/')}/bin/python",
-        "-m",
-        "pip",
-        "install",
-        "--no-deps",
-        "--no-build-isolation",
-        "-e",
+        "uv",
+        "sync",
+        "--project",
         checkout,
+        "--python",
+        interpreter,
+        "--frozen",
     ]
 
 
@@ -1282,6 +1322,52 @@ def annotate(kube: Kubectl, target: HotfixTarget, manifest: HotfixManifest) -> s
     )
 
 
+def seeded_python(store: HotfixStore) -> str:
+    """The interpreter binary on the claim, discovered rather than assumed.
+
+    A uv-managed install nests one level down - ``cpython-<version>-<triple>`` -
+    so the path the copy created is a *directory of* interpreters, and the
+    obvious ``<root>/bin/python3`` does not exist. Measured on the beamline:
+    ``/podbench/app/.python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11``.
+
+    Raises rather than guessing: a wrong ``--python`` produces a venv naming an
+    interpreter that the next restart takes away, which surfaces as the fix
+    reverting and not as an error.
+    """
+    listing = store.run(
+        [
+            "bash",
+            "-c",
+            f"ls -d {HOTFIX_INTERPRETER_PATH}/*/bin/python3 2>/dev/null | head -1",
+        ],
+        check=False,
+    )
+    found = listing.stdout.strip()
+    if not found:
+        raise HotfixError(
+            f"no interpreter under {HOTFIX_INTERPRETER_PATH}: the seed copied "
+            "the project but not a usable python. The claim's interpreter is "
+            "what the rebuilt venv's shebangs name, so continuing would build a "
+            "venv that stops working at the next restart."
+        )
+    return found
+
+
+def _seeded_interpreter(store: HotfixStore, checkout: str) -> str:
+    """The interpreter version the seeded venv reports, or ``""``.
+
+    Read from the claim rather than from the image, because after the rebuild
+    the claim's is the one the console scripts name.
+    """
+    config = store.read_text(f"{checkout}/.venv/pyvenv.cfg")
+    if config is None:
+        return ""
+    settings = parse_pyvenv_cfg(config)
+    return normalise_interpreter(
+        settings.get("version") or settings.get("version_info") or ""
+    )
+
+
 def _identity(store: HotfixStore, checkout: str, author: str | None) -> tuple[str, str]:
     """The name and email a hotfix commit is made under.
 
@@ -1319,32 +1405,62 @@ def init(
     author: str | None = None,
     install: bool = True,
 ) -> tuple[HotfixManifest, list[str]]:
-    """Prepare a claim: verify the seed, put the source on it, record the base.
+    """Prepare a claim: seed it from the running container, then record the base.
 
-    The seed is *verified*, never performed. Once the claim is mounted over the
-    venv path the image's own venv is hidden behind it in every container, so
-    the only moment it can be copied is before the application container starts
-    — which is an initContainer's job, and ``--print-values`` emits one. A
-    podbench that offered to seed after the fact would be offering to copy a
-    directory it cannot see.
+    The seed is *performed* here, which the previous design could not do. It
+    mounted the claim over the venv path, so the image's own venv sat behind the
+    mount in every container and the only moment it could be copied was before
+    the application started — an initContainer's job, and one ``ioc-instance``
+    cannot express, because every initContainer there inherits the main
+    container's ``volumeMounts`` and so cannot keep a staging path clear.
+
+    Mounting beside the application dissolves that: nothing the image ships is
+    hidden, so the copy can happen now, from the container that is already
+    running, through PID 1's root.
+
+    It is a rebuild rather than a copy of the venv. A venv's absolute paths lie
+    the moment it moves, so ``uv sync`` is run afterwards in the *application*
+    container — the interpreter on the claim is the one the scripts must name.
     """
     actions: list[str] = []
-    config = store.read_text(f"{venv.rstrip('/')}/pyvenv.cfg")
-    if config is None:
+    project, interpreter_src = seed_source()
+    checkout = checkout_path()
+
+    if not store.exists(checkout):
         raise HotfixError(
-            f"{venv}/pyvenv.cfg is missing: the claim is mounted but was never "
-            "seeded from the image's venv. Seeding has to happen in an "
-            "initContainer, before the mount hides the image's copy — run "
-            "`podbench hotfix --print-values` for the snippet, and note "
-            "that the initContainer must use the application's own image."
+            f"{checkout} is not present: the claim is not mounted. Run "
+            "`podbench hotfix --print-values` and deploy the five values it "
+            "emits."
         )
-    settings = parse_pyvenv_cfg(config)
-    interpreter = normalise_interpreter(
-        settings.get("version") or settings.get("version_info") or ""
-    )
+
+    if store.exists(f"{checkout}/pyproject.toml"):
+        actions.append(f"claim already seeded at {checkout}")
+    else:
+        if not store.exists(project):
+            raise HotfixError(
+                f"{project} is not readable, so the seed cannot run. That path "
+                "is the application container's own filesystem seen through PID "
+                "1, and reaching it needs the ptrace rung — a seat that landed "
+                "without CAP_SYS_PTRACE, or in a namespace whose policy denies "
+                "it, cannot see the target's root at all. `podbench doctor` "
+                "names the mechanism. This is not something to work around by "
+                "copying the seat's own /app: the seat is a different image and "
+                "its venv is podbench's, not the application's."
+            )
+        # The *entries*, never the mount root. `cp -a` onto the claim's own
+        # directory fails with "preserving times for '.': Operation not
+        # permitted": the mount root is 0777 with an owner the NFS id map does
+        # not resolve, so utimes on it is refused however writable it is. The
+        # contents copy fine; only the final stat on the destination fails, so
+        # this reads as an inexplicable failure at the very end of a 50s copy.
+        store.run(["bash", "-c", f"shopt -s dotglob; cp -a {project}/* {checkout}/"])
+        actions.append(f"seeded {checkout} from {project}")
+        store.run(["cp", "-a", interpreter_src, HOTFIX_INTERPRETER_PATH])
+        actions.append(f"copied the interpreter to {HOTFIX_INTERPRETER_PATH}")
+
+    interpreter = _seeded_interpreter(store, checkout)
     actions.append(f"claim seeded, venv interpreter {interpreter or 'unknown'}")
 
-    checkout = checkout_path(venv)
     if store.exists(f"{checkout}/.git"):
         actions.append(f"checkout already present at {checkout}")
     else:
@@ -1361,7 +1477,7 @@ def init(
     )
 
     if install:
-        actions.append(_install(kube, target, venv, checkout))
+        actions.append(_install(kube, target, seeded_python(store), checkout))
 
     name, email = _identity(store, checkout, author)
     manifest = HotfixManifest(
@@ -1385,8 +1501,22 @@ def init(
     return manifest, actions
 
 
-def _install(kube: Kubectl, target: HotfixTarget, venv: str, checkout: str) -> str:
-    argv = install_argv(venv, checkout)
+def _install(
+    kube: Kubectl, target: HotfixTarget, interpreter: str, checkout: str
+) -> str:
+    """Rebuild the venv on the claim, in the *application* container.
+
+    A rebuild and not a copy. A venv records absolute paths, so one copied from
+    ``/app/.venv`` to the claim names an interpreter and a site-packages that
+    are no longer where it says - and the failure is a console script whose
+    shebang points back into the image, which keeps working until the restart
+    that was the whole point.
+
+    It runs in the application container because that is where the interpreter
+    the scripts must name lives, and where the application's own index
+    configuration is.
+    """
+    argv = install_argv(interpreter, checkout)
     # A resolve and a build against the cluster's index, so the pod-work bound.
     result = kube.exec_(
         target.pod.name,
@@ -1397,13 +1527,13 @@ def _install(kube: Kubectl, target: HotfixTarget, venv: str, checkout: str) -> s
     )
     if result.returncode != 0:
         raise HotfixError(
-            f"editable install failed in container {target.container}: "
+            f"rebuilding the venv failed in container {target.container}: "
             f"{result.stderr.strip() or result.stdout.strip()}. It has to run "
-            "there and not in the seat: the venv's bin/python is a symlink into "
-            "the application image. If that image has no pip, install once at "
-            "build time and re-run with --no-install."
+            "there and not in the seat, whose interpreter is a different "
+            "image's. If the pod has no egress to an index, pre-build the venv "
+            "on the claim and re-run with --no-install."
         )
-    return f"editable install of {checkout} into {venv}"
+    return f"rebuilt the venv at {checkout}/.venv"
 
 
 def apply_hotfix(
@@ -1462,7 +1592,7 @@ def apply_hotfix(
     # commits either way.
     changed = changed_paths(store, checkout, manifest.commit, head)
     if metadata_changed(changed):
-        actions.append(_install(kube, target, manifest.venv, checkout))
+        actions.append(_install(kube, target, seeded_python(store), checkout))
     elif changed:
         actions.append("no packaging metadata changed; editable install still valid")
 
