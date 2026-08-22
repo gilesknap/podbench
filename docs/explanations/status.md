@@ -119,6 +119,16 @@ recorded child pid moved, and the running process's interpreter resolved to the
 claim's rather than the image's. `--print-values --from-pod` was measured
 against the same two pods.
 
+What it also found is the seed blaming the wrong thing. On `bl47p-mo-ioc-01` —
+an epics-containers image, which keeps its venv at `/venv` with a separate
+`/python` — `/proc/1/root` listed cleanly from the seat and `/app` did not
+exist, and `init` reported that absence as a ptrace denial and sent the user to
+`podbench doctor`, which then correctly called the rung healthy: a contradiction
+with no next step (issue #178). The two failures are now asked about separately
+and the layout is a flag rather than a constant. That makes the paths
+expressible and nothing more — what hotfixing a *compiled* IOC would mean is
+untouched, and stays on issue #34.
+
 What that run did **not** show is survival across pod replacement — it used a
 generic ephemeral volume, which dies with its pod, because a real claim needs
 `create` on persistentvolumeclaims that the test account does not have — and

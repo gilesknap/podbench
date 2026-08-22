@@ -53,6 +53,11 @@ The claim mounts **beside** the application's project, never over it.
   └────────────────────────────────────────────────────────────────────┘
 ```
 
+`/app` and `/python` in the application's half of that picture are the *defaults*
+podbench assumes and not a requirement — see *The layout is the image's, not
+podbench's* under `hotfix init` below, and the `--image-project` flag it describes.
+What the mode genuinely requires is the claim, mounted beside.
+
 `podbench hotfix --print-values --app NAME --from-pod POD` emits five keys, and
 every one is a passthrough an application's chart already has:
 
@@ -78,6 +83,7 @@ renders that chart at the pinned version and asserts all five arrive.
 ```text
 podbench hotfix --print-values --app NAME --from-pod POD [-n NS]
                 [--container NAME] [--entrypoint CMD] [--gid GID] [--context C]
+                [--claim-venv NAME]
     │
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -171,7 +177,9 @@ Three things about it, each of which failed silently before it was measured:
 * **The runtime switch is inside the loop.** Evaluated once at container start it can
   never see a claim seeded afterwards, so the first `apply` after an `init` would
   relaunch the *image's* code and report success — new pids, `restartCount` 0, and the
-  old binary still serving.
+  old binary still serving. The `.venv` it looks for is `--claim-venv`'s default, and
+  the same value has to reach `init`: a switch looking for one directory and a rebuild
+  landing in another is the same silent failure by another route.
 * **With no hold file it is fail-fast.** It exits with the child's status and the
   kubelet restarts exactly as it does today, so a deployment carrying this behaves
   identically to one that does not until somebody deliberately holds the pod.
@@ -195,6 +203,8 @@ Every verb reaches the claim through a `HotfixStore`:
 ```text
 podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
                             [--no-install] [--seat NAME]
+                            [--image-project PATH] [--image-interpreter PATH]
+                            [--claim-venv NAME]
     │
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -241,15 +251,33 @@ podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
 │                                                                  │
 │   Through PID 1's root, and NOT from the seat's own /app: the    │
 │   seat is a different image and its venv is podbench's, not the  │
-│   application's. If /proc/1/root is not traversable this is      │
-│   refused, naming the ptrace rung — never quietly substituted.   │
+│   application's — never quietly substituted.                     │
+│                                                                  │
+│   Where the project is not there, the root question is asked     │
+│   directly rather than inferred from it (#178):                  │
+│                                                                  │
+│     ls /proc/1/root/                                             │
+│       fails → the seat cannot see the target's root at all, so   │
+│               the seed cannot run. That is the ptrace rung, and  │
+│               the refusal names CAP_SYS_PTRACE and `podbench     │
+│               doctor`.                                           │
+│       lists → the root reads fine and this image simply keeps no │
+│               project at /app. A layout difference and not a     │
+│               permission one, so the refusal names               │
+│               --image-project and --image-interpreter — and      │
+│               names neither ptrace nor doctor.                   │
+│                                                                  │
+│   `ls` and not `test -e`: test -e follows the /proc/1/root       │
+│   symlink and answers for the target of the link, so it says yes │
+│   on precisely the seat that cannot traverse it.                 │
 │                                                                  │
 │   The *entries*, never the mount root: `cp -a` onto the claim's  │
 │   own directory fails with "preserving times for '.': Operation  │
 │   not permitted", after copying everything, which reads as an    │
 │   inexplicable failure at the end of a long copy.                │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ├─ no ptrace / no claim ───────▶ exit 2
+                                  ├─ root unreadable ────────────▶ exit 2
+                                  ├─ no project / no claim ──────▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ PUT THE SOURCE ON THE CLAIM      the claim *is* the checkout     │
@@ -298,6 +326,40 @@ podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
                                   ▼
                         actions printed, exit 0
 ```
+
+### The layout is the image's, not podbench's
+
+`/app` and `/python` are
+[python-copier-template](https://github.com/DiamondLightSource/python-copier-template)'s
+convention and the defaults of `--image-project` and `--image-interpreter`; they are
+not a requirement. An epics-containers image has no `/app` at all — its venv is at
+`/venv`, with a separate `/python` — which is how the seed came to report a layout
+difference as a ptrace denial. Measured on `bl47p-mo-ioc-01` on 2026-08-22:
+`/proc/1/root` listed cleanly from that seat and `/app` did not exist, so podbench
+blamed the rung and sent the user to `podbench doctor`, which correctly reported the
+rung healthy ([#178](https://github.com/gilesknap/podbench/issues/178)). A
+contradiction with no next step, and the reason the two failures are now asked about
+separately.
+
+The refusal prints the path **inside the image** rather than the `/proc/1/root/...`
+form podbench reads it through, because `--image-project` takes the former and an
+error should print what you would type. It names neither *ptrace* nor *doctor*, and
+not merely because neither is the cause: both are the false trail the old message
+opened, and a message that mentions a mechanism at all — even to rule it out — is one
+the reader will go and chase.
+
+This makes the paths *expressible*; it does not make a compiled IOC hotfixable. That
+process is a compiled binary, and whether the thing to fix is a Python support module
+installed into its venv or the ibek `ioc.yaml` beside it is a design question that
+stays on [#34](https://github.com/gilesknap/podbench/issues/34).
+
+`--claim-venv` is the third of the set and belongs to the *claim* rather than the
+image: it is the venv directory the runtime switch in the supervisor above looks
+for and the one `uv sync` builds, so both ends have to agree. `init` sets
+`UV_PROJECT_ENVIRONMENT` whenever it is not uv's own `.venv`, because a rebuild that
+landed beside the venv the supervisor is looking for would leave the pod quietly
+running the image's code — the one failure this whole mode exists to avoid. Passing it
+to `init` means passing the same value to `--print-values`.
 
 ## `hotfix apply` — commit, rebuild if needed, relaunch
 
