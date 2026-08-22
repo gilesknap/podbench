@@ -115,19 +115,24 @@ spec:
               -e 's#/epics/opi/#/tmp/#g' \
               /epics/ioc/config/controller.yaml > /podbench/config/controller.yaml
 
-          # The runtime switch. Seeded claim wins; unseeded claim is inert, which
-          # is precisely what Phase 0 has to prove.
-          if [ -x /podbench/app/.venv/bin/fastcs-example ]; then
-            export PATH=/podbench/app/.venv/bin:$PATH
-            echo "podbench: claim is seeded, running claim code"
-          else
-            echo "podbench: claim is unseeded, running image code"
-          fi
-
           # The hold loop. Fail-fast with no hold file present: exits the child's
           # status and the kubelet restarts exactly as today.
+          #
+          # The runtime switch is *inside* the loop. Evaluated once at container
+          # start it could never see a claim seeded afterwards, so the first
+          # apply after an init would relaunch the image's code and report
+          # success - measured 2026-08-22, restartCount 0 and the IOC still
+          # /app/.venv/bin/fastcs-example.
           while :; do
-            stdio-socket --ptty "fastcs-example run /podbench/config/controller.yaml" &
+            (
+              if [ -x /podbench/app/.venv/bin/fastcs-example ]; then
+                export PATH=/podbench/app/.venv/bin:$PATH
+                echo "podbench: claim is seeded, running claim code"
+              else
+                echo "podbench: claim is unseeded, running image code"
+              fi
+              exec stdio-socket --ptty "fastcs-example run /podbench/config/controller.yaml"
+            ) &
             child=$!
             echo $child > /tmp/podbench-child.pid
             wait $child; rc=$?

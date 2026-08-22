@@ -117,6 +117,7 @@ __all__ = [
     "interpreter_warning",
     "main",
     "manifest_annotations",
+    "require_supervisor",
     "manifest_from_pod",
     "manifest_path",
     "metadata_changed",
@@ -128,6 +129,7 @@ __all__ = [
     "resolve_target",
     "seat_container",
     "status_rows",
+    "git_argv",
     "hold_loop_args",
     "hotfix_claim",
     "values_snippet",
@@ -722,7 +724,7 @@ def drift_commits(
     if not base_commit:
         return ()
     result = store.run(
-        ["git", "-C", checkout, "log", _LOG_FORMAT, f"{base_commit}..HEAD"],
+        git_argv(checkout, "log", _LOG_FORMAT, f"{base_commit}..HEAD"),
         check=False,
     )
     if result.returncode != 0:
@@ -773,14 +775,14 @@ def changed_paths(
         return ()
     if previous:
         result = store.run(
-            ["git", "-C", checkout, "diff", "--name-only", f"{previous}..{head}"],
+            git_argv(checkout, "diff", "--name-only", f"{previous}..{head}"),
             check=False,
         )
         if result.returncode == 0:
             return _paths(result.stdout)
     return _paths(
         store.run(
-            ["git", "-C", checkout, "show", "--name-only", "--pretty=format:", head],
+            git_argv(checkout, "show", "--name-only", "--pretty=format:", head),
             check=False,
         ).stdout
     )
@@ -1353,6 +1355,61 @@ def seeded_python(store: HotfixStore) -> str:
     return found
 
 
+def git_argv(checkout: str, *args: str) -> list[str]:
+    """A git invocation against the checkout, with the ownership check disabled.
+
+    ``-c safe.directory=`` and not a global config, because the seat is
+    ephemeral: a hotfix started in one seat is committed from whichever seat is
+    alive later, and a setting written into the first one's HOME is gone by
+    then.
+
+    It is needed at all because the seed is a copy. ``cp -a`` preserves the
+    image's ownership, and the claim is read back as a uid that does not own it,
+    so git refuses the repository outright:
+
+        fatal: detected dubious ownership in repository at '/podbench/app'
+
+    Measured on the beamline, 2026-08-22. Without this every ``apply`` fails at
+    the commit - after the edit has been made, which is the worst moment.
+
+    >>> git_argv("/podbench/app", "status", "--porcelain")[:4]
+    ['git', '-c', 'safe.directory=/podbench/app', '-C']
+    """
+    return ["git", "-c", f"safe.directory={checkout}", "-C", checkout, *args]
+
+
+def require_supervisor(kube: Kubectl, target: HotfixTarget) -> None:
+    """Refuse a target whose container is not running the hold loop.
+
+    Checked at *runtime* against the live container rather than by reading the
+    pod spec, because the spec can carry the supervisor while the container
+    runs something else - an image whose ENTRYPOINT wins, a chart that emits
+    ``command`` somewhere the values did not reach, a pod that predates the
+    values being applied.
+
+    It is a refusal and not a warning because the fallback is destructive: with
+    no supervisor there is nothing to relaunch, so ``apply`` would kill the
+    application and the kubelet would restart the container - taking the
+    developer's seat with it (issue #161). Better to refuse at ``init``, before
+    anybody has edited anything, than at ``apply``, after they have.
+    """
+    probe = kube.exec_(
+        target.pod.name,
+        ["test", "-e", HOTFIX_CHILD_PID_PATH],
+        container=target.container,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise HotfixError(
+            f"container {target.container} is not running the podbench "
+            f"supervisor: {HOTFIX_CHILD_PID_PATH} does not exist. Hotfix mode "
+            "relaunches the application in place, which needs the supervisor "
+            "from `podbench hotfix --print-values` to be this container's "
+            "command. Without it there is nothing to relaunch, and applying a "
+            "fix would restart the container and kill your seat with it."
+        )
+
+
 def _seeded_interpreter(store: HotfixStore, checkout: str) -> str:
     """The interpreter version the seeded venv reports, or ``""``.
 
@@ -1379,12 +1436,10 @@ def _identity(store: HotfixStore, checkout: str, author: str | None) -> tuple[st
         name, _, email = author.partition("<")
         return name.strip() or "podbench", email.strip().rstrip(">") or "podbench@local"
     configured = store.run(
-        ["git", "-C", checkout, "config", "--get", "user.email"], check=False
+        git_argv(checkout, "config", "--get", "user.email"), check=False
     )
     email = configured.stdout.strip()
-    named = store.run(
-        ["git", "-C", checkout, "config", "--get", "user.name"], check=False
-    )
+    named = store.run(git_argv(checkout, "config", "--get", "user.name"), check=False)
     name = named.stdout.strip()
     return name or "podbench", email or "podbench@local"
 
@@ -1423,6 +1478,7 @@ def init(
     container — the interpreter on the claim is the one the scripts must name.
     """
     actions: list[str] = []
+    require_supervisor(kube, target)
     project, interpreter_src = seed_source()
     checkout = checkout_path()
 
@@ -1472,8 +1528,7 @@ def init(
         actions.append(f"cloned {repo} to {checkout}")
 
     resolved = (
-        base_commit
-        or store.run(["git", "-C", checkout, "rev-parse", "HEAD"]).stdout.strip()
+        base_commit or store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
     )
 
     if install:
@@ -1561,16 +1616,14 @@ def apply_hotfix(
         )
     checkout = manifest.checkout or checkout_path(manifest.venv)
 
-    dirty = store.run(["git", "-C", checkout, "status", "--porcelain"]).stdout.strip()
+    dirty = store.run(git_argv(checkout, "status", "--porcelain")).stdout.strip()
     if not dirty:
         actions.append("working tree clean; nothing new to commit")
     else:
-        store.run(["git", "-C", checkout, "add", "-A"])
+        store.run(git_argv(checkout, "add", "-A"))
         name, email = _identity(store, checkout, author)
         store.run(
-            [
-                "git",
-                "-C",
+            git_argv(
                 checkout,
                 "-c",
                 f"user.name={name}",
@@ -1579,11 +1632,11 @@ def apply_hotfix(
                 "commit",
                 "-m",
                 message,
-            ]
+            )
         )
         actions.append(f"committed as {name} <{email}>")
 
-    head = store.run(["git", "-C", checkout, "rev-parse", "HEAD"]).stdout.strip()
+    head = store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
     commits = drift_commits(store, checkout, manifest.base_commit)
 
     # From what the manifest last recorded to HEAD, not from what this apply
@@ -1616,30 +1669,130 @@ def apply_hotfix(
     actions.append(annotate(kube, target, manifest))
 
     if bounce:
-        actions.append(_bounce(kube, target))
+        actions.append(_relaunch(kube, target))
     else:
-        actions.append("not bounced; the running process still has the old code")
+        actions.append("not relaunched; the running process still has the old code")
     return manifest, actions
 
 
-def _bounce(kube: Kubectl, target: HotfixTarget) -> str:
-    """Make the kubelet pick the hotfix up.
+HOLD_SECONDS = 120.0
+"""How long a hold may stand before the supervisor stops honouring it.
 
-    With a pod template the annotation edit has already rolled the workload, so
-    there is nothing more to do — and doing more would race the rollout. A bare
-    pod has to be deleted, and deleting a pod nobody owns destroys it, so that
-    one is refused rather than done helpfully.
+Decision 4. The supervisor has no backoff, so a hold left behind over a child
+that cannot start is an unbounded spin - and worse, a pod whose liveness probe
+is short-circuited indefinitely. The deadline is absolute rather than a
+countdown so that a seat which dies mid-apply cannot leave the pod held.
+"""
+
+HOLD_AND_RELAUNCH = """\
+set -u
+test -e {pid_file} || {{ echo "no {pid_file}: this container is not running the \
+podbench supervisor, so there is nothing to relaunch" >&2; exit 1; }}
+date -u -d "+{deadline} seconds" +%s > {hold}
+trap 'rm -f {hold}' EXIT
+child=$(cat {pid_file})
+python - "$child" <<'PY'
+import glob, os, re, signal, sys, time
+root = int(sys.argv[1])
+kids = {{}}
+for d in glob.glob('/proc/[0-9]*'):
+    try:
+        pid = int(d.rsplit('/', 1)[1])
+        ppid = int(re.search(r'PPid:\\s+(\\d+)', open(d + '/status').read()).group(1))
+    except Exception:
+        continue
+    kids.setdefault(ppid, []).append(pid)
+seen, stack = [], [root]
+while stack:
+    p = stack.pop()
+    if p in seen:
+        continue
+    seen.append(p)
+    stack.extend(kids.get(p, []))
+for pid in reversed(seen):
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+deadline = time.time() + 5
+while time.time() < deadline and any(os.path.exists('/proc/%d' % p) for p in seen):
+    time.sleep(0.02)
+for pid in seen:
+    if os.path.exists('/proc/%d' % pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+PY
+for _ in $(seq 1 300); do
+  [ "$(cat {pid_file})" != "$child" ] && break
+  sleep 0.1
+done
+"""
+"""Hold, tree-kill, release - as one script, because it must be one exec.
+
+One exec and not three: a seat that dies between them would leave the pod held,
+which is a pod whose liveness probe is short-circuited and whose supervisor is
+spinning without backoff. ``trap ... EXIT`` removes the hold on every path
+including the failure ones, and the deadline in the file is the belt to that
+brace.
+
+The refusal when the pid file is absent is what stops this being run against a
+container that never got the supervisor: there the kill would take the
+application down with no relaunch behind it, and the kubelet would restart the
+container - taking the seat with it, which is precisely what the mode exists to
+avoid.
+"""
+
+
+def _relaunch(
+    kube: Kubectl, target: HotfixTarget, *, deadline: float = HOLD_SECONDS
+) -> str:
+    """Relaunch the application without restarting its container.
+
+    Hold, kill, release. The hold makes the supervisor relaunch the child rather
+    than exit with its status, so PID 1 never dies and the kubelet never sees a
+    restart - which is the whole point: an ephemeral container shares the target
+    container's namespaces, so a restart does not orphan the developer's seat,
+    it SIGKILLs it (issue #161, exitCode 137).
+
+    Measured on the beamline: ~6.8s to full service, against a kubelet
+    CrashLoopBackOff ladder of 15s, 23s, 45s. See spike S7.
+
+    The kill is a **tree** kill, not a signal to the recorded pid. A target that
+    allocates a pty puts its real process in its own session, where it survives
+    a signal aimed at the pid or its process group and is reparented onto PID 1
+    still holding the port - so the relaunch comes up deaf and the pod goes on
+    serving the old code with restartCount still 0. Nothing about that is
+    visible without collecting the tree first.
+
+    The hold carries an absolute deadline because the supervisor has no backoff
+    of its own: held with a child that cannot start, it relaunches as fast as
+    the child can exit. The hold replaces the kubelet's ladder with none at all,
+    so it must not be left behind.
     """
-    if target.workload_kind in ("deployment", "statefulset"):
-        return "the annotation edit rolls the workload; watch `kubectl rollout status`"
-    if target.workload_kind is None:
-        return (
-            "not bounced: this pod has no controller, so deleting it would not "
-            "bring it back. Restart the application process yourself — with the "
-            "venv on the claim, the restart is the relaunch."
+    script = HOLD_AND_RELAUNCH.format(
+        hold=HOTFIX_HOLD_PATH,
+        pid_file=HOTFIX_CHILD_PID_PATH,
+        deadline=int(deadline),
+    )
+    result = kube.exec_(
+        target.pod.name,
+        ["bash", "-c", script],
+        container=target.container,
+        check=False,
+        timeout=POD_WORK_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise HotfixError(
+            f"the relaunch failed in container {target.container}: "
+            f"{result.stderr.strip() or result.stdout.strip()}. The hold file is "
+            f"removed on every path, so the pod is fail-fast again either way - "
+            f"check {HOTFIX_CHILD_PID_PATH} exists, which is what tells you the "
+            "supervisor is the one from `--print-values` and not the image's own "
+            "entrypoint."
         )
-    kube.delete_pod(target.pod.name)
-    return f"deleted pod {target.pod.name}; {target.workload} will replace it"
+    return f"relaunched the application in {target.container} without a restart"
 
 
 def consolidate(
@@ -1673,7 +1826,7 @@ def consolidate(
             "the claim instead — see `hotfix status`."
         )
     if push:
-        store.run(["git", "-C", checkout, "push", remote, f"HEAD:refs/heads/{branch}"])
+        store.run(git_argv(checkout, "push", remote, f"HEAD:refs/heads/{branch}"))
         actions.append(f"pushed {len(commits)} commit(s) to {remote}/{branch}")
     else:
         actions.append(f"would push {len(commits)} commit(s) to {remote}/{branch}")
@@ -1759,6 +1912,14 @@ def hold_loop_args(entrypoint: str) -> str:
     the same values deploy safely with an empty claim - Phase 0 proved the
     unseeded case runs image code and says so.
 
+    It sits *inside* the loop, and that is not tidiness. Evaluated once at
+    container start it can never see a claim seeded afterwards, so the first
+    ``apply`` after an ``init`` relaunches the **image's** code and reports
+    success - measured on 2026-08-22: restartCount 0, new pids, and the IOC
+    still ``/app/.venv/bin/fastcs-example``. A mode whose whole promise is
+    "relaunch without restarting the container" would have needed a container
+    restart to take effect even once.
+
     The **hold** decides relaunch versus exit. With no hold file the supervisor
     exits with the child's status and the kubelet restarts as it always has, so
     a deployment carrying this is fail-fast until somebody deliberately holds
@@ -1773,16 +1934,18 @@ def hold_loop_args(entrypoint: str) -> str:
     See spike S7.
 
     >>> print(hold_loop_args("myapp serve"))  # doctest: +ELLIPSIS
-    if [ -x /podbench/app/.venv/bin/python ]; then...
+    while :; do...
     """
     return "\n".join(
         [
-            f"if [ -x {HOTFIX_APP_PATH}/.venv/bin/python ]; then",
-            f'  export PATH="{HOTFIX_APP_PATH}/.venv/bin:$PATH"',
-            '  echo "podbench: running the hotfixed project"',
-            "fi",
             "while :; do",
-            f"  {entrypoint} &",
+            "  (",
+            f"    if [ -x {HOTFIX_APP_PATH}/.venv/bin/python ]; then",
+            f'      export PATH="{HOTFIX_APP_PATH}/.venv/bin:$PATH"',
+            '      echo "podbench: running the hotfixed project"',
+            "    fi",
+            f"    exec {entrypoint}",
+            "  ) &",
             "  child=$!",
             f"  echo $child > {HOTFIX_CHILD_PID_PATH}",
             "  wait $child; rc=$?",
