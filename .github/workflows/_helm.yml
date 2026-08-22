@@ -41,31 +41,58 @@ jobs:
             exit 1
           fi
 
-      - name: Lint helm chart
-        run: helm lint Charts/podbench
+      # Every chart under Charts/, so adding one does not need this file edited
+      # again. podbench-hotfix-claim is the second: a dependency a target chart
+      # declares, published alongside the release it belongs to.
+      - name: Lint helm charts
+        run: |
+          set -xe
+          for chart in Charts/*/; do
+            helm lint "${chart%/}"
+          done
 
       # Rendering with the demo values proves the templates actually produce valid
       # manifests, which `helm lint` alone does not guarantee.
-      - name: Render helm chart
+      - name: Render helm charts
         run: |
           set -xe
           helm template podbench Charts/podbench > /dev/null
           helm template podbench Charts/podbench \
             --set scratchPvc.enabled=true \
             --set rbac.create=true > /dev/null
+          # Both directions for the subchart, because rendering *nothing* until
+          # asked is its whole contract: a service that inherits the dependency
+          # and never sets the boolean must be unchanged by having it.
+          if helm template svc Charts/podbench-hotfix-claim | grep -q "^kind:"; then
+            echo "podbench-hotfix-claim rendered an object with enabled unset"
+            exit 1
+          fi
+          helm template svc Charts/podbench-hotfix-claim --set enabled=true > /dev/null
 
       # Attached to the GitHub release by `_release.yml`, which gives the schema
       # a stable per-tag URL a site's own values file can point
       # `# yaml-language-server: $schema=` at. Uploaded from here rather than
       # committed into the release job's workdir because that job deliberately
       # downloads named artifacts only.
-      - name: Upload the chart values schema
+      # `values.schema.json` keeps its bare name: it is the URL
+      # docs/tutorials/setup.md tells sites to point their
+      # `# yaml-language-server: $schema=` line at, and renaming it would break
+      # every values file already doing so. The second chart's is qualified.
+      - name: Collect the chart values schemas
+        run: |
+          set -xe
+          mkdir -p schemas
+          cp Charts/podbench/values.schema.json schemas/values.schema.json
+          cp Charts/podbench-hotfix-claim/values.schema.json \
+            schemas/podbench-hotfix-claim.values.schema.json
+
+      - name: Upload the chart values schemas
         uses: actions/upload-artifact@v7
         with:
           name: chart-schema
-          path: Charts/podbench/values.schema.json
+          path: schemas/
 
-      - name: Package helm chart
+      - name: Package helm charts
         env:
           # Stamp the real version from the tag; off a tag it stays at 0.0.0 so a PR
           # build still produces a (throwaway) package and exercises packaging.
@@ -73,10 +100,15 @@ jobs:
         run: |
           set -xe
           mkdir -p charts
-          helm package -u --app-version "${VERSION}" --version "${VERSION}" Charts/podbench
-          mv podbench-*.tgz charts/
+          # `-d charts` rather than a glob-and-move: `podbench-*.tgz` also
+          # matches podbench-hotfix-claim's package, so a move is one chart's
+          # name away from being wrong.
+          for chart in Charts/*/; do
+            helm package -u -d charts \
+              --app-version "${VERSION}" --version "${VERSION}" "${chart%/}"
+          done
 
-      - name: Push tagged helm chart to registry
+      - name: Push tagged helm charts to registry
         if: inputs.publish && github.ref_type == 'tag'
         run: |
           set -x

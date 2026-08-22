@@ -50,8 +50,15 @@ repos:
     rev: v2.5.0
     hooks:
       - id: helm-schema
+        name: Helm values schema json (podbench)
         args: [--config, Charts/podbench/.schema.config.yaml]
         files: ^Charts/podbench/(values\.yaml|example\.values\.yaml|\.schema\.config\.yaml|values\.schema\.json)$
+      # A second entry rather than a widened `files`, because the plugin takes
+      # one `--config` and each chart's config names its own output.
+      - id: helm-schema
+        name: Helm values schema json (podbench-hotfix-claim)
+        args: [--config, Charts/podbench-hotfix-claim/.schema.config.yaml]
+        files: ^Charts/podbench-hotfix-claim/(values\.yaml|\.schema\.config\.yaml|values\.schema\.json)$
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1

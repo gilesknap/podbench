@@ -1,0 +1,27 @@
+apiVersion: v2
+name: podbench-hotfix-claim
+description: >-
+  The one cluster object podbench Hotfix mode needs a target's own chart to
+  create: a PersistentVolumeClaim carrying the project, mounted beside the
+  application's own code and never over it. Renders nothing at all unless
+  `enabled` is set, so it can sit in a shared Chart.yaml that every service
+  inherits, hotfix-enabled or not.
+
+type: application
+
+# Placeholder version/appVersion. CI stamps the real values from the git tag at
+# package time (`helm package -u --version $TAG --app-version $TAG`); these 0.0.0
+# defaults exist only so `helm lint`/`helm template` work locally off a checkout.
+version: 0.0.0
+
+# The version of podbench being deployed. CI overrides this with the release tag.
+appVersion: "0.0.0"
+
+keywords:
+  - debugging
+  - hotfix
+  - persistentvolumeclaim
+
+home: https://github.com/gilesknap/podbench
+sources:
+  - https://github.com/gilesknap/podbench

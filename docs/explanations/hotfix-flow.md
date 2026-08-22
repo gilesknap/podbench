@@ -546,13 +546,23 @@ podbench hotfix consolidate TARGET --branch fix/thing [--dry-run]
      2. merge; let CI build and publish the image
      3. roll the workload onto it and confirm it is healthy
      4. remove the five values from the application's chart
-     5. set hotfixProject.enabled=false and delete the claim
+     5. turn the claim's boolean off and delete the claim
 ```
 
 The PR is not opened here: that needs a forge client podbench does not depend on, and
 a printed `gh pr create` is one paste. Until step 5 the claim keeps shadowing the
 image's project — the runtime switch prefers a seeded claim, and it does not care that
 the fix is now in the image too.
+
+Step 5 is two actions and not one, deliberately. The claim carries both
+`helm.sh/resource-policy: keep` and
+`argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so turning the
+boolean off takes the claim out of the desired state and leaves the object
+standing. That is the point — a hotfix has to survive somebody reverting a
+repoint mid-beamtime — and it means the deletion is a separate, deliberate act.
+Measured: a claim carrying Helm's annotation *alone* is pruned about three
+minutes after it leaves the desired state, and a `Delete`-reclaim PV goes with
+it (issue #190).
 
 ## Every cluster call, in order
 

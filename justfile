@@ -38,11 +38,15 @@ docs:
 docs-serve:
     uv run --no-sync sphinx-autobuild docs docs/_build
 
-# The chart, as the helm workflow checks it.
+# The charts, as the helm workflow checks them.
 helm:
     helm lint Charts/podbench
+    helm lint Charts/podbench-hotfix-claim
     helm template podbench Charts/podbench >/dev/null
     helm template podbench Charts/podbench --set scratchPvc.enabled=true --set rbac.create=true >/dev/null
+    # Renders nothing until asked is the subchart's whole contract, so check both ways.
+    ! helm template svc Charts/podbench-hotfix-claim | grep -q '^kind:'
+    helm template svc Charts/podbench-hotfix-claim --set enabled=true >/dev/null
 
 # The e2e suite. Needs a cluster and a published image, so it is opt-in.
 e2e image="ghcr.io/gilesknap/podbench:latest":

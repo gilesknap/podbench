@@ -1,0 +1,9 @@
+.DS_Store
+.git/
+.gitignore
+*.tmproj
+.vscode/
+# Schema-generation inputs. values.schema.json is the artefact and must stay in
+# the package — helm only validates a schema it finds inside the chart — but the
+# config that produces it is build-time only.
+.schema.config.yaml

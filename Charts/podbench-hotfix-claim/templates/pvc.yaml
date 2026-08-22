@@ -1,0 +1,63 @@
+{{- /*
+The claim, declared beside the pod it serves rather than centrally.
+
+Its lifecycle should match the workload's. podbench's own chart can create these
+from a central `hotfixProject.claims[]` list and still does, for anyone already
+using it - but that is a namespace-wide release naming every application that
+might ever be hotfixed, and a claim there outlives every service that ever used
+it.
+*/ -}}
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "podbench-hotfix-claim.name" . }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    podbench.dev/hotfix-target: {{ .Release.Name | quote }}
+    {{- with .Values.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    # A hotfix is an emergency fix that has to survive every restart and reschedule
+    # until the next shutdown. Losing the volume loses the fix and, worse, silently
+    # reverts the running code to the released image.
+    #
+    # Two annotations, because they guard different events and neither implies the
+    # other. Argo CD does honour Helm's - its docs list it as equivalent to
+    # `Delete=false` - but that is the *Application* being deleted, and ending a
+    # hotfix is never that: somebody flips `enabled` off, removes the values or
+    # reverts a repoint, and the claim leaves the desired state on an ordinary
+    # sync. That is `Prune=false`.
+    #
+    # Measured rather than assumed (issue #190, p47-beamline, 2026-08-22): a claim
+    # carrying `keep` alone was pruned three minutes after it left the desired
+    # state, and its `Delete`-reclaim PV was deleted with it. Keeping Helm's
+    # annotation is not redundant either - it is what a plain `helm uninstall`
+    # honours for anyone not running Argo at all.
+    #
+    # Neither is exposed as a value, and `annotations` is filtered rather than
+    # merged so that setting one of them by hand cannot reach here either. A
+    # claim that can be pruned is a hotfix silently lost, which is the one
+    # failure this whole mode exists to prevent, and `annotations` rendering
+    # after these would otherwise win on a duplicate key.
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    {{- with omit .Values.annotations "helm.sh/resource-policy" "argocd.argoproj.io/sync-options" }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    # ReadWriteOnce deliberately, and not a value: one checkout cannot serve two
+    # writers, so the access mode is what makes a second replica fail loudly
+    # rather than silently corrupt the fix.
+    - ReadWriteOnce
+  {{- with .Values.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.size | default "2Gi" | quote }}
+{{- end }}
