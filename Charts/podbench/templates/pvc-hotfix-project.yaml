@@ -1,10 +1,10 @@
-{{- if .Values.hotfixVenv.enabled }}
-{{- range .Values.hotfixVenv.claims }}
+{{- if .Values.hotfixProject.enabled }}
+{{- range .Values.hotfixProject.claims }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ printf "%s-venv" .name }}
+  name: {{ printf "%s-podbench-project" .name }}
   labels:
     {{- include "podbench.labels" $ | nindent 4 }}
     podbench.dev/hotfix-target: {{ .name | quote }}

@@ -69,14 +69,15 @@ from .kubectl import (
 )
 from .launcher import CONTAINER_BASE, kubectl_for, running_seat
 from .model import (
+    HOTFIX_APP_PATH,
+    HOTFIX_CHILD_PID_PATH,
+    HOTFIX_CLAIM_VOLUME,
+    HOTFIX_HOLD_PATH,
     HOTFIXED_ANNOTATION,
-    SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
-    SEAT_IDENTITY_VOLUME,
     PodRef,
     as_dict,
 )
-from .sshcfg import SEAT_USER
 
 __all__ = [
     "APPLIED_ANNOTATION",
@@ -124,7 +125,10 @@ __all__ = [
     "resolve_target",
     "seat_container",
     "status_rows",
+    "hold_loop_args",
+    "hotfix_claim",
     "values_snippet",
+    "wrapped_liveness_probe",
 ]
 
 MANIFEST_FILENAME = ".podbench-hotfix.json"
@@ -1098,7 +1102,7 @@ def assess(
             f"the hotfix was consolidated onto {manifest.consolidated_branch} and "
             "the image has changed since. If the rebuild included it, the claim "
             "is now shadowing the released fix with an older copy of it: retire "
-            "the claim and turn hotfixVenv off.",
+            "the claim and turn hotfixProject off.",
         )
     if changed:
         return (
@@ -1571,7 +1575,7 @@ def _retirement_checklist(
             "  2. merge, and let CI build and publish the image",
             f"  3. roll {workload} onto the new image and confirm it is healthy",
             "  4. remove the volume/volumeMount from the application's values",
-            "  5. set hotfixVenv.enabled=false and delete the claim",
+            "  5. set hotfixProject.enabled=false and delete the claim",
             "",
             "until step 5 the claim keeps shadowing the image's venv, and "
             "`hotfix status` will report this pod as superseded.",
@@ -1597,148 +1601,190 @@ def identity_configmap(app: str) -> str:
     return f"{app}-podbench-identity"
 
 
+def hotfix_claim(app: str) -> str:
+    """The claim ``hotfixProject`` emits for one application.
+
+    Derived rather than configured, so the chart and this snippet cannot drift -
+    ``templates/pvc-hotfix-project.yaml`` builds the same name from the same
+    field.
+
+    Not ``<app>-venv``: the claim stopped being a venv when the layout moved
+    beside the application. It now carries the project - source, ``.venv`` and
+    interpreter - and a name that says venv is a name that sends the next reader
+    looking for a mount over one.
+
+    >>> hotfix_claim("api")
+    'api-podbench-project'
+    """
+    return f"{app}-podbench-project"
+
+
+def hold_loop_args(entrypoint: str) -> str:
+    """The supervisor, as one ``args`` string, wrapping *entrypoint*.
+
+    Three things it does, and each was forced by a measurement rather than
+    chosen:
+
+    The **runtime switch** prefers the claim only when the claim is seeded, so
+    the same values deploy safely with an empty claim - Phase 0 proved the
+    unseeded case runs image code and says so.
+
+    The **hold** decides relaunch versus exit. With no hold file the supervisor
+    exits with the child's status and the kubelet restarts as it always has, so
+    a deployment carrying this is fail-fast until somebody deliberately holds
+    the pod.
+
+    The **reap** is the part that looks redundant and is not. A target that
+    allocates a pty - ``stdio-socket --ptty``, i.e. every epics-containers IOC -
+    puts its real process in its own session, so it survives a signal aimed at
+    the recorded pid *or its process group* and is reparented onto PID 1 still
+    holding the port. Measured on 2026-08-22: ten relaunches, ``restartCount``
+    0, and the pod still served by the process that started with the container.
+    See spike S7.
+
+    >>> print(hold_loop_args("myapp serve"))  # doctest: +ELLIPSIS
+    if [ -x /podbench/app/.venv/bin/python ]; then...
+    """
+    return "\n".join(
+        [
+            f"if [ -x {HOTFIX_APP_PATH}/.venv/bin/python ]; then",
+            f'  export PATH="{HOTFIX_APP_PATH}/.venv/bin:$PATH"',
+            '  echo "podbench: running the hotfixed project"',
+            "fi",
+            "while :; do",
+            f"  {entrypoint} &",
+            "  child=$!",
+            f"  echo $child > {HOTFIX_CHILD_PID_PATH}",
+            "  wait $child; rc=$?",
+            '  kill -TERM -"$child" 2>/dev/null || true',
+            f"  [ -e {HOTFIX_HOLD_PATH} ] || exit $rc",
+            "done",
+        ]
+    )
+
+
+def wrapped_liveness_probe(original: Sequence[str]) -> str:
+    """*original* exec probe, short-circuited while the pod is held.
+
+    A held pod has a deliberately dead or restarting child, so its own health
+    check fails and an unwrapped probe restarts the container out from under
+    the hold. Measured on 2026-08-22: wrapped, a held pod with its service down
+    survived 344s with no restart and no ``Unhealthy`` event; unwrapped, the
+    same pod restarted at 122s. 7 of 18 containers in a real beamline namespace
+    declare a probe, and the canonical hotfix target declares none - so this
+    cannot be omitted on the grounds that the target in front of you has no
+    probe.
+    """
+    inner = " ".join(original)
+    return f"if [ -e {HOTFIX_HOLD_PATH} ]; then exit 0; fi; exec {inner}"
+
+
 def values_snippet(
     app: str,
-    venv: str,
+    entrypoint: str,
     *,
-    image: str = "<the application's own image>",
     size: str = "2Gi",
-    uid: str = "<the application's runAsUser>",
     gid: str = "<the application's runAsGroup>",
     home_size: str = SEAT_HOME_SIZE,
-    volumes_key: str = "extraVolumes",
-    mounts_key: str = "extraVolumeMounts",
-    init_key: str = "initContainers",
+    liveness_exec: Sequence[str] | None = None,
+    indent: int = 0,
+    volumes_key: str = "volumes",
+    mounts_key: str = "volumeMounts",
+    command_key: str = "command",
+    args_key: str = "args",
+    probe_key: str = "livenessProbe",
     security_key: str = "podSecurityContext",
 ) -> str:
     """The values an application's chart needs, ready to paste.
 
-    Kept as small as it can be, because this is the *only* deploy-time
-    cooperation podbench ever asks for and every line of it is a line somebody
-    has to defend in review. The key names are parameters because charts differ
-    on what they call their passthroughs; the shapes underneath are plain
-    Kubernetes and do not.
+    Five keys, and every one of them is an ordinary passthrough that charts
+    already have - which is the practical payoff of mounting *beside* the
+    application rather than over it. The old snippet needed an initContainer at
+    a staging path, and ``ioc-instance`` cannot express one: every initContainer
+    there inherits ``volumeMounts`` from the main container, so the staging path
+    could not be kept clear.
 
-    The initContainer is the load-bearing part and the part that looks
-    redundant. It mounts the claim at a *staging* path, which is the only moment
-    the image's own venv is still visible: once the claim is mounted over the
-    venv path, the thing that has to be copied is behind the mount.
+    Nothing is emitted for seat identity. That was always for a seat which is an
+    ordinary container, and this mode's seat attaches to the live pod.
 
-    The seat's own two volumes ride along here for one reason: they are subject
-    to the identical constraint. An ephemeral container may only mount volumes
-    the pod already declares, and pod volumes are immutable after creation, so
-    the writable home that keeps a seat's disk use off the workload's
-    ephemeral-storage budget has to be in the spec at deploy time or not at all.
-
-    The identity volume is emitted beside it and is **not** what gives a live-pod
-    seat its login: projecting a passwd *file* takes a ``subPath`` per mount and
-    an ephemeral container may not have one, so ``attach`` never mounts it and a
-    live-pod seat registers its own record instead. It is emitted because it is
-    the identity a seat that is an *ordinary* container can be given, which is
-    what ``podbench dev`` authors — and the comments say exactly that, so nobody
-    deploys it expecting it to fix an ssh they cannot get. ``uid``/``gid``
-    default to placeholders rather than to plausible numbers: a wrong uid pasted
-    unread is a seat that authenticates as nobody, and a snippet that fails at
-    ``helm install`` beats one that fails at 3am.
+    The key names are parameters because charts differ on what they call their
+    passthroughs, and *indent* exists because some nest them: ``ioc-instance``
+    wants all five under an ``ioc-instance:`` key. Indenting the block is the
+    only correct way to do that - prefixing each key instead leaves a mapping's
+    children at their parent's level, which is silently invalid rather than
+    obviously so. The shapes underneath the keys are plain Kubernetes and do not
+    vary.
     """
-    claim = f"{app}-venv"
-    configmap = identity_configmap(app)
+    claim = hotfix_claim(app)
+    probe = wrapped_liveness_probe(liveness_exec) if liveness_exec else None
+    header = [
+        f"# 1. values for the podbench release - creates the claim {claim}",
+        "hotfixProject:",
+        "  enabled: true",
+        "  claims:",
+        f"    - name: {app}",
+        f"      size: {size}",
+        "",
+        f"# 2. values for {app}'s own chart. All five are ordinary passthroughs;",
+        "#    the names below are the common convention, not a requirement.",
+    ]
+    lines = [
+        f"{volumes_key}:",
+        f"  - name: {HOTFIX_CLAIM_VOLUME}",
+        "    persistentVolumeClaim:",
+        f"      claimName: {claim}",
+        f"  # {SEAT_HOME_VOLUME} is the seat's, and is deliberately *declared and",
+        "  # not mounted* by the application container. An ephemeral container",
+        "  # may only mount volumes its pod already declares, and pod volumes",
+        "  # cannot be added later - so it is here at deploy time or not at all.",
+        f"  - name: {SEAT_HOME_VOLUME}",
+        "    emptyDir:",
+        "      # vscode-server unpacks to ~700 MiB and a real session reaches",
+        "      # 1.1-1.3 GB. Unbounded, that comes out of the node's ephemeral",
+        "      # storage and an overrun evicts the pod - application included.",
+        f"      sizeLimit: {home_size}",
+        f"{mounts_key}:",
+        "  # Beside the application's own project, never over it. Nothing the",
+        "  # image ships is hidden, so the seed is a plain copy and the seat",
+        "  # keeps its own venv.",
+        f"  - name: {HOTFIX_CLAIM_VOLUME}",
+        f"    mountPath: {HOTFIX_APP_PATH}",
+        f"{command_key}:",
+        "  - bash",
+        "  - -c",
+        f"{args_key}:",
+        "  - |",
+    ]
+    lines += [f"    {line}" for line in hold_loop_args(entrypoint).splitlines()]
+    if probe is not None:
+        lines += [
+            f"{probe_key}:",
+            "  # The application's own check, short-circuited while the pod is",
+            "  # held. Without the wrapper the kubelet restarts a held pod at",
+            "  # failureThreshold x periodSeconds and takes the seat with it.",
+            "  exec:",
+            "    command:",
+            "      - bash",
+            "      - -c",
+            f"      - {probe!r}",
+        ]
+    lines += [
+        f"{security_key}:",
+        "  # Not optional. The claim and the seat's home are created root:root,",
+        "  # and neither the application nor the seat runs as root. Without",
+        f"  # fsGroup {HOTFIX_APP_PATH} is present and unwritable, which is worse",
+        "  # than absent - everything starts, then fails.",
+        f"  fsGroup: {gid}",
+    ]
+    pad = " " * indent
+    body = "\n".join(f"{pad}{line}" if line else line for line in lines)
     return "\n".join(
         [
-            f"# 1. values for the podbench release — creates the claim {claim}",
-            f"#    and the identity ConfigMap {configmap}",
-            "hotfixVenv:",
-            "  enabled: true",
-            "  claims:",
-            f"    - name: {app}",
-            f"      size: {size}",
-            "seatIdentity:",
-            "  # An /etc/passwd + /etc/group for a seat that runs as this",
-            f"  # application's uid. sshd cannot log in a {SEAT_USER!r} that NSS —",
-            "  # i.e. this file — does not resolve at that uid, so uid/gid must",
-            "  # be the application container's own.",
-            "  #",
-            "  # It serves a seat that is an *ordinary* container. `attach` does",
-            "  # not use it: landing the two files takes a subPath per mount and",
-            "  # the API server forbids subPath on an ephemeral container, so a",
-            "  # live-pod seat registers its own record at start-up instead, in",
-            "  # the image's own NSS database and with no help from this chart.",
-            "  # It is enabled here because Hotfix mode's seat is an ordinary",
-            "  # container; set it false if this application only ever gets",
-            "  # live-pod `attach` sessions.",
-            "  enabled: true",
-            "  apps:",
-            f"    - name: {app}",
-            f"      uid: {uid}",
-            f"      gid: {gid}",
-            "",
-            f"# 2. values for {app}'s own chart — mounts it over {venv}",
-            "#    Use whatever passthrough your chart already has for these four",
-            "#    keys; the names below are the common convention, not a",
-            "#    requirement. The shapes underneath them are plain Kubernetes.",
-            f"{volumes_key}:",
-            "  - name: podbench-hotfix-venv",
-            "    persistentVolumeClaim:",
-            f"      claimName: {claim}",
-            "  # The next two are the seat's, and they are deliberately *declared",
-            "  # and not mounted* by the application container — which looks like",
-            "  # a mistake and is not. Declaring them is enough: an ephemeral",
-            "  # container may only mount volumes its pod already has, and pod",
-            "  # volumes cannot be added later. Mounting them into the",
-            "  # application as well would change its filesystem for no gain.",
-            f"  # {SEAT_IDENTITY_VOLUME} is the one `attach` cannot use — it needs a",
-            "  # subPath per file, which an ephemeral container may not have. It",
-            "  # is here for a seat that is an ordinary container; drop it if you",
-            "  # only ever attach to live pods, whose seats register a record of",
-            "  # their own and need nothing declared for it.",
-            f"  - name: {SEAT_IDENTITY_VOLUME}",
-            "    configMap:",
-            f"      name: {configmap}",
-            "      # Read-only to everybody: this is the seat's /etc/passwd, and",
-            "      # nothing in the pod has any business rewriting it.",
-            "      defaultMode: 0444",
-            f"  # {SEAT_HOME_VOLUME} *is* mounted by `attach`, by convention, and is",
-            "  # worth having on its own: it keeps everything the seat writes off",
-            "  # the workload's ephemeral-storage budget.",
-            f"  - name: {SEAT_HOME_VOLUME}",
-            "    emptyDir:",
-            "      # vscode-server unpacks to ~700 MiB and a real session reaches",
-            "      # 1.1-1.3 GB. Unbounded, that comes out of the node's ephemeral",
-            "      # storage and an overrun evicts the pod — application included.",
-            f"      sizeLimit: {home_size}",
-            f"{mounts_key}:",
-            "  - name: podbench-hotfix-venv",
-            f"    mountPath: {venv}",
-            f"{security_key}:",
-            "  # Not optional if the seat is to be able to write its own home: an",
-            "  # emptyDir is created root:root, and the seat runs as the",
-            "  # application's uid, not as root. Without fsGroup the kubelet never",
-            f"  # chgrps the volume and {SEAT_HOME_PATH} is present and unwritable,",
-            "  # which is worse than absent — everything starts, then fails.",
-            f"  fsGroup: {gid}",
-            f"{init_key}:",
-            "  # Seeds an empty claim from the image's venv. It mounts the claim",
-            "  # somewhere else on purpose: at this point the image's venv is",
-            f"  # still visible at {venv}, and after the main mount it is not.",
-            "  # The image must be the application's own, or the venv is the",
-            "  # wrong one.",
-            "  - name: podbench-seed-venv",
-            f"    image: {image}",
-            '    command: ["sh", "-c"]',
-            "    args:",
-            "      - test -e /podbench-seed/pyvenv.cfg || cp -a "
-            f"{venv.rstrip('/')}/. /podbench-seed/",
-            "    volumeMounts:",
-            "      - name: podbench-hotfix-venv",
-            "        mountPath: /podbench-seed",
+            *header,
+            body,
             "",
             "# Single replica only: the claim is ReadWriteOnce and one checkout",
-            "# cannot serve two writers. Take hotfixVenv off again — and delete the",
-            "# claim — once `hotfix consolidate` has been through the pipeline.",
-            f"# {SEAT_HOME_VOLUME} has no such lifetime: it is deployment",
-            "# furniture, it costs one volume the application does not mount, and",
-            "# it is what keeps a seat's disk use off the workload's budget on",
-            "# the day the namespace refuses the ptrace rung.",
+            "# cannot serve two writers.",
         ]
     )
 
@@ -1865,12 +1911,26 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--app", metavar="NAME", help="application name, for --print-values"
             ),
         ] = None,
-        venv_path: Annotated[
+        entrypoint: Annotated[
             str | None,
             typer.Option(
-                "--venv-path",
-                metavar="PATH",
-                help="the application's venv path, for --print-values",
+                "--entrypoint",
+                metavar="CMD",
+                help=(
+                    "the command the container runs today, which the supervisor "
+                    "wraps, for --print-values"
+                ),
+            ),
+        ] = None,
+        liveness: Annotated[
+            str | None,
+            typer.Option(
+                "--liveness",
+                metavar="CMD",
+                help=(
+                    "the target's existing exec livenessProbe command, which is "
+                    "emitted wrapped to honour the hold; omit if it has none"
+                ),
             ),
         ] = None,
         size: Annotated[
@@ -1879,26 +1939,10 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--size", metavar="SIZE", help="claim size, for --print-values"
             ),
         ] = "2Gi",
-        app_image: Annotated[
-            str,
-            typer.Option(
-                "--app-image",
-                metavar="REF",
-                help="image the seeding initContainer runs, for --print-values",
-            ),
-        ] = "<the application's own image>",
-        # Left as placeholders when unset, so that a snippet pasted without
-        # reading it fails at `helm install` rather than deploying an identity
-        # for the wrong uid — which fails later, in the dark, as a login that is
-        # simply refused.
-        uid: Annotated[
-            str,
-            typer.Option(
-                "--uid",
-                metavar="UID",
-                help="the application container's uid, for --print-values",
-            ),
-        ] = "<the application's runAsUser>",
+        # Left as a placeholder when unset, so that a snippet pasted without
+        # reading it fails at `helm install` rather than deploying an fsGroup
+        # the application does not run as — which fails later, in the dark, as a
+        # claim that is present and unwritable.
         gid: Annotated[
             str,
             typer.Option(
@@ -1908,24 +1952,24 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             ),
         ] = "<the application's runAsGroup>",
     ) -> None:
-        """Durable in-place fixes: a venv on a claim, every change a commit, and
-        a status command that will not let a hotfixed pod go unnoticed.
+        """Durable in-place fixes: the project on a claim beside the
+        application, every change a commit, and a status command that will not
+        let a hotfixed pod go unnoticed.
         """
         if print_values:
-            if app_name is None or venv_path is None:
+            if app_name is None or entrypoint is None:
                 print(
-                    "podbench: --print-values needs --app NAME and --venv-path PATH",
+                    "podbench: --print-values needs --app NAME and --entrypoint CMD",
                     file=sys.stderr,
                 )
                 raise typer.Exit(2)
             print(
                 values_snippet(
                     app_name,
-                    venv_path,
-                    image=app_image,
+                    entrypoint,
                     size=size,
-                    uid=uid,
                     gid=gid,
+                    liveness_exec=shlex.split(liveness) if liveness else None,
                 )
             )
             raise typer.Exit(0)
