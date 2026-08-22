@@ -638,6 +638,10 @@ def test_init_refuses_an_unreachable_target_root_naming_the_ptrace_rung() -> Non
     runs the wrong code.
     """
     store = FakeStore(files={CHECKOUT: ""})
+    # The rung is measured, not inferred: `ls` on the root is what fails when
+    # the seat has no CAP_SYS_PTRACE.
+    store.failures["ls /proc/1/root/"] = "ls: cannot open directory: Permission denied"
+
     with pytest.raises(hotfix.HotfixError) as caught:
         hotfix.init(
             kube(FakeRunner()),
@@ -646,10 +650,94 @@ def test_init_refuses_an_unreachable_target_root_naming_the_ptrace_rung() -> Non
             venv=VENV,
             repo="https://example.invalid/acme/api.git",
         )
+
     message = str(caught.value)
     assert "ptrace rung" in message
     assert "podbench doctor" in message
     assert not store.ran("cp -a")
+
+
+def test_a_missing_project_is_not_reported_as_a_ptrace_denial() -> None:
+    """Issue #178, measured on bl47p-mo-ioc-01 on 2026-08-22: from that seat
+    `/proc/1/root` listed cleanly and `/app` did not exist. The old message
+    blamed ptrace and sent the user to `doctor`, which then reported the rung
+    healthy - a contradiction with no next step."""
+    store = FakeStore(files={CHECKOUT: ""})
+
+    with pytest.raises(hotfix.HotfixError) as caught:
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=VENV,
+            repo="https://example.invalid/acme/api.git",
+        )
+
+    message = str(caught.value)
+    assert "no project at /app" in message
+    # The whole of the fix: neither of the two words that sent the user in a
+    # circle appears, because neither is the problem.
+    assert "ptrace" not in message
+    assert "doctor" not in message
+    # And it names the flags that express a different layout.
+    assert "--image-project" in message
+    assert "--image-interpreter" in message
+    assert not store.ran("cp -a")
+
+
+def test_the_root_is_listed_rather_than_tested_for_existence() -> None:
+    """`test -e` follows the /proc/1/root symlink and answers for its target, so
+    it says yes on a seat that cannot traverse it - the exact case this has to
+    catch. Listing is what measures the rung."""
+    store = FakeStore(files={CHECKOUT: ""})
+
+    with pytest.raises(hotfix.HotfixError):
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=VENV,
+            repo="https://example.invalid/acme/api.git",
+        )
+
+    assert store.ran("ls /proc/1/root/")
+
+
+def test_an_image_with_a_different_layout_is_expressible_without_a_code_change() -> (
+    None
+):
+    """An epics-containers image has no /app: its venv is at /venv with a
+    separate /python. That is a layout difference, and #178 is what happened
+    when podbench could only express one layout."""
+    store = FakeStore(files={CHECKOUT: "", "/proc/1/root/venv": ""})
+
+    with pytest.raises(hotfix.HotfixError) as caught:
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=VENV,
+            repo="https://example.invalid/acme/api.git",
+            image_project="/app",
+        )
+    assert "no project at /app" in str(caught.value)
+
+    # The same claim, pointed at the layout the image actually has, gets past
+    # the guard and copies from /proc/1/root/venv.
+    store = FakeStore(files={CHECKOUT: "", "/proc/1/root/venv": ""})
+    hotfix.init(
+        kube(FakeRunner()),
+        store,
+        deployment_target(),
+        venv=VENV,
+        repo="https://example.invalid/acme/api.git",
+        image_project="/venv",
+        image_interpreter="/python",
+        install=False,
+    )
+
+    assert store.ran("cp -a")
+    assert any("/proc/1/root/venv" in " ".join(argv) for argv in store.calls)
 
 
 def test_init_seeds_the_project_and_the_interpreter() -> None:
