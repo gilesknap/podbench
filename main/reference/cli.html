@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.6.2.dev19+g70cf69376 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=369ef860"></script>
+    <script src="../_static/documentation_options.js?v=8b1ef474"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1708,7 +1708,7 @@ reaches the cluster the way every other verb does — <code class="docutils lite
 context when <code class="docutils literal notranslate"><span class="pre">-n</span></code> is not given — and <code class="docutils literal notranslate"><span class="pre">--container</span> <span class="pre">NAME</span></code> picks the application
 container where the pod has more than one, defaulting to the first.</p>
 <p>Notes on <code class="docutils literal notranslate"><span class="pre">--print-values</span></code>:</p>
-<ul class="simple">
+<ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is the way to emit without a cluster — CI, an offline machine,
 or a pod that does not exist yet — and it is the only way <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code>,
 <code class="docutils literal notranslate"><span class="pre">--gid</span></code>, <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> and <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> have to carry the whole snippet
@@ -1737,15 +1737,21 @@ survives.</p></li>
 Re-emitting the values for a pod that is already hotfixed — after a chart bump,
 or to see what is deployed — is a normal thing to do, and a supervisor nested
 inside a supervisor would hold on a file the inner one never sees.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">volumes:</span></code> and <code class="docutils literal notranslate"><span class="pre">volumeMounts:</span></code> replace the chart’s keys rather than adding
-to them</strong>, so where the target already mounts volumes of its own they are
-named and you are told which way the key resolves. Found by diffing this
-output against the hand-written values for <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code>, where pasting it
-verbatim would have dropped that IOC’s <code class="docutils literal notranslate"><span class="pre">dev-shm</span></code> and left it without
-<code class="docutils literal notranslate"><span class="pre">/dev/shm</span></code>. Podbench cannot merge them itself and does not pretend to: read
-from a live pod, a chart-generated volume and one the service declared for
-itself are indistinguishable. Anything chart-generated comes back on the next
-render; anything the service declares for itself does not.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">volumes:</span></code> and <code class="docutils literal notranslate"><span class="pre">volumeMounts:</span></code> are a whole key each</strong>, so pasting them over
+a values file that already sets one drops whatever it declared. Where the
+target already mounts volumes of its own they are named, and the advice is to
+merge rather than replace. Found by diffing this output against the
+hand-written values for <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code>, where pasting it verbatim would
+have dropped that IOC’s <code class="docutils literal notranslate"><span class="pre">dev-shm</span></code> and left it without <code class="docutils literal notranslate"><span class="pre">/dev/shm</span></code>.</p>
+<p>The key at risk is the <strong>values file’s</strong>, not the chart’s, and the difference
+matters. Measured against <code class="docutils literal notranslate"><span class="pre">ioc-instance</span></code> 5.6.1: <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code>’s values
+declare <code class="docutils literal notranslate"><span class="pre">dev-shm</span></code> alone and its pod carries six volumes — the chart’s five and
+that one. A chart appends what the values give it, so what the chart generates
+for itself is unaffected either way and <strong>must not be copied in here</strong>;
+doing so declares it twice. Podbench cannot do the merge itself and does not
+pretend to: read from a live pod, a chart-generated volume and one the service
+declared are indistinguishable.</p>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> stays the literal placeholder <code class="docutils literal notranslate"><span class="pre">&lt;the</span> <span class="pre">application's</span> <span class="pre">runAsGroup&gt;</span></code> only
 where nothing could say what it should be: under <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> with no
 <code class="docutils literal notranslate"><span class="pre">--gid</span></code>, or against a pod that states <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>, which a
