@@ -1,0 +1,131 @@
+# Phase 0 harness: a duplicate of bl47p-ea-fastcs-01-0 that cannot disturb the
+# beamline, carrying the hold loop and an *unseeded* claim beside the project.
+#
+# Duplicate rules (plan "Duplicating a target without disturbing the beamline"):
+#   1. hostNetwork off, so CA/PVA ports and UDP searches stay off the host net
+#   2. the three shared claims dropped entirely
+#   3. PV prefix renamed, so even on the pod network it cannot answer for a live IOC
+#   4. podbench-test-* name + test-duplicate label, so it is greppable as a set
+#   5. deleted at the end of the phase
+apiVersion: v1
+kind: Pod
+metadata:
+  name: podbench-test-fastcs
+  labels:
+    podbench.dev/test-duplicate: "true"
+spec:
+  restartPolicy: Always
+  hostNetwork: false
+  dnsPolicy: ClusterFirst
+  securityContext:
+    runAsUser: 36096
+    runAsGroup: 36096
+    supplementalGroupsPolicy: Strict
+    # The fsGroup half of the beside-the-app layout, proved on netapp in preflight.
+    fsGroup: 37887
+    fsGroupChangePolicy: OnRootMismatch
+  tolerations:
+    - {key: beamline, operator: Equal, value: bl47p, effect: NoSchedule}
+    - {key: location, operator: Equal, value: bl47p, effect: NoSchedule}
+    - {key: nodetype, operator: Equal, value: training-rig, effect: NoSchedule}
+  volumes:
+    # Read-only, and the original: temp_controller.yaml and schema.json are used
+    # as-is. controller.yaml is NOT — it carries the live PV prefix, and this
+    # account cannot create a configmap to hold a renamed copy.
+    - name: config-volume
+      configMap:
+        name: bl47p-ea-fastcs-01-config
+        defaultMode: 420
+    # The claim, beside the project and deliberately UNSEEDED for Phase 0.
+    - name: podbench-app
+      ephemeral:
+        volumeClaimTemplate:
+          metadata:
+            labels:
+              podbench.dev/test-duplicate: "true"
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: 2Gi
+    - name: podbench-config
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+  containers:
+    - name: bl47p-ea-fastcs-01
+      image: ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        runAsUser: 37887
+        runAsGroup: 37887
+        capabilities:
+          drop: [ALL]
+          add: [AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD,
+                SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT]
+      resources:
+        requests: {cpu: 100m, memory: 103Mi, ephemeral-storage: 100Mi}
+        limits: {cpu: 500m, memory: 1Gi, ephemeral-storage: 2Gi}
+      env:
+        - {name: IOC_NAME, value: podbench-test-fastcs}
+        - {name: IOC_PREFIX, value: podbench-test-fastcs}
+        - {name: IOCSH_PS1, value: "podbench-test-fastcs > "}
+        - {name: HOME, value: /tmp}
+        - {name: TERM, value: xterm-256color}
+      volumeMounts:
+        - {name: config-volume, mountPath: /epics/ioc/config, readOnly: true}
+        - {name: podbench-config, mountPath: /podbench/config}
+        - {name: podbench-app, mountPath: /podbench/app}
+        - {name: tmp, mountPath: /tmp}
+      command: [bash, -c]
+      args:
+        - |
+          set -u
+          # Rule 3: our own controller.yaml, renamed prefix, GUI output redirected
+          # off the (dropped) opis claim.
+          sed -e 's/T01-EA-FASTCS-01/PODBENCHTEST-EA-FASTCS-01/g' \
+              -e 's#/epics/opi/#/tmp/#g' \
+              /epics/ioc/config/controller.yaml > /podbench/config/controller.yaml
+
+          # The runtime switch. Seeded claim wins; unseeded claim is inert, which
+          # is precisely what Phase 0 has to prove.
+          if [ -x /podbench/app/.venv/bin/fastcs-example ]; then
+            export PATH=/podbench/app/.venv/bin:$PATH
+            echo "podbench: claim is seeded, running claim code"
+          else
+            echo "podbench: claim is unseeded, running image code"
+          fi
+
+          # The hold loop. Fail-fast with no hold file present: exits the child's
+          # status and the kubelet restarts exactly as today.
+          while :; do
+            stdio-socket --ptty "fastcs-example run /podbench/config/controller.yaml" &
+            echo $! > /tmp/podbench-child.pid
+            wait $!; rc=$?
+            echo "podbench: child exited rc=$rc"
+            [ -e /tmp/podbench-hold ] || exit $rc
+            echo "podbench: held, relaunching"
+          done
+    - name: temp-controller-simulator
+      image: ghcr.io/diamondlightsource/fastcs-example:2025.9.1
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        runAsUser: 37887
+        runAsGroup: 37887
+        capabilities:
+          drop: [ALL]
+          add: [AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD,
+                SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT]
+      resources:
+        requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 100Mi}
+        limits: {cpu: 1, memory: 1Gi, ephemeral-storage: 2Gi}
+      env:
+        - {name: HOME, value: /tmp}
+      command: [tickit, all, /epics/ioc/config/temp_controller.yaml]
+      volumeMounts:
+        - {name: config-volume, mountPath: /epics/ioc/config, readOnly: true}
+        - {name: tmp, mountPath: /tmp}
