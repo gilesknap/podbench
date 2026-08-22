@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
+    <title>Command-line reference &#8212; podbench 0.6.2.dev11+gbc98b77e4 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=219d01b3"></script>
+    <script src="../_static/documentation_options.js?v=2a02f1ea"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1543,11 +1543,18 @@ actually create.</p></li>
 </section>
 <section id="hotfix">
 <h3><code class="docutils literal notranslate"><span class="pre">hotfix</span></code><a class="headerlink" href="#hotfix" title="Link to this heading">#</a></h3>
-<p>Durable in-place fixes: a venv on a ReadWriteOnce claim, every change a git
-commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a hotfixed pod go unnoticed.</p>
+<p>Durable in-place fixes: the project on a ReadWriteOnce claim beside the
+application, every change a git commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a
+hotfixed pod go unnoticed.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>Hotfix mode has never been run against a cluster. It is unit-tested only.</p>
+<p>Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC’s running
+code with <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> unchanged and both seats alive. Two things about it are
+still undemonstrated — survival across pod replacement, which needs a real claim
+rather than the generic ephemeral volume that run used, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, which
+no cluster has run. <code class="docutils literal notranslate"><span class="pre">--print-values</span> <span class="pre">--from-pod</span></code> was measured against the live
+<code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01</span></code> and <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> targets, and is where the volume and
+probe warnings below came from.</p>
 </div>
 <p>The seat must mount the claim at the application’s own mountPath, since that is
 how <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Neither is
@@ -1559,23 +1566,43 @@ wins.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is run from a terminal inside the
 seat, where the claim is already in this process’s own mount namespace.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
- Durable in-place fixes: a venv on a claim, every change a commit, and a status command that will
- not let a hotfixed pod go unnoticed.
+ Durable in-place fixes: the project on a claim beside the application, every change a commit, and
+ a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --print-values              emit the helm values an application&#39;s chart needs, and exit          │
-│ --app                 NAME  application name, for --print-values                                 │
-│ --venv-path           PATH  the application&#39;s venv path, for --print-values                      │
-│ --size                SIZE  claim size, for --print-values [default: 2Gi]                        │
-│ --app-image           REF   image the seeding initContainer runs, for --print-values             │
-│                             [default: &lt;the application&#39;s own image&gt;]                             │
-│ --uid                 UID   the application container&#39;s uid, for --print-values                  │
-│                             [default: &lt;the application&#39;s runAsUser&gt;]                             │
-│ --gid                 GID   the application container&#39;s gid, for --print-values                  │
-│                             [default: &lt;the application&#39;s runAsGroup&gt;]                            │
-│ --help                      Show this message and exit.                                          │
+│ --print-values                       emit the helm values an application&#39;s chart needs, and exit │
+│ --app                     NAME       application name, for --print-values                        │
+│ --entrypoint              CMD        the command the container runs today, which the supervisor  │
+│                                      wraps, for --print-values                                   │
+│ --liveness                CMD        the target&#39;s existing exec livenessProbe command, for       │
+│                                      --no-from-pod; emitted wrapped to honour the hold. Carries  │
+│                                      no timings, so prefer --liveness-probe - or --from-pod,     │
+│                                      which carries them without being asked                      │
+│ --liveness-probe          JSON       the target&#39;s whole livenessProbe as json, for               │
+│                                      --no-from-pod. --from-pod reads it off the target itself,   │
+│                                      which is what this flag existed to make you do by hand:     │
+│                                      `kubectl get pod POD -o                                     │
+│                                      jsonpath=&#39;{.spec.containers[0].livenessProbe}&#39;`. Its exec   │
+│                                      command is wrapped and its timings are carried over; a      │
+│                                      chart renders a supplied probe wholesale, so a timing left  │
+│                                      out becomes the k8s default                                 │
+│ --size                    SIZE       claim size, for --print-values [default: 2Gi]               │
+│ --gid                     GID        the application container&#39;s gid, for --print-values         │
+│                                      (default: read from the target)                             │
+│                                      [default: &lt;the application&#39;s runAsGroup&gt;]                   │
+│ --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, so │
+│                                      the emitted values need no hand-editing (the default;       │
+│                                      --no-from-pod turns it off)                                 │
+│ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
+│                                      offline machine, or a pod that does not exist yet           │
+│ --container               NAME       the application container (default: first)                  │
+│ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)           │
+│ --context                 NAME       kubeconfig context                                          │
+│ --kubectl                 BIN        kubectl binary to use [default: kubectl]                    │
+│ --help                               Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
 │ init         verify the seeded claim, clone the source, editable-install                         │
@@ -1583,6 +1610,7 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 </pre></div>
 </div>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1623,16 +1651,79 @@ venv is shared but its interpreter is not. <code class="docutils literal notrans
 <li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired hotfixes” is
 a testable shutdown assertion.</p></li>
 </ul>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --entrypoint &#39;myapp serve&#39;
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --from-pod myapp-0
 </pre></div>
 </div>
 <p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">hotfixProject</span></code> values for the podbench
 release, and five ordinary passthroughs for the application’s own chart — the
 claim and the seat’s home under <code class="docutils literal notranslate"><span class="pre">volumes</span></code>, the claim mounted <em>beside</em> the
 project at <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code> under <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code>, the supervisor as
-<code class="docutils literal notranslate"><span class="pre">command</span></code>/<code class="docutils literal notranslate"><span class="pre">args</span></code>, <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> under <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code>, and — when the target
-has one, named with <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> — its <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wrapped to honour the
-hold.</p>
+<code class="docutils literal notranslate"><span class="pre">command</span></code>/<code class="docutils literal notranslate"><span class="pre">args</span></code>, <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> under <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code>, and — where the target
+declares an exec one — its <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wrapped to honour the hold.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> reads the entrypoint, the whole <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> and the gid off
+that pod, and reading is the <strong>default</strong>: naming no pod and not passing
+<code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is a refusal that asks for one. Supplying those three by hand is
+how issue #176 happened — a chart renders a supplied <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wholesale,
+so a timing left out becomes the Kubernetes default, and a compiled IOC went
+from <code class="docutils literal notranslate"><span class="pre">initialDelaySeconds:</span> <span class="pre">120</span></code> and <code class="docutils literal notranslate"><span class="pre">periodSeconds:</span> <span class="pre">30</span></code> to 0s and 10s: probed
+from the moment it started, before it had reached its hardware. Reading the pod
+removes the whole class, and the timings arrive without anyone typing them. It
+reaches the cluster the way every other verb does — <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--context</span></code> and <code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>, with the namespace coming from the kubeconfig
+context when <code class="docutils literal notranslate"><span class="pre">-n</span></code> is not given — and <code class="docutils literal notranslate"><span class="pre">--container</span> <span class="pre">NAME</span></code> picks the application
+container where the pod has more than one, defaulting to the first.</p>
+<p>Notes on <code class="docutils literal notranslate"><span class="pre">--print-values</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is the way to emit without a cluster — CI, an offline machine,
+or a pod that does not exist yet — and it is the only way <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--gid</span></code>, <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> and <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> have to carry the whole snippet
+between them. <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> takes the JSON the pod would have given you,
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">pod</span> <span class="pre">POD</span> <span class="pre">-o</span> <span class="pre">jsonpath='{.spec.containers[0].livenessProbe}'</span></code>, which
+is exactly the paste <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> exists to spare you; <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> takes the
+exec command alone and carries <strong>no timings</strong>, which is the shape of #176.</p></li>
+<li><p><strong>A flag you pass beats the pod.</strong> That is what makes <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code> a usable
+answer to a target whose command lives in the image’s <code class="docutils literal notranslate"><span class="pre">ENTRYPOINT</span></code> — a
+container declaring neither <code class="docutils literal notranslate"><span class="pre">command</span></code> nor <code class="docutils literal notranslate"><span class="pre">args</span></code> has it nowhere in the pod
+spec, so nothing read from the cluster will find it — without giving up the
+gid and the probe as well. The refusal says so, rather than sending you to
+<code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> for all three.</p></li>
+<li><p><strong>A target with no <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> is not an error.</strong> 7 of 18 containers on a
+real beamline declare one and the canonical fastcs target is not among them,
+so no probe block is emitted and nothing is said about it.</p></li>
+<li><p><strong>A non-exec probe is not an error either</strong>, but it is warned about: an
+<code class="docutils literal notranslate"><span class="pre">httpGet</span></code>, <code class="docutils literal notranslate"><span class="pre">tcpSocket</span></code> or <code class="docutils literal notranslate"><span class="pre">grpc</span></code> probe cannot be short-circuited by the hold,
+because it answers from the application and the application is exactly what is
+down while a pod is held. No probe block is emitted, so the chart keeps the
+one it has and the kubelet will restart the pod out from under the seat at
+<code class="docutils literal notranslate"><span class="pre">failureThreshold</span></code> × <code class="docutils literal notranslate"><span class="pre">periodSeconds</span></code>. Without the warning that absence looks
+identical to the fastcs case, and the difference is whether a held pod
+survives.</p></li>
+<li><p><strong>A container already carrying the layout is unwrapped, not wrapped twice.</strong>
+Re-emitting the values for a pod that is already hotfixed — after a chart bump,
+or to see what is deployed — is a normal thing to do, and a supervisor nested
+inside a supervisor would hold on a file the inner one never sees.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">volumes:</span></code> and <code class="docutils literal notranslate"><span class="pre">volumeMounts:</span></code> replace the chart’s keys rather than adding
+to them</strong>, so where the target already mounts volumes of its own they are
+named and you are told which way the key resolves. Found by diffing this
+output against the hand-written values for <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code>, where pasting it
+verbatim would have dropped that IOC’s <code class="docutils literal notranslate"><span class="pre">dev-shm</span></code> and left it without
+<code class="docutils literal notranslate"><span class="pre">/dev/shm</span></code>. Podbench cannot merge them itself and does not pretend to: read
+from a live pod, a chart-generated volume and one the service declared for
+itself are indistinguishable. Anything chart-generated comes back on the next
+render; anything the service declares for itself does not.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> stays the literal placeholder <code class="docutils literal notranslate"><span class="pre">&lt;the</span> <span class="pre">application's</span> <span class="pre">runAsGroup&gt;</span></code> only
+where nothing could say what it should be: under <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> with no
+<code class="docutils literal notranslate"><span class="pre">--gid</span></code>, or against a pod that states <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>, which a
+hardened workload routinely does. It is deliberately not a number — a snippet
+pasted unread then fails at <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">install</span></code> rather than deploying an fsGroup the
+application does not run as. It must never become 0: a claim that is present
+and unwritable starts and <em>then</em> fails, in the dark.</p></li>
+<li><p><strong>Every failure reading the pod names <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> and what taking it
+costs</strong>, quoting #176, because making a cluster read the default lands each of
+these on somebody who did not ask for one. kubectl tells a missing kubeconfig,
+an absent pod and a forbidden <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> apart only in the text of its own
+message, so podbench relays that verbatim rather than guessing at a category.</p></li>
+</ul>
 </section>
 </section>
 <hr class="docutils" />

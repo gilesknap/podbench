@@ -1003,11 +1003,18 @@ Notes:
 
 ### `hotfix`
 
-Durable in-place fixes: a venv on a ReadWriteOnce claim, every change a git
-commit, and a `status` that will not let a hotfixed pod go unnoticed.
+Durable in-place fixes: the project on a ReadWriteOnce claim beside the
+application, every change a git commit, and a `status` that will not let a
+hotfixed pod go unnoticed.
 
 :::{warning}
-Hotfix mode has never been run against a cluster. It is unit-tested only.
+Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC's running
+code with `restartCount` unchanged and both seats alive. Two things about it are
+still undemonstrated — survival across pod replacement, which needs a real claim
+rather than the generic ephemeral volume that run used, and `consolidate`, which
+no cluster has run. `--print-values --from-pod` was measured against the live
+`bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01` targets, and is where the volume and
+probe warnings below came from.
 :::
 
 The seat must mount the claim at the application's own mountPath, since that is
@@ -1023,23 +1030,43 @@ seat, where the claim is already in this process's own mount namespace.
 
 ```
 
+
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
- Durable in-place fixes: a venv on a claim, every change a commit, and a status command that will
- not let a hotfixed pod go unnoticed.
+ Durable in-place fixes: the project on a claim beside the application, every change a commit, and
+ a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --print-values              emit the helm values an application's chart needs, and exit          │
-│ --app                 NAME  application name, for --print-values                                 │
-│ --venv-path           PATH  the application's venv path, for --print-values                      │
-│ --size                SIZE  claim size, for --print-values [default: 2Gi]                        │
-│ --app-image           REF   image the seeding initContainer runs, for --print-values             │
-│                             [default: <the application's own image>]                             │
-│ --uid                 UID   the application container's uid, for --print-values                  │
-│                             [default: <the application's runAsUser>]                             │
-│ --gid                 GID   the application container's gid, for --print-values                  │
-│                             [default: <the application's runAsGroup>]                            │
-│ --help                      Show this message and exit.                                          │
+│ --print-values                       emit the helm values an application's chart needs, and exit │
+│ --app                     NAME       application name, for --print-values                        │
+│ --entrypoint              CMD        the command the container runs today, which the supervisor  │
+│                                      wraps, for --print-values                                   │
+│ --liveness                CMD        the target's existing exec livenessProbe command, for       │
+│                                      --no-from-pod; emitted wrapped to honour the hold. Carries  │
+│                                      no timings, so prefer --liveness-probe - or --from-pod,     │
+│                                      which carries them without being asked                      │
+│ --liveness-probe          JSON       the target's whole livenessProbe as json, for               │
+│                                      --no-from-pod. --from-pod reads it off the target itself,   │
+│                                      which is what this flag existed to make you do by hand:     │
+│                                      `kubectl get pod POD -o                                     │
+│                                      jsonpath='{.spec.containers[0].livenessProbe}'`. Its exec   │
+│                                      command is wrapped and its timings are carried over; a      │
+│                                      chart renders a supplied probe wholesale, so a timing left  │
+│                                      out becomes the k8s default                                 │
+│ --size                    SIZE       claim size, for --print-values [default: 2Gi]               │
+│ --gid                     GID        the application container's gid, for --print-values         │
+│                                      (default: read from the target)                             │
+│                                      [default: <the application's runAsGroup>]                   │
+│ --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, so │
+│                                      the emitted values need no hand-editing (the default;       │
+│                                      --no-from-pod turns it off)                                 │
+│ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
+│                                      offline machine, or a pod that does not exist yet           │
+│ --container               NAME       the application container (default: first)                  │
+│ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)           │
+│ --context                 NAME       kubeconfig context                                          │
+│ --kubectl                 BIN        kubectl binary to use [default: kubectl]                    │
+│ --help                               Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
 │ init         verify the seeded claim, clone the source, editable-install                         │
@@ -1047,6 +1074,7 @@ seat, where the claim is already in this process's own mount namespace.
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 ```
 
 | Sub-verb | Does |
@@ -1074,16 +1102,80 @@ Notes:
   a testable shutdown assertion.
 
 ```
-$ podbench hotfix --print-values --app myapp --entrypoint 'myapp serve'
+$ podbench hotfix --print-values --app myapp --from-pod myapp-0
 ```
 
 emits both halves of the chart wiring: `hotfixProject` values for the podbench
 release, and five ordinary passthroughs for the application's own chart — the
 claim and the seat's home under `volumes`, the claim mounted *beside* the
 project at `/podbench/app` under `volumeMounts`, the supervisor as
-`command`/`args`, `fsGroup` under `podSecurityContext`, and — when the target
-has one, named with `--liveness` — its `livenessProbe` wrapped to honour the
-hold.
+`command`/`args`, `fsGroup` under `podSecurityContext`, and — where the target
+declares an exec one — its `livenessProbe` wrapped to honour the hold.
+
+`--from-pod` reads the entrypoint, the whole `livenessProbe` and the gid off
+that pod, and reading is the **default**: naming no pod and not passing
+`--no-from-pod` is a refusal that asks for one. Supplying those three by hand is
+how issue #176 happened — a chart renders a supplied `livenessProbe` wholesale,
+so a timing left out becomes the Kubernetes default, and a compiled IOC went
+from `initialDelaySeconds: 120` and `periodSeconds: 30` to 0s and 10s: probed
+from the moment it started, before it had reached its hardware. Reading the pod
+removes the whole class, and the timings arrive without anyone typing them. It
+reaches the cluster the way every other verb does — `-n`/`--namespace`,
+`--context` and `--kubectl`, with the namespace coming from the kubeconfig
+context when `-n` is not given — and `--container NAME` picks the application
+container where the pod has more than one, defaulting to the first.
+
+Notes on `--print-values`:
+
+* `--no-from-pod` is the way to emit without a cluster — CI, an offline machine,
+  or a pod that does not exist yet — and it is the only way `--entrypoint`,
+  `--gid`, `--liveness` and `--liveness-probe` have to carry the whole snippet
+  between them. `--liveness-probe` takes the JSON the pod would have given you,
+  `kubectl get pod POD -o jsonpath='{.spec.containers[0].livenessProbe}'`, which
+  is exactly the paste `--from-pod` exists to spare you; `--liveness` takes the
+  exec command alone and carries **no timings**, which is the shape of #176.
+* **A flag you pass beats the pod.** That is what makes `--entrypoint` a usable
+  answer to a target whose command lives in the image's `ENTRYPOINT` — a
+  container declaring neither `command` nor `args` has it nowhere in the pod
+  spec, so nothing read from the cluster will find it — without giving up the
+  gid and the probe as well. The refusal says so, rather than sending you to
+  `--no-from-pod` for all three.
+* **A target with no `livenessProbe` is not an error.** 7 of 18 containers on a
+  real beamline declare one and the canonical fastcs target is not among them,
+  so no probe block is emitted and nothing is said about it.
+* **A non-exec probe is not an error either**, but it is warned about: an
+  `httpGet`, `tcpSocket` or `grpc` probe cannot be short-circuited by the hold,
+  because it answers from the application and the application is exactly what is
+  down while a pod is held. No probe block is emitted, so the chart keeps the
+  one it has and the kubelet will restart the pod out from under the seat at
+  `failureThreshold` × `periodSeconds`. Without the warning that absence looks
+  identical to the fastcs case, and the difference is whether a held pod
+  survives.
+* **A container already carrying the layout is unwrapped, not wrapped twice.**
+  Re-emitting the values for a pod that is already hotfixed — after a chart bump,
+  or to see what is deployed — is a normal thing to do, and a supervisor nested
+  inside a supervisor would hold on a file the inner one never sees.
+* **`volumes:` and `volumeMounts:` replace the chart's keys rather than adding
+  to them**, so where the target already mounts volumes of its own they are
+  named and you are told which way the key resolves. Found by diffing this
+  output against the hand-written values for `bl47p-mo-ioc-01`, where pasting it
+  verbatim would have dropped that IOC's `dev-shm` and left it without
+  `/dev/shm`. Podbench cannot merge them itself and does not pretend to: read
+  from a live pod, a chart-generated volume and one the service declared for
+  itself are indistinguishable. Anything chart-generated comes back on the next
+  render; anything the service declares for itself does not.
+* `fsGroup` stays the literal placeholder `<the application's runAsGroup>` only
+  where nothing could say what it should be: under `--no-from-pod` with no
+  `--gid`, or against a pod that states `runAsUser` and no `runAsGroup`, which a
+  hardened workload routinely does. It is deliberately not a number — a snippet
+  pasted unread then fails at `helm install` rather than deploying an fsGroup the
+  application does not run as. It must never become 0: a claim that is present
+  and unwritable starts and *then* fails, in the dark.
+* **Every failure reading the pod names `--no-from-pod` and what taking it
+  costs**, quoting #176, because making a cluster read the default lands each of
+  these on somebody who did not ask for one. kubectl tells a missing kubeconfig,
+  an absent pod and a forbidden `get pods` apart only in the text of its own
+  message, so podbench relays that verbatim rather than guessing at a category.
 
 ---
 

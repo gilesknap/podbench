@@ -112,13 +112,18 @@ Two of the verb's steps mutate the workload **by default** — `--no-resize` and
 resize and provisioning. The headroom it sizes from is read with
 `kubectl top pod`, and reports **unmeasured** where there is no metrics API.
 
-**Hotfix mode has never been run against a cluster.** The workflow exists —
-`podbench hotfix init|apply|status|consolidate`, plus `hotfix --print-values`
-for the chart snippet — and is unit-tested, but every one of those tests drives
-a temp directory and a fake `kubectl`. `attach` puts the claim into the seat at
-the application's own mountPath without being asked, and `hotfix init` lands a
-seat when none is running, so the workflow is reachable end to end; reachable is
-not the same as demonstrated. See
+**Hotfix mode has met a cluster, and two things about it are still
+undemonstrated.** On 2026-08-22 an edit reached the running code of a live IOC
+on a real beamline with `restartCount` unchanged and both seats alive: the
+recorded child pid moved, and the running process's interpreter resolved to the
+claim's rather than the image's. `--print-values --from-pod` was measured
+against the same two pods.
+
+What that run did **not** show is survival across pod replacement — it used a
+generic ephemeral volume, which dies with its pod, because a real claim needs
+`create` on persistentvolumeclaims that the test account does not have — and
+`consolidate`, which no cluster has ever run. Everything else here is unit-tested
+against a temp directory and a fake `kubectl`. See
 [What `hotfix` does](hotfix-flow.md).
 
 **Which half you are running is now measured, not guessed.** The launcher and

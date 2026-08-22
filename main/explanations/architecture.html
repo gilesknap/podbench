@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Architecture &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
+    <title>Architecture &#8212; podbench 0.6.2.dev11+gbc98b77e4 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=219d01b3"></script>
+    <script src="../_static/documentation_options.js?v=2a02f1ea"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -806,16 +806,20 @@ worked yesterday” is explicable.</p>
 </tbody>
 </table>
 </div>
-<p>Hotfix mode — a PVC mounted over the app’s venv so a fix survives restarts and
-reschedules — is the one mode that requires deploy-time cooperation, because
-durable-across-restart code must sit on a volume that was present in the pod
-spec at creation: pod volumes are immutable and a container’s rootfs is reset on
-every restart. The workflow ships as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span></code>
+<p>Hotfix mode — a PVC mounted <em>beside</em> the app’s project so a fix survives
+restarts and reschedules — is the one mode that requires deploy-time
+cooperation, because durable-across-restart code must sit on a volume that was
+present in the pod spec at creation: pod volumes are immutable and a container’s
+rootfs is reset on every restart. Beside and never over: nothing the image ships
+is hidden by the mount, which is what lets the seed be a plain copy rather than
+an initContainer racing the application.</p>
+<p>The workflow ships as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span></code>
 (<code class="docutils literal notranslate"><span class="pre">init</span></code>/<code class="docutils literal notranslate"><span class="pre">apply</span></code>/<code class="docutils literal notranslate"><span class="pre">status</span></code>/<code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, plus <code class="docutils literal notranslate"><span class="pre">--print-values</span></code> for the chart
-snippet), but it has only ever been exercised against unit tests: no cluster has
-run it. <code class="docutils literal notranslate"><span class="pre">attach</span></code> now puts the claim into the seat at the application’s own
-mountPath on any pod carrying the layout, so the workflow is reachable end to
-end — but reachable is not demonstrated. See <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
+snippet). It met a cluster on 2026-08-22 — an edit reached a live IOC’s running
+code with <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> unchanged — and two things about it remain
+undemonstrated: survival across pod replacement, which needs a real claim rather
+than the generic ephemeral volume that run used, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, which no
+cluster has run. See <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
 </section>
 <section id="see-also">
 <h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>

@@ -272,16 +272,21 @@ worked yesterday" is explicable.
 | Risk to the workload | real: OOM, eviction | none; the origin pod is untouched |
 | Debugging | attach to the live process, read-only inspection, or debugpy where `podbench vscode` provisions it into the target | gdb-launch, debugpy, the relaunch loop |
 
-Hotfix mode — a PVC mounted over the app's venv so a fix survives restarts and
-reschedules — is the one mode that requires deploy-time cooperation, because
-durable-across-restart code must sit on a volume that was present in the pod
-spec at creation: pod volumes are immutable and a container's rootfs is reset on
-every restart. The workflow ships as `podbench hotfix`
+Hotfix mode — a PVC mounted *beside* the app's project so a fix survives
+restarts and reschedules — is the one mode that requires deploy-time
+cooperation, because durable-across-restart code must sit on a volume that was
+present in the pod spec at creation: pod volumes are immutable and a container's
+rootfs is reset on every restart. Beside and never over: nothing the image ships
+is hidden by the mount, which is what lets the seed be a plain copy rather than
+an initContainer racing the application.
+
+The workflow ships as `podbench hotfix`
 (`init`/`apply`/`status`/`consolidate`, plus `--print-values` for the chart
-snippet), but it has only ever been exercised against unit tests: no cluster has
-run it. `attach` now puts the claim into the seat at the application's own
-mountPath on any pod carrying the layout, so the workflow is reachable end to
-end — but reachable is not demonstrated. See [What `hotfix` does](hotfix-flow.md).
+snippet). It met a cluster on 2026-08-22 — an edit reached a live IOC's running
+code with `restartCount` unchanged — and two things about it remain
+undemonstrated: survival across pod replacement, which needs a real claim rather
+than the generic ephemeral volume that run used, and `consolidate`, which no
+cluster has run. See [What `hotfix` does](hotfix-flow.md).
 
 ## See also
 
