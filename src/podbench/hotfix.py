@@ -415,7 +415,36 @@ def checkout_path(project: str = HOTFIX_APP_PATH) -> str:
     return project.rstrip("/")
 
 
-def seed_source(container_root: str = "/proc/1/root") -> tuple[str, str]:
+IMAGE_PROJECT_PATH = "/app"
+"""Where a python-copier-template image keeps the application's project.
+
+The default and nothing more. It is python-copier-template's convention, not a
+law: an epics-containers image has no ``/app`` at all - its venv is at ``/venv``
+with a separate ``/python`` - which is how #178 came to report a layout
+difference as a ptrace denial. A layout that differs is expressible with
+``--image-project`` rather than a code change.
+"""
+
+IMAGE_INTERPRETER_PATH = "/python"
+"""The interpreter beside :data:`IMAGE_PROJECT_PATH`, in the same image."""
+
+CLAIM_VENV_DIR = ".venv"
+"""The venv's directory name on the claim, relative to the checkout.
+
+``uv`` creates ``.venv`` and the runtime switch looks for it, so the two have to
+agree - which is why this is one constant threaded to both ends rather than a
+literal at each. :func:`install_argv` sets ``UV_PROJECT_ENVIRONMENT`` when it is
+anything else, because otherwise uv would build ``.venv`` beside the venv the
+supervisor is looking for and the pod would quietly run the image's code.
+"""
+
+
+def seed_source(
+    container_root: str = "/proc/1/root",
+    *,
+    project: str = IMAGE_PROJECT_PATH,
+    interpreter: str = IMAGE_INTERPRETER_PATH,
+) -> tuple[str, str]:
     """The two paths a seed copies out of the *running* application container.
 
     The project and the interpreter, and the interpreter is the half that looks
@@ -429,11 +458,82 @@ def seed_source(container_root: str = "/proc/1/root") -> tuple[str, str]:
     ``/app/.venv`` - so copying its copy would seed the claim with podbench's
     dependencies and none of the application's.
 
+    Both paths are parameters because the layout is the image's and not
+    podbench's, and an image that puts them elsewhere should not need a code
+    change. What hotfixing a *compiled* IOC would mean is a separate question
+    and stays on #34 - this only makes the paths expressible.
+
     >>> seed_source()
     ('/proc/1/root/app', '/proc/1/root/python')
+    >>> seed_source(project="/venv", interpreter="/python")
+    ('/proc/1/root/venv', '/proc/1/root/python')
     """
     root = container_root.rstrip("/")
-    return f"{root}/app", f"{root}/python"
+    return f"{root}/{project.strip('/')}", f"{root}/{interpreter.strip('/')}"
+
+
+TARGET_ROOT_UNREADABLE = (
+    "{root} cannot be listed, so the seed cannot run. That path is the "
+    "application container's own filesystem seen through PID 1, and reaching it "
+    "needs the ptrace rung - a seat that landed without CAP_SYS_PTRACE, or in a "
+    "namespace whose policy denies it, cannot see the target's root at all. "
+    "`podbench doctor` names the mechanism."
+)
+"""Said when the seat genuinely cannot see the target's root.
+
+Which is a *different* failure from the one below, and telling them apart is the
+whole of #178. This one is about the rung; the other is about the image. Until
+2026-08-22 podbench inferred this from the project path being absent, so an
+epics-containers image - which has no ``/app`` - was reported as a ptrace denial
+and the user was sent to ``doctor``, which correctly reported the rung healthy.
+A contradiction, and no next step.
+"""
+
+TARGET_HAS_NO_PROJECT = (
+    "the target's image has no project at {image_project}, so there is nothing "
+    "to seed the claim from. Its filesystem reads fine ({root} lists) - this is "
+    "a layout difference, not a permission one.\n"
+    "\n"
+    "`{image_project}` is python-copier-template's convention and not a law: an "
+    "epics-containers image keeps its venv at /venv with a separate /python, "
+    "and a compiled IOC has no Python project at all. Point podbench at the "
+    "layout this image actually has with `--image-project PATH` and "
+    "`--image-interpreter PATH`, or check you are targeting the container you "
+    "meant with `--container NAME`.\n"
+    "\n"
+    "This is not something to work around by copying the seat's own /app: the "
+    "seat is a different image and its venv is podbench's, not the "
+    "application's."
+)
+"""Said when the root is fine and the project simply is not there.
+
+Measured on ``bl47p-mo-ioc-01`` on 2026-08-22: from that seat ``/proc/1/root``
+listed cleanly and ``/app`` did not exist. The old message blamed ptrace, so the
+user was sent to ``doctor``, which reported the rung healthy - which is a
+contradiction with no next step, and is #178.
+
+It names neither *ptrace* nor *doctor*, deliberately and not merely because
+neither is the cause. Both are the false trail the old message opened, and a
+message that mentions a mechanism at all - even to rule it out - is one a reader
+will go and chase. The path it prints is the one **inside the image**, not the
+``/proc/1/root/...`` form podbench reads it through, because ``--image-project``
+takes the former and an error should print what you would type.
+"""
+
+
+def target_root_readable(store: HotfixStore, container_root: str) -> bool:
+    """Whether the seat can traverse the target's root at all.
+
+    Asked **explicitly**, and not inferred from the project path being missing,
+    which is the mistake #178 is. ``ls`` and not ``test -e``: ``test -e`` follows
+    the ``/proc/1/root`` symlink and answers for the target of the link, so it
+    says yes on a seat that cannot traverse it - the exact case this has to
+    catch. Listing is what :func:`podbench.proc.ptrace_readable` measures for the
+    same reason, from inside the seat rather than through one.
+    """
+    return (
+        store.run(["ls", f"{container_root.rstrip('/')}/"], check=False).returncode == 0
+    )
 
 
 # -- reaching the volume ---------------------------------------------------
@@ -786,7 +886,9 @@ def _paths(text: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in text.splitlines() if line.strip())
 
 
-def install_argv(interpreter: str, checkout: str) -> list[str]:
+def install_argv(
+    interpreter: str, checkout: str, *, venv: str = CLAIM_VENV_DIR
+) -> list[str]:
     """The venv rebuild, run in the *application* container.
 
     ``uv sync`` rather than a pip editable install, because the claim now holds
@@ -814,12 +916,25 @@ def install_argv(interpreter: str, checkout: str) -> list[str]:
     does not - so it cannot be left to chance. On the claim, it also survives to
     make the next rebuild cheap.
 
+    ``UV_PROJECT_ENVIRONMENT`` is set only when *venv* is not uv's own default.
+    uv builds ``.venv`` and the runtime switch the supervisor carries looks for
+    whatever :data:`CLAIM_VENV_DIR` says; left to disagree, the rebuild would
+    land beside the venv the pod is looking for and the pod would quietly go on
+    running the image's code - the failure mode this whole mode exists to avoid.
+
     >>> install_argv("/x/bin/python3", "/podbench/app")[:4]
     ['env', 'UV_CACHE_DIR=/podbench/app/.uv-cache', 'uv', 'sync']
+    >>> install_argv("/x/bin/python3", "/podbench/app", venv="env")[2]
+    'UV_PROJECT_ENVIRONMENT=/podbench/app/env'
     """
+    root = checkout.rstrip("/")
+    environment = (
+        [] if venv == CLAIM_VENV_DIR else [f"UV_PROJECT_ENVIRONMENT={root}/{venv}"]
+    )
     return [
         "env",
-        f"UV_CACHE_DIR={checkout.rstrip('/')}/.uv-cache",
+        f"UV_CACHE_DIR={root}/.uv-cache",
+        *environment,
         "uv",
         "sync",
         "--project",
@@ -1584,13 +1699,15 @@ def require_supervisor(kube: Kubectl, target: HotfixTarget) -> None:
         )
 
 
-def _seeded_interpreter(store: HotfixStore, checkout: str) -> str:
+def _seeded_interpreter(
+    store: HotfixStore, checkout: str, *, venv: str = CLAIM_VENV_DIR
+) -> str:
     """The interpreter version the seeded venv reports, or ``""``.
 
     Read from the claim rather than from the image, because after the rebuild
     the claim's is the one the console scripts name.
     """
-    config = store.read_text(f"{checkout}/.venv/pyvenv.cfg")
+    config = store.read_text(f"{checkout}/{venv}/pyvenv.cfg")
     if config is None:
         return ""
     settings = parse_pyvenv_cfg(config)
@@ -1633,6 +1750,10 @@ def init(
     base_commit: str | None = None,
     author: str | None = None,
     install: bool = True,
+    container_root: str = "/proc/1/root",
+    image_project: str = IMAGE_PROJECT_PATH,
+    image_interpreter: str = IMAGE_INTERPRETER_PATH,
+    claim_venv: str = CLAIM_VENV_DIR,
 ) -> tuple[HotfixManifest, list[str]]:
     """Prepare a claim: seed it from the running container, then record the base.
 
@@ -1653,7 +1774,9 @@ def init(
     """
     actions: list[str] = []
     require_supervisor(kube, target)
-    project, interpreter_src = seed_source()
+    project, interpreter_src = seed_source(
+        container_root, project=image_project, interpreter=image_interpreter
+    )
     checkout = checkout_path()
 
     if not store.exists(checkout):
@@ -1667,15 +1790,16 @@ def init(
         actions.append(f"claim already seeded at {checkout}")
     else:
         if not store.exists(project):
+            # Two failures wearing one message until 2026-08-22. Ask the root
+            # question directly rather than inferring it from the leaf: they
+            # have different causes and different fixes, and the one podbench
+            # guessed sent the user to `doctor`, which then disagreed with it.
+            if not target_root_readable(store, container_root):
+                raise HotfixError(TARGET_ROOT_UNREADABLE.format(root=container_root))
             raise HotfixError(
-                f"{project} is not readable, so the seed cannot run. That path "
-                "is the application container's own filesystem seen through PID "
-                "1, and reaching it needs the ptrace rung — a seat that landed "
-                "without CAP_SYS_PTRACE, or in a namespace whose policy denies "
-                "it, cannot see the target's root at all. `podbench doctor` "
-                "names the mechanism. This is not something to work around by "
-                "copying the seat's own /app: the seat is a different image and "
-                "its venv is podbench's, not the application's."
+                TARGET_HAS_NO_PROJECT.format(
+                    root=container_root, image_project=f"/{image_project.strip('/')}"
+                )
             )
         # The *entries*, never the mount root. `cp -a` onto the claim's own
         # directory fails with "preserving times for '.': Operation not
@@ -1688,7 +1812,7 @@ def init(
         store.run(["cp", "-a", interpreter_src, HOTFIX_INTERPRETER_PATH])
         actions.append(f"copied the interpreter to {HOTFIX_INTERPRETER_PATH}")
 
-    interpreter = _seeded_interpreter(store, checkout)
+    interpreter = _seeded_interpreter(store, checkout, venv=claim_venv)
     actions.append(f"claim seeded, venv interpreter {interpreter or 'unknown'}")
 
     if store.exists(f"{checkout}/.git"):
@@ -1706,7 +1830,9 @@ def init(
     )
 
     if install:
-        actions.append(_install(kube, target, seeded_python(store), checkout))
+        actions.append(
+            _install(kube, target, seeded_python(store), checkout, venv=claim_venv)
+        )
 
     name, email = _identity(store, checkout, author)
     manifest = HotfixManifest(
@@ -1730,7 +1856,12 @@ def init(
 
 
 def _install(
-    kube: Kubectl, target: HotfixTarget, interpreter: str, checkout: str
+    kube: Kubectl,
+    target: HotfixTarget,
+    interpreter: str,
+    checkout: str,
+    *,
+    venv: str = CLAIM_VENV_DIR,
 ) -> str:
     """Rebuild the venv on the claim, in the *application* container.
 
@@ -1744,7 +1875,7 @@ def _install(
     the scripts must name lives, and where the application's own index
     configuration is.
     """
-    argv = install_argv(interpreter, checkout)
+    argv = install_argv(interpreter, checkout, venv=venv)
     # A resolve and a build against the cluster's index, so the pod-work bound.
     result = kube.exec_(
         target.pod.name,
@@ -1761,7 +1892,7 @@ def _install(
             "image's. If the pod has no egress to an index, pre-build the venv "
             "on the claim and re-run with --no-install."
         )
-    return f"rebuilt the venv at {checkout}/.venv"
+    return f"rebuilt the venv at {checkout}/{venv}"
 
 
 def apply_hotfix(
@@ -2073,7 +2204,7 @@ def hotfix_claim(app: str) -> str:
     return f"{app}-podbench-project"
 
 
-def hold_loop_args(entrypoint: str) -> str:
+def hold_loop_args(entrypoint: str, *, venv: str = CLAIM_VENV_DIR) -> str:
     """The supervisor, as one ``args`` string, wrapping *entrypoint*.
 
     Three things it does, and each was forced by a measurement rather than
@@ -2111,8 +2242,8 @@ def hold_loop_args(entrypoint: str) -> str:
         [
             "while :; do",
             "  (",
-            f"    if [ -x {HOTFIX_APP_PATH}/.venv/bin/python ]; then",
-            f'      export PATH="{HOTFIX_APP_PATH}/.venv/bin:$PATH"',
+            f"    if [ -x {HOTFIX_APP_PATH}/{venv}/bin/python ]; then",
+            f'      export PATH="{HOTFIX_APP_PATH}/{venv}/bin:$PATH"',
             '      echo "podbench: running the hotfixed project"',
             "    fi",
             f"    exec {entrypoint}",
@@ -2300,6 +2431,7 @@ def values_snippet(
     size: str = "2Gi",
     gid: str = DEFAULT_GID_PLACEHOLDER,
     home_size: str = SEAT_HOME_SIZE,
+    venv: str = CLAIM_VENV_DIR,
     liveness_exec: Sequence[str] | None = None,
     liveness_probe: Mapping[str, Any] | None = None,
     indent: int = 0,
@@ -2376,7 +2508,9 @@ def values_snippet(
         f"{args_key}:",
         "  - |",
     ]
-    lines += [f"    {line}" for line in hold_loop_args(entrypoint).splitlines()]
+    lines += [
+        f"    {line}" for line in hold_loop_args(entrypoint, venv=venv).splitlines()
+    ]
     if probe is not None:
         lines += [
             f"{probe_key}:",
@@ -2476,6 +2610,33 @@ _Container = Annotated[
         "--container",
         metavar="NAME",
         help="the application container (default: first)",
+    ),
+]
+_ImageProject = Annotated[
+    str,
+    typer.Option(
+        "--image-project",
+        metavar="PATH",
+        help="where the application's project lives inside its own image "
+        f"(default: {IMAGE_PROJECT_PATH}, python-copier-template's convention)",
+    ),
+]
+_ImageInterpreter = Annotated[
+    str,
+    typer.Option(
+        "--image-interpreter",
+        metavar="PATH",
+        help="the interpreter beside it, in the same image "
+        f"(default: {IMAGE_INTERPRETER_PATH})",
+    ),
+]
+_ClaimVenv = Annotated[
+    str,
+    typer.Option(
+        "--claim-venv",
+        metavar="NAME",
+        help="the venv's directory name on the claim, which the runtime switch "
+        f"looks for and `uv sync` builds (default: {CLAIM_VENV_DIR})",
     ),
 ]
 _Seat = Annotated[
@@ -2782,6 +2943,16 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "offline machine, or a pod that does not exist yet",
             ),
         ] = False,
+        claim_venv: Annotated[
+            str,
+            typer.Option(
+                "--claim-venv",
+                metavar="NAME",
+                help="the venv's directory name on the claim, which the emitted "
+                f"runtime switch looks for (default: {CLAIM_VENV_DIR}). Must "
+                "match `hotfix init --claim-venv`",
+            ),
+        ] = CLAIM_VENV_DIR,
         container: _Container = None,
         namespace: _Namespace = None,
         context: _Context = None,
@@ -2841,6 +3012,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                     entrypoint,
                     size=size,
                     gid=gid,
+                    venv=claim_venv,
                     liveness_exec=shlex.split(liveness) if liveness else None,
                     liveness_probe=parsed_probe,
                 )
@@ -2883,6 +3055,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 help="skip the editable install (the application image has no pip)",
             ),
         ] = False,
+        image_project: _ImageProject = IMAGE_PROJECT_PATH,
+        image_interpreter: _ImageInterpreter = IMAGE_INTERPRETER_PATH,
+        claim_venv: _ClaimVenv = CLAIM_VENV_DIR,
         container: _Container = None,
         seat: _Seat = None,
         local: _Local = False,
@@ -2909,6 +3084,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             base_commit=base_commit,
             author=author,
             install=not no_install,
+            image_project=image_project,
+            image_interpreter=image_interpreter,
+            claim_venv=claim_venv,
         )
         raise typer.Exit(_report(actions))
 
