@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.6.2.dev11+gbc98b77e4 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2a02f1ea"></script>
+    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -617,6 +617,15 @@ on a real beamline with <code class="docutils literal notranslate"><span class="
 recorded child pid moved, and the running process’s interpreter resolved to the
 claim’s rather than the image’s. <code class="docutils literal notranslate"><span class="pre">--print-values</span> <span class="pre">--from-pod</span></code> was measured
 against the same two pods.</p>
+<p>What it also found is the seed blaming the wrong thing. On <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> —
+an epics-containers image, which keeps its venv at <code class="docutils literal notranslate"><span class="pre">/venv</span></code> with a separate
+<code class="docutils literal notranslate"><span class="pre">/python</span></code> — <code class="docutils literal notranslate"><span class="pre">/proc/1/root</span></code> listed cleanly from the seat and <code class="docutils literal notranslate"><span class="pre">/app</span></code> did not
+exist, and <code class="docutils literal notranslate"><span class="pre">init</span></code> reported that absence as a ptrace denial and sent the user to
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code>, which then correctly called the rung healthy: a contradiction
+with no next step (issue #178). The two failures are now asked about separately
+and the layout is a flag rather than a constant. That makes the paths
+expressible and nothing more — what hotfixing a <em>compiled</em> IOC would mean is
+untouched, and stays on issue #34.</p>
 <p>What that run did <strong>not</strong> show is survival across pod replacement — it used a
 generic ephemeral volume, which dies with its pod, because a real claim needs
 <code class="docutils literal notranslate"><span class="pre">create</span></code> on persistentvolumeclaims that the test account does not have — and

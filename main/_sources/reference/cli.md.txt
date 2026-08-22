@@ -1062,6 +1062,10 @@ seat, where the claim is already in this process's own mount namespace.
 │                                      --no-from-pod turns it off)                                 │
 │ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
 │                                      offline machine, or a pod that does not exist yet           │
+│ --claim-venv              NAME       the venv's directory name on the claim, which the emitted   │
+│                                      runtime switch looks for (default: .venv). Must match       │
+│                                      `hotfix init --claim-venv`                                  │
+│                                      [default: .venv]                                            │
 │ --container               NAME       the application container (default: first)                  │
 │ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)           │
 │ --context                 NAME       kubeconfig context                                          │
@@ -1079,7 +1083,7 @@ seat, where the claim is already in this process's own mount namespace.
 
 | Sub-verb | Does |
 |---|---|
-| `init --repo URL --venv PATH TARGET` | verify the claim was seeded from the image's venv, clone the source onto it, editable-install, record the base commit |
+| `init --repo URL --venv PATH TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
 | `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
 | `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
 | `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
@@ -1092,9 +1096,40 @@ Notes:
 
 * **Single replica only**, refused otherwise: the claim is `ReadWriteOnce`, so a
   second replica either fails to schedule or races on one checkout.
-* `init` **verifies** the seed, never performs it. Once the claim is mounted over
-  the venv path the image's own venv is hidden in every container, so the copy
-  can only happen in an initContainer — which is what `--print-values` emits.
+* `init` **performs** the seed. It copies the project and the interpreter out of
+  the running application container through `/proc/1/root`, and never out of the
+  seat's own `/app`: the seat is a different image and its venv is podbench's,
+  not the application's. The claim mounts *beside* the image's project rather
+  than over it, so nothing the image ships is hidden and no initContainer has to
+  race the application.
+* **An unreadable root and a missing project are different failures**, and have
+  been told apart since #178. Where the project is not where podbench looked,
+  `init` asks the root question directly — `ls /proc/1/root/` — rather than
+  inferring it from the leaf: a root that will not list is the ptrace rung, and
+  that refusal names `CAP_SYS_PTRACE` and `podbench doctor`; a root that lists is
+  a layout difference, and that refusal names `--image-project` and
+  `--image-interpreter` and mentions neither ptrace nor `doctor`. `ls` and not
+  `test -e`, because `test -e` follows the `/proc/1/root` symlink and answers for
+  the target of the link — so it says yes on precisely the seat that cannot
+  traverse it. Measured on `bl47p-mo-ioc-01` on 2026-08-22, where the old
+  message blamed ptrace and `doctor` then correctly reported the rung healthy: a
+  contradiction with no next step.
+* **`/app` and `/python` are defaults, not requirements.** They are
+  python-copier-template's convention, and an epics-containers image has neither
+  — its venv is at `/venv`, with a separate `/python`. `--image-project PATH` and
+  `--image-interpreter PATH` point `init` at the layout the image actually has,
+  and the refusal above prints the path *inside the image* rather than the
+  `/proc/1/root/...` form podbench reads it through, because that is what the
+  flag takes. Making those paths expressible is not the same as hotfixing a
+  compiled IOC, which stays on #34: the running process is a binary, and whether
+  the thing to fix is a Python support module in its venv or the ibek `ioc.yaml`
+  beside it is a design question this does not settle.
+* **`--claim-venv` must match on both ends.** It names the venv directory on the
+  claim, which the supervisor's runtime switch looks for and which `uv sync`
+  builds, so `hotfix init --claim-venv` and `hotfix --print-values --claim-venv`
+  have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
+  `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
+  looking for and the pod goes on quietly running the image's code.
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.

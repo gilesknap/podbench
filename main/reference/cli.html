@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.6.2.dev11+gbc98b77e4 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=2a02f1ea"></script>
+    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1598,6 +1598,10 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 │                                      --no-from-pod turns it off)                                 │
 │ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
 │                                      offline machine, or a pod that does not exist yet           │
+│ --claim-venv              NAME       the venv&#39;s directory name on the claim, which the emitted   │
+│                                      runtime switch looks for (default: .venv). Must match       │
+│                                      `hotfix init --claim-venv`                                  │
+│                                      [default: .venv]                                            │
 │ --container               NAME       the application container (default: first)                  │
 │ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)           │
 │ --context                 NAME       kubeconfig context                                          │
@@ -1621,7 +1625,7 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">--repo</span> <span class="pre">URL</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
-<td><p>verify the claim was seeded from the image’s venv, clone the source onto it, editable-install, record the base commit</p></td>
+<td><p>seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
 <td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application’s own child so the fix is what runs</p></td>
@@ -1642,9 +1646,40 @@ venv path), <code class="docutils literal notranslate"><span class="pre">--conta
 <ul class="simple">
 <li><p><strong>Single replica only</strong>, refused otherwise: the claim is <code class="docutils literal notranslate"><span class="pre">ReadWriteOnce</span></code>, so a
 second replica either fails to schedule or races on one checkout.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">init</span></code> <strong>verifies</strong> the seed, never performs it. Once the claim is mounted over
-the venv path the image’s own venv is hidden in every container, so the copy
-can only happen in an initContainer — which is what <code class="docutils literal notranslate"><span class="pre">--print-values</span></code> emits.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">init</span></code> <strong>performs</strong> the seed. It copies the project and the interpreter out of
+the running application container through <code class="docutils literal notranslate"><span class="pre">/proc/1/root</span></code>, and never out of the
+seat’s own <code class="docutils literal notranslate"><span class="pre">/app</span></code>: the seat is a different image and its venv is podbench’s,
+not the application’s. The claim mounts <em>beside</em> the image’s project rather
+than over it, so nothing the image ships is hidden and no initContainer has to
+race the application.</p></li>
+<li><p><strong>An unreadable root and a missing project are different failures</strong>, and have
+been told apart since #178. Where the project is not where podbench looked,
+<code class="docutils literal notranslate"><span class="pre">init</span></code> asks the root question directly — <code class="docutils literal notranslate"><span class="pre">ls</span> <span class="pre">/proc/1/root/</span></code> — rather than
+inferring it from the leaf: a root that will not list is the ptrace rung, and
+that refusal names <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code>; a root that lists is
+a layout difference, and that refusal names <code class="docutils literal notranslate"><span class="pre">--image-project</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--image-interpreter</span></code> and mentions neither ptrace nor <code class="docutils literal notranslate"><span class="pre">doctor</span></code>. <code class="docutils literal notranslate"><span class="pre">ls</span></code> and not
+<code class="docutils literal notranslate"><span class="pre">test</span> <span class="pre">-e</span></code>, because <code class="docutils literal notranslate"><span class="pre">test</span> <span class="pre">-e</span></code> follows the <code class="docutils literal notranslate"><span class="pre">/proc/1/root</span></code> symlink and answers for
+the target of the link — so it says yes on precisely the seat that cannot
+traverse it. Measured on <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> on 2026-08-22, where the old
+message blamed ptrace and <code class="docutils literal notranslate"><span class="pre">doctor</span></code> then correctly reported the rung healthy: a
+contradiction with no next step.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">/app</span></code> and <code class="docutils literal notranslate"><span class="pre">/python</span></code> are defaults, not requirements.</strong> They are
+python-copier-template’s convention, and an epics-containers image has neither
+— its venv is at <code class="docutils literal notranslate"><span class="pre">/venv</span></code>, with a separate <code class="docutils literal notranslate"><span class="pre">/python</span></code>. <code class="docutils literal notranslate"><span class="pre">--image-project</span> <span class="pre">PATH</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--image-interpreter</span> <span class="pre">PATH</span></code> point <code class="docutils literal notranslate"><span class="pre">init</span></code> at the layout the image actually has,
+and the refusal above prints the path <em>inside the image</em> rather than the
+<code class="docutils literal notranslate"><span class="pre">/proc/1/root/...</span></code> form podbench reads it through, because that is what the
+flag takes. Making those paths expressible is not the same as hotfixing a
+compiled IOC, which stays on #34: the running process is a binary, and whether
+the thing to fix is a Python support module in its venv or the ibek <code class="docutils literal notranslate"><span class="pre">ioc.yaml</span></code>
+beside it is a design question this does not settle.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--claim-venv</span></code> must match on both ends.</strong> It names the venv directory on the
+claim, which the supervisor’s runtime switch looks for and which <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code>
+builds, so <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span> <span class="pre">--claim-venv</span></code> and <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">--print-values</span> <span class="pre">--claim-venv</span></code>
+have to agree. <code class="docutils literal notranslate"><span class="pre">init</span></code> sets <code class="docutils literal notranslate"><span class="pre">UV_PROJECT_ENVIRONMENT</span></code> whenever it is not uv’s own
+<code class="docutils literal notranslate"><span class="pre">.venv</span></code>, because otherwise the rebuild lands beside the venv the supervisor is
+looking for and the pod goes on quietly running the image’s code.</p></li>
 <li><p>The editable install runs in the <strong>application</strong> container, not the seat: the
 venv is shared but its interpreter is not. <code class="docutils literal notranslate"><span class="pre">--no-install</span></code> skips it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> does not open a PR; it prints the <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> line.</p></li>
