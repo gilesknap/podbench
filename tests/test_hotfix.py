@@ -1267,6 +1267,59 @@ def test_no_probe_is_emitted_for_a_target_that_has_none() -> None:
     assert "livenessProbe" not in parsed_snippet()
 
 
+def test_a_whole_probe_carries_its_timings_through() -> None:
+    """A chart renders a supplied probe wholesale, so an omitted timing is lost.
+
+    Measured on p47-beamline 2026-08-22: ``ioc-instance``'s 120s/30s live on the
+    ``livenessExecutable`` branch that supplying ``livenessProbe`` takes instead
+    of, so a wrapped probe carrying only ``exec`` moved a compiled IOC to the
+    Kubernetes defaults 0s/10s - probed before it had reached its hardware.
+    """
+    values = parsed_snippet(
+        liveness_probe={
+            "exec": {"command": ["/bin/bash", "/epics/ioc/liveness.sh"]},
+            "initialDelaySeconds": 120,
+            "periodSeconds": 30,
+            "failureThreshold": 3,
+        }
+    )
+    probe = cast(dict[str, Any], values["livenessProbe"])
+    assert probe["initialDelaySeconds"] == 120
+    assert probe["periodSeconds"] == 30
+    assert probe["failureThreshold"] == 3
+    # and the command is still the wrapped one, not the original
+    command = cast(list[Any], probe["exec"]["command"])
+    held = f"if [ -e {model.HOTFIX_HOLD_PATH} ]; then exit 0; fi;"
+    assert command[2].startswith(held)
+    assert "/epics/ioc/liveness.sh" in command[2]
+
+
+def test_a_bare_liveness_command_warns_that_it_carries_no_timings() -> None:
+    """--liveness cannot carry timings, so it must not look like it did."""
+    snippet = hotfix.values_snippet(
+        "api", ENTRY, liveness_exec=["/bin/bash", "/epics/ioc/liveness.sh"]
+    )
+    assert "WARNING" in snippet
+    assert "periodSeconds 10" in snippet
+
+
+def test_probe_timings_keeps_kubernetes_field_order() -> None:
+    """Round-tripping somebody's probe should not reshuffle it."""
+    lines = hotfix.probe_timings(
+        {"periodSeconds": 30, "initialDelaySeconds": 120, "timeoutSeconds": 1}
+    )
+    assert lines == [
+        "  initialDelaySeconds: 120",
+        "  periodSeconds: 30",
+        "  timeoutSeconds: 1",
+    ]
+
+
+def test_a_non_exec_probe_has_no_command_to_wrap() -> None:
+    """httpGet answers from the application, which is what is down under a hold."""
+    assert hotfix.probe_exec_command({"httpGet": {"path": "/healthz"}}) == []
+
+
 def test_values_snippet_key_names_are_the_charts_business() -> None:
     """ioc-instance nests all five under ``global:``."""
     snippet = hotfix.values_snippet(
