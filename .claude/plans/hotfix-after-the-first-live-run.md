@@ -334,10 +334,37 @@ the image, and confirm `status` names the claim as shadowing the released fix.
 
 #### Getting back onto the cluster
 
+**The delivery loop is git, and it is sanctioned.** Emit the values, commit them to
+p47-services, let Argo pick them up:
+
+```
+podbench hotfix --print-values --from-pod bl47p-ea-fastcs-01-0   # phase 2
+  → services/bl47p-ea-fastcs-01/values.yaml on a p47-services branch
+  → push; Argo syncs; the pod comes back carrying the layout
+  → podbench hotfix init / apply / status against it
+```
+
+There is no other route. Argo runs `selfHeal: true` **and** `prune: true` on the
+root Application (`p47-deployment/apps.yaml`), so anything `kubectl patch` puts on a
+live StatefulSet is reverted — the same mechanism as #32. Do not spend time
+discovering that again.
+
+The test account can push to both repos but has **no `create` on
+persistentvolumeclaims**; Argo creates them, which is what makes the per-pod claim
+above work without new permissions. It has `pods` create/delete/patch,
+`pods/exec` create, `pods/ephemeralcontainers` get/patch/update, and
+`statefulsets`/`deployments` get/list/watch/patch — no create.
+
 The p47-services branch `podbench-hotfix-test` still carries the working layout for
-`bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01`. In p47-deployment, `git revert a55fdf4`
-repoints both services at it. The beamline was left clean: both services on `main`,
-original entrypoints, ephemeral claims collected.
+`bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01`, hand-written. In p47-deployment,
+`git revert a55fdf4` repoints both services at it. Prefer regenerating those values
+from `--from-pod` over reusing them — the diff between the two *is* Phase 2's
+assertion. The beamline was left clean: both services on `main`, original
+entrypoints, ephemeral claims collected.
+
+**Put it back when done.** Revert the p47-deployment commit so both services return
+to `main`, and confirm the pods come back on their original entrypoints. The branch
+in p47-services can stay; the repoint must not.
 
 Two things that bit last time. `hotfix init` takes longer than a 2-minute tool
 timeout — run it backgrounded. And `mo-ioc-01`'s wrapped probe needs
