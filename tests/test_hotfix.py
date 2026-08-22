@@ -49,16 +49,22 @@ def pod_json(
     owner: str | None = "replicaset",
     annotations: dict[str, str] | None = None,
     seat: bool = True,
+    claim: bool = False,
 ) -> dict[str, Any]:
-    """One application pod, optionally carrying a podbench seat and a manifest."""
+    """One application pod, optionally carrying a podbench seat and a claim."""
     metadata: dict[str, Any] = {"name": name, "annotations": annotations or {}}
     if owner is not None:
         metadata["ownerReferences"] = [
             {"kind": owner.title(), "name": "api-7f9", "controller": True}
         ]
-    spec: dict[str, Any] = {
-        "containers": [{"name": "app", "image": "ghcr.io/acme/api:1.4.0"}]
-    }
+    container: dict[str, Any] = {"name": "app", "image": "ghcr.io/acme/api:1.4.0"}
+    if claim:
+        # The listing's whole filter: a volume, which a GitOps controller
+        # reconciles towards rather than strips.
+        container["volumeMounts"] = [
+            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+        ]
+    spec: dict[str, Any] = {"containers": [container]}
     status: dict[str, Any] = {
         "phase": "Running",
         "containerStatuses": [
@@ -488,9 +494,24 @@ def test_assess_warns_on_a_measured_interpreter_mismatch() -> None:
 
 
 def test_assess_reports_lost_provenance() -> None:
-    health, _ = hotfix.assess(None, current_digest=BASE_DIGEST)
+    """A manifest that is present and will not parse."""
+    health, _ = hotfix.assess(None, current_digest=BASE_DIGEST, unreadable=True)
     assert health is hotfix.HotfixHealth.UNREADABLE
     assert not health.ok
+
+
+def test_assess_does_not_blame_a_manifest_that_was_never_written() -> None:
+    """No manifest is a different answer from an unreadable one.
+
+    A pod reaches the listing by being held, and a hold with no fix behind it is
+    real - the supervisor relaunches without backoff and the probe is
+    short-circuited. Reporting it as lost provenance would blame the wrong
+    thing and send somebody looking for a fix that does not exist.
+    """
+    health, detail = hotfix.assess(None, current_digest=BASE_DIGEST)
+    assert health is hotfix.HotfixHealth.NOT_HOTFIXED
+    assert not health.ok
+    assert "carries no hotfix" in detail
 
 
 # -- targets and the multi-replica refusal ---------------------------------
@@ -606,44 +627,6 @@ def deployment_target() -> hotfix.HotfixTarget:
     )
 
 
-def test_annotation_goes_on_the_pod_template() -> None:
-    """A pod annotation would not survive the reschedule this mode relies on."""
-    runner = FakeRunner()
-    manifest = a_manifest(ahead=1)
-    detail = hotfix.annotate(kube(runner), deployment_target(), manifest)
-
-    calls = runner.matching("patch deployment api")
-    assert len(calls) == 1
-    body = json.loads(calls[0][calls[0].index("-p") + 1])
-    annotations = body["spec"]["template"]["metadata"]["annotations"]
-    assert annotations[hotfix.HOTFIXED_ANNOTATION] == "true"
-    assert (
-        hotfix.HotfixManifest.from_json(annotations[hotfix.MANIFEST_ANNOTATION])
-        == manifest
-    )
-    assert "--type=merge" in calls[0]
-    assert "rolls the workload" in detail
-
-
-def test_annotating_an_unowned_pod_says_what_it_costs() -> None:
-    runner = FakeRunner()
-    target = hotfix.HotfixTarget(
-        pod=hotfix.PodRef("demo", "solo"),
-        container="app",
-        image="ghcr.io/acme/api:1.4.0",
-        image_digest=BASE_DIGEST,
-    )
-    detail = hotfix.annotate(kube(runner), target, a_manifest())
-    calls = runner.matching("patch pod solo")
-    assert len(calls) == 1
-    body = json.loads(calls[0][calls[0].index("-p") + 1])
-    assert hotfix.HOTFIXED_ANNOTATION in body["metadata"]["annotations"]
-    assert "lost if the pod is ever replaced" in detail
-
-
-# -- init ------------------------------------------------------------------
-
-
 def test_init_refuses_when_the_claim_is_not_mounted() -> None:
     """Nothing to seed onto is a deployment mistake, not a seeding one."""
     store = FakeStore()
@@ -734,7 +717,9 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert store.read_text(hotfix.manifest_path(VENV)) is not None
     # The rebuild runs in the application container, not in the seat.
     assert runner.matching("exec -c app api-7f9-abc -- uv sync")
-    assert runner.matching("patch deployment api")
+    # No annotation: provenance lives on the claim, where Argo self-heal cannot
+    # strip it. The pod template is not touched at all any more.
+    assert not runner.matching("patch deployment api")
     assert any("rebuilt the venv" in action for action in actions)
 
 
@@ -790,7 +775,7 @@ def applied_store(dirty: bool = True, changed: str = "src/api/beam.py") -> FakeS
     return store
 
 
-def test_apply_commits_measures_drift_and_annotates() -> None:
+def test_apply_commits_measures_drift_and_relaunches() -> None:
     runner = FakeRunner()
     store = applied_store()
     manifest, actions = hotfix.apply_hotfix(
@@ -809,15 +794,16 @@ def test_apply_commits_measures_drift_and_annotates() -> None:
     assert manifest.commits[0].subject == "make the beam behave"
     assert manifest.author == "Ada <ada@example.invalid>"
 
-    calls = runner.matching("patch deployment api")
-    body = json.loads(calls[0][calls[0].index("-p") + 1])
-    written = body["spec"]["template"]["metadata"]["annotations"]
-    assert (
-        hotfix.HotfixManifest.from_json(written[hotfix.MANIFEST_ANNOTATION]).ahead == 1
-    )
-    assert any("rolls the workload" in action for action in actions)
-    # The template edit is the bounce; deleting the pod as well would race it.
+    # The pod template is never touched: provenance lives on the claim, where
+    # Argo self-heal cannot strip it, and the relaunch happens inside the
+    # container rather than by rolling the workload.
+    assert not runner.matching("patch deployment api")
     assert not runner.matching("delete pod")
+    assert (
+        hotfix.HotfixManifest.from_json(store.files[hotfix.manifest_path(VENV)]).ahead
+        == 1
+    )
+    assert any("without a restart" in action for action in actions)
 
 
 def test_apply_skips_the_reinstall_when_only_code_changed() -> None:
@@ -1014,9 +1000,19 @@ def hotfixed_pod(
     name: str = "api-7f9-abc",
     digest: str = BASE_DIGEST,
 ) -> dict[str, Any]:
-    return pod_json(
-        name=name, digest=digest, annotations=hotfix.manifest_annotations(manifest)
-    )
+    return pod_json(name=name, digest=digest, claim=True)
+
+
+def state_exec(
+    manifest: hotfix.HotfixManifest | None = None,
+    *,
+    hold: str = "",
+    now: int = 1000,
+) -> str:
+    """What `read_pod_state`'s single exec prints back."""
+    sep = hotfix.STATE_SEPARATOR
+    body = manifest.to_json() if manifest is not None else ""
+    return f"{body}\n{sep}\n{hold}\n{sep}\n{now}\n"
 
 
 def test_status_ignores_pods_without_a_hotfix() -> None:
@@ -1030,7 +1026,10 @@ def test_status_reports_drift_for_a_healthy_hotfix() -> None:
         ahead=2, commits=(hotfix.HotfixCommit(HEAD_SHA, "stop the beam tripping"),)
     )
     runner = FakeRunner(
-        {"get pods -o json": json.dumps({"items": [hotfixed_pod(manifest)]})}
+        {
+            "get pods -o json": json.dumps({"items": [hotfixed_pod(manifest)]}),
+            "exec -c app": state_exec(manifest),
+        }
     )
     rows = hotfix.status_rows(kube(runner))
     assert len(rows) == 1
@@ -1039,9 +1038,9 @@ def test_status_reports_drift_for_a_healthy_hotfix() -> None:
     assert "+2 commit(s)" in report
     assert "stop the beam tripping" in report
     assert "and 1 more" in report
-    # Nothing changed, so nothing was exec'd: status has to stay cheap enough
-    # to run habitually.
-    assert not runner.matching("exec")
+    # One exec, for the state read - and only against a pod that carries a
+    # claim. The interpreter probe is not run, because nothing moved.
+    assert not runner.matching("exec -c app api-7f9-abc -- python")
 
 
 def test_status_probes_the_interpreter_only_when_the_image_moved() -> None:
@@ -1051,51 +1050,103 @@ def test_status_probes_the_interpreter_only_when_the_image_moved() -> None:
             "get pods -o json": json.dumps(
                 {"items": [hotfixed_pod(manifest, digest=NEW_DIGEST)]}
             ),
-            "exec -c app": "Python 3.13.1\n",
+            # Two different execs now: the state read, and the probe on top.
+            "exec -c app api-7f9-abc -- sh -c": state_exec(manifest),
+            "exec -c app api-7f9-abc -- python": "Python 3.13.1\n",
         }
     )
     rows = hotfix.status_rows(kube(runner))
-    assert runner.matching("exec -c app")
+    assert runner.matching("exec -c app api-7f9-abc -- python")
     assert rows[0].health is hotfix.HotfixHealth.INTERPRETER_MISMATCH
     assert "will not import" in rows[0].detail
     assert "!" in hotfix.format_status(rows)
 
 
-def test_status_can_be_told_not_to_exec() -> None:
+def test_status_does_not_probe_the_interpreter_when_told_not_to() -> None:
     manifest = a_manifest(ahead=1)
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps(
                 {"items": [hotfixed_pod(manifest, digest=NEW_DIGEST)]}
-            )
+            ),
+            "exec -c app": state_exec(manifest),
         }
     )
     rows = hotfix.status_rows(kube(runner), probe=False)
-    assert not runner.matching("exec")
+    # It still reads the claim - that is where the manifest is now - but it does
+    # not run the interpreter probe on top.
+    assert not runner.matching("exec -c app api-7f9-abc -- python")
     assert rows[0].health is hotfix.HotfixHealth.IMAGE_CHANGED
 
 
 def test_status_notes_a_manifest_from_an_older_podbench() -> None:
     older = json.dumps({"commit": HEAD_SHA, "baseCommit": BASE_SHA, "container": "app"})
-    pod = pod_json(
-        annotations={
-            hotfix.HOTFIXED_ANNOTATION: "true",
-            hotfix.MANIFEST_ANNOTATION: older,
+    sep = hotfix.STATE_SEPARATOR
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
+            "exec -c app": f"{older}\n{sep}\n\n{sep}\n1000\n",
         }
     )
-    runner = FakeRunner({"get pods -o json": json.dumps({"items": [pod]})})
     rows = hotfix.status_rows(kube(runner))
     assert "older podbench" in "\n".join(rows[0].notes)
 
 
-def test_status_reports_a_pod_whose_provenance_is_gone() -> None:
-    pod = pod_json(
-        annotations={
-            hotfix.HOTFIXED_ANNOTATION: "true",
-            hotfix.MANIFEST_ANNOTATION: "{not json",
+def test_status_reports_a_held_pod_that_was_never_hotfixed() -> None:
+    """The case an annotation-keyed listing could not see at all.
+
+    A hold with no fix behind it is a pod whose liveness probe is
+    short-circuited and whose supervisor spins without backoff. Nothing else
+    will notice it.
+    """
+    sep = hotfix.STATE_SEPARATOR
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
+            "exec -c app": f"\n{sep}\n1600\n{sep}\n1000\n",
         }
     )
-    runner = FakeRunner({"get pods -o json": json.dumps({"items": [pod]})})
+    rows = hotfix.status_rows(kube(runner))
+    assert len(rows) == 1
+    assert rows[0].manifest is None
+    assert rows[0].hold == hotfix.Hold(deadline=1600, now=1000)
+    assert not rows[0].ok
+    assert "held 600s left" in hotfix.format_status(rows)
+
+
+def test_a_hold_past_its_deadline_says_so() -> None:
+    sep = hotfix.STATE_SEPARATOR
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
+            "exec -c app": f"\n{sep}\n900\n{sep}\n1000\n",
+        }
+    )
+    rows = hotfix.status_rows(kube(runner))
+    assert rows[0].hold is not None and rows[0].hold.expired
+    assert "held EXPIRED" in hotfix.format_status(rows)
+
+
+def test_a_pod_with_a_claim_but_no_state_is_not_listed() -> None:
+    """A deployed-but-unused claim is not a hotfix, and must not read as one."""
+    sep = hotfix.STATE_SEPARATOR
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
+            "exec -c app": f"\n{sep}\n\n{sep}\n1000\n",
+        }
+    )
+    assert hotfix.status_rows(kube(runner)) == []
+
+
+def test_status_reports_a_pod_whose_provenance_is_gone() -> None:
+    sep = hotfix.STATE_SEPARATOR
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
+            "exec -c app": f"{{not json\n{sep}\n1600\n{sep}\n1000\n",
+        }
+    )
     rows = hotfix.status_rows(kube(runner))
     assert rows[0].health is hotfix.HotfixHealth.UNREADABLE
     assert "provenance" in hotfix.format_status(rows)
@@ -1312,7 +1363,8 @@ def test_status_exits_non_zero_when_a_pod_needs_attention(
         {
             "get pods -o json": json.dumps(
                 {"items": [hotfixed_pod(manifest, digest=NEW_DIGEST)]}
-            )
+            ),
+            "exec -c app": state_exec(manifest),
         }
     )
     code = hotfix.main(["hotfix", "status", "-n", "demo", "--no-probe"], runner=runner)
@@ -1322,7 +1374,10 @@ def test_status_exits_non_zero_when_a_pod_needs_attention(
 
 def test_status_exits_zero_when_everything_is_accounted_for() -> None:
     runner = FakeRunner(
-        {"get pods -o json": json.dumps({"items": [hotfixed_pod(a_manifest())]})}
+        {
+            "get pods -o json": json.dumps({"items": [hotfixed_pod(a_manifest())]}),
+            "exec -c app": state_exec(a_manifest()),
+        }
     )
     assert hotfix.main(["hotfix", "status", "-n", "demo"], runner=runner) == 0
 
