@@ -59,7 +59,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 
 import typer
 
@@ -73,7 +73,14 @@ from .kubectl import (
     Runner,
     run_subprocess,
 )
-from .launcher import CONTAINER_BASE, attach, kubectl_for, running_seat
+from .launcher import (
+    CONTAINER_BASE,
+    attach,
+    kubectl_for,
+    resolve_pod_name,
+    running_seat,
+    runs_hotfix_supervisor,
+)
 from .model import (
     HOTFIX_APP_PATH,
     HOTFIX_CHILD_PID_PATH,
@@ -82,8 +89,10 @@ from .model import (
     HOTFIX_INTERPRETER_PATH,
     SEAT_HOME_VOLUME,
     PodRef,
+    and_list,
     as_dict,
 )
+from .spec import target_uid_gid
 
 __all__ = [
     "MANIFEST_FILENAME",
@@ -123,6 +132,11 @@ __all__ = [
     "read_pod_state",
     "require_supervisor",
     "manifest_path",
+    "container_entrypoint",
+    "pod_gid",
+    "FROM_POD_ESCAPE",
+    "EXISTING_MOUNTS_WARNING",
+    "DEFAULT_GID_PLACEHOLDER",
     "metadata_changed",
     "normalise_interpreter",
     "parse_log",
@@ -2185,12 +2199,105 @@ def probe_exec_command(probe: Mapping[str, Any]) -> list[str]:
     return [str(part) for part in _as_list(command)]
 
 
+DEFAULT_GID_PLACEHOLDER = "<the application's runAsGroup>"
+"""What the fsGroup stays when nothing could say what it should be.
+
+Deliberately not a number. A snippet pasted without reading it fails at
+``helm install`` rather than deploying an fsGroup the application does not
+run as - which fails later, in the dark, as a claim that is present and
+unwritable. Named here because ``--from-pod`` has to recognise "the user did
+not pass --gid" and the sentinel is the only signal there is."""
+
+
+FROM_POD_ESCAPE = (
+    "`--print-values` reads the target by default so the emitted values need no "
+    "hand-editing. To emit them without a cluster, pass `--no-from-pod` and "
+    "supply `--entrypoint`, `--gid` and `--liveness-probe` yourself.\n"
+    "\n"
+    "Supplying them by hand is how #176 happened: a chart renders a supplied "
+    "`livenessProbe` wholesale, so a timing you leave out becomes the Kubernetes "
+    "default and the target is probed sooner and more often than it was before."
+)
+"""The way out of every failure reading the pod, and what taking it costs.
+
+Making a cluster read the default means every ``kubectl`` failure now lands on a
+user who did not ask for one, so a bare relay of kubectl's stderr is not enough:
+the message has to name the flag that gets the job done anyway. It also has to
+say what that flag costs, because the escape hatch is the exact route that
+produced #176 - the consequence *is* the point, and a generic "try
+``--no-from-pod``" would hand somebody the footgun without the warning.
+"""
+
+
+def container_entrypoint(container: Mapping[str, Any]) -> str:
+    """The command this container runs today, as the supervisor will wrap it.
+
+    ``command`` and ``args`` are Kubernetes' override of the image's ENTRYPOINT
+    and CMD, concatenated in that order and shell-quoted back into the one
+    string :func:`hold_loop_args` execs. Quoting matters: an argument containing
+    a space that is joined naively becomes two arguments the moment the
+    supervisor's ``exec`` re-splits it.
+
+    A container already carrying the layout is **unwrapped** rather than wrapped
+    twice. ``--from-pod`` against a pod that is already hotfixed is a normal
+    thing to do - re-emitting the values after a chart bump, or checking what is
+    deployed - and a supervisor nested inside a supervisor would hold on a file
+    the inner one never sees.
+
+    >>> container_entrypoint({"command": ["python", "-m", "app"]})
+    'python -m app'
+    >>> container_entrypoint({"command": ["sh", "-c"], "args": ["a b"]})
+    "sh -c 'a b'"
+    >>> container_entrypoint({"args": [hold_loop_args("myapp serve")]})
+    'myapp serve'
+    """
+    if runs_hotfix_supervisor(container):
+        for line in _supervised_lines(container):
+            if (stripped := line.strip()).startswith("exec "):
+                return stripped[len("exec ") :].strip()
+    words = [
+        word
+        for key in ("command", "args")
+        for word in _as_list(container.get(key))
+        if isinstance(word, str)
+    ]
+    if not words:
+        raise HotfixError(
+            "the target declares neither `command` nor `args`, so the command it "
+            "runs lives in the image's ENTRYPOINT and is not in the pod spec at "
+            "all - nothing podbench can read from the cluster will find it. Pass "
+            "`--entrypoint CMD` (the rest is still read from the pod), or "
+            f"`--no-from-pod` and supply all three.\n\n{FROM_POD_ESCAPE}"
+        )
+    return shlex.join(words)
+
+
+def _supervised_lines(container: Mapping[str, Any]) -> list[str]:
+    return "\n".join(
+        word for word in _as_list(container.get("args")) if isinstance(word, str)
+    ).splitlines()
+
+
+def pod_gid(pod_json: Mapping[str, Any], container: str) -> str | None:
+    """The gid the application runs as, or ``None`` where it does not say.
+
+    ``None`` is not zero and must not become it. A hardened workload routinely
+    states ``runAsUser`` and no ``runAsGroup`` (:func:`podbench.spec.target_uid_gid`
+    says so at length), and an fsGroup of 0 on a claim the application cannot
+    write is the failure this whole mode exists downstream of - present and
+    unwritable, which starts and then fails. Unknown keeps the placeholder, so
+    the snippet still refuses at ``helm install``.
+    """
+    _, gid = target_uid_gid(pod_json, container)
+    return None if gid is None else str(gid)
+
+
 def values_snippet(
     app: str,
     entrypoint: str,
     *,
     size: str = "2Gi",
-    gid: str = "<the application's runAsGroup>",
+    gid: str = DEFAULT_GID_PLACEHOLDER,
     home_size: str = SEAT_HOME_SIZE,
     liveness_exec: Sequence[str] | None = None,
     liveness_probe: Mapping[str, Any] | None = None,
@@ -2424,6 +2531,153 @@ def _report(actions: Sequence[str]) -> int:
     return 0
 
 
+NON_EXEC_PROBE_WARNING = (
+    "podbench: {pod}'s {container!r} declares a {kind} livenessProbe, which "
+    "cannot be short-circuited by the hold - only an exec probe can, because an "
+    "httpGet or tcpSocket probe answers from the application, and the "
+    "application is exactly what is down while a pod is held. No livenessProbe "
+    "is emitted below, so the chart keeps the one it has and the kubelet will "
+    "restart the pod out from under the seat at failureThreshold x "
+    "periodSeconds. Deal with that before holding this pod."
+)
+"""Said when the target's probe is real, readable, and of no use to hold mode.
+
+Not an error, because the values are still correct and still worth emitting -
+and not silence either, because the emitted block being *absent* looks identical
+to the canonical fastcs case, which genuinely has no probe. The difference is
+the whole of whether a held pod survives.
+"""
+
+
+EXISTING_MOUNTS_WARNING = (
+    "podbench: {pod}'s {container!r} already mounts {mounts}. The `volumeMounts:` "
+    "and `volumes:` keys below *replace* the ones your chart renders, they do not "
+    "add to them - so merge these entries into what the service's values.yaml "
+    "already has rather than pasting over it. Anything chart-generated will come "
+    "back on its own; anything the service declares for itself will not."
+)
+"""Said when the target carries volumes that are not podbench's.
+
+Found by diffing `--from-pod`'s output against the hand-written values for
+`bl47p-mo-ioc-01` on 2026-08-22: the emitted `volumes:` carried podbench's two
+and nothing else, so pasting it verbatim would have dropped that IOC's `dev-shm`
+and left it without `/dev/shm`.
+
+Podbench cannot merge them itself and must not pretend to: read from a live pod,
+a chart-generated volume and one the service declared for itself are
+indistinguishable, and emitting the chart's own back to it would duplicate what
+the next render produces anyway. Naming them and saying which way the key
+resolves is the whole of what can honestly be done here.
+"""
+
+
+def _print_values_failure(message: str) -> NoReturn:
+    print(f"podbench: {message}", file=sys.stderr)
+    raise typer.Exit(2)
+
+
+def _read_print_values_from_pod(
+    pod: str | None,
+    *,
+    container: str | None,
+    namespace: str | None,
+    context: str | None,
+    binary: str,
+    runner: Runner | None,
+    entrypoint: str | None,
+    gid: str,
+    probe: Mapping[str, Any] | None,
+    liveness: str | None,
+) -> tuple[str | None, str, Mapping[str, Any] | None]:
+    """Fill the three hand-supplied arguments from the target, or say why not.
+
+    This is the whole of ``--from-pod``: a thin cluster-reading wrapper that
+    fills :func:`values_snippet`'s existing arguments. The emitter keeps its
+    signature and stays testable with no cluster, which is not negotiable - it
+    is what lets every shape of the output be asserted in a unit test.
+
+    A flag the user passed always wins over the pod. That is what makes
+    ``--entrypoint`` a usable answer to an image-ENTRYPOINT target without
+    giving up the gid and the probe as well.
+
+    Every failure here names ``--no-from-pod`` and what it costs
+    (:data:`FROM_POD_ESCAPE`). Making the cluster read the default means each
+    of these lands on somebody who did not ask for a cluster, and the one thing
+    they must not be left to work out for themselves is that the way round it
+    is the way #176 happened.
+    """
+    if pod is None:
+        _print_values_failure(
+            "--print-values reads the target by default, so it needs to know "
+            "which pod: pass `--from-pod POD`.\n"
+            "\n" + FROM_POD_ESCAPE
+        )
+    kube = kubectl_for(namespace, context=context, binary=binary, runner=runner)
+    name = resolve_pod_name(pod)
+    try:
+        pod_json = kube.get_pod(name)
+    except KubectlError as error:
+        # One branch for no kubeconfig, no current context, a pod that does not
+        # exist and a forbidden `get pods` alike: kubectl tells those apart only
+        # in the text of its own message, so podbench relays that verbatim
+        # rather than guessing at a category and getting it wrong.
+        _print_values_failure(
+            f"could not read pod {name!r} in {kube.namespace!r}: "
+            f"{error}.\n\n{FROM_POD_ESCAPE}"
+        )
+    try:
+        target = _application_container(pod_json, container)
+    except HotfixError as error:
+        _print_values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
+    spec = next(
+        as_dict(entry)
+        for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
+        if _as_str(as_dict(entry).get("name")) == target
+    )
+    if entrypoint is None:
+        try:
+            entrypoint = container_entrypoint(spec)
+        except HotfixError as error:
+            # Already carries the escape: it has an extra way out of its own.
+            _print_values_failure(str(error))
+    if gid == DEFAULT_GID_PLACEHOLDER:
+        gid = pod_gid(pod_json, target) or DEFAULT_GID_PLACEHOLDER
+    # `volume` and not `name`: a walrus inside a comprehension binds in the
+    # *enclosing* scope, so reusing `name` here silently overwrote the pod's.
+    theirs = sorted(
+        volume
+        for entry in _as_list(spec.get("volumeMounts"))
+        if (volume := _as_str(as_dict(entry).get("name"))) is not None
+        and volume not in (HOTFIX_CLAIM_VOLUME, SEAT_HOME_VOLUME)
+    )
+    if theirs:
+        print(
+            EXISTING_MOUNTS_WARNING.format(
+                pod=name, container=target, mounts=and_list(theirs)
+            ),
+            file=sys.stderr,
+        )
+    if probe is None and liveness is None:
+        declared = as_dict(spec.get("livenessProbe")) or None
+        # A target with no livenessProbe is not an error, and must never be
+        # reported as one: the canonical fastcs target declares none.
+        if declared is not None:
+            if probe_exec_command(declared):
+                probe = declared
+            else:
+                kind = next(
+                    (k for k in ("httpGet", "tcpSocket", "grpc") if k in declared),
+                    "non-exec",
+                )
+                print(
+                    NON_EXEC_PROBE_WARNING.format(
+                        pod=name, container=target, kind=kind
+                    ),
+                    file=sys.stderr,
+                )
+    return entrypoint, gid, probe
+
+
 def _build_app(runner: Runner | None) -> typer.Typer:
     app = new_app()
 
@@ -2495,20 +2749,40 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             typer.Option(
                 "--gid",
                 metavar="GID",
-                help="the application container's gid, for --print-values",
+                help="the application container's gid, for --print-values "
+                "(default: read from the target)",
             ),
-        ] = "<the application's runAsGroup>",
+        ] = DEFAULT_GID_PLACEHOLDER,
+        from_pod: Annotated[
+            str | None,
+            typer.Option(
+                "--from-pod",
+                metavar="POD",
+                help="read the entrypoint, livenessProbe and gid off this pod, "
+                "so the emitted values need no hand-editing (the default; "
+                "--no-from-pod turns it off)",
+            ),
+        ] = None,
+        no_from_pod: Annotated[
+            bool,
+            typer.Option(
+                "--no-from-pod",
+                help="do not read any pod: emit from the flags alone, for CI, an "
+                "offline machine, or a pod that does not exist yet",
+            ),
+        ] = False,
+        container: _Container = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
     ) -> None:
         """Durable in-place fixes: the project on a claim beside the
         application, every change a commit, and a status command that will not
         let a hotfixed pod go unnoticed.
         """
         if print_values:
-            if app_name is None or entrypoint is None:
-                print(
-                    "podbench: --print-values needs --app NAME and --entrypoint CMD",
-                    file=sys.stderr,
-                )
+            if app_name is None:
+                print("podbench: --print-values needs --app NAME", file=sys.stderr)
                 raise typer.Exit(2)
             parsed_probe: Mapping[str, Any] | None = None
             if liveness_probe is not None:
@@ -2529,6 +2803,27 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                         file=sys.stderr,
                     )
                     raise typer.Exit(2)
+            if not no_from_pod:
+                entrypoint, gid, parsed_probe = _read_print_values_from_pod(
+                    from_pod,
+                    container=container,
+                    namespace=namespace,
+                    context=context,
+                    binary=kubectl,
+                    runner=runner,
+                    entrypoint=entrypoint,
+                    gid=gid,
+                    probe=parsed_probe,
+                    liveness=liveness,
+                )
+            if entrypoint is None:
+                print(
+                    "podbench: --print-values needs --entrypoint CMD when the "
+                    "target is not read. Pass --from-pod POD to read it, or "
+                    "--entrypoint CMD to state it.",
+                    file=sys.stderr,
+                )
+                raise typer.Exit(2)
             print(
                 values_snippet(
                     app_name,
