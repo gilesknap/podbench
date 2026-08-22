@@ -3028,7 +3028,12 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
         argv = argv[1:]
     try:
         return run(_build_app(runner), argv, prog="podbench hotfix")
-    except (HotfixError, KubectlError, ValueError) as error:
+    # `LauncherError` is here because `hotfix init` lands its own seat now
+    # (#177): the landing goes through `launcher.attach`, which refuses in its
+    # own currency - an unknown --mount, a pod with no containers, a target
+    # container that is not there. Those are all things the user has to fix, and
+    # exit 2 with the sentence is the answer; a traceback is not.
+    except (HotfixError, KubectlError, LauncherError, ValueError) as error:
         print(f"podbench: {error}", file=sys.stderr)
         return 2
 

@@ -2061,6 +2061,46 @@ def test_init_lands_its_own_seat_rather_than_sending_the_user_to_attach(
     assert "/podbench/app" in out
 
 
+def test_a_seat_that_cannot_be_landed_exits_2_rather_than_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`init` lands its own seat since #177, and the landing goes through
+    `launcher.attach`, which refuses in its own currency. `LauncherError` was
+    not one of the exceptions `main` folds into exit 2, so a pod attach could
+    not seat came out as a traceback instead of a sentence."""
+    runner = FakeRunner(
+        {
+            "get pod solo -o json": json.dumps(
+                {
+                    "metadata": {"name": "solo"},
+                    "spec": {"containers": []},
+                    "status": {},
+                }
+            )
+        }
+    )
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "init",
+            "solo",
+            "--repo",
+            "https://example/x",
+            "--venv",
+            VENV,
+            "-n",
+            "demo",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 2
+    assert "pod has no containers" in capsys.readouterr().err
+
+
 def test_a_named_seat_is_never_second_guessed_by_landing_another() -> None:
     """`--seat` is for a seat named something other than podbench-N, and taking
     it at its word is the whole of what it is for."""
