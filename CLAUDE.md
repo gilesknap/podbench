@@ -61,6 +61,13 @@ silent.
   in `podbench-*` namespaces created for the purpose and deleted afterwards.
   There is a persistent k3s box for this: read the `k3s-test-bed` skill before
   reproducing a field defect or running the e2e suite outside CI.
+- **Never delete from the registry on intuition.** One push publishes seven
+  manifests and tags one, so every "delete untagged versions" recipe destroys a
+  live release while leaving its tag resolving — and an expired ghcr.io pull
+  token answers **404**, which is indistinguishable from the manifest being gone.
+  Read the `ghcr-registry` skill before touching `.github/scripts/ghcr_audit.py`
+  or `ghcr_prune.py`, before removing anything from the package, or before
+  reasoning about which image a released launcher can pull.
 - **`Charts/podbench/values.schema.json` is generated.** A pre-commit hook
   (`helm schema`, driven by `Charts/podbench/.schema.config.yaml`) rewrites it
   from `values.yaml` plus `example.values.yaml`. Edit those; hand-edits are

@@ -122,6 +122,17 @@ gh api -X PATCH repos/gilesknap/podbench/pulls/<child> -f base=main --jq '.base.
 
 `gh pr edit <child> --base main` is the obvious spelling and **fails on this repo** with
 the Projects-classic GraphQL deprecation error; the REST call above is the way through.
+
+**Retarget *before* merging the child, not after, and never rely on the deletion to do
+it.** On 2026-08-22 #156 merged to `main` at 05:10:26 and #157 at 05:10:35 — nine seconds
+apart, in the right order, with the parent branch deleted — and #157 still merged into
+`claude/ghcr-registry-audit`, because GitHub had not retargeted it in those nine seconds.
+The symptom is a `MERGED` child, a `main` that lacks its files, and a scheduled workflow
+quietly running the old version: `Periodic` ran and did only the audit, because the
+reaper job did not exist on `main`. Recovery is a fresh PR for the same commits, which
+costs another CI round. Telling a human "delete the branch and the child will follow" is
+the advice that produced this; give them the `PATCH` above instead, and read the base
+back before saying it is merged.
 `UNKNOWN`/`UNKNOWN` for `mergeStateStatus` means GitHub is still computing — that is not
 permission to proceed either.
 
