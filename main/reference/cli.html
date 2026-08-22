@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
+    <script src="../_static/documentation_options.js?v=369ef860"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -514,7 +514,7 @@ in both places, rather than a launcher’s guess and a helper’s separate guess
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
 │ dev            create or delete the dev pod                                                      │
-│ hotfix         durable in-place fixes on a claim-backed venv                                     │
+│ hotfix         durable in-place fixes on a claim beside the application                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
 │ agent          prepare the container for ssh and idle as its PID 1                               │
@@ -977,8 +977,8 @@ API server answers <code class="docutils literal notranslate"><span class="pre">
 rejects the whole request — and dropping it silently would give the seat the
 volume root where the application sees one directory inside it, so every
 path Hotfix mode recorded would resolve to the wrong thing. Deploy the claim
-mounted whole over the venv path, or use <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>, whose seat is an
-ordinary container.</p></li>
+mounted whole at its own mountPath, beside the application’s project, or use
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code>, whose seat is an ordinary container.</p></li>
 <li><p>Mounts are fixed when a container is created, so <code class="docutils literal notranslate"><span class="pre">--mount</span></code> against a
 reconnect warns and does nothing. Use <code class="docutils literal notranslate"><span class="pre">--new</span></code> for a seat with a new mount.</p></li>
 </ul>
@@ -1609,8 +1609,8 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 │ --help                               Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
-│ init         verify the seeded claim, clone the source, editable-install                         │
-│ apply        commit the change on the claim and roll the workload                                │
+│ init         seed the claim from the running container, clone the source, rebuild the venv       │
+│ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -1640,8 +1640,8 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 </table>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">TARGET</span></code> is <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">deployment/NAME</span></code> or <code class="docutils literal notranslate"><span class="pre">statefulset/NAME</span></code>. Shared flags:
-<code class="docutils literal notranslate"><span class="pre">--venv</span></code> (the mountPath the claim is mounted at, which <em>is</em> the application’s
-venv path), <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>, <code class="docutils literal notranslate"><span class="pre">--author</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">--venv</span></code> (the mountPath the claim is mounted at, beside the application’s own
+project and never over it), <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>, <code class="docutils literal notranslate"><span class="pre">--author</span></code>.</p>
 <p>Notes:</p>
 <ul class="simple">
 <li><p><strong>Single replica only</strong>, refused otherwise: the claim is <code class="docutils literal notranslate"><span class="pre">ReadWriteOnce</span></code>, so a
@@ -2207,8 +2207,8 @@ site-packages is never written over — only supplemented, when its copy is
 missing the architecture helper.</p>
 <p>Only <strong>Observe</strong> mode needs any of this. A <code class="docutils literal notranslate"><span class="pre">dev</span></code> pod relaunches the app as the
 seat’s own child in this container, where debugpy is an ordinary workspace-venv
-dependency; Hotfix mounts the same PVC over the venv at the same path in both
-containers. <code class="docutils literal notranslate"><span class="pre">--provision</span></code> says so rather than installing anyway.</p>
+dependency; Hotfix mounts the same PVC beside the application at the same path
+in both containers. <code class="docutils literal notranslate"><span class="pre">--provision</span></code> says so rather than installing anyway.</p>
 <p><code class="docutils literal notranslate"><span class="pre">miDebuggerPath</span></code> names <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/gdb-podbench</span></code>, never <code class="docutils literal notranslate"><span class="pre">/usr/bin/gdb</span></code>:
 cpptools launches gdb inheriting its own extension directory as a working
 directory, which VS Code deletes on extension update, and gdb’s libpython then

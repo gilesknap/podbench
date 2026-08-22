@@ -195,10 +195,11 @@ Argo CD
 
 claim
   A PersistentVolumeClaim: a request for storage that a pod mounts as a volume. Hotfix
-  mode's claim is mounted over the application's {term}`venv` path, which is what
-  makes a fix survive a restart. Pod volumes are immutable after creation, so a claim
-  can never be added to a running pod — hence the deploy-time cooperation that mode
-  asks for.
+  mode's claim is mounted *beside* the application's own project, at `/podbench/app`
+  and never over it, which is what makes a fix survive a restart while leaving
+  everything the image ships visible. Pod volumes are immutable after creation, so a
+  claim can never be added to a running pod — hence the deploy-time cooperation that
+  mode asks for.
 
 CreateContainerConfigError
   The waiting reason the {term}`kubelet` reports when it refuses a container the API
@@ -696,8 +697,9 @@ uvx
 
 venv
   A Python virtual environment: an interpreter, a `bin/` and a `site-packages` of its
-  own. Hotfix mode mounts a {term}`claim` over the application's, which is what makes
-  a fix outlive the container — and also what makes the venv shadow the image's after
-  an upgrade, since its `bin/python` is a symlink to an interpreter path *inside the
-  image*.
+  own. Hotfix mode never mounts over the application's: it rebuilds a second venv on
+  the {term}`claim` beside it, which the supervisor's runtime switch puts on `PATH`
+  ahead of the image's, and that is what makes a fix outlive the container. It is also
+  what makes the claim's venv shadow the image's after an upgrade, since its
+  `bin/python` is a symlink to an interpreter path *inside the image*.
 ```

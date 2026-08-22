@@ -12,7 +12,7 @@ available to you before taste does.
 | **GitOps-safe** | **yes** | **no** — refused outright | mostly ([#32](https://github.com/gilesknap/podbench/issues/32)) |
 | **Languages** | any | any, but only Python is set up for you | Python only ([#34](https://github.com/gilesknap/podbench/issues/34)) |
 | **Survives a restart** | no | no | **yes** |
-| **Inner loop** | no | **yes**, ~1 s | yes, one rollout per edit |
+| **Inner loop** | no | **yes**, ~1 s | yes, in place, ~7 s per relaunch |
 | **What it actually does** | [step by step](attach-flow.md) | [step by step](dev-flow.md) | [step by step](hotfix-flow.md) |
 
 `podbench vscode` is not a fourth mode. It is `attach` — the same seat, the same
@@ -72,8 +72,8 @@ anything. What is Python-specific is `dev-bootstrap`, which clones, runs `uv syn
 does an editable install. For another language, prepare the workspace yourself and use
 `podbench run`.
 
-`hotfix` is Python throughout: it reads `pyvenv.cfg`, mounts a claim over the application's
-venv, and re-runs an editable install. Generalising it is [#34](https://github.com/gilesknap/podbench/issues/34).
+`hotfix` is Python throughout: it reads `pyvenv.cfg`, mounts a claim beside the
+application's own project, and rebuilds a venv on it. Generalising it is [#34](https://github.com/gilesknap/podbench/issues/34).
 
 ## If you only remember one thing
 

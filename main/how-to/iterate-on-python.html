@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iterate on Python &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
+    <title>Iterate on Python &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
+    <script src="../_static/documentation_options.js?v=369ef860"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -823,11 +823,18 @@ importable from there.</p>
 </section>
 <section id="what-you-cannot-do-in-observe-mode">
 <h2>What you cannot do in Observe mode<a class="headerlink" href="#what-you-cannot-do-in-observe-mode" title="Link to this heading">#</a></h2>
-<p>The relaunch loop is Iterate-only, and the report says so explicitly when you
-attach to a live pod. Killing PID 1 in a live container makes the kubelet
-restart it with pristine image code, and SIGSTOPping it leaves the listening
-socket held while liveness probes kill the container anyway. Do not fight the
-kubelet: mint a dev pod.</p>
+<p>The relaunch loop is Iterate-only on an ordinary pod, and the report says so
+explicitly when you attach to a live one. Killing PID 1 in a live container makes
+the kubelet restart it with pristine image code, and SIGSTOPping it leaves the
+listening socket held while liveness probes kill the container anyway. Do not
+fight the kubelet: mint a dev pod.</p>
+<p>The exception is a pod carrying the <a class="reference internal" href="../explanations/hotfix-flow.html"><span class="std std-doc">hotfix
+layout</span></a>, where neither of those sentences holds:
+the supervisor is PID 1 and the application is its child, so <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">apply</span></code> relaunches the child in place with the container untouched and
+<code class="docutils literal notranslate"><span class="pre">restartCount</span></code> unchanged, and the liveness probe is podbench’s hold-aware wrapper
+rather than the target’s own. <code class="docutils literal notranslate"><span class="pre">attach</span></code> ticks the <code class="docutils literal notranslate"><span class="pre">iterate</span></code> row on such a pod
+rather than pointing you here (issue #179), and the loop runs on the live
+workload — which is the only shape of it a singleton can accept.</p>
 </section>
 </section>
 

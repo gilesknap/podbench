@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Debug with gdb &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
+    <title>Debug with gdb &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
+    <script src="../_static/documentation_options.js?v=369ef860"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -534,7 +534,10 @@ also produced <code class="docutils literal notranslate"><span class="pre">Conta
 and <code class="docutils literal notranslate"><span class="pre">exitCode:</span> <span class="pre">137</span></code> on both the workload <em>and</em> the seat.</p>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> prints these numbers for the pod you name, computed from its
 own spec — including the opposite answer, “no probes, no deadline”, when the
-target has none.</p>
+target has none, and a third one where the liveness probe is podbench’s
+hold-aware wrapper: it returns 0 for as long as <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-hold</span></code> exists, so
+nothing restarts the container while the pod is held, and the numbers above are
+what the pause costs once the hold is gone (issue #179).</p>
 <p><strong>Probes cannot be turned off on a running pod.</strong> A pod update may change only
 <code class="docutils literal notranslate"><span class="pre">containers[*].image</span></code>, <code class="docutils literal notranslate"><span class="pre">initContainers[*].image</span></code>, <code class="docutils literal notranslate"><span class="pre">activeDeadlineSeconds</span></code>,
 <code class="docutils literal notranslate"><span class="pre">tolerations</span></code> and <code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code>; unlike <code class="docutils literal notranslate"><span class="pre">resources</span></code> — the

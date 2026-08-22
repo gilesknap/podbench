@@ -423,7 +423,8 @@ The report is six lines of *measured* capability, not of requested capability:
 
 * **live attach** — `gdb -p <pid>`, qualified by the probe deadline this pod puts on a
   breakpoint (a stopped process stops answering probes, and the kubelet cannot tell
-  that from a hang);
+  that from a hang), or by the *absence* of one where the liveness probe is podbench's
+  hold-aware wrapper;
 * **read-only inspect** — `/proc/<pid>/root`, maps, environ; ticked from those three
   reads themselves and never from the verdict, with the matrix printed under it, and
   all three have to land. The other three reads capreport takes — `cmdline`, `status`,
@@ -434,7 +435,9 @@ The report is six lines of *measured* capability, not of requested capability:
   attach on the probe's own forked child. It is the rung that survives when the reads
   do not, and it is measured rather than assumed: a seccomp filter that rejects
   `ptrace` takes it away along with everything else;
-* **iterate** — always unavailable here, naming `podbench dev` as the way to it;
+* **iterate** — unavailable on an ordinary pod, naming `podbench dev` as the way to
+  it; ticked on a pod carrying the hotfix layout, where `podbench hotfix apply` runs
+  the loop on the live workload;
 * **ssh seat** and **exec seat**, reported separately, because the ssh half needs an
   NSS identity the exec half does not.
 
@@ -442,6 +445,31 @@ When ptrace is denied, the report names *which* of the four mechanisms said no �
 missing capability, Yama's `ptrace_scope`, seccomp or the node's LSM — because
 all four
 return the same `EPERM`, and that naming is the point of the whole probe.
+
+Two of those rows described a pod other than the one in front of the user until issue
+#179. The **iterate** reason — "killing PID 1 restarts the container and a liveness
+probe would kill a stopped one, so the relaunch loop needs a sacrificial dev pod" — is
+true of an ordinary pod and false in *both* halves on one carrying the
+[hotfix layout](hotfix-flow.md): there the supervisor is PID 1 and the application is
+its child, so killing the child relaunches it rather than restarting the container, and
+the probe is the hold-aware wrapper. The row is now decided by `is_hotfixed`, the same
+spec-derived predicate that decides whether the seat mounts the claim, so the tick and
+what is in the seat cannot disagree. `features` is handed a `Session` and never the pod
+json, so the `Session` carries the fact, read in `attach` where both are in hand.
+
+The **live attach** qualifier is read from the probe's *handler* rather than from the
+pod carrying the layout, because the two are different questions: a pod can be given
+one without the other, and it is the handler that decides whether the kubelet restarts
+a held container. A probe whose `exec.command` names `/tmp/podbench-hold` returns 0 for
+as long as the hold exists, so it puts no deadline on a pause at all — and on
+`bl47p-mo-ioc-01` on 2026-08-22 the report nevertheless called it `liveness at 61-91s`.
+The arithmetic was never wrong and is not thrown away: `61-91s` is what the pause costs
+*once the hold is gone*, and it survives as exactly that statement. What goes is
+calling it a deadline on a pause, which is the thing that cannot happen while the pod
+is held; issue #21's budget is right in general and wrong for this probe. A readiness
+probe beside a wrapped liveness one keeps its own deadline — only the liveness probe is
+wrapped, readiness still drops the pod out of the Service, and suppressing both would
+trade one wrong report for another.
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
 whose pid, sysroot-prefixed program path and setup ordering are things the

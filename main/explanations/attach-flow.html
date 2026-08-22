@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
+    <title>What attach does &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
+    <script src="../_static/documentation_options.js?v=369ef860"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -940,7 +940,8 @@ host rather than as a man-in-the-middle warning.</p>
 <ul class="simple">
 <li><p><strong>live attach</strong> — <code class="docutils literal notranslate"><span class="pre">gdb</span> <span class="pre">-p</span> <span class="pre">&lt;pid&gt;</span></code>, qualified by the probe deadline this pod puts on a
 breakpoint (a stopped process stops answering probes, and the kubelet cannot tell
-that from a hang);</p></li>
+that from a hang), or by the <em>absence</em> of one where the liveness probe is podbench’s
+hold-aware wrapper;</p></li>
 <li><p><strong>read-only inspect</strong> — <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, maps, environ; ticked from those three
 reads themselves and never from the verdict, with the matrix printed under it, and
 all three have to land. The other three reads capreport takes — <code class="docutils literal notranslate"><span class="pre">cmdline</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>,
@@ -951,7 +952,9 @@ not decide anything either;</p></li>
 attach on the probe’s own forked child. It is the rung that survives when the reads
 do not, and it is measured rather than assumed: a seccomp filter that rejects
 <code class="docutils literal notranslate"><span class="pre">ptrace</span></code> takes it away along with everything else;</p></li>
-<li><p><strong>iterate</strong> — always unavailable here, naming <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> as the way to it;</p></li>
+<li><p><strong>iterate</strong> — unavailable on an ordinary pod, naming <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> as the way to
+it; ticked on a pod carrying the hotfix layout, where <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">apply</span></code> runs
+the loop on the live workload;</p></li>
 <li><p><strong>ssh seat</strong> and <strong>exec seat</strong>, reported separately, because the ssh half needs an
 NSS identity the exec half does not.</p></li>
 </ul>
@@ -959,6 +962,29 @@ NSS identity the exec half does not.</p></li>
 missing capability, Yama’s <code class="docutils literal notranslate"><span class="pre">ptrace_scope</span></code>, seccomp or the node’s LSM — because
 all four
 return the same <code class="docutils literal notranslate"><span class="pre">EPERM</span></code>, and that naming is the point of the whole probe.</p>
+<p>Two of those rows described a pod other than the one in front of the user until issue
+#179. The <strong>iterate</strong> reason — “killing PID 1 restarts the container and a liveness
+probe would kill a stopped one, so the relaunch loop needs a sacrificial dev pod” — is
+true of an ordinary pod and false in <em>both</em> halves on one carrying the
+<a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">hotfix layout</span></a>: there the supervisor is PID 1 and the application is
+its child, so killing the child relaunches it rather than restarting the container, and
+the probe is the hold-aware wrapper. The row is now decided by <code class="docutils literal notranslate"><span class="pre">is_hotfixed</span></code>, the same
+spec-derived predicate that decides whether the seat mounts the claim, so the tick and
+what is in the seat cannot disagree. <code class="docutils literal notranslate"><span class="pre">features</span></code> is handed a <code class="docutils literal notranslate"><span class="pre">Session</span></code> and never the pod
+json, so the <code class="docutils literal notranslate"><span class="pre">Session</span></code> carries the fact, read in <code class="docutils literal notranslate"><span class="pre">attach</span></code> where both are in hand.</p>
+<p>The <strong>live attach</strong> qualifier is read from the probe’s <em>handler</em> rather than from the
+pod carrying the layout, because the two are different questions: a pod can be given
+one without the other, and it is the handler that decides whether the kubelet restarts
+a held container. A probe whose <code class="docutils literal notranslate"><span class="pre">exec.command</span></code> names <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-hold</span></code> returns 0 for
+as long as the hold exists, so it puts no deadline on a pause at all — and on
+<code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> on 2026-08-22 the report nevertheless called it <code class="docutils literal notranslate"><span class="pre">liveness</span> <span class="pre">at</span> <span class="pre">61-91s</span></code>.
+The arithmetic was never wrong and is not thrown away: <code class="docutils literal notranslate"><span class="pre">61-91s</span></code> is what the pause costs
+<em>once the hold is gone</em>, and it survives as exactly that statement. What goes is
+calling it a deadline on a pause, which is the thing that cannot happen while the pod
+is held; issue #21’s budget is right in general and wrong for this probe. A readiness
+probe beside a wrapped liveness one keeps its own deadline — only the liveness probe is
+wrapped, readiness still drops the pod out of the Service, and suppressing both would
+trade one wrong report for another.</p>
 <p>Then, inside the seat, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code> writes a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code>
 whose pid, sysroot-prefixed program path and setup ordering are things the
 launcher knows and a human cannot guess. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> runs that same

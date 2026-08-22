@@ -375,8 +375,17 @@ importable from there.
 
 ## What you cannot do in Observe mode
 
-The relaunch loop is Iterate-only, and the report says so explicitly when you
-attach to a live pod. Killing PID 1 in a live container makes the kubelet
-restart it with pristine image code, and SIGSTOPping it leaves the listening
-socket held while liveness probes kill the container anyway. Do not fight the
-kubelet: mint a dev pod.
+The relaunch loop is Iterate-only on an ordinary pod, and the report says so
+explicitly when you attach to a live one. Killing PID 1 in a live container makes
+the kubelet restart it with pristine image code, and SIGSTOPping it leaves the
+listening socket held while liveness probes kill the container anyway. Do not
+fight the kubelet: mint a dev pod.
+
+The exception is a pod carrying the [hotfix
+layout](../explanations/hotfix-flow.md), where neither of those sentences holds:
+the supervisor is PID 1 and the application is its child, so `podbench hotfix
+apply` relaunches the child in place with the container untouched and
+`restartCount` unchanged, and the liveness probe is podbench's hold-aware wrapper
+rather than the target's own. `attach` ticks the `iterate` row on such a pod
+rather than pointing you here (issue #179), and the loop runs on the live
+workload — which is the only shape of it a singleton can accept.

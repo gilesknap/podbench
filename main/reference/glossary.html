@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
+    <title>Glossary &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
+    <script src="../_static/documentation_options.js?v=369ef860"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -654,10 +654,11 @@ ordinary Helm label, so erring toward missing a detection is safer than refusing
 mode that works.</p>
 </dd>
 <dt id="term-claim">claim<a class="headerlink" href="#term-claim" title="Link to this term">#</a></dt><dd><p>A PersistentVolumeClaim: a request for storage that a pod mounts as a volume. Hotfix
-mode’s claim is mounted over the application’s <a class="reference internal" href="#term-venv"><span class="xref std std-term">venv</span></a> path, which is what
-makes a fix survive a restart. Pod volumes are immutable after creation, so a claim
-can never be added to a running pod — hence the deploy-time cooperation that mode
-asks for.</p>
+mode’s claim is mounted <em>beside</em> the application’s own project, at <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code>
+and never over it, which is what makes a fix survive a restart while leaving
+everything the image ships visible. Pod volumes are immutable after creation, so a
+claim can never be added to a running pod — hence the deploy-time cooperation that
+mode asks for.</p>
 </dd>
 <dt id="term-CreateContainerConfigError">CreateContainerConfigError<a class="headerlink" href="#term-CreateContainerConfigError" title="Link to this term">#</a></dt><dd><p>The waiting reason the <a class="reference internal" href="#term-kubelet"><span class="xref std std-term">kubelet</span></a> reports when it refuses a container the API
 server already accepted. It arrives <em>seconds after</em> a successful <code class="docutils literal notranslate"><span class="pre">kubectl</span></code> exit, and
@@ -1071,10 +1072,11 @@ dependencies is no longer running what production runs.</p>
 is podbench’s canonical invocation: <code class="docutils literal notranslate"><span class="pre">uvx</span> <span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">my-pod</span></code>.</p>
 </dd>
 <dt id="term-venv">venv<a class="headerlink" href="#term-venv" title="Link to this term">#</a></dt><dd><p>A Python virtual environment: an interpreter, a <code class="docutils literal notranslate"><span class="pre">bin/</span></code> and a <code class="docutils literal notranslate"><span class="pre">site-packages</span></code> of its
-own. Hotfix mode mounts a <a class="reference internal" href="#term-claim"><span class="xref std std-term">claim</span></a> over the application’s, which is what makes
-a fix outlive the container — and also what makes the venv shadow the image’s after
-an upgrade, since its <code class="docutils literal notranslate"><span class="pre">bin/python</span></code> is a symlink to an interpreter path <em>inside the
-image</em>.</p>
+own. Hotfix mode never mounts over the application’s: it rebuilds a second venv on
+the <a class="reference internal" href="#term-claim"><span class="xref std std-term">claim</span></a> beside it, which the supervisor’s runtime switch puts on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>
+ahead of the image’s, and that is what makes a fix outlive the container. It is also
+what makes the claim’s venv shadow the image’s after an upgrade, since its
+<code class="docutils literal notranslate"><span class="pre">bin/python</span></code> is a symlink to an interpreter path <em>inside the image</em>.</p>
 </dd>
 </dl>
 </section>

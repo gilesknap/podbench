@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ways in &#8212; podbench 0.6.2.dev14+g01fd0c604 documentation</title>
+    <title>Ways in &#8212; podbench 0.6.2.dev17+g73cd6aa87 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d19eeefa"></script>
+    <script src="../_static/documentation_options.js?v=369ef860"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -555,7 +555,7 @@ available to you before taste does.</p>
 <tr class="row-even"><td><p><strong>Inner loop</strong></p></td>
 <td><p>no</p></td>
 <td><p><strong>yes</strong>, ~1 s</p></td>
-<td><p>yes, one rollout per edit</p></td>
+<td><p>yes, in place, ~7 s per relaunch</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>What it actually does</strong></p></td>
 <td><p><a class="reference internal" href="attach-flow.html"><span class="std std-doc">step by step</span></a></p></td>
@@ -614,8 +614,8 @@ listening-socket check are all language-agnostic — <code class="docutils liter
 anything. What is Python-specific is <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, which clones, runs <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code> and
 does an editable install. For another language, prepare the workspace yourself and use
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">run</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is Python throughout: it reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code>, mounts a claim over the application’s
-venv, and re-runs an editable install. Generalising it is <a class="reference external" href="https://github.com/gilesknap/podbench/issues/34">#34</a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is Python throughout: it reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code>, mounts a claim beside the
+application’s own project, and rebuilds a venv on it. Generalising it is <a class="reference external" href="https://github.com/gilesknap/podbench/issues/34">#34</a>.</p>
 </section>
 <section id="if-you-only-remember-one-thing">
 <h2>If you only remember one thing<a class="headerlink" href="#if-you-only-remember-one-thing" title="Link to this heading">#</a></h2>

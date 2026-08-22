@@ -65,6 +65,34 @@ one you are in. For an unlimited pause on a probed workload use
 [`podbench dev`](iterate-on-python.md), which strips all three probes by
 construction; [Debug with gdb](debug-with-gdb.md) has the measurements.
 
+A pod whose liveness probe is podbench's **hold-aware wrapper** gets a third
+answer, which is neither of those two:
+
+```
+supports
+  [x] live attach (gdb -p <pid>)
+      no deadline while the hold is in place: 'app' answers its liveness
+      probe through podbench's hold-aware wrapper, which returns 0 whenever
+      /tmp/podbench-hold exists - so nothing restarts it while it is held.
+      Once the hold is gone the target's own check applies again, at 61-91s
+```
+
+Read it as the conditional it is. The wrapper short-circuits only while the hold
+file exists — the window `podbench hotfix apply` opens around a relaunch — and
+outside that window the target's own check applies and `61-91s` is your budget
+again. The arithmetic is reported rather than discarded because it was never
+wrong: it is what a pause costs once the hold is gone, and what podbench stopped
+doing is calling it a deadline on a pause that nothing can interrupt. On
+`bl47p-mo-ioc-01` on 2026-08-22 it said `liveness at 61-91s` flatly, about a
+probe that was already returning 0 (issue #179). Whether the line appears is read
+from the probe's own `exec` command and not from the pod carrying the hotfix
+layout, because a pod can be given one without the other and it is the handler
+that decides whether the kubelet restarts a held container. A **readiness** probe
+beside a wrapped liveness one keeps its own deadline, with `; its liveness probe
+is podbench's hold-aware wrapper and imposes none while the hold exists` appended
+to it: only liveness is wrapped, and readiness still drops the pod out of the
+Service.
+
 **Symbol fetches are spent out of that same budget.** gdb fetches the
 executable's debuginfo when it opens the file, but a shared library's only
 *after* the attach — which is with the workload stopped — and waits
@@ -327,6 +355,32 @@ descendant needs no capability and no Yama exemption. So go straight to
 `cmdline`, `status` and `fd` staying readable is not a partial win: they need no
 permission at all, and are readable on any pod whatsoever. That is why the tick
 is decided by the three paths it names and nothing else.
+
+## The `iterate` row, and the pod it ticks on
+
+`[ ] iterate (edit, relaunch, verify through the Service)` is the ordinary
+answer, and the line under it says why: `attach` shares a live pod, where killing
+PID 1 restarts the container and a liveness probe would kill a stopped one, so
+the relaunch loop needs a sacrificial dev pod ([Iterate on
+Python](iterate-on-python.md)) and never the live workload.
+
+On a pod carrying the [hotfix layout](../explanations/hotfix-flow.md) both halves
+of that sentence are false, and the row is ticked instead:
+
+```
+  [x] iterate (edit, relaunch, verify through the Service)
+      `podbench hotfix apply` relaunches the application's own child in
+      place: this pod carries the supervisor, so the loop runs on the live
+      workload without a second pod and without restarting the container.
+```
+
+There the supervisor is PID 1 and the application is its child, so killing the
+child relaunches it rather than restarting the container, and the liveness probe
+is podbench's hold-aware wrapper rather than the target's own. Both p47 pods
+reported the unticked row on 2026-08-22 while carrying the layout (issue #179) —
+a true sentence about a pod other than the one in front of you. The row is
+decided by the same spec-derived predicate that decides whether the seat mounts
+the claim, so the tick and what is in the seat cannot disagree.
 
 ## What the probe itself does to the workload
 
