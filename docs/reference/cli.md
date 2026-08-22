@@ -1254,8 +1254,11 @@ Notes on `--print-values`:
 
   **Read from the values file it is decidable, and `--values` does it.** The file
   says exactly what the service declares and everything else came from the chart,
-  so there is nothing left to guess. Prefer it; the warning above is what is left
-  for a target whose values file you do not have.
+  so there is nothing left to guess. Under `--values` this warning is therefore
+  not printed at all — it would be telling you to do by hand a merge that has
+  already been done, and naming volumes the merge deliberately left alone because
+  the chart renders them. Prefer it; the warning is what is left for a target
+  whose values file you do not have.
 * `fsGroup` stays the literal placeholder `<the application's runAsGroup>` only
   where nothing could say what it should be: under `--no-from-pod` with no
   `--gid`, or against a pod that states `runAsUser` and no `runAsGroup`, which a

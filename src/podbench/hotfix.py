@@ -3231,6 +3231,7 @@ def _read_print_values_from_pod(
     gid: str,
     probe: Mapping[str, Any] | None,
     liveness: str | None,
+    warn_mounts: bool = True,
 ) -> tuple[str | None, str, Mapping[str, Any] | None]:
     """Fill the three hand-supplied arguments from the target, or say why not.
 
@@ -3300,7 +3301,12 @@ def _read_print_values_from_pod(
         if (volume := _as_str(as_dict(entry).get("name"))) is not None
         and volume not in (HOTFIX_CLAIM_VOLUME, SEAT_HOME_VOLUME)
     )
-    if theirs:
+    # Not under `--values`: the warning exists because a pod cannot say which of
+    # its volumes the service asked for, and the values file has just said. Left
+    # in, it tells the user to go and do by hand the merge that has already been
+    # done for them, and names volumes the merge deliberately did not copy
+    # because the chart renders them.
+    if theirs and warn_mounts:
         print(
             EXISTING_MOUNTS_WARNING.format(
                 pod=name, container=target, mounts=and_list(theirs)
@@ -3517,6 +3523,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                     gid=gid,
                     probe=parsed_probe,
                     liveness=liveness,
+                    warn_mounts=values is None,
                 )
             if entrypoint is None:
                 print(
