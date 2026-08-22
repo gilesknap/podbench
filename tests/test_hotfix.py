@@ -1585,7 +1585,11 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     else, so pasting it verbatim would have dropped that IOC's dev-shm and left
     it without /dev/shm. Podbench cannot merge them itself - from a live pod a
     chart-generated volume and one the service declared are indistinguishable -
-    so it names them and says which way the key resolves."""
+    so it names them and says which key is at risk.
+
+    The key at risk is the *values file's*, not the chart's. Measured against
+    ioc-instance 5.6.1: bl47p-mo-ioc-01's values declare dev-shm alone and its
+    pod carries six volumes, so a chart appends what the values give it."""
     pod = target_pod(command=["python", "-m", "app"])
     pod["spec"]["containers"][0]["volumeMounts"] = [
         {"name": "dev-shm", "mountPath": "/dev/shm"},
@@ -1612,7 +1616,11 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     assert code == 0
     err = capsys.readouterr().err
     assert "dev-shm" in err
-    assert "replace" in err
+    # The advice is to merge into the values file, and explicitly *not* to copy
+    # the chart's own volumes in - which is what "replaces the ones your chart
+    # renders" would have sent a reader off to do.
+    assert "merge into it rather than replacing it" in err
+    assert "must not be copied in here" in err
     # podbench's own two are not reported back to the user as theirs.
     assert model.HOTFIX_CLAIM_VOLUME not in err
 

@@ -1190,15 +1190,21 @@ Notes on `--print-values`:
   Re-emitting the values for a pod that is already hotfixed — after a chart bump,
   or to see what is deployed — is a normal thing to do, and a supervisor nested
   inside a supervisor would hold on a file the inner one never sees.
-* **`volumes:` and `volumeMounts:` replace the chart's keys rather than adding
-  to them**, so where the target already mounts volumes of its own they are
-  named and you are told which way the key resolves. Found by diffing this
-  output against the hand-written values for `bl47p-mo-ioc-01`, where pasting it
-  verbatim would have dropped that IOC's `dev-shm` and left it without
-  `/dev/shm`. Podbench cannot merge them itself and does not pretend to: read
-  from a live pod, a chart-generated volume and one the service declared for
-  itself are indistinguishable. Anything chart-generated comes back on the next
-  render; anything the service declares for itself does not.
+* **`volumes:` and `volumeMounts:` are a whole key each**, so pasting them over
+  a values file that already sets one drops whatever it declared. Where the
+  target already mounts volumes of its own they are named, and the advice is to
+  merge rather than replace. Found by diffing this output against the
+  hand-written values for `bl47p-mo-ioc-01`, where pasting it verbatim would
+  have dropped that IOC's `dev-shm` and left it without `/dev/shm`.
+
+  The key at risk is the **values file's**, not the chart's, and the difference
+  matters. Measured against `ioc-instance` 5.6.1: `bl47p-mo-ioc-01`'s values
+  declare `dev-shm` alone and its pod carries six volumes — the chart's five and
+  that one. A chart appends what the values give it, so what the chart generates
+  for itself is unaffected either way and **must not be copied in here**;
+  doing so declares it twice. Podbench cannot do the merge itself and does not
+  pretend to: read from a live pod, a chart-generated volume and one the service
+  declared are indistinguishable.
 * `fsGroup` stays the literal placeholder `<the application's runAsGroup>` only
   where nothing could say what it should be: under `--no-from-pod` with no
   `--gid`, or against a pod that states `runAsUser` and no `runAsGroup`, which a
