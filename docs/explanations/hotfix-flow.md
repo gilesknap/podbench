@@ -132,10 +132,18 @@ podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
                                   ├─ replicas != 1 ──────────────▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ FIND THE SEAT     get pod POD -o json → the running podbench-N   │
+│ FIND THE SEAT     get pod POD -o json → the running podbench-N,  │
+│                    or --seat NAME for one called something else  │
+│                                                                  │
+│   None running? `init` lands one itself, through the same        │
+│   `attach` you would have typed — which mounts the claim on a    │
+│   pod carrying the layout, so the seat it lands is one this      │
+│   mode can use. The verbs after `init` still refuse: by then     │
+│   a missing seat means it died or the pod was replaced, and      │
+│   that is a thing to be told about rather than to paper over     │
+│   by spending another ephemeral container name.                  │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ├─ none, and no --seat ────────▶ exit 2
-                                  ▼         ("run `podbench attach POD` first")
+                                  ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ REQUIRE THE SUPERVISOR                                           │
 │   exec -c APP -- test -e /tmp/podbench-child.pid                 │
@@ -318,7 +326,15 @@ podbench hotfix status [-n NS] [--no-probe]
     │                    sync interval, which is the precise failure this
     │                    command exists to prevent. A controller
     │                    reconciles a volume towards its spec; it does
-    │                    not remove it.
+    │                    not remove it. Nothing reads that annotation
+    │                    any more either: `is_hotfixed` was left reading
+    │                    a key nothing wrote, so it answered False on
+    │                    every pod podbench ever hotfixed. It now reads
+    │                    the same two things from the pod spec — the
+    │                    claim volume, and a container whose args are
+    │                    the supervisor loop — which is the filter above,
+    │                    applied everywhere else that signal is needed
+    │                    (#177).
     │
     ├─ ONE exec per candidate pod, returning three things at once:
     │      cat /podbench/app/.podbench-hotfix.json   ← the manifest

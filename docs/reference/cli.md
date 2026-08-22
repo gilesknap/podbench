@@ -408,13 +408,15 @@ Notes:
   running seat that the ceiling would not have landed is **not** reconnected to,
   since an ephemeral container's `securityContext` is fixed for the pod's
   lifetime. See {ref}`When the cluster strips SYS_PTRACE <stripped-sys-ptrace>`.
-* `--mount` is how a seat reaches a Hotfix-mode claim. An ephemeral container may
-  mount the volumes its pod **already declares** and may not introduce one —
-  `spec.volumes` is immutable once the pod exists — so a name the pod does not
-  carry is refused with that explanation rather than submitted. That immutability
-  is the whole reason Hotfix mode asks for the chart's cooperation at deploy time;
-  `podbench hotfix --print-values` emits the volume, the volumeMount and the
-  seeding initContainer that put it there.
+* `--mount` puts one of the workload's own volumes into the seat. A Hotfix-mode
+  claim no longer needs one — that is a convention now, below — so this is for a
+  volume podbench would not have thought to mount on its own. An ephemeral
+  container may mount the volumes its pod **already declares** and may not
+  introduce one — `spec.volumes` is immutable once the pod exists — so a name
+  the pod does not carry is refused with that explanation rather than submitted.
+  That immutability is the whole reason Hotfix mode asks for the chart's
+  cooperation at deploy time; `podbench hotfix --print-values` emits the volume,
+  the volumeMount and the seeding initContainer that put it there.
   * The argument is a **claim** name or the pod's **volume** name; a claim is
     resolved to the volume entry that references it.
   * `MOUNTPATH` is optional and usually should be. Where the application
@@ -447,6 +449,22 @@ Notes:
     by name at start-up.
   * An explicit `--mount` for the same mountPath **wins** over the convention.
     `--no-seat-identity` turns the convention off.
+* **The hotfix claim is mounted by convention too.** On a pod carrying the hotfix
+  layout — it declares `podbench-app` *and* a container runs podbench's supervisor
+  loop — `attach` mounts that claim into the seat at the application's own
+  mountPath, falling back to `/podbench/app` where the target container does not
+  mount it at all.
+  * A convention for the same reason the home is: the layout cannot be on the pod
+    by accident, so its presence *is* the request. Since an ephemeral container's
+    `volumeMounts` are fixed once it is created, a seat that lands without the
+    claim cannot be repaired afterwards, and there is nothing to gain by making
+    you ask twice (#177).
+  * It is **not** gated on `--no-seat-identity`, which is about the seat's *home*.
+    An explicit `--mount` for the same mountPath still wins.
+  * An application mount carrying a `subPath` cannot be copied onto an ephemeral
+    container, so the attach prints a note and lands without the claim rather than
+    refusing: the refusal is right for a mount you typed and wrong for one
+    podbench added on its own initiative.
 * **`attach` cannot mount `podbench-identity`, however plainly the pod declares
   it.** The identity has to land as two *files* — `passwd` over `/etc/passwd`,
   `group` over `/etc/group` — and one file at a time takes a `subPath` per
@@ -993,12 +1011,12 @@ Hotfix mode has never been run against a cluster. It is unit-tested only.
 :::
 
 The seat must mount the claim at the application's own mountPath, since that is
-how `hotfix` reads `pyvenv.cfg` and runs `git` against the checkout. Land it that
-way with `attach --mount`:
-
-```
-podbench attach myapp-0 --mount myapp-venv --new
-```
+how `hotfix` reads `pyvenv.cfg` and runs `git` against the checkout. Neither is
+something to arrange by hand: `attach` mounts the claim itself on a pod carrying
+the hotfix layout, and `hotfix init` lands a seat of its own when none is
+running, the way `podbench vscode` does. `--mount` is still the escape hatch for
+a claim `attach` would not have found, and an explicit one for the same path
+wins.
 
 `--local` remains the alternative when `hotfix` is run from a terminal inside the
 seat, where the claim is already in this process's own mount namespace.
@@ -1034,7 +1052,7 @@ seat, where the claim is already in this process's own mount namespace.
 | Sub-verb | Does |
 |---|---|
 | `init --repo URL --venv PATH TARGET` | verify the claim was seeded from the image's venv, clone the source onto it, editable-install, record the base commit |
-| `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest, annotate, roll the workload |
+| `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
 | `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
 | `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
 

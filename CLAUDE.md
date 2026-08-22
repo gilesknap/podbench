@@ -96,10 +96,12 @@ silent.
   neither.** A constant or helper the launcher needs from one of them goes in
   `model.py`, which imports nothing of podbench and is where the shared
   vocabulary belongs anyway; re-export from the original module so its public
-  surface does not move. `DEVPOD_LABEL` and `HOTFIXED_ANNOTATION` went that way
-  when a *listing* had to key on both. Duplicating instead is the trap: two
-  copies of `dev_pod_name`'s truncation rule is how the launcher comes to print
-  a command naming a pod the API server would refuse.
+  surface does not move. `DEVPOD_LABEL` went that way when a *listing* had to
+  key on it, and `DEFAULT_IMAGE` lives there because both halves of the launcher
+  author a container spec around it; `spec.py` and `dev.py` still name each in
+  their own `__all__`. Duplicating instead is the trap: two copies of
+  `dev_pod_name`'s truncation rule is how the launcher comes to print a command
+  naming a pod the API server would refuse.
 - Commits: one logical change, imperative subject, body explaining the reasoning
   rather than restating the diff.
 - Docs build with `just docs` — `sphinx-build -EW` plus `nitpicky = True`, so any
