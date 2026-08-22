@@ -2133,6 +2133,63 @@ def wrapped_liveness_probe(original: Sequence[str]) -> str:
     return f"if [ -e {HOTFIX_HOLD_PATH} ]; then exit 0; fi; exec {inner}"
 
 
+#: A probe's scalar fields, in the order Kubernetes documents them.
+#:
+#: A chart that accepts a whole ``livenessProbe`` renders it *wholesale*, so any
+#: of these the target declared and the snippet omits silently reverts to the
+#: Kubernetes default - and every default is in the direction that restarts
+#: things sooner. ``ioc-instance`` is the measured case: its 120s/30s live on a
+#: ``livenessExecutable`` branch that supplying ``livenessProbe`` takes instead
+#: of, so a wrapped probe carrying only ``exec`` moved a compiled IOC from
+#: 120s/30s to 0s/10s - probed from the moment it started, before it had reached
+#: its hardware. Found on p47-beamline, 2026-08-22.
+PROBE_SCALAR_FIELDS = (
+    "initialDelaySeconds",
+    "periodSeconds",
+    "timeoutSeconds",
+    "successThreshold",
+    "failureThreshold",
+    "terminationGracePeriodSeconds",
+)
+
+
+def probe_timings(probe: Mapping[str, Any] | None) -> list[str]:
+    """*probe*'s scalar fields as yaml lines, in :data:`PROBE_SCALAR_FIELDS` order.
+
+    Only the scalars. The handler is wrapped separately, and the handler is the
+    one part of somebody else's probe podbench is entitled to rewrite.
+
+    >>> probe_timings({"exec": {"command": ["x"]}, "periodSeconds": 30})
+    ['  periodSeconds: 30']
+    >>> probe_timings({"initialDelaySeconds": 120, "periodSeconds": 30})
+    ['  initialDelaySeconds: 120', '  periodSeconds: 30']
+    >>> probe_timings(None)
+    []
+    """
+    if not probe:
+        return []
+    return [
+        f"  {field}: {probe[field]}"
+        for field in PROBE_SCALAR_FIELDS
+        if probe.get(field) is not None
+    ]
+
+
+def probe_exec_command(probe: Mapping[str, Any]) -> list[str]:
+    """*probe*'s ``exec.command``, or ``[]`` if it does not have one.
+
+    >>> probe_exec_command({"exec": {"command": ["/bin/bash", "live.sh"]}})
+    ['/bin/bash', 'live.sh']
+    >>> probe_exec_command({"httpGet": {"path": "/healthz"}})
+    []
+    """
+    handler = probe.get("exec")
+    if not isinstance(handler, Mapping):
+        return []
+    command = cast(Mapping[str, Any], handler).get("command")
+    return [str(part) for part in _as_list(command)]
+
+
 def values_snippet(
     app: str,
     entrypoint: str,
@@ -2141,6 +2198,7 @@ def values_snippet(
     gid: str = "<the application's runAsGroup>",
     home_size: str = SEAT_HOME_SIZE,
     liveness_exec: Sequence[str] | None = None,
+    liveness_probe: Mapping[str, Any] | None = None,
     indent: int = 0,
     volumes_key: str = "volumes",
     mounts_key: str = "volumeMounts",
@@ -2170,7 +2228,13 @@ def values_snippet(
     vary.
     """
     claim = hotfix_claim(app)
-    probe = wrapped_liveness_probe(liveness_exec) if liveness_exec else None
+    # A whole probe carries its timings; a bare command cannot, and the caller is
+    # told so rather than left to find out from a restart ladder.
+    exec_command = liveness_exec or (
+        probe_exec_command(liveness_probe) if liveness_probe else []
+    )
+    probe = wrapped_liveness_probe(exec_command) if exec_command else None
+    timings = probe_timings(liveness_probe)
     header = [
         f"# 1. values for the podbench release - creates the claim {claim}",
         "hotfixProject:",
@@ -2222,6 +2286,23 @@ def values_snippet(
             "      - -c",
             f"      - {probe!r}",
         ]
+        # A chart renders a supplied probe wholesale, so a timing that is not
+        # here is not "left as it was" - it is the Kubernetes default.
+        if timings:
+            lines += [
+                "  # Carried over from the target's own probe. A chart renders a",
+                "  # supplied livenessProbe wholesale, so anything omitted here",
+                "  # silently becomes the Kubernetes default.",
+                *timings,
+            ]
+        else:
+            lines += [
+                "  # WARNING: no timings were supplied, so this probe will use the",
+                "  # Kubernetes defaults - initialDelaySeconds 0, periodSeconds 10.",
+                "  # If the target declared its own, copy them in here or it will be",
+                "  # probed sooner and more often than it was before. Pass the whole",
+                "  # probe (--liveness-probe) instead of --liveness to carry them.",
+            ]
     lines += [
         f"{security_key}:",
         "  # Not optional. The claim and the seat's home are created root:root,",
@@ -2383,7 +2464,22 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 metavar="CMD",
                 help=(
                     "the target's existing exec livenessProbe command, which is "
-                    "emitted wrapped to honour the hold; omit if it has none"
+                    "emitted wrapped to honour the hold; omit if it has none. "
+                    "Carries no timings - prefer --liveness-probe"
+                ),
+            ),
+        ] = None,
+        liveness_probe: Annotated[
+            str | None,
+            typer.Option(
+                "--liveness-probe",
+                metavar="JSON",
+                help=(
+                    "the target's whole livenessProbe as json, e.g. from "
+                    "`kubectl get pod POD -o jsonpath='{.spec.containers[0]"
+                    ".livenessProbe}'`. Its exec command is wrapped and its "
+                    "timings are carried over; a chart renders a supplied probe "
+                    "wholesale, so a timing left out becomes the k8s default"
                 ),
             ),
         ] = None,
@@ -2417,6 +2513,25 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                     file=sys.stderr,
                 )
                 raise typer.Exit(2)
+            parsed_probe: Mapping[str, Any] | None = None
+            if liveness_probe is not None:
+                try:
+                    parsed_probe = _load_json(liveness_probe)
+                except json.JSONDecodeError as exc:
+                    print(
+                        f"podbench: --liveness-probe is not valid json: {exc}",
+                        file=sys.stderr,
+                    )
+                    raise typer.Exit(2) from exc
+                if not probe_exec_command(parsed_probe):
+                    print(
+                        "podbench: --liveness-probe has no exec.command. Only an "
+                        "exec probe can be short-circuited by the hold - an "
+                        "httpGet or tcpSocket probe answers from the application, "
+                        "which is exactly what is down while a pod is held.",
+                        file=sys.stderr,
+                    )
+                    raise typer.Exit(2)
             print(
                 values_snippet(
                     app_name,
@@ -2424,6 +2539,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                     size=size,
                     gid=gid,
                     liveness_exec=shlex.split(liveness) if liveness else None,
+                    liveness_probe=parsed_probe,
                 )
             )
             raise typer.Exit(0)
