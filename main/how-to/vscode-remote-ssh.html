@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.7.1.dev7+g43d62b372 documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.7.1.dev9+g036c54b30 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4c8c6552"></script>
+    <script src="../_static/documentation_options.js?v=6a867caa"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -664,10 +664,11 @@ one.</p>
 <p><strong>It writes</strong> <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> and
 <code class="docutils literal notranslate"><span class="pre">.vscode/extensions.json</span></code> into the folder it is about to open, installs only the
 extensions this target’s debugger needs <strong>in the remote window</strong>, and opens the
-seat’s home. Those are the two steps most easily got wrong by hand, and both
-fail quietly: the wrong folder can end the seat, and a locally installed
-extension runs the debug adapter on your laptop. See
-<a class="reference internal" href="../reference/cli.html"><span class="std std-doc">the CLI reference</span></a> for the order and the refusals.</p>
+seat’s home — or, on a pod carrying the hotfix layout, the claim. Those are the
+two steps most easily got wrong by hand, and both fail quietly: the wrong folder
+can end the seat, and a locally installed extension runs the debug adapter on
+your laptop. See <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">the CLI reference</span></a> for the order and the
+refusals.</p>
 <p><strong>It sizes the pod.</strong> vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
 has less, the target’s memory limit is raised by the shortfall before the seat
@@ -1072,7 +1073,15 @@ the workspace volume; <code class="docutils literal notranslate"><span class="pr
 <li><p>In Observe mode open the seat’s <strong>home</strong> — <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> where
 the pod declares a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume — and reach the workload’s
 filesystem through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> from there. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> tells you
-which pid.</p>
+which pid.</p></li>
+<li><p>In Hotfix mode open the <strong>claim</strong>, at whatever path the application mounts it
+— <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code> by convention. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> does this for you and says
+so, because it is the only tree in the pod where an edit reaches the running
+process: the home is empty, and the image’s copy under <code class="docutils literal notranslate"><span class="pre">/proc/1/root</span></code> is read
+through a mount the supervisor never resolves, so nothing written there ever
+runs. Where the pod carries the layout but <em>this seat</em> did not get the mount —
+an application mount with a <code class="docutils literal notranslate"><span class="pre">subPath</span></code> cannot be copied into an ephemeral
+container — the home is opened instead and the reason is printed with it.</p>
 <p>Do <strong>not</strong> open <code class="docutils literal notranslate"><span class="pre">/</span></code>. Opening a <em>file</em> under <code class="docutils literal notranslate"><span class="pre">/proc</span></code> is fine; opening a
 <em>folder</em> at <code class="docutils literal notranslate"><span class="pre">/</span></code> points the file watcher and the search indexer at <code class="docutils literal notranslate"><span class="pre">/proc</span></code>,
 where every <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is a symlink into another container’s rootfs

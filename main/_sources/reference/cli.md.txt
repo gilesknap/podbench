@@ -416,7 +416,7 @@ Notes:
   the pod does not carry is refused with that explanation rather than submitted.
   That immutability is the whole reason Hotfix mode asks for the chart's
   cooperation at deploy time; `podbench hotfix --print-values` emits the volume,
-  the volumeMount and the seeding initContainer that put it there.
+  the volumeMount, the supervisor entrypoint and the fsGroup that put it there.
   * The argument is a **claim** name or the pod's **volume** name; a claim is
     resolved to the volume entry that references it.
   * `MOUNTPATH` is optional and usually should be. Where the application
@@ -704,6 +704,14 @@ would install into that machine rather than into the seat, leaving breakpoints
 that never bind. podbench refuses that one by name before landing anything — run
 it from a terminal on the machine your VS Code itself runs on, or run `podbench
 attach` and use **Remote-SSH: Connect to Host**.
+
+The folder is the seat's `<home>` for every pod without the hotfix layout, and
+the **claim** for a seat that carries it — read back off the seat's own
+`volumeMounts`, so a chart that mounts the claim somewhere other than
+`/podbench/app` is followed rather than guessed at. Whichever wins is named in
+the output with the reason, because it is a folder the command line did not ask
+for. A pod that carries the layout while this seat does not carry the mount gets
+the home and a `[warn]` saying so. `<home>` below means that folder.
 
 In order it:
 * writes `<home>/.vscode/settings.json` with every exclude `podbench agent`

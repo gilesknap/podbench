@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.7.1.dev7+g43d62b372 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.7.1.dev9+g036c54b30 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4c8c6552"></script>
+    <script src="../_static/documentation_options.js?v=6a867caa"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -960,7 +960,7 @@ introduce one — <code class="docutils literal notranslate"><span class="pre">s
 the pod does not carry is refused with that explanation rather than submitted.
 That immutability is the whole reason Hotfix mode asks for the chart’s
 cooperation at deploy time; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume,
-the volumeMount and the seeding initContainer that put it there.</p>
+the volumeMount, the supervisor entrypoint and the fsGroup that put it there.</p>
 <ul>
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
@@ -1256,6 +1256,13 @@ forwards to the window that terminal already belongs to: <code class="docutils l
 would install into that machine rather than into the seat, leaving breakpoints
 that never bind. podbench refuses that one by name before landing anything — run
 it from a terminal on the machine your VS Code itself runs on, or run <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> and use <strong>Remote-SSH: Connect to Host</strong>.</p>
+<p>The folder is the seat’s <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;</span></code> for every pod without the hotfix layout, and
+the <strong>claim</strong> for a seat that carries it — read back off the seat’s own
+<code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code>, so a chart that mounts the claim somewhere other than
+<code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code> is followed rather than guessed at. Whichever wins is named in
+the output with the reason, because it is a folder the command line did not ask
+for. A pod that carries the layout while this seat does not carry the mount gets
+the home and a <code class="docutils literal notranslate"><span class="pre">[warn]</span></code> saying so. <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;</span></code> below means that folder.</p>
 <p>In order it:</p>
 <ul class="simple">
 <li><p>writes <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/settings.json</span></code> with every exclude <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span></code>
