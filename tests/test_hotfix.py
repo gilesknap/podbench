@@ -1629,6 +1629,51 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     assert model.HOTFIX_CLAIM_VOLUME not in err
 
 
+def test_values_answers_the_question_the_mount_warning_asks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found on p47-beamline the first time the whole workflow was run.
+
+    `EXISTING_MOUNTS_WARNING` exists because a pod cannot say which of its
+    volumes the service asked for. Under `--values` the values file has just
+    said, and the merge has acted on it - so the warning tells the user to go
+    and do by hand what has already been done, and names volumes the merge
+    deliberately did not copy because the chart renders them.
+    """
+    pod = target_pod(command=["python", "-m", "app"])
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": "dev-shm", "mountPath": "/dev/shm"},
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH},
+    ]
+    child = tmp_path / "values.yaml"
+    child.write_text(CHILD)
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+            "--values",
+            str(child),
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "merge into it rather than replacing it" not in err
+    # The merge's own notes still say what it did.
+    assert "went under" in err
+
+
 def test_a_target_carrying_only_podbenchs_volumes_is_not_warned_about_them(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
