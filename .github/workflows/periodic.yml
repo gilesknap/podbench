@@ -11,3 +11,33 @@ jobs:
     uses: ./.github/workflows/_tox.yml
     with:
       tox: docs -- -b linkcheck
+
+  # Read-only, and deliberately so. It holds no credential that could delete a
+  # package version: the registry half uses an anonymous pull token, which is all
+  # a public package needs, and the job declares no `packages:` permission at
+  # all. Nothing here cleans anything up - see the script's docstring for why the
+  # accumulation is not itself the problem.
+  #
+  # Weekly is the cadence the recovery window sets, not a guess. GHCR keeps a
+  # deleted version restorable for 30 days, so a check that runs inside that
+  # window turns "a release's image is gone" from a permanent loss into a
+  # restore. Running it more often would buy nothing a restore does not already
+  # cover.
+  registry-audit:
+    name: Audit the published registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      # Run through the project so `podbench.spec.moves` imports: the audit asks
+      # the launcher's own code which tags are immutable rather than keeping a
+      # second copy of that rule where it could drift.
+      - name: Audit the registry
+        run: uv run --locked python .github/scripts/ghcr_audit.py
