@@ -32,7 +32,10 @@ and `exitCode: 137` on both the workload *and* the seat.
 
 `podbench attach` prints these numbers for the pod you name, computed from its
 own spec — including the opposite answer, "no probes, no deadline", when the
-target has none.
+target has none, and a third one where the liveness probe is podbench's
+hold-aware wrapper: it returns 0 for as long as `/tmp/podbench-hold` exists, so
+nothing restarts the container while the pod is held, and the numbers above are
+what the pause costs once the hold is gone (issue #179).
 
 **Probes cannot be turned off on a running pod.** A pod update may change only
 `containers[*].image`, `initContainers[*].image`, `activeDeadlineSeconds`,
