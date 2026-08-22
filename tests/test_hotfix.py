@@ -33,6 +33,8 @@ HEAD_SHA = "2222222222222222222222222222222222222222"
 BASE_DIGEST = "ghcr.io/acme/api@sha256:aaaa"
 NEW_DIGEST = "ghcr.io/acme/api@sha256:bbbb"
 
+GIT = f"git -c safe.directory={CHECKOUT} -C {CHECKOUT}"
+
 SEEDED_PYTHON = "/podbench/app/.python/cpython-3.11.13-linux-x86_64-gnu/bin/python3"
 
 PYVENV_CFG = (
@@ -197,8 +199,8 @@ def seeded_store(**extra: str) -> FakeStore:
     return FakeStore(
         files=files,
         outputs={
-            f"git -C {CHECKOUT} rev-parse HEAD": HEAD_SHA,
-            f"git -C {CHECKOUT} log": f"{HEAD_SHA}\x1fmake the beam behave\n",
+            f"{GIT} rev-parse HEAD": HEAD_SHA,
+            f"{GIT} log": f"{HEAD_SHA}\x1fmake the beam behave\n",
         },
     )
 
@@ -340,7 +342,7 @@ def test_changed_paths_covers_the_whole_range_since_the_last_apply() -> None:
     question is asked of the range and not of HEAD alone."""
     store = FakeStore(
         outputs={
-            f"git -C {CHECKOUT} diff --name-only {BASE_SHA}..{HEAD_SHA}": (
+            f"{GIT} diff --name-only {BASE_SHA}..{HEAD_SHA}": (
                 "setup.cfg\nsrc/api/beam file.py\n"
             )
         }
@@ -361,15 +363,15 @@ def test_changed_paths_is_empty_when_head_has_not_moved() -> None:
 
 def test_changed_paths_falls_back_to_head_without_a_recorded_commit() -> None:
     """A manifest old enough to have no ``commit`` gives no range to walk."""
-    store = FakeStore(outputs={f"git -C {CHECKOUT} show": "\npyproject.toml\n"})
+    store = FakeStore(outputs={f"{GIT} show": "\npyproject.toml\n"})
     assert hotfix.changed_paths(store, CHECKOUT, "", HEAD_SHA) == ("pyproject.toml",)
 
 
 def test_changed_paths_falls_back_when_the_recorded_commit_is_gone() -> None:
     """A rewritten history over-installs rather than under-installing: a
     redundant editable install costs seconds, a skipped one costs the hotfix."""
-    store = FakeStore(outputs={f"git -C {CHECKOUT} show": "pyproject.toml\n"})
-    store.failures[f"git -C {CHECKOUT} diff"] = "bad revision"
+    store = FakeStore(outputs={f"{GIT} show": "pyproject.toml\n"})
+    store.failures[f"{GIT} diff"] = "bad revision"
     assert hotfix.changed_paths(store, CHECKOUT, BASE_SHA, HEAD_SHA) == (
         "pyproject.toml",
     )
@@ -392,9 +394,7 @@ def test_parse_log_keeps_subjects_containing_anything_printable() -> None:
 def test_drift_counts_commits_the_image_does_not_have() -> None:
     store = FakeStore(
         outputs={
-            f"git -C {CHECKOUT} log": (
-                f"{HEAD_SHA}\x1fsecond fix\n{BASE_SHA[:-1]}3\x1ffirst fix\n"
-            )
+            f"{GIT} log": (f"{HEAD_SHA}\x1fsecond fix\n{BASE_SHA[:-1]}3\x1ffirst fix\n")
         }
     )
     commits = hotfix.drift_commits(store, CHECKOUT, BASE_SHA)
@@ -409,7 +409,7 @@ def test_drift_with_no_base_commit_is_no_drift() -> None:
 
 def test_drift_names_the_repository_mismatch() -> None:
     store = FakeStore()
-    store.failures[f"git -C {CHECKOUT} log"] = "unknown revision"
+    store.failures[f"{GIT} log"] = "unknown revision"
     with pytest.raises(hotfix.HotfixError, match="different repository"):
         hotfix.drift_commits(store, CHECKOUT, BASE_SHA)
 
@@ -689,7 +689,7 @@ def test_init_seeds_the_project_and_the_interpreter() -> None:
     """
     store = FakeStore(
         files={CHECKOUT: "", PROJECT_SRC: "", "/proc/1/root/python": ""},
-        outputs={f"git -C {CHECKOUT} rev-parse HEAD": BASE_SHA},
+        outputs={f"{GIT} rev-parse HEAD": BASE_SHA},
     )
     _, actions = hotfix.init(
         kube(FakeRunner()),
@@ -713,7 +713,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
             "/proc/1/root/python": "",
             f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
         },
-        outputs={f"git -C {CHECKOUT} rev-parse HEAD": BASE_SHA},
+        outputs={f"{GIT} rev-parse HEAD": BASE_SHA},
     )
     manifest, actions = hotfix.init(
         kube(runner),
@@ -755,7 +755,9 @@ def test_init_is_idempotent_about_an_existing_checkout() -> None:
 
 def test_init_explains_a_failed_install() -> None:
     runner = FakeRunner()
-    runner.failures["exec -c app"] = "no index reachable"
+    # only the rebuild fails; the supervisor probe must still succeed, or
+    # init refuses earlier and this asserts the wrong refusal.
+    runner.failures["exec -c app api-7f9-abc -- uv sync"] = "no index reachable"
     store = FakeStore(
         files={
             CHECKOUT: "",
@@ -763,7 +765,7 @@ def test_init_explains_a_failed_install() -> None:
             "/proc/1/root/python": "",
             f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
         },
-        outputs={f"git -C {CHECKOUT} rev-parse HEAD": BASE_SHA},
+        outputs={f"{GIT} rev-parse HEAD": BASE_SHA},
     )
     with pytest.raises(hotfix.HotfixError, match="pre-build the venv"):
         hotfix.init(
@@ -781,14 +783,10 @@ def test_init_explains_a_failed_install() -> None:
 def applied_store(dirty: bool = True, changed: str = "src/api/beam.py") -> FakeStore:
     store = seeded_store()
     store.files[hotfix.manifest_path(VENV)] = a_manifest().to_json()
-    store.outputs[f"git -C {CHECKOUT} status --porcelain"] = (
-        " M src/api/beam.py\n" if dirty else ""
-    )
+    store.outputs[f"{GIT} status --porcelain"] = " M src/api/beam.py\n" if dirty else ""
     # The reinstall question is asked of the manifest's recorded commit..HEAD,
     # so that is the range the fake git answers for.
-    store.outputs[f"git -C {CHECKOUT} diff --name-only {BASE_SHA}..{HEAD_SHA}"] = (
-        f"{changed}\n"
-    )
+    store.outputs[f"{GIT} diff --name-only {BASE_SHA}..{HEAD_SHA}"] = f"{changed}\n"
     return store
 
 
@@ -804,7 +802,7 @@ def test_apply_commits_measures_drift_and_annotates() -> None:
         author="Ada <ada@example.invalid>",
     )
 
-    assert store.ran(f"git -C {CHECKOUT} add -A")
+    assert store.ran(f"{GIT} add -A")
     assert any("commit" in " ".join(call) for call in store.calls)
     assert manifest.commit == HEAD_SHA
     assert manifest.ahead == 1
@@ -864,7 +862,7 @@ def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
         venv=VENV,
         message="new entry point",
     )
-    assert not store.ran(f"git -C {CHECKOUT} add")
+    assert not store.ran(f"{GIT} add")
     assert runner.matching("exec -c app api-7f9-abc -- uv sync")
     assert any("rebuilt the venv" in action for action in actions)
 
@@ -892,7 +890,7 @@ def test_apply_on_a_clean_tree_commits_nothing() -> None:
         venv=VENV,
         message="nothing to see",
     )
-    assert not store.ran(f"git -C {CHECKOUT} add")
+    assert not store.ran(f"{GIT} add")
     assert any("nothing new to commit" in action for action in actions)
 
 
@@ -907,7 +905,13 @@ def test_apply_without_a_manifest_sends_you_to_init() -> None:
         )
 
 
-def test_apply_will_not_delete_a_pod_nobody_owns() -> None:
+def test_apply_relaunches_in_place_and_deletes_nothing() -> None:
+    """A pod with no controller used to be refused. Now it needs no controller.
+
+    The relaunch happens inside the container, so ownership stops mattering -
+    which is what lets Hotfix mode work on a bare pod and, more to the point,
+    stops it SIGKILLing the seat that shares the container's namespaces.
+    """
     runner = FakeRunner()
     target = hotfix.HotfixTarget(
         pod=hotfix.PodRef("demo", "solo"),
@@ -919,7 +923,24 @@ def test_apply_will_not_delete_a_pod_nobody_owns() -> None:
         kube(runner), applied_store(), target, venv=VENV, message="fix"
     )
     assert not runner.matching("delete pod")
-    assert any("no controller" in action for action in actions)
+    assert any("without a restart" in action for action in actions)
+    # hold, tree-kill, release - as one exec, so a dying seat cannot leave the
+    # pod held with its probe short-circuited.
+    assert runner.matching("exec -c app solo -- bash -c")
+
+
+def test_the_relaunch_refuses_a_container_without_the_supervisor() -> None:
+    """Nothing to relaunch means the kill would restart the container instead."""
+    runner = FakeRunner()
+    runner.failures["exec -c app"] = "no such file"
+    with pytest.raises(hotfix.HotfixError, match="not running the podbench supervisor"):
+        hotfix.init(
+            kube(runner),
+            seeded_store(),
+            deployment_target(),
+            venv=VENV,
+            repo="https://example.invalid/acme/api.git",
+        )
 
 
 def test_apply_can_leave_the_process_alone() -> None:
@@ -948,7 +969,7 @@ def test_consolidate_pushes_and_records_the_branch() -> None:
         venv=VENV,
         branch="patch/beamtime-14",
     )
-    assert store.ran(f"git -C {CHECKOUT} push origin HEAD:refs/heads/patch/beamtime-14")
+    assert store.ran(f"{GIT} push origin HEAD:refs/heads/patch/beamtime-14")
     assert manifest.consolidated_branch == "patch/beamtime-14"
     reread = hotfix.HotfixManifest.from_json(store.files[hotfix.manifest_path(VENV)])
     assert reread.consolidated_branch == "patch/beamtime-14"
@@ -967,13 +988,13 @@ def test_consolidate_dry_run_pushes_nothing() -> None:
         branch="patch/beamtime-14",
         push=False,
     )
-    assert not store.ran(f"git -C {CHECKOUT} push")
+    assert not store.ran(f"{GIT} push")
     assert any("would push" in action for action in actions)
 
 
 def test_consolidate_refuses_when_there_is_no_drift() -> None:
     store = applied_store()
-    store.outputs[f"git -C {CHECKOUT} log"] = ""
+    store.outputs[f"{GIT} log"] = ""
     with pytest.raises(hotfix.HotfixError, match="no hotfix to consolidate"):
         hotfix.consolidate(
             kube(FakeRunner()),
@@ -1338,9 +1359,9 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
             "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
             f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
-            f"{seat} git -C {CHECKOUT} rev-parse": HEAD_SHA,
-            f"{seat} git -C {CHECKOUT} log": f"{HEAD_SHA}\x1ffix\n",
-            f"{seat} git -C {CHECKOUT} status": " M a.py\n",
+            f"{seat} {GIT} rev-parse": HEAD_SHA,
+            f"{seat} {GIT} log": f"{HEAD_SHA}\x1ffix\n",
+            f"{seat} {GIT} status": " M a.py\n",
         }
     )
     code = hotfix.main(
@@ -1358,7 +1379,7 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
         runner=runner,
     )
     assert code == 0
-    assert runner.matching(f"exec -c podbench-1 api-7f9-abc -- git -C {CHECKOUT} add")
+    assert runner.matching(f"exec -c podbench-1 api-7f9-abc -- {GIT} add")
     # The manifest is written back through the same seat, over stdin.
     assert any(
         "cat > /opt/venv/.podbench-hotfix.json" in " ".join(argv)
