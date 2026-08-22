@@ -426,6 +426,34 @@ def test_the_documented_example_entries_are_ones_the_schema_accepts() -> None:
     assert "kind: RoleBinding" in rendered.stdout
 
 
+def test_the_claim_is_annotated_against_both_ways_it_can_be_taken_away() -> None:
+    """`keep` alone is not enough, and that was measured rather than reasoned.
+
+    Argo CD does honour ``helm.sh/resource-policy: keep`` - its docs list it as
+    equivalent to ``Delete=false``, which is the *Application* being deleted.
+    Ending a hotfix is never that: the claim leaves the desired state on an
+    ordinary sync, and that is ``Prune=false``.
+
+    Measured on ``p47-beamline``, 2026-08-22 (issue #190): a claim carrying
+    ``keep`` alone was pruned three minutes after it left the desired state, and
+    its PV was deleted with it. Helm's annotation stays because it is what a
+    plain ``helm uninstall`` honours for anyone not running Argo.
+    """
+    rendered = render(
+        "--set",
+        "hotfixProject.enabled=true",
+        "--set",
+        f"hotfixProject.claims[0].name={APP}",
+        "--show-only",
+        "templates/pvc-hotfix-project.yaml",
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    claim = cast(dict[str, Any], yaml.safe_load(rendered.stdout))
+    annotations = claim["metadata"]["annotations"]
+    assert annotations["helm.sh/resource-policy"] == "keep"
+    assert annotations["argocd.argoproj.io/sync-options"] == "Prune=false,Delete=false"
+
+
 def test_a_mistyped_top_level_key_is_refused_rather_than_ignored() -> None:
     """The plain case: helm without a schema accepts any key and drops it.
 
