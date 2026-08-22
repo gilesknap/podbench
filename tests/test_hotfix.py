@@ -319,7 +319,7 @@ def test_install_pins_the_interpreter_on_the_claim() -> None:
     """Left to itself uv finds the image's, and the venv names a path that goes
     away on the next restart - the fix reverting rather than an error."""
     argv = hotfix.install_argv(SEEDED_PYTHON, CHECKOUT)
-    assert argv[:2] == ["uv", "sync"]
+    assert argv[:4] == ["env", f"UV_CACHE_DIR={CHECKOUT}/.uv-cache", "uv", "sync"]
     assert CHECKOUT in argv
     assert SEEDED_PYTHON in argv
 
@@ -716,7 +716,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert manifest.base_image_digest == BASE_DIGEST
     assert store.read_text(hotfix.manifest_path(VENV)) is not None
     # The rebuild runs in the application container, not in the seat.
-    assert runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
     # No annotation: provenance lives on the claim, where Argo self-heal cannot
     # strip it. The pod template is not touched at all any more.
     assert not runner.matching("patch deployment api")
@@ -742,7 +742,9 @@ def test_init_explains_a_failed_install() -> None:
     runner = FakeRunner()
     # only the rebuild fails; the supervisor probe must still succeed, or
     # init refuses earlier and this asserts the wrong refusal.
-    runner.failures["exec -c app api-7f9-abc -- uv sync"] = "no index reachable"
+    runner.failures["exec -c app api-7f9-abc -- env UV_CACHE_DIR"] = (
+        "no index reachable"
+    )
     store = FakeStore(
         files={
             CHECKOUT: "",
@@ -815,7 +817,7 @@ def test_apply_skips_the_reinstall_when_only_code_changed() -> None:
         venv=VENV,
         message="fix",
     )
-    assert not runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert not runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
 
 
 def test_apply_reinstalls_when_packaging_metadata_changed() -> None:
@@ -827,7 +829,7 @@ def test_apply_reinstalls_when_packaging_metadata_changed() -> None:
         venv=VENV,
         message="new entry point",
     )
-    assert runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
     assert any("rebuilt the venv" in action for action in actions)
 
 
@@ -849,7 +851,7 @@ def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
         message="new entry point",
     )
     assert not store.ran(f"{GIT} add")
-    assert runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
     assert any("rebuilt the venv" in action for action in actions)
 
 
@@ -863,7 +865,7 @@ def test_apply_after_a_code_only_hand_commit_does_not_reinstall() -> None:
         venv=VENV,
         message="already committed by hand",
     )
-    assert not runner.matching("exec -c app api-7f9-abc -- uv sync")
+    assert not runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
     assert any("still valid" in action for action in actions)
 
 

@@ -817,10 +817,23 @@ def install_argv(interpreter: str, checkout: str) -> list[str]:
     takes away - a failure that shows up as the fix silently reverting rather
     than as an error.
 
-    >>> install_argv("/x/bin/python3", "/podbench/app")[:3]
-    ['uv', 'sync', '--project']
+    ``UV_CACHE_DIR`` is set explicitly, on the claim. Left to itself uv wants
+    ``$HOME/.cache/uv`` and falls back to ``/.cache/uv`` when HOME is unset or
+    unwritable, which is a permission error partway through the rebuild:
+
+        error: failed to create directory `/.cache/uv`: Permission denied
+
+    Measured on the bench, 2026-08-22. Whether it works is a property of the
+    *target's* environment - the p47 pod sets ``HOME=/tmp`` and the bench pod
+    does not - so it cannot be left to chance. On the claim, it also survives to
+    make the next rebuild cheap.
+
+    >>> install_argv("/x/bin/python3", "/podbench/app")[:4]
+    ['env', 'UV_CACHE_DIR=/podbench/app/.uv-cache', 'uv', 'sync']
     """
     return [
+        "env",
+        f"UV_CACHE_DIR={checkout.rstrip('/')}/.uv-cache",
         "uv",
         "sync",
         "--project",
