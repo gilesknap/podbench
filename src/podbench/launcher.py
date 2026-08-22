@@ -70,7 +70,10 @@ from .model import (
     DEFAULT_IMAGE,
     DEVPOD_LABEL,
     HOST_NETWORK_ENV,
-    HOTFIXED_ANNOTATION,
+    HOTFIX_APP_PATH,
+    HOTFIX_CHILD_PID_PATH,
+    HOTFIX_CLAIM_VOLUME,
+    HOTFIX_HOLD_PATH,
     IMAGE_ENV,
     NOT_MEASURED,
     NOT_PROBED,
@@ -245,11 +248,15 @@ __all__ = [
     "seat_kind",
     "is_dev_pod",
     "is_hotfixed",
+    "runs_hotfix_supervisor",
     "shares_workload_volume",
     "DEV_SIDECAR_PROVISION_NOTE",
     "DEV_SIDECAR_REUSED_NOTE",
     "OTHER_MODES_NOTE",
     "UNMOUNTED_HOTFIX_NOTE",
+    "HOTFIX_CLAIM_MOUNTED_NOTE",
+    "HOTFIX_CLAIM_UNMOUNTABLE_NOTE",
+    "hotfix_claim_mounts",
     "wait_for_seats",
     "spec_env",
     "ssh_config_path",
@@ -791,6 +798,81 @@ def seat_identity_mounts(
     return resolve_mounts(pod_json, workload, requests)
 
 
+HOTFIX_CLAIM_MOUNTED_NOTE = (
+    "this pod carries the hotfix layout, so the claim {volume!r} was mounted "
+    "into the seat at {path} without being asked for - Hotfix mode needs the "
+    "claim at the same path in both, and an ephemeral container's volumeMounts "
+    "are fixed once it is created, so there is no adding it afterwards"
+)
+"""Said whenever :func:`hotfix_claim_mounts` authors a mount nobody typed.
+
+A mount the user did not ask for is only acceptable if the output names it, and
+this is the line that does. It is a note and not a warning: nothing went wrong,
+the seat simply has one more mount than the command line accounts for."""
+
+HOTFIX_CLAIM_UNMOUNTABLE_NOTE = (
+    "this pod carries the hotfix layout, but the claim could not be mounted "
+    "into the seat: {reason}. The seat will resolve the image's code rather "
+    "than the claim's, so an editor here reads code that is not running"
+)
+"""Said when the convention mount is refused rather than authored.
+
+:func:`resolve_mounts` refuses an application mount carrying a ``subPath``,
+because an ephemeral container may not have one and dropping it silently would
+resolve a different tree at the same path. That refusal is right for a mount
+somebody typed and wrong for one podbench added on its own initiative, so the
+convention degrades to a note - the same way :func:`seat_identity_mounts`
+authors nothing on a pod that declares no home volume."""
+
+
+def hotfix_claim_mounts(
+    pod_json: Mapping[str, Any], workload: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The claim's mount, when the pod was deployed to carry a hotfix.
+
+    A convention for the same reason the home volume is one
+    (:func:`seat_identity_mounts`): the layout can only be on the pod because
+    somebody deployed it there, so its presence *is* the request. Issue #177 is
+    what this closes from the other end - ``attach`` mounted
+    :data:`~podbench.model.SEAT_HOME_VOLUME` and nothing else, so ``hotfix init``
+    met a seat with no ``/podbench/app`` and blamed the values that had in fact
+    been deployed correctly.
+
+    The path is the **application's own**, copied by :func:`resolve_mounts`,
+    falling back to :data:`~podbench.model.HOTFIX_APP_PATH` only where the
+    target container does not mount the claim at all. Hotfix mode's premise is
+    that the two resolve identically - the venv's ``bin/python`` and the
+    checkout's editable install are absolute paths recorded on the claim - so
+    copying beats asserting, and the constant is the answer for a seat pointed
+    at a sibling container that was never given the layout.
+
+    Absence is not an error and neither is refusal: a bare ``attach`` on a pod
+    that knows nothing about hotfix mode authors nothing, and one whose
+    application mounts the claim with a ``subPath`` gets a note instead of a
+    dead attach.
+    """
+    if not is_hotfixed(pod_json):
+        return [], []
+    application = _application_mount(pod_json, workload, HOTFIX_CLAIM_VOLUME)
+    path = _as_str(application.get("mountPath"))
+    request = (
+        HOTFIX_CLAIM_VOLUME
+        if path is not None
+        else f"{HOTFIX_CLAIM_VOLUME}:{HOTFIX_APP_PATH}"
+    )
+    try:
+        mounts, warnings = resolve_mounts(pod_json, workload, [request])
+    except LauncherError as exc:
+        return [], [HOTFIX_CLAIM_UNMOUNTABLE_NOTE.format(reason=exc)]
+    for mount in mounts:
+        warnings.append(
+            HOTFIX_CLAIM_MOUNTED_NOTE.format(
+                volume=HOTFIX_CLAIM_VOLUME, path=_mount_path(mount)
+            )
+        )
+    return mounts, warnings
+
+
 def declared_volumes(pod_json: Mapping[str, Any]) -> set[str]:
     """The names of the volumes the pod carries in its spec."""
     return {
@@ -919,7 +1001,7 @@ class SeatInfo:
     doctest states only what it is about."""
 
     in_hotfixed_pod: bool = False
-    """Whether the pod carries :data:`~podbench.model.HOTFIXED_ANNOTATION` while
+    """Whether the pod carries the hotfix layout (:func:`is_hotfixed`) while
     this seat is *not* :attr:`~podbench.model.SeatKind.HOTFIX`.
 
     The one combination that is neither kind and has to be said out loud: the
@@ -960,26 +1042,76 @@ def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
     )
 
 
-def is_hotfixed(pod_json: Mapping[str, Any]) -> bool:
-    """Whether this pod runs a venv that podbench put on a claim.
+_SUPERVISOR_MARKERS = (HOTFIX_CHILD_PID_PATH, HOTFIX_HOLD_PATH)
+"""What makes a container's ``args`` the supervisor rather than a shell script.
 
-    Read from the annotation and never from the manifest beside it: loading that
-    *raises* on a manifest a newer podbench wrote, deliberately
-    (:meth:`podbench.hotfix.HotfixManifest.from_json`), and a listing must not
-    be the thing that fails on it.
+Both, never either. The pid file alone is a container that records its child;
+the hold file alone is a container that reads a flag. Only the pair is the loop
+:func:`podbench.hotfix.hold_loop_args` emits, and neither depends on the
+entrypoint it wraps - which is what lets this be read off any application's
+values without knowing what the application is."""
 
-    >>> is_hotfixed({"metadata": {"annotations": {HOTFIXED_ANNOTATION: "true"}}})
-    True
+
+def runs_hotfix_supervisor(container: Mapping[str, Any]) -> bool:
+    """Whether this container's ``args`` are podbench's supervisor loop.
+
+    >>> runs_hotfix_supervisor({"args": ["--serve"]})
+    False
     """
-    annotations = as_dict(as_dict(pod_json.get("metadata")).get("annotations"))
-    return annotations.get(HOTFIXED_ANNOTATION) == "true"
+    text = "\n".join(
+        arg for arg in _as_list(container.get("args")) if isinstance(arg, str)
+    )
+    return all(marker in text for marker in _SUPERVISOR_MARKERS)
+
+
+def is_hotfixed(pod_json: Mapping[str, Any]) -> bool:
+    """Whether this pod was deployed to carry a hotfix on a claim.
+
+    Read from the **pod spec**, and from both halves of it: the pod declares
+    :data:`~podbench.model.HOTFIX_CLAIM_VOLUME` *and* a container runs the
+    supervisor. Either alone is something else - a pod can carry a volume of
+    that name for its own reasons, and a container can wrap its entrypoint in a
+    loop that has nothing to do with podbench - so a predicate three features
+    hang off has to see the pair.
+
+    It was an annotation until 2026-08-22, and the annotation was never written:
+    Argo strips pod-template annotations on self-heal (#32), so the code that
+    wrote it was deleted and this was left reading a key nothing set. It
+    returned ``False`` on every pod podbench ever hotfixed, which silently
+    disabled :data:`UNMOUNTED_HOTFIX_NOTE`, made
+    :attr:`~podbench.model.SeatKind.HOTFIX` unreachable and emptied the listing
+    keyed on it. Both halves read here are emitted by
+    :func:`podbench.hotfix.values_snippet` and both survive Argo, which is the
+    whole reason to read them instead.
+
+    Still never from the manifest on the claim: loading that *raises* on a
+    manifest a newer podbench wrote, deliberately
+    (:meth:`podbench.hotfix.HotfixManifest.from_json`), and a listing must not
+    be the thing that fails on it. That reasoning is unchanged - it is the
+    manifest this avoids, not the annotation.
+
+    >>> is_hotfixed({"spec": {"volumes": [{"name": HOTFIX_CLAIM_VOLUME}]}})
+    False
+    """
+    if HOTFIX_CLAIM_VOLUME not in declared_volumes(pod_json):
+        return False
+    return any(
+        runs_hotfix_supervisor(as_dict(entry))
+        for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
+    )
 
 
 _CONVENTION_VOLUMES = frozenset({SEAT_IDENTITY_VOLUME, SEAT_HOME_VOLUME})
 """The volumes a seat mounts because podbench asked it to, not because the user
 did. Both are routinely mounted by the workload as well - that is what makes the
 identity a *convention* - so a kind derived from "shares a mount with the target"
-has to discount them or every seat in a cooperating pod reads as ``hotfix``."""
+has to discount them or every seat in a cooperating pod reads as ``hotfix``.
+
+:data:`~podbench.model.HOTFIX_CLAIM_VOLUME` is podbench's too, and is
+deliberately **not** here even though :func:`hotfix_claim_mounts` now authors it
+unasked. Sharing the claim with the target is not incidental to the kind, it
+*is* the kind - discounting it would make :attr:`~podbench.model.SeatKind.HOTFIX`
+unreachable a second time, by a different route than the one #177 fixed."""
 
 
 def shares_workload_volume(
@@ -2102,6 +2234,13 @@ def attach(
         convention, convention_warnings = seat_identity_mounts(pod_json, workload)
         warnings.extend(convention_warnings)
         volume_mounts = _merge_mounts(volume_mounts, convention)
+    # Not gated on `seat_identity`, which is about the seat's *home*. This is
+    # about the seat resolving the same code as the application, and the two
+    # have no reason to be turned off together. An explicit `--mount` of the
+    # same path still wins, through `_merge_mounts`.
+    claim, claim_warnings = hotfix_claim_mounts(pod_json, workload)
+    warnings.extend(claim_warnings)
+    volume_mounts = _merge_mounts(volume_mounts, claim)
     identity_declared = SEAT_IDENTITY_VOLUME in declared_volumes(pod_json)
 
     manifest_uid, manifest_gid = target_uid_gid(pod_json, workload)
@@ -4869,18 +5008,25 @@ def _seat_verdict(measured: CapabilityReport | str | None) -> str:
 
 
 UNMOUNTED_HOTFIX_NOTE = (
-    "this pod is hotfixed and this seat mounts none of the workload's volumes, "
-    "so the application runs the venv on the claim while an editor or debugger "
-    "here resolves the image's - the code you read is not the code running, and "
-    "breakpoints set on it never bind. `podbench hotfix status` names the "
-    "claim; a seat that shares it has to be landed with `--new --mount CLAIM`, "
-    "since an ephemeral container's volumeMounts are fixed when it is created"
+    "this pod carries the hotfix layout and this seat mounts none of the "
+    "workload's volumes, so the application runs the code on the claim while an "
+    "editor or debugger here resolves the image's - the code you read is not "
+    "the code running, and breakpoints set on it never bind. An ephemeral "
+    "container's volumeMounts are fixed when it is created, so this seat cannot "
+    "be repaired: land a fresh one with `--new`, which mounts the claim itself"
 )
-"""Said on a seat whose kind is ``attach`` in a pod whose kind is hotfix.
+"""Said on a seat whose kind is ``attach`` in a pod carrying the hotfix layout.
 
 The one disagreement between the two that is silent in both directions: nothing
 refuses the attach, ``--mount`` on a *reconnect* is already warned about
 elsewhere, and the seat that results works perfectly - against the wrong tree.
+
+Since #177 this is a **reconnect's** note rather than every hotfixed pod's: a
+seat landed fresh gets the claim from :func:`hotfix_claim_mounts` without being
+asked, so the only way to be here is to have reconnected into one that predates
+the layout, predates that change, or was landed with ``--no-seat-identity``
+against a target that does not mount the claim. Which is why it names ``--new``
+and no longer asks for a ``--mount`` the user would now be typing redundantly.
 """
 
 MEASURED_RUNG_HEADING = "RUNG (measured)"
