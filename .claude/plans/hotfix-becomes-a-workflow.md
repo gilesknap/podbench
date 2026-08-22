@@ -111,25 +111,50 @@ Phase 3 is largely a matter of moving it into podbench and generalising it.
 
 ---
 
-## Phase 1 — the claim survives Argo
+## Phase 1 — the claim survives prune-on-sync
 
-**Issue #190. Two lines, and a data-loss bug, so it goes first.**
+**Issue #190. Small, and it goes first — but it starts with a measurement, not a
+patch.**
 
 `Charts/podbench/templates/pvc-hotfix-project.yaml` carries
 `helm.sh/resource-policy: keep` and nothing else, and `commonAnnotations`
-defaults to `{}`. Helm's resource policy is honoured on *Helm's* uninstall path;
-Argo prunes from its own diff and never takes it. So the claim that the
-template's own comment calls unlosable is prunable by the controller this mode
-was designed around.
+defaults to `{}`.
 
-* **Carry both annotations**, for the reason the prototype does: they guard
-  different paths and neither implies the other.
-* **While here**, the chart's `description` still says the PVC is "mounted **over**
-  an application's site-packages". Beside, never over — the same stale vocabulary
-  #180 swept out of the CLI.
+**Argo CD honours that annotation** — its Helm docs list it as *"Supported as
+equivalent to `argocd.argoproj.io/sync-options: Delete=false`"*. So the gap, if
+there is one, is narrower than "Argo ignores Helm's annotation", and the first
+draft of this plan and of #190 both got it wrong. `Delete=false` and
+`Prune=false` guard different events:
 
-**Falsified if:** the added annotation changes what `helm uninstall` does, or a
-claim survives that the user explicitly asked to be removed.
+* `Delete=false` — the resource is kept when the **Application** is deleted.
+* `Prune=false` — the resource is kept during a **normal sync**, once it has left
+  the desired state.
+
+Ending a hotfix is the second event, always: nobody deletes the Argo Application,
+they take the layout back out — flip the boolean off, remove the values, revert a
+repoint. So `Prune=false` is the annotation that would be load-bearing.
+
+* **Measure before patching.** Deploy a claim carrying `helm.sh/resource-policy:
+  keep` *alone*, remove it from the desired state, and see whether Argo prunes
+  it. Phase 5 of the last plan cannot answer this: its prototype carried both
+  annotations, so the survival it recorded cannot be attributed to either.
+* **If it is pruned**, carry both — the Helm one is still what a plain `helm
+  uninstall` honours for anyone not running Argo.
+* **If it survives**, close #190 and fix the comment instead. That is a real
+  outcome, not a failed phase.
+* **Either way**, the chart's `description` still says the PVC is "mounted
+  **over** an application's site-packages". Beside, never over — the same stale
+  vocabulary #180 swept out of the CLI.
+* **The p47 prototype's own comment repeats the wrong reasoning** ("Argo does not
+  take that path") and is replaced wholesale by Phase 3; do not leave it behind
+  if any of it is reused.
+
+This is the one phase that needs the cluster *before* Phase 5, and it needs it
+for a few minutes on a claim nothing depends on — not on either live IOC.
+
+**Falsified if:** keep-alone survives prune-on-sync and the annotation is added
+anyway, or the added annotation changes what `helm uninstall` does, or a claim
+survives that the user explicitly asked to be removed.
 
 **Anchors:** `Charts/podbench/templates/pvc-hotfix-project.yaml`,
 `Charts/podbench/values.yaml:156` `commonAnnotations`,
@@ -244,9 +269,10 @@ Then edit, `apply`, and hold the same four numbers the last run did —
 running process, every seat alive. Those four are the contract; anything else is
 commentary.
 
-Finally re-prove #190 the way it was proved before: revert the repoint and
-confirm the claim is still `Bound` while everything else the branch added is
-pruned.
+Finally re-prove #190 as Phase 1 settled it: revert the repoint and confirm the
+claim is still `Bound` while everything else the branch added is pruned. That is
+the prune-on-sync path, and it is the one that matters — not Application
+deletion, which `helm.sh/resource-policy: keep` already covers on its own.
 
 ### Starting state, and what needs clearing first
 
