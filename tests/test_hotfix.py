@@ -14,6 +14,7 @@ written by a schema version that predates half its fields.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -1338,9 +1339,534 @@ def test_print_values_needs_the_two_things_it_cannot_guess(
     assert "--app" in capsys.readouterr().err
 
 
+# -- --from-pod: reading the target is the default (#176 follow-on) ---------
+
+MO_IOC_PROBE: dict[str, Any] = {
+    "exec": {"command": ["/bin/bash", "/epics/ioc/liveness.sh"]},
+    "initialDelaySeconds": 120,
+    "periodSeconds": 30,
+    "failureThreshold": 3,
+    "timeoutSeconds": 1,
+}
+
+
+def target_pod(
+    *,
+    name: str = "api-7f9-abc",
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+    probe: dict[str, Any] | None = None,
+    gid: int | None = 37000,
+    containers: list[str] | None = None,
+) -> dict[str, Any]:
+    """A pod as `--from-pod` meets it, with the three things it reads."""
+    container: dict[str, Any] = {"name": "app", "image": "ghcr.io/acme/api:1.4.0"}
+    if command is not None:
+        container["command"] = command
+    if args is not None:
+        container["args"] = args
+    if probe is not None:
+        container["livenessProbe"] = probe
+    spec: dict[str, Any] = {"containers": [container]}
+    for extra in containers or []:
+        spec["containers"].append({"name": extra, "image": "busybox"})
+    if gid is not None:
+        spec["securityContext"] = {"runAsUser": 1000, "runAsGroup": gid}
+    return {"metadata": {"name": name}, "spec": spec, "status": {"phase": "Running"}}
+
+
+def test_from_pod_needs_no_hand_editing(capsys: pytest.CaptureFixture[str]) -> None:
+    """The whole point. `--print-values` used to take the entrypoint, the probe
+    and the gid by hand, and #176 is what a hand-supplied probe cost: a chart
+    renders it wholesale, so an omitted timing silently became the Kubernetes
+    default."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(
+                target_pod(command=["python", "-m", "app"], probe=MO_IOC_PROBE)
+            )
+        }
+    )
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    values = yaml.safe_load(out.split("# 2.", 1)[1].split("\n", 1)[1])
+    # The entrypoint, shell-quoted back into the string the supervisor execs.
+    assert "exec python -m app" in values["args"][0]
+    # The gid, off the pod, with no placeholder left behind.
+    assert values["podSecurityContext"]["fsGroup"] == 37000
+    # And the timings, carried without being asked for. This is the end-to-end
+    # assertion for #176: nobody typed 120 or 30.
+    assert values["livenessProbe"]["initialDelaySeconds"] == 120
+    assert values["livenessProbe"]["periodSeconds"] == 30
+    assert values["livenessProbe"]["failureThreshold"] == 3
+    assert values["livenessProbe"]["timeoutSeconds"] == 1
+    # The handler is podbench's, wrapping the target's own command.
+    assert "/epics/ioc/liveness.sh" in values["livenessProbe"]["exec"]["command"][-1]
+    assert model.HOTFIX_HOLD_PATH in values["livenessProbe"]["exec"]["command"][-1]
+
+
+def test_a_target_with_no_liveness_probe_is_not_an_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The canonical fastcs target declares none, and reporting that as a
+    failure would refuse to emit values for the one pod this mode was built
+    against."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(
+                target_pod(command=["python", "-m", "app"])
+            )
+        }
+    )
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "livenessProbe:" not in captured.out
+    assert captured.err == ""
+
+
+def test_a_non_exec_probe_is_emitted_around_and_said_out_loud(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Not an error - the values are still right - and not silence either: an
+    absent probe block looks identical to the fastcs case, and the difference is
+    whether a held pod survives."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(
+                target_pod(
+                    command=["python", "-m", "app"],
+                    probe={"httpGet": {"path": "/healthz", "port": 8080}},
+                )
+            )
+        }
+    )
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "livenessProbe:" not in captured.out
+    assert "httpGet" in captured.err
+    assert "restart the pod out from under the seat" in captured.err
+
+
+def test_volumes_the_target_already_has_are_named_as_a_merge(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Found by diffing --from-pod's output against the hand-written values for
+    bl47p-mo-ioc-01: the emitted `volumes:` carried podbench's two and nothing
+    else, so pasting it verbatim would have dropped that IOC's dev-shm and left
+    it without /dev/shm. Podbench cannot merge them itself - from a live pod a
+    chart-generated volume and one the service declared are indistinguishable -
+    so it names them and says which way the key resolves."""
+    pod = target_pod(command=["python", "-m", "app"])
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": "dev-shm", "mountPath": "/dev/shm"},
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH},
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "dev-shm" in err
+    assert "replace" in err
+    # podbench's own two are not reported back to the user as theirs.
+    assert model.HOTFIX_CLAIM_VOLUME not in err
+
+
+def test_a_target_carrying_only_podbenchs_volumes_is_not_warned_about_them(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pod = target_pod(command=["python", "-m", "app"])
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_from_pod_unwraps_a_target_that_already_carries_the_layout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Re-emitting the values for an already-hotfixed pod is a normal thing to
+    do, and a supervisor nested in a supervisor would hold on a file the inner
+    one never sees."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(
+                target_pod(
+                    command=["bash", "-c"],
+                    args=[hotfix.hold_loop_args("python -m app")],
+                )
+            )
+        }
+    )
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.count("while :; do") == 1
+    assert "exec python -m app" in out
+
+
+def test_an_unknown_gid_keeps_the_placeholder_rather_than_becoming_root(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A hardened workload routinely states runAsUser and no runAsGroup. An
+    fsGroup of 0 on a claim the application cannot write is worse than absent:
+    everything starts, then fails."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(
+                target_pod(command=["python", "-m", "app"], gid=None)
+            )
+        }
+    )
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    assert hotfix.DEFAULT_GID_PLACEHOLDER in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (
+            "error: no configuration has been provided, try setting "
+            "KUBERNETES_MASTER environment variable",
+            "no configuration has been provided",
+        ),
+        (
+            'Error from server (NotFound): pods "api-7f9-abc" not found',
+            "not found",
+        ),
+        (
+            'Error from server (Forbidden): pods is forbidden: User "sa" cannot '
+            'list resource "pods"',
+            "Forbidden",
+        ),
+    ],
+    ids=["no-context", "absent-pod", "forbidden"],
+)
+def test_every_cluster_failure_names_the_escape_and_its_cost(
+    capsys: pytest.CaptureFixture[str], failure: str, expected: str
+) -> None:
+    """Making the cluster read the default means each of these lands on somebody
+    who did not ask for a cluster. kubectl tells the three apart only in the
+    text of its own message, so podbench relays that verbatim - and every one of
+    them has to name the way out and what taking it costs."""
+    runner = FakeRunner()
+    runner.failures["get pod api-7f9-abc -o json"] = failure
+
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert expected in err, err
+    assert "--no-from-pod" in err
+    assert "#176" in err
+
+
+def test_a_target_that_is_not_a_pod_is_refused_cleanly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--from-pod` is a pod and only a pod - the entrypoint, the probe and the
+    gid are read off a running container and a Deployment has none. LauncherError
+    is not one of the three `main` folds into exit 2, so this used to come out as
+    a traceback rather than an answer."""
+    runner = FakeRunner()
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "deployment/api",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "works on pods" in err
+    assert "--no-from-pod" in err
+    assert runner.calls == []
+
+
+def test_a_container_that_is_not_in_the_pod_names_the_escape_too(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(
+                target_pod(command=["python", "-m", "app"], containers=["sidecar"])
+            )
+        }
+    )
+
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+            "--container",
+            "nope",
+        ],
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "'nope' not in pod" in err
+    assert "--no-from-pod" in err
+
+
+def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A container declaring neither command nor args keeps its entrypoint in
+    the image, which is not in the pod spec at all - nothing podbench reads from
+    the cluster will find it. The answer is --entrypoint, not --no-from-pod, and
+    the message has to offer the cheaper one first."""
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(target_pod())})
+
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+        ],
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "ENTRYPOINT" in err
+    assert "--entrypoint" in err
+    assert "--no-from-pod" in err
+
+
+def test_a_flag_the_user_passed_beats_the_pod(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Which is what makes --entrypoint a usable answer to the case above
+    without giving up the gid and the probe as well."""
+    runner = FakeRunner(
+        {"get pod api-7f9-abc -o json": json.dumps(target_pod(probe=MO_IOC_PROBE))}
+    )
+
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "api-7f9-abc",
+            "--entrypoint",
+            "myapp serve",
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "exec myapp serve" in out
+    # The other two still came off the pod.
+    assert "fsGroup: 37000" in out
+    assert "initialDelaySeconds: 120" in out
+
+
+def test_reading_the_pod_is_the_default_and_says_so_when_none_is_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = FakeRunner()
+
+    code = hotfix.main(
+        ["hotfix", "--print-values", "--app", "api", "-n", "demo"], runner=runner
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--from-pod POD" in err
+    assert "--no-from-pod" in err
+    assert runner.calls == [], "nothing should have been asked of the cluster"
+
+
+def test_no_from_pod_asks_the_cluster_nothing_at_all() -> None:
+    """The escape has to work on a machine with no cluster to reach, which means
+    it must not so much as construct a kubectl call."""
+    runner = FakeRunner()
+
+    code = hotfix.main(
+        [
+            "hotfix",
+            "--print-values",
+            "--no-from-pod",
+            "--app",
+            "api",
+            "--entrypoint",
+            ENTRY,
+        ],
+        runner=runner,
+    )
+
+    assert code == 0
+    assert runner.calls == []
+
+
+def test_values_snippet_has_no_cluster_dependency() -> None:
+    """Not negotiable, per the plan: the emitter keeps its signature and stays
+    testable with no cluster, which is what lets every shape of its output be
+    asserted in a unit test. --from-pod is a wrapper that fills these arguments,
+    never a read the emitter makes for itself."""
+    parameters = inspect.signature(hotfix.values_snippet).parameters
+    assert not [name for name in parameters if "pod" in name or "kube" in name]
+    # Asked of the compiled function rather than its text, so that the word
+    # "Kubernetes" in the docstring is not mistaken for a call to one.
+    referenced = set(hotfix.values_snippet.__code__.co_names)
+    assert not {name for name in referenced if "kube" in name.lower()}
+    assert "get_pod" not in referenced
+
+
 def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
-        ["hotfix", "--print-values", "--app", "api", "--entrypoint", ENTRY]
+        [
+            "hotfix",
+            "--print-values",
+            "--no-from-pod",
+            "--app",
+            "api",
+            "--entrypoint",
+            ENTRY,
+        ]
     )
     assert code == 0
     out = capsys.readouterr().out
@@ -1354,6 +1880,7 @@ def test_print_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> 
         [
             "hotfix",
             "--print-values",
+            "--no-from-pod",
             "--app",
             "api",
             "--entrypoint",
@@ -1376,6 +1903,7 @@ def test_print_values_wraps_a_named_liveness_probe(
         [
             "hotfix",
             "--print-values",
+            "--no-from-pod",
             "--app",
             "api",
             "--entrypoint",
@@ -1531,6 +2059,46 @@ def test_init_lands_its_own_seat_rather_than_sending_the_user_to_attach(
     # And the mount nobody typed is named, because that is the only thing that
     # makes taking it acceptable.
     assert "/podbench/app" in out
+
+
+def test_a_seat_that_cannot_be_landed_exits_2_rather_than_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`init` lands its own seat since #177, and the landing goes through
+    `launcher.attach`, which refuses in its own currency. `LauncherError` was
+    not one of the exceptions `main` folds into exit 2, so a pod attach could
+    not seat came out as a traceback instead of a sentence."""
+    runner = FakeRunner(
+        {
+            "get pod solo -o json": json.dumps(
+                {
+                    "metadata": {"name": "solo"},
+                    "spec": {"containers": []},
+                    "status": {},
+                }
+            )
+        }
+    )
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "init",
+            "solo",
+            "--repo",
+            "https://example/x",
+            "--venv",
+            VENV,
+            "-n",
+            "demo",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 2
+    assert "pod has no containers" in capsys.readouterr().err
 
 
 def test_a_named_seat_is_never_second_guessed_by_landing_another() -> None:
