@@ -79,10 +79,36 @@ spec:
         - {name: podbench-config, mountPath: /podbench/config}
         - {name: podbench-app, mountPath: /podbench/app}
         - {name: tmp, mountPath: /tmp}
+      # The wrapped liveness probe. The underlying check is a real one - the IOC's
+      # CA port answering - and the wrapper short-circuits it while the hold file
+      # is present, which is the whole point: a held pod has a deliberately dead
+      # or restarting child, and an unwrapped probe would restart the container
+      # out from under it at failureThreshold x periodSeconds.
+      #
+      # Timings are the live epics-containers IOC's own (bl47p-ea-simdet-01:
+      # period 30, failureThreshold 3, timeout 1), so ~90s to restart. Only
+      # initialDelaySeconds differs - 30 rather than 120 - to shorten setup.
+      livenessProbe:
+        exec:
+          command:
+            - bash
+            - -c
+            - 'if [ -e /tmp/podbench-hold ]; then exit 0; fi; exec 3<>/dev/tcp/127.0.0.1/5064'
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        failureThreshold: 3
+        successThreshold: 1
+        timeoutSeconds: 1
       command: [bash, -c]
       args:
         - |
-          set -u
+          # -m puts each background job in its own process group, so the recorded
+          # pid is also a process-group id and the whole tree can be signalled.
+          # Without it, killing the recorded pid signals only stdio-socket: its
+          # descendants are reparented onto PID 1, the original IOC keeps the CA
+          # port, and the relaunched one silently fails to bind. Measured on
+          # 2026-08-22 - ten relaunches, restartCount 0, still serving pid 14.
+          set -u -m
           # Rule 3: our own controller.yaml, renamed prefix, GUI output redirected
           # off the (dropped) opis claim.
           sed -e 's/T01-EA-FASTCS-01/PODBENCHTEST-EA-FASTCS-01/g' \
@@ -102,8 +128,12 @@ spec:
           # status and the kubelet restarts exactly as today.
           while :; do
             stdio-socket --ptty "fastcs-example run /podbench/config/controller.yaml" &
-            echo $! > /tmp/podbench-child.pid
-            wait $!; rc=$?
+            child=$!
+            echo $child > /tmp/podbench-child.pid
+            wait $child; rc=$?
+            # Reap anything the child left behind before relaunching, or the old
+            # IOC keeps the port and the new one comes up deaf.
+            kill -TERM -"$child" 2>/dev/null || true
             echo "podbench: child exited rc=$rc"
             [ -e /tmp/podbench-hold ] || exit $rc
             echo "podbench: held, relaunching"

@@ -57,6 +57,7 @@ up whether or not the answer was the hoped-for one.
 :maxdepth: 1
 
 spikes/s6
+spikes/s7
 ```
 
 ### Verdicts
@@ -64,6 +65,7 @@ spikes/s6
 | Spike | Subject | Verdict |
 |---|---|---|
 | [S6](spikes/s6) | Suspending an Argo-managed origin by taking `spec.replicas` via server-side apply | NOT ADOPTED |
+| [S7](spikes/s7) | The hold loop: relaunching a service without restarting its container | PASS, after a fix |
 
 S6 is a record of a route *not* taken. The mechanism works, but only against an
 Application that uses server-side apply, and against the far commoner client-side case it
