@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -952,13 +952,15 @@ to insist on the capability rung, which is the only one Yama exempts, or
 running seat that the ceiling would not have landed is <strong>not</strong> reconnected to,
 since an ephemeral container’s <code class="docutils literal notranslate"><span class="pre">securityContext</span></code> is fixed for the pod’s
 lifetime. See <a class="reference internal" href="../how-to/attach-to-a-pod.html#stripped-sys-ptrace"><span class="std std-ref">When the cluster strips SYS_PTRACE</span></a>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> is how a seat reaches a Hotfix-mode claim. An ephemeral container may
-mount the volumes its pod <strong>already declares</strong> and may not introduce one —
-<code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name the pod does not
-carry is refused with that explanation rather than submitted. That immutability
-is the whole reason Hotfix mode asks for the chart’s cooperation at deploy time;
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume, the volumeMount and the
-seeding initContainer that put it there.</p>
+<li><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> puts one of the workload’s own volumes into the seat. A Hotfix-mode
+claim no longer needs one — that is a convention now, below — so this is for a
+volume podbench would not have thought to mount on its own. An ephemeral
+container may mount the volumes its pod <strong>already declares</strong> and may not
+introduce one — <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name
+the pod does not carry is refused with that explanation rather than submitted.
+That immutability is the whole reason Hotfix mode asks for the chart’s
+cooperation at deploy time; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume,
+the volumeMount and the seeding initContainer that put it there.</p>
 <ul>
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
@@ -995,6 +997,25 @@ owned by <code class="docutils literal notranslate"><span class="pre">root:root<
 by name at start-up.</p></li>
 <li><p>An explicit <code class="docutils literal notranslate"><span class="pre">--mount</span></code> for the same mountPath <strong>wins</strong> over the convention.
 <code class="docutils literal notranslate"><span class="pre">--no-seat-identity</span></code> turns the convention off.</p></li>
+</ul>
+</li>
+<li><p><strong>The hotfix claim is mounted by convention too.</strong> On a pod carrying the hotfix
+layout — it declares <code class="docutils literal notranslate"><span class="pre">podbench-app</span></code> <em>and</em> a container runs podbench’s supervisor
+loop — <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts that claim into the seat at the application’s own
+mountPath, falling back to <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code> where the target container does not
+mount it at all.</p>
+<ul>
+<li><p>A convention for the same reason the home is: the layout cannot be on the pod
+by accident, so its presence <em>is</em> the request. Since an ephemeral container’s
+<code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code> are fixed once it is created, a seat that lands without the
+claim cannot be repaired afterwards, and there is nothing to gain by making
+you ask twice (#177).</p></li>
+<li><p>It is <strong>not</strong> gated on <code class="docutils literal notranslate"><span class="pre">--no-seat-identity</span></code>, which is about the seat’s <em>home</em>.
+An explicit <code class="docutils literal notranslate"><span class="pre">--mount</span></code> for the same mountPath still wins.</p></li>
+<li><p>An application mount carrying a <code class="docutils literal notranslate"><span class="pre">subPath</span></code> cannot be copied onto an ephemeral
+container, so the attach prints a note and lands without the claim rather than
+refusing: the refusal is right for a mount you typed and wrong for one
+podbench added on its own initiative.</p></li>
 </ul>
 </li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">attach</span></code> cannot mount <code class="docutils literal notranslate"><span class="pre">podbench-identity</span></code>, however plainly the pod declares
@@ -1529,11 +1550,12 @@ commit, and a <code class="docutils literal notranslate"><span class="pre">statu
 <p>Hotfix mode has never been run against a cluster. It is unit-tested only.</p>
 </div>
 <p>The seat must mount the claim at the application’s own mountPath, since that is
-how <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Land it that
-way with <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--mount</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">podbench</span> <span class="n">attach</span> <span class="n">myapp</span><span class="o">-</span><span class="mi">0</span> <span class="o">--</span><span class="n">mount</span> <span class="n">myapp</span><span class="o">-</span><span class="n">venv</span> <span class="o">--</span><span class="n">new</span>
-</pre></div>
-</div>
+how <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> reads <code class="docutils literal notranslate"><span class="pre">pyvenv.cfg</span></code> and runs <code class="docutils literal notranslate"><span class="pre">git</span></code> against the checkout. Neither is
+something to arrange by hand: <code class="docutils literal notranslate"><span class="pre">attach</span></code> mounts the claim itself on a pod carrying
+the hotfix layout, and <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span></code> lands a seat of its own when none is
+running, the way <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> does. <code class="docutils literal notranslate"><span class="pre">--mount</span></code> is still the escape hatch for
+a claim <code class="docutils literal notranslate"><span class="pre">attach</span></code> would not have found, and an explicit one for the same path
+wins.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is run from a terminal inside the
 seat, where the claim is already in this process’s own mount namespace.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
@@ -1574,7 +1596,7 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 <td><p>verify the claim was seeded from the image’s venv, clone the source onto it, editable-install, record the base commit</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
-<td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest, annotate, roll the workload</p></td>
+<td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application’s own child so the fix is what runs</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
 <td><p>every hotfixed pod in the namespace, its drift, and what is wrong with it</p></td>

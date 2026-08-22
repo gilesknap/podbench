@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1019,7 +1019,8 @@ $ podbench list -n demo        # every pod in the namespace carrying one
 <p><code class="docutils literal notranslate"><span class="pre">KIND</span></code> names which of the three modes a seat is serving, and it is derived from
 the pod rather than stamped on the container: <code class="docutils literal notranslate"><span class="pre">dev</span></code> is the <code class="docutils literal notranslate"><span class="pre">podbench</span></code> sidecar of
 a pod podbench cloned, <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is a seat that mounts one of the workload’s own
-volumes in a pod carrying the hotfix annotation, and <code class="docutils literal notranslate"><span class="pre">attach</span></code> is everything
+volumes in a pod carrying the hotfix layout — the <code class="docutils literal notranslate"><span class="pre">podbench-app</span></code> claim, and a
+container running podbench’s supervisor loop — and <code class="docutils literal notranslate"><span class="pre">attach</span></code> is everything
 else. Two consequences are worth knowing.</p>
 <p>A <code class="docutils literal notranslate"><span class="pre">dev</span></code> seat is an <strong>ordinary</strong> container, not an ephemeral one. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> on a dev pod reconnects to it rather than landing an ephemeral seat
 beside it: in a dev pod the workload container is idled and the application runs
@@ -1028,13 +1029,15 @@ would spend a permanent name to see it. The reconnect says which mode the seat
 is, since that decides what a debugger attaches to. <code class="docutils literal notranslate"><span class="pre">--new</span></code> lands an
 Observe-mode seat anyway, which is worth the name where the sidecar is non-root
 and the cluster admits <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>.</p>
-<p>A seat in a hotfixed pod that mounts none of the workload’s volumes carries a
-<code class="docutils literal notranslate"><span class="pre">note</span></code> saying so. Nothing is broken — the seat works — but the application is
-running the venv on the claim while an editor or debugger in that seat resolves
-the image’s, so the code you read is not the code running and breakpoints set on
-it never bind. An ephemeral container’s <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code> are fixed when it is
-created, so the fix is a fresh seat: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span> <span class="pre">--mount</span> <span class="pre">CLAIM</span></code>, with
-the claim named by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span></code>.</p>
+<p>A seat in a pod carrying the hotfix layout that mounts none of the workload’s
+volumes carries a <code class="docutils literal notranslate"><span class="pre">note</span></code> saying so. Nothing is broken — the seat works — but the
+application is running the code on the claim while an editor or debugger in that
+seat resolves the image’s, so the code you read is not the code running and
+breakpoints set on it never bind. It is a reconnect’s note in practice: a seat
+landed fresh mounts the claim by convention, so the way to be here is to have
+reconnected into one that predates the layout. An ephemeral container’s
+<code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code> are fixed when it is created, so that seat cannot be repaired —
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span></code> lands one that mounts the claim itself.</p>
 <p>Each seat is listed under <code class="docutils literal notranslate"><span class="pre">RUNG</span> <span class="pre">(measured)</span></code> — the four numbers the agent writes
 into the container log at start-up, recovered with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span></code> and no exec, so
 the cost does not scale with the namespace. A seat whose log could not be read

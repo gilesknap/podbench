@@ -59,8 +59,9 @@ hotfix manifest
   Not a Kubernetes {term}`manifest`. A JSON file — `.podbench-hotfix.json` — written
   at the root of the hotfix {term}`claim`, recording what the fix was made against:
   the repo, the base commit, the base image and its digest, the {term}`venv`'s
-  interpreter version, and the commits since. A copy travels in a pod annotation so
-  that `hotfix status` needs one `get pods` and no `exec`.
+  interpreter version, and the commits since. It lives on the claim and nowhere else,
+  so `hotfix status` finds its candidates with one `get pods` — the filter is the claim
+  mount — and then reads it with one `exec` per candidate pod.
 
 manifest
   A Kubernetes object as JSON or YAML. Podbench authors these itself for the
@@ -274,14 +275,16 @@ liveness probe
   and `attach` prints the arithmetic before you set one.
 
 merge patch
-  A patch that unions map keys — RFC 7386, `kubectl patch --type=merge`. Right for
-  *adding* the hotfix provenance annotations to whatever else an object carries; wrong
-  for a Service {term}`selector`, where {term}`JSON patch` is used instead.
+  A patch that unions map keys — RFC 7386, `kubectl patch --type=merge`. Podbench
+  authors none: the union is wrong for a Service {term}`selector`, where {term}`JSON
+  patch` is used instead, and wrong for the {term}`resize subresource`, where a
+  {term}`strategic merge patch` keys `containers` by name rather than by position.
 
 ownerReferences
   Metadata naming the object that created this one. Podbench walks them upward — pod →
   {term}`ReplicaSet` → Deployment — to find the workload that carries the
-  {term}`GitOps` mark, and to find the pod template that hotfix annotations must go on.
+  {term}`GitOps` mark, and to refuse a multi-replica Hotfix-mode target before two
+  writers race one ReadWriteOnce checkout.
 
 pod-template-hash
   A label the Deployment controller puts on the pods of each {term}`ReplicaSet`.

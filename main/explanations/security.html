@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Security model &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>Security model &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -567,17 +567,7 @@ without it. Everything else runs with capabilities dropped, non-root, under the
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code>, <code class="docutils literal notranslate"><span class="pre">replicasets</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
-<td><p>walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout</p></td>
-<td><p>Hotfix mode</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
-<td><p>write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Hotfix mode relies on, so they go on the template — and that same edit is what rolls the workload</p></td>
-<td><p>Hotfix mode</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code>, <code class="docutils literal notranslate"><span class="pre">delete</span></code></p></td>
-<td><p>annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back</p></td>
+<td><p>walk pod → ReplicaSet → Deployment to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. Read-only, and the whole of what Hotfix mode adds: the provenance lives on the claim and <code class="docutils literal notranslate"><span class="pre">apply</span></code> re-execs the application’s own child, so nothing is patched and no pod is deleted</p></td>
 <td><p>Hotfix mode</p></td>
 </tr>
 </tbody>
@@ -597,13 +587,15 @@ mid-attach, after a container name has been burnt for the life of the pod.</p>
 trust: reading and attaching to a pod you own is not the same as creating and
 deleting pods in a namespace, and neither is the same as changing a running
 workload’s limits.</p>
-<p><code class="docutils literal notranslate"><span class="pre">rbac.hotfix</span></code> is the one to hand out most sparingly, and the table row that says
-<code class="docutils literal notranslate"><span class="pre">patch</span></code> on <code class="docutils literal notranslate"><span class="pre">deployments</span></code> is the reason. It is nominally an annotation write, but
-the annotation is on the pod template, so the same call rolls the workload — the
-mechanism <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">rollout</span> <span class="pre">restart</span></code> uses. It therefore <em>deploys code</em>, which is
-the most privileged thing podbench does anywhere. It also grants nothing on its
-own: Hotfix mode still reads pods and execs into the seat, so it is <code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code>
-plus the three rules above.</p>
+<p><code class="docutils literal notranslate"><span class="pre">rbac.hotfix</span></code> used to be the one to hand out most sparingly, because it added
+<code class="docutils literal notranslate"><span class="pre">patch</span></code> on <code class="docutils literal notranslate"><span class="pre">deployments</span></code>: nominally an annotation write, but the annotation went
+on the pod template, so the same call rolled the workload — the mechanism
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">rollout</span> <span class="pre">restart</span></code> uses — and it therefore <em>deployed code</em>, the most
+privileged thing podbench asked for anywhere. Moving the provenance onto the
+claim and the relaunch inside the container removed the need for all of it, so
+what is left is a read-only walk to the owning workload. It still grants nothing
+on its own: Hotfix mode reads pods and execs into the seat, so it is
+<code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> plus the one rule above.</p>
 <p>Note what is <strong>not</strong> there. No cluster-scoped anything. No nodes, no secrets, no
 CRDs, no admission webhook to install, no controller to run, no agent DaemonSet.
 podbench has no cluster-side component at all: it is a CLI and an image.</p>

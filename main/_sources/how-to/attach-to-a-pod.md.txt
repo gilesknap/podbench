@@ -602,7 +602,8 @@ $ podbench list -n demo        # every pod in the namespace carrying one
 `KIND` names which of the three modes a seat is serving, and it is derived from
 the pod rather than stamped on the container: `dev` is the `podbench` sidecar of
 a pod podbench cloned, `hotfix` is a seat that mounts one of the workload's own
-volumes in a pod carrying the hotfix annotation, and `attach` is everything
+volumes in a pod carrying the hotfix layout — the `podbench-app` claim, and a
+container running podbench's supervisor loop — and `attach` is everything
 else. Two consequences are worth knowing.
 
 A `dev` seat is an **ordinary** container, not an ephemeral one. `podbench
@@ -614,13 +615,15 @@ is, since that decides what a debugger attaches to. `--new` lands an
 Observe-mode seat anyway, which is worth the name where the sidecar is non-root
 and the cluster admits `SYS_PTRACE`.
 
-A seat in a hotfixed pod that mounts none of the workload's volumes carries a
-`note` saying so. Nothing is broken — the seat works — but the application is
-running the venv on the claim while an editor or debugger in that seat resolves
-the image's, so the code you read is not the code running and breakpoints set on
-it never bind. An ephemeral container's `volumeMounts` are fixed when it is
-created, so the fix is a fresh seat: `podbench attach --new --mount CLAIM`, with
-the claim named by `podbench hotfix status`.
+A seat in a pod carrying the hotfix layout that mounts none of the workload's
+volumes carries a `note` saying so. Nothing is broken — the seat works — but the
+application is running the code on the claim while an editor or debugger in that
+seat resolves the image's, so the code you read is not the code running and
+breakpoints set on it never bind. It is a reconnect's note in practice: a seat
+landed fresh mounts the claim by convention, so the way to be here is to have
+reconnected into one that predates the layout. An ephemeral container's
+`volumeMounts` are fixed when it is created, so that seat cannot be repaired —
+`podbench attach --new` lands one that mounts the claim itself.
 
 Each seat is listed under `RUNG (measured)` — the four numbers the agent writes
 into the container log at start-up, recovered with `kubectl logs` and no exec, so

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Setup &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>Setup &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -691,15 +691,7 @@ Read the whole list, with the reasoning for each, in
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code>, <code class="docutils literal notranslate"><span class="pre">replicasets</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
-<td><p>Hotfix mode</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">apps</span></code>: <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code></p></td>
-<td><p>Hotfix mode — writes the provenance annotations, and that same edit rolls the workload</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pods</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">patch</span></code>, <code class="docutils literal notranslate"><span class="pre">delete</span></code></p></td>
-<td><p>Hotfix mode</p></td>
+<td><p>Hotfix mode — a read-only walk to refuse a multi-replica target, and all it needs</p></td>
 </tr>
 </tbody>
 </table>

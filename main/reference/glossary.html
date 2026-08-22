@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>Glossary &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -532,8 +532,9 @@ the mode is unsafe for a <a class="reference internal" href="#term-singleton"><s
 <dt id="term-hotfix-manifest">hotfix manifest<a class="headerlink" href="#term-hotfix-manifest" title="Link to this term">#</a></dt><dd><p>Not a Kubernetes <a class="reference internal" href="#term-manifest"><span class="xref std std-term">manifest</span></a>. A JSON file — <code class="docutils literal notranslate"><span class="pre">.podbench-hotfix.json</span></code> — written
 at the root of the hotfix <a class="reference internal" href="#term-claim"><span class="xref std std-term">claim</span></a>, recording what the fix was made against:
 the repo, the base commit, the base image and its digest, the <a class="reference internal" href="#term-venv"><span class="xref std std-term">venv</span></a>’s
-interpreter version, and the commits since. A copy travels in a pod annotation so
-that <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> needs one <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> and no <code class="docutils literal notranslate"><span class="pre">exec</span></code>.</p>
+interpreter version, and the commits since. It lives on the claim and nowhere else,
+so <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> finds its candidates with one <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> — the filter is the claim
+mount — and then reads it with one <code class="docutils literal notranslate"><span class="pre">exec</span></code> per candidate pod.</p>
 </dd>
 <dt id="term-launch-only">launch-only<a class="headerlink" href="#term-launch-only" title="Link to this term">#</a></dt><dd><p>The <a class="reference internal" href="#term-capreport"><span class="xref std std-term">capreport</span></a> verdict for a seat that can debug processes <em>it</em> starts, but
 cannot inspect the target: <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code>, <code class="docutils literal notranslate"><span class="pre">maps</span></code> and <code class="docutils literal notranslate"><span class="pre">environ</span></code> are denied, and
@@ -719,13 +720,14 @@ container. A process stopped at a breakpoint stops answering it, and the kubelet
 cannot tell that from a hang — so on a probed pod a debugging session is on a timer,
 and <code class="docutils literal notranslate"><span class="pre">attach</span></code> prints the arithmetic before you set one.</p>
 </dd>
-<dt id="term-merge-patch">merge patch<a class="headerlink" href="#term-merge-patch" title="Link to this term">#</a></dt><dd><p>A patch that unions map keys — RFC 7386, <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">--type=merge</span></code>. Right for
-<em>adding</em> the hotfix provenance annotations to whatever else an object carries; wrong
-for a Service <a class="reference internal" href="#term-selector"><span class="xref std std-term">selector</span></a>, where <a class="reference internal" href="#term-JSON-patch"><span class="xref std std-term">JSON patch</span></a> is used instead.</p>
+<dt id="term-merge-patch">merge patch<a class="headerlink" href="#term-merge-patch" title="Link to this term">#</a></dt><dd><p>A patch that unions map keys — RFC 7386, <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">patch</span> <span class="pre">--type=merge</span></code>. Podbench
+authors none: the union is wrong for a Service <a class="reference internal" href="#term-selector"><span class="xref std std-term">selector</span></a>, where <a class="reference internal" href="#term-JSON-patch"><span class="xref std std-term">JSON patch</span></a> is used instead, and wrong for the <a class="reference internal" href="#term-resize-subresource"><span class="xref std std-term">resize subresource</span></a>, where a
+<a class="reference internal" href="#term-strategic-merge-patch"><span class="xref std std-term">strategic merge patch</span></a> keys <code class="docutils literal notranslate"><span class="pre">containers</span></code> by name rather than by position.</p>
 </dd>
 <dt id="term-ownerReferences">ownerReferences<a class="headerlink" href="#term-ownerReferences" title="Link to this term">#</a></dt><dd><p>Metadata naming the object that created this one. Podbench walks them upward — pod →
 <a class="reference internal" href="#term-ReplicaSet"><span class="xref std std-term">ReplicaSet</span></a> → Deployment — to find the workload that carries the
-<a class="reference internal" href="#term-GitOps"><span class="xref std std-term">GitOps</span></a> mark, and to find the pod template that hotfix annotations must go on.</p>
+<a class="reference internal" href="#term-GitOps"><span class="xref std std-term">GitOps</span></a> mark, and to refuse a multi-replica Hotfix-mode target before two
+writers race one ReadWriteOnce checkout.</p>
 </dd>
 <dt id="term-pod-template-hash">pod-template-hash<a class="headerlink" href="#term-pod-template-hash" title="Link to this term">#</a></dt><dd><p>A label the Deployment controller puts on the pods of each <a class="reference internal" href="#term-ReplicaSet"><span class="xref std std-term">ReplicaSet</span></a>.
 Podbench deliberately strips it (and the other controller labels) from a

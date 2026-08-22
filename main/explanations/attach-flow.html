@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>What attach does &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -573,10 +573,15 @@ this codebase.</p>
 │   workload container = --target, else spec.containers[0]         │
 │   --mount CLAIM:PATH → resolved against spec.volumes only        │
 │   podbench-home volume declared? → mounted by convention         │
+│   hotfix layout on the pod?      → the claim, at the app&#39;s own   │
+│                                    mountPath, also by convention │
 │   podbench-identity declared?    → *never* mounted here          │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ├─ --mount names no declared volume ▶ exit 2
                                   ├─ the app mounts it with subPath ─▶ exit 2
+                                  │     — for a --mount you typed. A convention
+                                  │       that cannot copy the path notes it and
+                                  │       lands without, rather than refusing
                                   ▼
                    ┌────────────────────────────────┐
                    │ is a podbench-N container      │
@@ -823,7 +828,7 @@ subresource takes the spec verbatim, so the launcher posts to it directly.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--mount</span></code> resolved against <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code></p></td>
 <td><p>an API-server error naming a volume podbench invented — pod volumes are immutable, so an attach can never <em>add</em> one</p></td>
 </tr>
-<tr class="row-even"><td><p>application mount uses <code class="docutils literal notranslate"><span class="pre">subPath</span></code> → refuse</p></td>
+<tr class="row-even"><td><p>application mount uses <code class="docutils literal notranslate"><span class="pre">subPath</span></code> → refuse the <code class="docutils literal notranslate"><span class="pre">--mount</span></code>, note the convention</p></td>
 <td><p>a seat that silently resolves a different tree at the same path (an ephemeral container may not carry <code class="docutils literal notranslate"><span class="pre">subPath</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">runAsNonRoot:</span> <span class="pre">true</span></code> read up front</p></td>

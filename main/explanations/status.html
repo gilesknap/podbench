@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -614,9 +614,10 @@ resize and provisioning. The headroom it sizes from is read with
 <p><strong>Hotfix mode has never been run against a cluster.</strong> The workflow exists —
 <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">init|apply|status|consolidate</span></code>, plus <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">--print-values</span></code>
 for the chart snippet — and is unit-tested, but every one of those tests drives
-a temp directory and a fake <code class="docutils literal notranslate"><span class="pre">kubectl</span></code>. <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--mount</span></code> puts the claim into the
-seat at the application’s own mountPath, so the workflow is reachable end to
-end; reachable is not the same as demonstrated. See
+a temp directory and a fake <code class="docutils literal notranslate"><span class="pre">kubectl</span></code>. <code class="docutils literal notranslate"><span class="pre">attach</span></code> puts the claim into the seat at
+the application’s own mountPath without being asked, and <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span></code> lands a
+seat when none is running, so the workflow is reachable end to end; reachable is
+not the same as demonstrated. See
 <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
 <p><strong>Which half you are running is now measured, not guessed.</strong> The launcher and
 the image are one release in two places, and they can differ: <code class="docutils literal notranslate"><span class="pre">uvx</span></code> resolves the

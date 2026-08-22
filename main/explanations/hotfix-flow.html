@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What hotfix does &#8212; podbench 0.6.2.dev3+gb65e50e60 documentation</title>
+    <title>What hotfix does &#8212; podbench 0.6.2.dev6+g5f61fad8d documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=c76dfb7b"></script>
+    <script src="../_static/documentation_options.js?v=219d01b3"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -631,10 +631,18 @@ is a spin. That is why the hold carries an absolute deadline.</p></li>
                                   ├─ replicas != 1 ──────────────▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ FIND THE SEAT     get pod POD -o json → the running podbench-N   │
+│ FIND THE SEAT     get pod POD -o json → the running podbench-N,  │
+│                    or --seat NAME for one called something else  │
+│                                                                  │
+│   None running? `init` lands one itself, through the same        │
+│   `attach` you would have typed — which mounts the claim on a    │
+│   pod carrying the layout, so the seat it lands is one this      │
+│   mode can use. The verbs after `init` still refuse: by then     │
+│   a missing seat means it died or the pod was replaced, and      │
+│   that is a thing to be told about rather than to paper over     │
+│   by spending another ephemeral container name.                  │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ├─ none, and no --seat ────────▶ exit 2
-                                  ▼         (&quot;run `podbench attach POD` first&quot;)
+                                  ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ REQUIRE THE SUPERVISOR                                           │
 │   exec -c APP -- test -e /tmp/podbench-child.pid                 │
@@ -816,7 +824,15 @@ shutdown-checklist assertion.</p>
     │                    sync interval, which is the precise failure this
     │                    command exists to prevent. A controller
     │                    reconciles a volume towards its spec; it does
-    │                    not remove it.
+    │                    not remove it. Nothing reads that annotation
+    │                    any more either: `is_hotfixed` was left reading
+    │                    a key nothing wrote, so it answered False on
+    │                    every pod podbench ever hotfixed. It now reads
+    │                    the same two things from the pod spec — the
+    │                    claim volume, and a container whose args are
+    │                    the supervisor loop — which is the filter above,
+    │                    applied everywhere else that signal is needed
+    │                    (#177).
     │
     ├─ ONE exec per candidate pod, returning three things at once:
     │      cat /podbench/app/.podbench-hotfix.json   ← the manifest

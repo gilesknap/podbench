@@ -115,9 +115,10 @@ resize and provisioning. The headroom it sizes from is read with
 **Hotfix mode has never been run against a cluster.** The workflow exists —
 `podbench hotfix init|apply|status|consolidate`, plus `hotfix --print-values`
 for the chart snippet — and is unit-tested, but every one of those tests drives
-a temp directory and a fake `kubectl`. `attach --mount` puts the claim into the
-seat at the application's own mountPath, so the workflow is reachable end to
-end; reachable is not the same as demonstrated. See
+a temp directory and a fake `kubectl`. `attach` puts the claim into the seat at
+the application's own mountPath without being asked, and `hotfix init` lands a
+seat when none is running, so the workflow is reachable end to end; reachable is
+not the same as demonstrated. See
 [What `hotfix` does](hotfix-flow.md).
 
 **Which half you are running is now measured, not guessed.** The launcher and

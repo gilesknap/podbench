@@ -23,9 +23,7 @@ RBAC, in the namespace being debugged. That is the whole list:
 | `services` | `get`, `list`, `patch` | repoint a Service at the dev pod | `--take-traffic` / `--cutover` only |
 | `persistentvolumeclaims` | `get`, `list` | granted by the chart for the optional scratch workspace claim. Nothing in the launcher reads it yet — the dev pod's workspace is always an `emptyDir` | Iterate mode |
 | `pods/resize` | `get`, `patch` | raise a running workload's memory limit before attaching | `attach --resize` / `--resize-cpu`, and every `podbench vscode` unless `--no-resize` |
-| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | walk pod → ReplicaSet → Deployment to find the pod template the provenance belongs on, and to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. The ReplicaSet is only ever read — annotating it would be discarded by the next rollout | Hotfix mode |
-| `apps`: `deployments`, `statefulsets` | `patch` | write the provenance annotations onto the pod template. Pod annotations do not survive the reschedule Hotfix mode relies on, so they go on the template — and that same edit is what rolls the workload | Hotfix mode |
-| `pods` | `patch`, `delete` | annotate a pod that has no pod template, and delete one whose controller podbench does not template so that the patch is picked up. An unowned pod is never deleted: nothing would bring it back | Hotfix mode |
+| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | walk pod → ReplicaSet → Deployment to refuse a multi-replica target before two writers race one ReadWriteOnce checkout. Read-only, and the whole of what Hotfix mode adds: the provenance lives on the claim and `apply` re-execs the application's own child, so nothing is patched and no pod is deleted | Hotfix mode |
 
 `podbench doctor` asks the cluster for these one `kubectl auth can-i` at a time,
 as your own kubeconfig, and reports them per feature —
@@ -43,13 +41,15 @@ trust: reading and attaching to a pod you own is not the same as creating and
 deleting pods in a namespace, and neither is the same as changing a running
 workload's limits.
 
-`rbac.hotfix` is the one to hand out most sparingly, and the table row that says
-`patch` on `deployments` is the reason. It is nominally an annotation write, but
-the annotation is on the pod template, so the same call rolls the workload — the
-mechanism `kubectl rollout restart` uses. It therefore *deploys code*, which is
-the most privileged thing podbench does anywhere. It also grants nothing on its
-own: Hotfix mode still reads pods and execs into the seat, so it is `rbac.observe`
-plus the three rules above.
+`rbac.hotfix` used to be the one to hand out most sparingly, because it added
+`patch` on `deployments`: nominally an annotation write, but the annotation went
+on the pod template, so the same call rolled the workload — the mechanism
+`kubectl rollout restart` uses — and it therefore *deployed code*, the most
+privileged thing podbench asked for anywhere. Moving the provenance onto the
+claim and the relaunch inside the container removed the need for all of it, so
+what is left is a read-only walk to the owning workload. It still grants nothing
+on its own: Hotfix mode reads pods and execs into the seat, so it is
+`rbac.observe` plus the one rule above.
 
 Note what is **not** there. No cluster-scoped anything. No nodes, no secrets, no
 CRDs, no admission webhook to install, no controller to run, no agent DaemonSet.
