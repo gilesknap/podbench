@@ -156,10 +156,11 @@ one.
 **It writes** `.vscode/settings.json`, `.vscode/launch.json` and
 `.vscode/extensions.json` into the folder it is about to open, installs only the
 extensions this target's debugger needs **in the remote window**, and opens the
-seat's home. Those are the two steps most easily got wrong by hand, and both
-fail quietly: the wrong folder can end the seat, and a locally installed
-extension runs the debug adapter on your laptop. See
-[the CLI reference](../reference/cli.md) for the order and the refusals.
+seat's home — or, on a pod carrying the hotfix layout, the claim. Those are the
+two steps most easily got wrong by hand, and both fail quietly: the wrong folder
+can end the seat, and a locally installed extension runs the debug adapter on
+your laptop. See [the CLI reference](../reference/cli.md) for the order and the
+refusals.
 
 **It sizes the pod.** vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
@@ -576,6 +577,14 @@ arguments. It kills the server after exactly five minutes idle.
   the pod declares a `podbench-home` volume — and reach the workload's
   filesystem through `/proc/<pid>/root` from there. `podbench pids` tells you
   which pid.
+* In Hotfix mode open the **claim**, at whatever path the application mounts it
+  — `/podbench/app` by convention. `podbench vscode` does this for you and says
+  so, because it is the only tree in the pod where an edit reaches the running
+  process: the home is empty, and the image's copy under `/proc/1/root` is read
+  through a mount the supervisor never resolves, so nothing written there ever
+  runs. Where the pod carries the layout but *this seat* did not get the mount —
+  an application mount with a `subPath` cannot be copied into an ephemeral
+  container — the home is opened instead and the reason is printed with it.
 
   Do **not** open `/`. Opening a *file* under `/proc` is fine; opening a
   *folder* at `/` points the file watcher and the search indexer at `/proc`,

@@ -540,10 +540,13 @@ def open_seat(
     has proven the alias: the two steps that follow it both report success on a
     seat ssh cannot reach.
 
-    ``folder`` is the caller's choice — ``attach`` passes the seat's own home,
-    which is where the workload is read from through ``/proc/<pid>/root`` — and
-    it is checked here rather than assumed, because it is the one argument whose
-    wrong value is unrecoverable and it is not a constant: the home follows a
+    ``folder`` is the caller's choice, and it is genuinely a choice: ``attach``
+    passes the seat's own home, which is where the workload is read from through
+    ``/proc/<pid>/root``, and ``vscode`` on a seat carrying the hotfix claim
+    passes the claim's own mountPath instead, because that is the only tree
+    there where an edit reaches the running process (issue #189). It is checked
+    here rather than assumed, because it is the one argument whose wrong value
+    is unrecoverable and it is not a constant: the home follows a
     ``podbench-home`` mount, and ``--mount podbench-home:/`` is a spelling of
     that a user can reach.
 
@@ -570,8 +573,9 @@ def open_seat(
             "absolute path and it cannot be `/`: a folder at the root walks "
             "/proc/<pid>/root, which is a symlink into another container's "
             "rootfs, so the walk has no bottom and OOMs a seat that cannot be "
-            "restarted. This is the seat's $HOME - `--mount "
-            f"{SEAT_HOME_VOLUME}:<path>` is what moves it."
+            "restarted. This is normally the seat's $HOME - `--mount "
+            f"{SEAT_HOME_VOLUME}:<path>` is what moves it - or, on a seat that "
+            "carries the hotfix claim, wherever the application mounts it."
         )
     run = runner if runner is not None else run_subprocess
     # Before anything is written, installed or downloaded: everything below

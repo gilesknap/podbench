@@ -49,6 +49,8 @@ from .cli import new_app, require_subcommand, run
 from .console import WARNING_LEAD, emit, paragraph
 from .editor import (
     CONNECTION_HINT,
+    OK,
+    WARN,
     EditorError,
     Provision,
     is_step,
@@ -810,6 +812,32 @@ A mount the user did not ask for is only acceptable if the output names it, and
 this is the line that does. It is a note and not a warning: nothing went wrong,
 the seat simply has one more mount than the command line accounts for."""
 
+EDITOR_FOLDER_CLAIM_NOTE = (
+    "opening {folder} and not the seat's home {home} - this pod carries the "
+    "hotfix layout, and the claim is the only tree here where an edit reaches "
+    "the running process"
+)
+"""Said when ``vscode`` opens the claim rather than the home.
+
+A folder the user did not name is only acceptable if the output names it, which
+is :data:`HOTFIX_CLAIM_MOUNTED_NOTE`'s rule applied to the other unasked-for
+answer in the same command."""
+
+EDITOR_FOLDER_HOME_NOTE = (
+    "opening the seat's home {home} and not the claim - this pod carries the "
+    "hotfix layout but the claim is not mounted into this seat, so there is no "
+    "{path} here to open. The block above says why; an editor here reads the "
+    "image's code, which is not the code running"
+)
+"""Said when the pod is hotfixed and the seat did not get the claim anyway.
+
+Which is not a corner case: :func:`hotfix_claim_mounts` degrades a ``subPath``
+refusal to a note rather than a dead attach, a reconnect into a seat older than
+the layout has no claim mount, and ``--no-seat-identity`` against a target that
+does not mount it lands the same way. ``session.hotfixed`` is true in all three
+while there is nothing on the claim's path to open, and opening it anyway would
+put an editor on an empty directory in the seat's own rootfs."""
+
 HOTFIX_CLAIM_UNMOUNTABLE_NOTE = (
     "this pod carries the hotfix layout, but the claim could not be mounted "
     "into the seat: {reason}. The seat will resolve the image's code rather "
@@ -933,9 +961,10 @@ def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
         "volumes the pod already has: spec.volumes is immutable once the pod "
         "exists, so podbench cannot add one now. This is exactly why Hotfix mode "
         "needs the chart's cooperation at deploy time - redeploy the workload "
-        f"with a volume bound to claim {name!r}, mounted over the application's "
-        "venv path (`podbench hotfix --print-values` emits the volume, the "
-        "volumeMount and the seeding initContainer). The pod currently declares: "
+        f"with a volume bound to claim {name!r}, mounted beside the "
+        "application's own project and never over it (`podbench hotfix "
+        "--print-values` emits the volume, the volumeMount, the supervisor "
+        "entrypoint and the fsGroup). The pod currently declares: "
         + (", ".join(str(entry) for entry in declared) or "no volumes")
     )
 
@@ -1023,6 +1052,53 @@ class SeatInfo:
     def running(self) -> bool:
         """Whether this container can still take an ssh session."""
         return self.phase == "running"
+
+
+def editor_folder(
+    session: Session, seat_spec: Mapping[str, Any] | None
+) -> tuple[str, str | None]:
+    """The folder ``vscode`` should open, and the line that says why.
+
+    The seat's home is the answer for every pod without the layout, and issue
+    #189 is what it costs on a pod with one: the project is on the claim, that
+    is the only tree where an edit reaches the running process, and a user who
+    does not notice edits the image's copy through ``/proc/1/root`` where
+    nothing they write ever runs.
+
+    The question is asked of **the seat's own** ``volumeMounts`` and not of
+    :func:`is_hotfixed`, because those are different questions. ``is_hotfixed``
+    reads the pod, and a pod can carry the layout while this seat does not carry
+    the mount - :func:`hotfix_claim_mounts` degrades a ``subPath`` refusal to a
+    note, and a reconnect into a seat older than the layout has none either. The
+    home is the honest answer there, and the note says so rather than leaving it
+    to be discovered.
+
+    The path is read off the mount rather than taken from
+    :data:`~podbench.model.HOTFIX_APP_PATH`, for the same reason
+    :func:`hotfix_claim_mounts` copies it: the application chose it, podbench
+    only matched it, and a seat pointed at a container that mounts it somewhere
+    else would otherwise be sent to a path that is not there.
+
+    The second element is ``None`` for the ordinary case. ``open_seat`` already
+    reports the folder it opened, and a home that nothing competed for needs no
+    justification on top of that.
+    """
+    home = seat_layout(session).home
+    if not session.hotfixed:
+        return home, None
+    mounts = _as_list(as_dict(seat_spec).get("volumeMounts"))
+    mount = next(
+        (
+            entry
+            for entry in (as_dict(entry) for entry in mounts)
+            if _entry_name(entry) == HOTFIX_CLAIM_VOLUME
+        ),
+        None,
+    )
+    folder = _mount_path(mount) if mount is not None else ""
+    if not folder:
+        return home, EDITOR_FOLDER_HOME_NOTE.format(home=home, path=HOTFIX_APP_PATH)
+    return folder, EDITOR_FOLDER_CLAIM_NOTE.format(folder=folder, home=home)
 
 
 def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
@@ -6099,14 +6175,22 @@ def _open_editor(
     editor: str,
     provision: Provision,
     runner: Runner | None,
+    seat_spec: Mapping[str, Any] | None = None,
 ) -> None:
     """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
 
-    The folder is the seat's **home**, taken from the same layout the
-    ProxyCommand is derived from rather than hardcoded: a pod that declares
-    :data:`podbench.model.SEAT_HOME_VOLUME` moves it, and the guarantee that
-    matters is that this is never ``/`` — the walk from there has no bottom and
-    ends the seat.
+    The folder is :func:`editor_folder`'s, which is the seat's **home** for
+    every pod without the hotfix layout and the claim for a seat that carries
+    it. The home is taken from the same layout the ProxyCommand is derived from
+    rather than hardcoded — a pod that declares
+    :data:`podbench.model.SEAT_HOME_VOLUME` moves it — and the guarantee that
+    matters either way is that this is never ``/``: the walk from there has no
+    bottom and ends the seat.
+
+    ``seat_spec`` is the landed seat's own container spec, and it is a
+    parameter rather than another ``get_pod`` because the caller already has
+    it. Without it every pod looks unhotfixed, which is the pre-#189 behaviour
+    and the safe direction to fail in.
 
     Each line is printed as it arrives rather than collected: the extension
     install bootstraps vscode-server in the seat, which is a download, and a
@@ -6119,11 +6203,23 @@ def _open_editor(
             "out; the kubectl exec helpers work now regardless."
         )
     emit("editor")
+    home = seat_layout(session).home
+    folder, why = editor_folder(session, seat_spec)
+    if why is not None:
+        # Before the steps rather than after: this is the decision every one of
+        # them is carried out against, and `open_seat` reports the folder it
+        # opened without ever having been told why it was the folder.
+        #
+        # A warning when the home won on a hotfixed pod, because that is an
+        # editor on code that is not running; an ordinary step when the claim
+        # won, because nothing went wrong - the answer was simply not the one
+        # the command line asked for.
+        _editor_step(f"{WARN if folder == home else OK} {why}")
     open_seat(
         kubectl,
         session.seat,
         alias=wiring.alias,
-        folder=seat_layout(session).home,
+        folder=folder,
         report=_editor_step,
         editor=editor,
         provision=provision,
@@ -6342,6 +6438,7 @@ def _build_app(
                 kube,
                 session,
                 wiring,
+                seat_spec=ephemeral_container(landed_pod, session.seat.container),
                 editor=editor,
                 provision=(
                     Provision.NEVER

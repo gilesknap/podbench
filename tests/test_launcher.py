@@ -4134,6 +4134,98 @@ def test_open_configures_the_seats_home_and_opens_that(
     assert "open /root over Remote-SSH" in capsys.readouterr().out
 
 
+def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #189, and the one a user hits on their first real try.
+
+    The project is on the claim, and that is the only tree here where an edit
+    reaches the running process: a user who lands in the home and does not
+    notice edits the image's copy through ``/proc/1/root``, where nothing they
+    write ever runs.
+    """
+    cluster = FakeCluster(layout_pod())
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    assert f"{HOTFIX_APP_PATH}/.vscode/settings.json" in cluster.seat_files
+    editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert editor[-1][-1] == HOTFIX_APP_PATH
+    # Flattened, because the note is wrapped under its own tick before it is
+    # printed and the sentence under test spans the wrap.
+    out = " ".join(capsys.readouterr().out.split())
+    # A folder the user did not name, so the output names it.
+    assert f"opening {HOTFIX_APP_PATH} and not the seat's home" in out
+    assert "the only tree here where an edit reaches the running process" in out
+
+
+def test_open_follows_the_claim_to_wherever_the_application_mounts_it(
+    tmp_path: Path,
+) -> None:
+    """The path is the application's, not :data:`HOTFIX_APP_PATH`.
+
+    ``hotfix_claim_mounts`` copies the application's own mountPath into the
+    seat rather than asserting the constant, so the folder has to be read back
+    off the seat's mount or a chart that mounts it elsewhere opens nothing.
+    """
+    cluster = FakeCluster(
+        layout_pod(
+            volume_mounts=[{"name": HOTFIX_CLAIM_VOLUME, "mountPath": "/srv/podbench"}]
+        )
+    )
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert editor[-1][-1] == "/srv/podbench"
+
+
+def test_open_keeps_the_home_when_the_seat_could_not_carry_the_claim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``hotfixed`` is true here and the mount is absent, which is #189's own
+    falsification case.
+
+    An ephemeral container may not set ``subPath``, so the convention mount is
+    refused and degraded to a note rather than a dead attach. The pod carries
+    the layout, this seat does not carry the claim, and there is nothing at
+    ``/podbench/app`` in it to open.
+    """
+    cluster = FakeCluster(
+        layout_pod(
+            volume_mounts=[
+                {
+                    "name": HOTFIX_CLAIM_VOLUME,
+                    "mountPath": HOTFIX_APP_PATH,
+                    "subPath": "app",
+                }
+            ]
+        )
+    )
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert editor[-1][-1] == SEAT_HOME_PATH
+    assert f"{HOTFIX_APP_PATH}/.vscode/settings.json" not in cluster.seat_files
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"opening the seat's home {SEAT_HOME_PATH} and not the claim" in out
+    assert f"there is no {HOTFIX_APP_PATH} here to open" in out
+    assert "reads the image's code, which is not the code running" in out
+
+
 def test_open_separates_what_it_did_from_what_to_do_next(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
