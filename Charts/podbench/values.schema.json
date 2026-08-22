@@ -27,7 +27,7 @@
                 "null"
             ]
         },
-        "hotfixVenv": {
+        "hotfixProject": {
             "type": "object",
             "properties": {
                 "claims": {

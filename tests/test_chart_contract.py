@@ -102,10 +102,17 @@ def configmap() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def snippet() -> dict[str, Any]:
-    """``hotfix --print-values``, parsed - the pod spec the user is told to write."""
+    """``hotfix --print-values``, parsed - the pod spec the user is told to write.
+
+    It no longer carries seat identity. That was always for a seat which is an
+    *ordinary* container, and Hotfix mode's seat attaches to the live pod - so
+    the identity half of this contract is checked against the chart and
+    :func:`identity_configmap` directly, and against ``dev_pod_spec``, which is
+    the thing that really mounts it.
+    """
     return cast(
         dict[str, Any],
-        yaml.safe_load(values_snippet(APP, "/venv", uid=str(UID), gid=str(GID))),
+        yaml.safe_load(values_snippet(APP, "myapp serve", gid=str(GID))),
     )
 
 
@@ -119,12 +126,10 @@ def test_the_chart_names_the_configmap_the_snippet_points_at(
     configmap: dict[str, Any], snippet: dict[str, Any]
 ) -> None:
     """The helper and :func:`identity_configmap` derive one name in two places."""
-    volume = next(
-        entry
-        for entry in snippet["extraVolumes"]
-        if entry["name"] == SEAT_IDENTITY_VOLUME
-    )
     assert configmap["metadata"]["name"] == identity_configmap(APP)
+    volume = next(
+        entry for entry in identity_volume() if entry["name"] == SEAT_IDENTITY_VOLUME
+    )
     assert volume["configMap"]["name"] == identity_configmap(APP)
 
 
@@ -212,8 +217,8 @@ def test_the_launcher_mounts_what_the_snippet_declares_and_attach_may_carry(
     """
     pod = {
         "spec": {
-            "volumes": snippet["extraVolumes"],
-            "containers": [{"name": APP, "volumeMounts": snippet["extraVolumeMounts"]}],
+            "volumes": snippet["volumes"],
+            "containers": [{"name": APP, "volumeMounts": snippet["volumeMounts"]}],
         }
     }
     mounts, warnings = seat_identity_mounts(pod, APP)
@@ -222,13 +227,29 @@ def test_the_launcher_mounts_what_the_snippet_declares_and_attach_may_carry(
     assert not [mount for mount in mounts if mount["name"] == SEAT_IDENTITY_VOLUME]
 
 
-def origin_from_snippet(snippet: dict[str, Any]) -> dict[str, Any]:
-    """A pod deployed as ``hotfix --print-values`` says, in one place.
+def identity_volume() -> list[dict[str, Any]]:
+    """The seat-identity volume a ``podbench dev`` deployment declares.
 
-    The application's own uid and gid are on the container because that is what
-    the snippet's comments *require* of whoever pastes it: the numbers in
-    ``seatIdentity.apps[]`` have to be the application container's own, or the
-    record resolves to a user nothing runs as.
+    0444: this is the seat's /etc/passwd, and nothing in the pod has any
+    business rewriting it.
+    """
+    return [
+        {
+            "name": SEAT_IDENTITY_VOLUME,
+            "configMap": {"name": identity_configmap(APP), "defaultMode": 0o444},
+        }
+    ]
+
+
+def origin_from_snippet(snippet: dict[str, Any]) -> dict[str, Any]:
+    """A pod deployed as ``hotfix --print-values`` says, plus the identity volume.
+
+    The identity is declared here rather than taken from the snippet because the
+    snippet no longer emits it: it serves a seat that is an *ordinary*
+    container, which is what ``podbench dev`` authors and what this fixture
+    feeds. The application's own uid and gid are on the container because the
+    numbers in ``seatIdentity.apps[]`` have to be the application container's
+    own, or the record resolves to a user nothing runs as.
     """
     return {
         "apiVersion": "v1",
@@ -236,13 +257,13 @@ def origin_from_snippet(snippet: dict[str, Any]) -> dict[str, Any]:
         "metadata": {"name": APP, "namespace": "demo"},
         "spec": {
             "securityContext": snippet["podSecurityContext"],
-            "volumes": snippet["extraVolumes"],
+            "volumes": [*snippet["volumes"], *identity_volume()],
             "containers": [
                 {
                     "name": APP,
                     "image": f"{APP}:1",
                     "securityContext": {"runAsUser": UID, "runAsGroup": GID},
-                    "volumeMounts": snippet["extraVolumeMounts"],
+                    "volumeMounts": snippet["volumeMounts"],
                 }
             ],
         },
@@ -386,7 +407,7 @@ def test_the_documented_example_entries_are_ones_the_schema_accepts() -> None:
     """``example.values.yaml`` is the item shape, so it has to install.
 
     It exists to teach the schema what one ``rbac.subjects`` /
-    ``hotfixVenv.claims`` / ``seatIdentity.apps`` entry looks like. Feeding it
+    ``hotfixProject.claims`` / ``seatIdentity.apps`` entry looks like. Feeding it
     back in is what catches an example edited to document a field the generator
     never saw - which would otherwise read as documentation and behave as a
     refusal.
@@ -397,7 +418,7 @@ def test_the_documented_example_entries_are_ones_the_schema_accepts() -> None:
         "--set",
         "rbac.create=true",
         "--set",
-        "hotfixVenv.enabled=true",
+        "hotfixProject.enabled=true",
         "--set",
         "seatIdentity.enabled=true",
     )

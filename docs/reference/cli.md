@@ -1056,12 +1056,16 @@ Notes:
   a testable shutdown assertion.
 
 ```
-$ podbench hotfix --print-values --app myapp --venv-path /opt/venv
+$ podbench hotfix --print-values --app myapp --entrypoint 'myapp serve'
 ```
 
-emits both halves of the chart wiring: `hotfixVenv` values for the podbench
-release, and the volume, volumeMount and seeding initContainer for the
-application's own chart.
+emits both halves of the chart wiring: `hotfixProject` values for the podbench
+release, and five ordinary passthroughs for the application's own chart — the
+claim and the seat's home under `volumes`, the claim mounted *beside* the
+project at `/podbench/app` under `volumeMounts`, the supervisor as
+`command`/`args`, `fsGroup` under `podSecurityContext`, and — when the target
+has one, named with `--liveness` — its `livenessProbe` wrapped to honour the
+hold.
 
 ---
 

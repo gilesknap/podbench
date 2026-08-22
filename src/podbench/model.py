@@ -44,6 +44,11 @@ __all__ = [
     "TARGET_NAME_ENV",
     "DEVPOD_LABEL",
     "HOTFIXED_ANNOTATION",
+    "HOTFIX_APP_PATH",
+    "HOTFIX_CLAIM_VOLUME",
+    "HOTFIX_CHILD_PID_PATH",
+    "HOTFIX_HOLD_PATH",
+    "HOTFIX_INTERPRETER_PATH",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
@@ -744,6 +749,52 @@ modes apart, and a listing reads them together or not at all.
 """
 
 HOTFIXED_ANNOTATION = "podbench.dev/hotfixed"
+
+HOTFIX_CLAIM_VOLUME = "podbench-app"
+"""The volume carrying a hotfixed project, mounted *beside* the application.
+
+Named for what it holds rather than for a venv, because it no longer is one:
+the claim carries the project - source, `.venv` and interpreter - and the
+application's own `/app` is never occluded. Mounting *over* the venv was the
+original design and every awkward thing about it followed from that one choice:
+the image's venv sat behind the mount, so seeding needed an initContainer at a
+staging path that `ioc-instance` cannot express, and a seat that is itself a
+python-copier-template image lost its own `/app/.venv`.
+"""
+
+HOTFIX_APP_PATH = "/podbench/app"
+"""Where :data:`HOTFIX_CLAIM_VOLUME` is mounted.
+
+Beside the application's project, never over it. Nothing the image ships is
+hidden by this mount, which is what lets the seed be a plain copy from the
+running container rather than an initContainer racing the application.
+"""
+
+HOTFIX_INTERPRETER_PATH = "/podbench/app/.python"
+"""The interpreter, on the claim.
+
+A rebuilt venv's console scripts carry an absolute shebang, so the interpreter
+they name has to outlive a restart too. Copying it here is what makes
+`head -1 <venv>/bin/<script>` point at the claim rather than back into the
+image.
+"""
+
+HOTFIX_HOLD_PATH = "/tmp/podbench-hold"
+"""Presence of this file makes the supervisor relaunch rather than exit.
+
+It is the runtime switch the whole mode turns on: absent - the production case
+- the supervisor exits with the child's status and the kubelet restarts exactly
+as it does today.
+"""
+
+HOTFIX_CHILD_PID_PATH = "/tmp/podbench-child.pid"
+"""Where the supervisor records the pid of the process it started.
+
+The pid is the *root of a tree*, not a thing to signal on its own: a target
+that allocates a pty puts its real process in another session, so killing this
+pid reaps the wrapper and leaves the application running - silently, with the
+old code still serving. See spike S7.
+"""
 """Marks a pod (or pod template) as carrying a hotfix on a claim.
 
 Its natural home is :mod:`podbench.hotfix`, and it cannot live there: that

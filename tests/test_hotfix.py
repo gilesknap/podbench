@@ -869,7 +869,7 @@ def test_consolidate_pushes_and_records_the_branch() -> None:
     assert reread.consolidated_branch == "patch/beamtime-14"
     checklist = "\n".join(actions)
     assert "gh pr create" in checklist
-    assert "hotfixVenv.enabled=false" in checklist
+    assert "hotfixProject.enabled=false" in checklist
 
 
 def test_consolidate_dry_run_pushes_nothing() -> None:
@@ -998,28 +998,12 @@ def test_status_reports_a_pod_whose_provenance_is_gone() -> None:
 # -- helm values -----------------------------------------------------------
 
 
-def test_values_snippet_covers_claim_mount_and_seed() -> None:
-    snippet = hotfix.values_snippet("api", VENV, image="ghcr.io/acme/api:1.4.0")
-    assert "claimName: api-venv" in snippet
-    assert f"mountPath: {VENV}" in snippet
-    # The initContainer mounts the claim somewhere else on purpose: that is the
-    # only moment the image's own venv is still visible.
-    assert "mountPath: /podbench-seed" in snippet
-    assert f"cp -a {VENV}/. /podbench-seed/" in snippet
-    assert "ReadWriteOnce" in snippet
+ENTRY = "myapp serve --config /etc/myapp.yaml"
 
 
-def test_values_snippet_key_names_are_the_charts_business() -> None:
-    snippet = hotfix.values_snippet(
-        "api", VENV, volumes_key="volumes", mounts_key="volumeMounts"
-    )
-    assert "\nvolumes:" in snippet
-    assert "\nvolumeMounts:" in snippet
-
-
-def parsed_snippet(**kwargs: str) -> dict[str, Any]:
+def parsed_snippet(**kwargs: Any) -> dict[str, Any]:
     """The snippet as data. It is pasted into a values file, so it has to parse."""
-    loaded: object = yaml.safe_load(hotfix.values_snippet("api", VENV, **kwargs))
+    loaded: object = yaml.safe_load(hotfix.values_snippet("api", ENTRY, **kwargs))
     assert isinstance(loaded, dict)
     return cast(dict[str, Any], loaded)
 
@@ -1028,59 +1012,120 @@ def volume_names(values: Mapping[str, Any], key: str) -> list[str]:
     return [str(entry["name"]) for entry in cast(list[Any], values.get(key, []))]
 
 
-def test_values_snippet_declares_the_seat_volumes_but_does_not_mount_them() -> None:
-    """The seat's volumes only have to be *declared* on the pod.
+def test_values_snippet_mounts_the_claim_beside_the_project_not_over_it() -> None:
+    """Beside is the whole design, so it is asserted rather than assumed.
+
+    Mounting over the venv hid the image's own copy, which is what forced the
+    initContainer at a staging path that ``ioc-instance`` cannot express.
+    """
+    values = parsed_snippet()
+    mounts = {
+        str(m["name"]): str(m["mountPath"])
+        for m in cast(list[Any], values["volumeMounts"])
+    }
+    assert mounts[model.HOTFIX_CLAIM_VOLUME] == model.HOTFIX_APP_PATH
+    assert model.HOTFIX_APP_PATH.startswith("/podbench/")
+
+
+def test_values_snippet_emits_no_init_container_and_no_identity() -> None:
+    """Both were casualties of moving beside the application.
+
+    The initContainer existed only to reach a venv that was about to be hidden,
+    and the identity ConfigMap serves a seat that is an ordinary container -
+    which this mode's seat is not.
+    """
+    values = parsed_snippet()
+    assert "initContainers" not in values
+    assert "seatIdentity" not in values
+    assert model.SEAT_IDENTITY_VOLUME not in hotfix.values_snippet("api", ENTRY)
+
+
+def test_values_snippet_claim_name_no_longer_says_venv() -> None:
+    values = parsed_snippet()
+    claim = cast(list[Any], values["volumes"])[0]["persistentVolumeClaim"]["claimName"]
+    assert claim == hotfix.hotfix_claim("api") == "api-podbench-project"
+    assert not claim.endswith("-venv")
+
+
+def test_values_snippet_declares_the_seats_home_but_does_not_mount_it() -> None:
+    """Declaring is both necessary and sufficient.
 
     An ephemeral container may mount any volume the pod already has, and pod
-    volumes are immutable after creation — so declaring is both necessary and
-    sufficient, and mounting them into the application as well would change its
-    filesystem for nothing. It reads as an omission, so it is asserted.
+    volumes are immutable after creation. Mounting it into the application as
+    well would change its filesystem for nothing, so it reads as an omission
+    and is asserted.
     """
-    values = parsed_snippet(uid="1000", gid="1000")
-    declared = volume_names(values, "extraVolumes")
-    assert model.SEAT_IDENTITY_VOLUME in declared
-    assert model.SEAT_HOME_VOLUME in declared
-    mounted = volume_names(values, "extraVolumeMounts")
-    assert model.SEAT_IDENTITY_VOLUME not in mounted
-    assert model.SEAT_HOME_VOLUME not in mounted
+    values = parsed_snippet()
+    assert model.SEAT_HOME_VOLUME in volume_names(values, "volumes")
+    assert model.SEAT_HOME_VOLUME not in volume_names(values, "volumeMounts")
 
 
-def test_values_snippet_identity_volume_is_the_chart_configmap_read_only() -> None:
-    values = parsed_snippet(uid="1000", gid="1000")
-    volumes = {
-        str(entry["name"]): entry for entry in cast(list[Any], values["extraVolumes"])
-    }
-    identity = cast(dict[str, Any], volumes[model.SEAT_IDENTITY_VOLUME]["configMap"])
-    assert identity["name"] == hotfix.identity_configmap("api")
-    assert values["seatIdentity"]["apps"][0]["name"] == "api"
-    # 0444 in YAML 1.1 octal, which is what Kubernetes reads it as: nothing in
-    # the pod should be able to rewrite the seat's /etc/passwd.
-    assert identity["defaultMode"] == 0o444
-    home = cast(dict[str, Any], volumes[model.SEAT_HOME_VOLUME]["emptyDir"])
-    assert home["sizeLimit"] == hotfix.SEAT_HOME_SIZE
+def test_values_snippet_wraps_the_entrypoint_in_the_supervisor() -> None:
+    values = parsed_snippet()
+    assert values["command"] == ["bash", "-c"]
+    args = "\n".join(cast(list[Any], values["args"]))
+    assert ENTRY in args
+    assert model.HOTFIX_HOLD_PATH in args
+    assert model.HOTFIX_CHILD_PID_PATH in args
+
+
+def test_the_supervisor_reaps_the_tree_not_the_pid() -> None:
+    """S7: a target that allocates a pty escapes a signal aimed at the pid.
+
+    Its real process lands in its own session, survives, and keeps the port -
+    so the relaunch comes up deaf and the pod goes on serving the old code with
+    ``restartCount`` still 0. Nothing about that is visible without this line.
+    """
+    args = "\n".join(cast(list[Any], parsed_snippet()["args"]))
+    assert 'kill -TERM -"$child"' in args
+
+
+def test_the_supervisor_is_fail_fast_without_a_hold_file() -> None:
+    """The production case. A deployment carrying this restarts as it always did."""
+    args = "\n".join(cast(list[Any], parsed_snippet()["args"]))
+    assert f"[ -e {model.HOTFIX_HOLD_PATH} ] || exit $rc" in args
+
+
+def test_the_runtime_switch_prefers_the_claim_only_when_it_is_seeded() -> None:
+    args = "\n".join(cast(list[Any], parsed_snippet()["args"]))
+    assert f"if [ -x {model.HOTFIX_APP_PATH}/.venv/bin/python ]; then" in args
+
+
+def test_the_liveness_probe_is_wrapped_to_honour_the_hold() -> None:
+    """Unwrapped, the kubelet restarts a held pod out from under the hold.
+
+    Measured in S7 at 122s against 344s with the wrapper.
+    """
+    values = parsed_snippet(liveness_exec=["/bin/bash", "/epics/ioc/liveness.sh"])
+    probe = cast(list[Any], values["livenessProbe"]["exec"]["command"])
+    assert probe[:2] == ["bash", "-c"]
+    assert probe[2].startswith(f"if [ -e {model.HOTFIX_HOLD_PATH} ]; then exit 0; fi;")
+    assert "/epics/ioc/liveness.sh" in probe[2]
+
+
+def test_no_probe_is_emitted_for_a_target_that_has_none() -> None:
+    """The canonical hotfix target declares no probe, and 7 of 18 do."""
+    assert "livenessProbe" not in parsed_snippet()
+
+
+def test_values_snippet_key_names_are_the_charts_business() -> None:
+    """ioc-instance nests all five under ``global:``."""
+    snippet = hotfix.values_snippet(
+        "api", ENTRY, volumes_key="  volumes", mounts_key="  volumeMounts"
+    )
+    assert "\n  volumes:" in snippet
+    assert "\n  volumeMounts:" in snippet
 
 
 def test_values_snippet_sets_fsgroup_to_the_apps_gid() -> None:
-    """Without it the home volume is present and unwritable, which is worse.
-
-    An emptyDir arrives root:root and the seat runs as the application's uid;
-    fsGroup is what makes the kubelet hand the volume to that gid.
-    """
-    values = parsed_snippet(uid="1000", gid="65532")
+    """Without it the claim is present and unwritable, which is worse than absent."""
+    values = parsed_snippet(gid="65532")
     assert values["podSecurityContext"]["fsGroup"] == 65532
-    assert values["seatIdentity"]["apps"][0]["gid"] == 65532
 
 
-def test_values_snippet_uid_defaults_to_a_placeholder_not_a_plausible_number() -> None:
-    """A snippet pasted unread must fail at install time, not at 3am.
-
-    An identity built for the wrong uid produces a seat that authenticates as
-    nobody — the same silent refusal as having no identity at all — so the
-    default is deliberately not a number.
-    """
-    values = parsed_snippet()
-    assert not isinstance(values["seatIdentity"]["apps"][0]["uid"], int)
-    assert not isinstance(values["podSecurityContext"]["fsGroup"], int)
+def test_values_snippet_gid_defaults_to_a_placeholder_not_a_plausible_number() -> None:
+    """A snippet pasted unread must fail at install time, not at 3am."""
+    assert not isinstance(parsed_snippet()["podSecurityContext"]["fsGroup"], int)
 
 
 # -- CLI -------------------------------------------------------------------
@@ -1095,15 +1140,15 @@ def test_print_values_needs_the_two_things_it_cannot_guess(
 
 def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
-        ["hotfix", "--print-values", "--app", "api", "--venv-path", VENV]
+        ["hotfix", "--print-values", "--app", "api", "--entrypoint", ENTRY]
     )
     assert code == 0
-    assert "claimName: api-venv" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "claimName: api-podbench-project" in out
+    assert ENTRY in out
 
 
-def test_print_values_takes_the_apps_uid_and_gid(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_print_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
         # fmt: off
         [
@@ -1111,19 +1156,40 @@ def test_print_values_takes_the_apps_uid_and_gid(
             "--print-values",
             "--app",
             "api",
-            "--venv-path",
-            VENV,
-            "--uid",
-            "65532",
+            "--entrypoint",
+            ENTRY,
             "--gid",
             "65532",
         ],
         # fmt: on
     )
     assert code == 0
+    assert "fsGroup: 65532" in capsys.readouterr().out
+
+
+def test_print_values_wraps_a_named_liveness_probe(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The probe is only emitted when the target has one to wrap."""
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "--entrypoint",
+            ENTRY,
+            "--liveness",
+            "/bin/bash /epics/ioc/liveness.sh",
+        ],
+        # fmt: on
+    )
+    assert code == 0
     out = capsys.readouterr().out
-    assert "uid: 65532" in out
-    assert "fsGroup: 65532" in out
+    assert "livenessProbe:" in out
+    assert model.HOTFIX_HOLD_PATH in out
+    assert "/epics/ioc/liveness.sh" in out
 
 
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
