@@ -41,6 +41,7 @@ import typer
 
 from .cli import new_app, run
 from .model import (
+    HOTFIX_INTERPRETER_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
     ContainerRef,
@@ -75,6 +76,7 @@ __all__ = [
     "PUBKEY_ENV",
     "SEAT_NSS_PATH",
     "SESSION_ENV_NAMES",
+    "UV_PYTHON_INSTALL_DIR_ENV",
     "SESSION_ENV_PREFIX",
     "VSCODE_SETTINGS_WAY_OUT",
     "CheckResult",
@@ -96,6 +98,7 @@ __all__ = [
     "ensure_passwd_entry",
     "ensure_privsep_dir",
     "ensure_sshd_config",
+    "hotfix_interpreter_store",
     "ensure_vscode_settings",
     "extrausers_serves",
     "fd2_check",
@@ -773,6 +776,17 @@ environment.
 DEBUGINFOD_URLS_ENV = "DEBUGINFOD_URLS"
 DEBUGINFOD_TIMEOUT_ENV = "DEBUGINFOD_TIMEOUT"
 
+UV_PYTHON_INSTALL_DIR_ENV = "UV_PYTHON_INSTALL_DIR"
+"""Where uv looks for, and installs, managed interpreters.
+
+Never forwarded *by name*, which is why it is not in :data:`SESSION_ENV_NAMES`.
+Both podbench's image and every python-copier-template target set it to
+``/python``, so carrying the seat's value would name the seat's interpreter
+store to a session working on the target's project - the bleed issue #160
+describes. The session gets a *computed* value instead, and only when there is
+a hotfix claim to compute it from.
+"""
+
 SESSION_ENV_NAMES = frozenset({"PATH", DEBUGINFOD_URLS_ENV, DEBUGINFOD_TIMEOUT_ENV})
 """The image's own variables the transport carries as well, by exact name.
 
@@ -801,19 +815,67 @@ world-readable file, and a seat's environment is where the launcher's secrets
 _SESSION_ENV_EXCLUDE = frozenset({PUBKEY_ENV, HOST_KEY_ENV})
 
 
-def session_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def session_env(
+    env: Mapping[str, str] | None = None, *, interpreter_store: str | None = None
+) -> dict[str, str]:
     """The variables worth forwarding into an ssh session.
 
     >>> sorted(session_env({"PATH": "/bin", "HOME": "/root", "TERM": "xterm"}))
     ['PATH']
+
+    *interpreter_store* is the one value the session is *given* rather than
+    handed on, and it is ``None`` for every seat that has no hotfix claim:
+
+    >>> session_env({}, interpreter_store="/podbench/app/.python")
+    {'UV_PYTHON_INSTALL_DIR': '/podbench/app/.python'}
     """
     source = os.environ if env is None else env
-    return {
+    forwarded = {
         name: value
         for name, value in source.items()
         if (name.startswith(SESSION_ENV_PREFIX) or name in SESSION_ENV_NAMES)
         and name not in _SESSION_ENV_EXCLUDE
     }
+    if interpreter_store is not None:
+        forwarded[UV_PYTHON_INSTALL_DIR_ENV] = interpreter_store
+    return forwarded
+
+
+def hotfix_interpreter_store(
+    *, exists: Callable[[str], bool] | None = None
+) -> str | None:
+    """The claim's interpreter store, or ``None`` when this seat has no claim.
+
+    Probed rather than assumed, because the answer differs per seat and getting
+    it wrong is worse than not answering: pointing ``UV_PYTHON_INSTALL_DIR`` at
+    a path that does not exist would break uv in an ordinary ``attach`` seat,
+    which has no claim and no business being told about one.
+
+    What it fixes, measured on the beamline 2026-08-22. A VS Code shell is an
+    ssh session, which inherits none of the image's ``ENV``, so
+    ``UV_PYTHON_INSTALL_DIR`` arrives *unset* and uv falls back to
+    ``$HOME/.local/share/uv/python`` - inside the seat. ``uv sync`` with the
+    project's ``.venv`` already present is unaffected, because uv reuses the
+    interpreter ``pyvenv.cfg`` names and that one is on the claim. But the
+    moment uv has to *choose* an interpreter - a missing ``.venv``, ``uv
+    venv``, a ``requires-python`` change - it writes::
+
+        home = /tmp/.local/share/uv/python/cpython-3.11.13-linux-x86_64-gnu/bin
+
+    a path the target cannot see, with no error and a shebang that still looks
+    right. The fix reverts at the next relaunch and nothing says so.
+
+    >>> hotfix_interpreter_store(exists=lambda path: True)
+    '/podbench/app/.python'
+    >>> hotfix_interpreter_store(exists=lambda path: False) is None
+    True
+    """
+
+    def on_disk(path: str) -> bool:
+        return Path(path).is_dir()
+
+    present = exists if exists is not None else on_disk
+    return HOTFIX_INTERPRETER_PATH if present(HOTFIX_INTERPRETER_PATH) else None
 
 
 DEBUGINFOD_TIMEOUT_SECONDS = "2"
@@ -949,7 +1011,7 @@ def ensure_sshd_config(
     offer — a ``PATH`` dropped without a word is the defect ``SetEnv`` was
     widened to fix.
     """
-    wanted = session_env(env)
+    wanted = session_env(env, interpreter_store=hotfix_interpreter_store())
     changed = _write_if_changed(
         Path(layout.config_path), sshd_config(layout, wanted), 0o644
     )

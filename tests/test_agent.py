@@ -18,13 +18,14 @@ import pytest
 
 from podbench import agent
 from podbench.model import (
+    HOTFIX_INTERPRETER_PATH,
     SEAT_IDENTITY_VOLUME,
     SEAT_REPORT_MARKER,
     TARGET_CID_ENV,
     Rung,
     SeatReport,
 )
-from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config
+from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config, unsafe_set_env
 from podbench.vscode import MACHINE_SETTINGS_PATH
 
 TARGET_CID = "abc123def456"
@@ -1261,6 +1262,50 @@ def test_a_named_variable_that_is_unset_is_simply_absent() -> None:
     empty values, which sshd would parse as pairs of its own."""
     assert "DEBUGINFOD_TIMEOUT" in agent.SESSION_ENV_NAMES
     assert agent.session_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+def test_a_seat_with_a_claim_is_told_where_the_interpreters_live() -> None:
+    """A VS Code shell is an ssh session, which inherits none of the image's ENV.
+
+    So UV_PYTHON_INSTALL_DIR arrives unset and uv falls back to a store inside
+    the seat. `uv sync` with the venv already present is fine - uv reuses the
+    interpreter pyvenv.cfg names, and that one is on the claim - but the moment
+    uv has to *choose* one it writes a seat-local path the target cannot see,
+    with no error. Measured on the beamline 2026-08-22.
+    """
+    forwarded = agent.session_env(
+        {"PATH": "/usr/bin"}, interpreter_store=HOTFIX_INTERPRETER_PATH
+    )
+    assert forwarded[agent.UV_PYTHON_INSTALL_DIR_ENV] == HOTFIX_INTERPRETER_PATH
+
+
+def test_the_store_is_never_carried_by_name_from_the_seats_own_environment() -> None:
+    """Both images set it to /python, so inheriting it names the *seat's* store.
+
+    That is the bleed, not the fix: a session working on the target's project
+    would resolve interpreters against podbench's own copy.
+    """
+    forwarded = agent.session_env(
+        {"PATH": "/usr/bin", "UV_PYTHON_INSTALL_DIR": "/python"}
+    )
+    assert agent.UV_PYTHON_INSTALL_DIR_ENV not in forwarded
+    assert agent.UV_PYTHON_INSTALL_DIR_ENV not in agent.SESSION_ENV_NAMES
+
+
+def test_a_seat_without_a_claim_is_told_nothing() -> None:
+    """An ordinary attach seat has no claim, and pointing uv at a path that does
+    not exist would break it for no reason."""
+    assert agent.hotfix_interpreter_store(exists=lambda _: False) is None
+    assert agent.session_env({"PATH": "/usr/bin"}, interpreter_store=None) == {
+        "PATH": "/usr/bin"
+    }
+
+
+def test_the_store_survives_sshds_setenv_parser() -> None:
+    """SetEnv is whitespace-separated NAME=value, so a path with a space in it
+    would silently become a different directive."""
+    forwarded = agent.session_env({}, interpreter_store=HOTFIX_INTERPRETER_PATH)
+    assert unsafe_set_env(forwarded) == ()
 
 
 # -- the symbol server, bounded and checked ---------------------------------
