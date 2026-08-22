@@ -1,46 +1,52 @@
 """Hotfix mode: an emergency fix that outlives the session, and its provenance.
 
-Hotfix mode is the one place podbench asks for deploy-time cooperation, and the
-one place it deliberately *inverts* an earlier rule. Everywhere else the design
-refuses to fight the kubelet: Iterate mode runs on a sacrificial clone precisely
-because killing PID 1 gets you pristine image code back. Here the venv lives on
-a PVC that outlives the container, so pristine image code is no longer what a
-restart yields — **the restart is the relaunch mechanism**, probes and all.
+Hotfix mode is the one place podbench asks for deploy-time cooperation. What it
+asks for is five ordinary values passthroughs - ``volumes``, ``volumeMounts``,
+``command``/``args``, ``livenessProbe`` and ``podSecurityContext`` - which every
+chart tried against it already has, and which
+:func:`values_snippet` emits ready to paste.
 
-The mount also dissolves the constraint that shapes :mod:`podbench.dev`. The
-seat mounts the same claim at the same ``mountPath`` as the application, so the
-venv and the checkout resolve identically on both sides and an editable install
-is finally not straddling two mount namespaces (report §3.17 is about the case
-where it does).
+The claim mounts **beside** the application's project, at
+:data:`~podbench.model.HOTFIX_APP_PATH`, never over it. Every awkward thing about
+the earlier design followed from mounting over the venv: the image's own copy sat
+behind the mount, so seeding needed an initContainer at a staging path that
+``ioc-instance`` cannot express; and a seat that is itself a
+python-copier-template image lost its own ``/app/.venv``. Beside dissolves both,
+and lets the seed be a plain copy out of the container that is already running.
 
-Three things the PVC does *not* fix, and which this module exists to make
+**The relaunch does not restart the container, and that is the point.** An
+ephemeral container shares the target container's namespaces, so a restart does
+not orphan the developer's seat - it SIGKILLs it, ``exitCode: 137``
+(`#161 <https://github.com/gilesknap/podbench/issues/161>`_). So the values
+carry a supervisor, and ``apply`` holds it, kills the child's *tree*, and
+releases the hold: PID 1 never dies, the kubelet never sees a restart, and
+service is back in ~6.8s against a CrashLoopBackOff ladder of 15s, 23s, 45s
+(spike S7).
+
+Two things the claim does *not* fix, and which this module exists to make
 visible rather than leave to be discovered:
 
-1. **The PVC venv shadows the image's.** An image upgrade under a live hotfix
-   mount keeps running the old venv, and an interpreter bump breaks it outright
-   — the ``bin/python`` symlink on the volume points at an interpreter path in
-   the *image*, which is not on the volume. So the manifest records the
-   interpreter exactly (from ``pyvenv.cfg``, which is on the volume) and
-   ``status`` measures the live one instead of assuming.
+1. **The claim's project shadows the image's.** An image upgrade under a live
+   hotfix keeps running the claim's code, so the upgrade does not reach what is
+   executing. The manifest records the digest it was made against and ``status``
+   compares it, which is what turns a silent shadow into ``image-changed``.
 2. **Single replica only.** The claim is ReadWriteOnce, so a second replica
-   either cannot schedule or, with RWX, races on the same checkout. ``init``
-   and ``apply`` refuse a multi-replica target rather than partially hotfix a
+   either cannot schedule or, with RWX, races on the same checkout. ``init`` and
+   ``apply`` refuse a multi-replica target rather than partially hotfix a
    Deployment.
-3. **A stale PVC silently reverts provenance.** Once a hotfix is consolidated
-   and the new image rolls out, a PVC left mounted keeps the *old* code running
-   under a version string that claims to contain the fix. ``status`` calls that
-   out by name.
 
-Provenance is therefore not decoration: every hotfix is a git commit, a manifest
-on the volume records what it was made against, and the pod carries an
-annotation saying it is hotfixed. ``status`` is the point of the whole mode —
-silently-diverged pods are the risk it must never create.
+What used to be a third - an interpreter bump breaking the venv, because
+``bin/python`` pointed into the image - is fixed rather than reported. The
+interpreter now lives on the claim at
+:data:`~podbench.model.HOTFIX_INTERPRETER_PATH` and the venv is *rebuilt* there
+rather than copied, so its console scripts name a path that survives a restart.
 
-Where the provenance is written is itself a design decision. Pod annotations do
-not survive the reschedule that Hotfix mode *relies on*, so the annotations go on
-the workload's pod template when there is one: they then propagate to every pod
-the controller makes, and the template edit is also what rolls the workload —
-the same mechanism ``kubectl rollout restart`` uses.
+Provenance is not decoration: every hotfix is a git commit, and a manifest on
+the claim records what it was made against. It lives on the **claim**, not on
+the workload's pod template, because a GitOps controller reconciles a volume
+towards its spec but strips an annotation as drift - which is how a hotfixed pod
+under Argo used to go quiet within one sync interval. ``status`` is the point of
+the whole mode: silently-diverged pods are the risk it must never create.
 """
 
 from __future__ import annotations

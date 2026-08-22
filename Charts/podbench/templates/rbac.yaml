@@ -60,32 +60,27 @@ rules:
   {{- end }}
   {{- if .Values.rbac.hotfix }}
   # Hotfix mode builds on rbac.observe — it reads the pod to find the application
-  # container and its imageID, and reaches the claim's git checkout by exec'ing
-  # into the seat — and adds the following.
+  # container and its imageID, and reaches the claim by exec'ing into the seat —
+  # and adds only this.
   #
-  # Read-only walk from the pod to the object that owns its pod template: pod ->
-  # ReplicaSet -> Deployment. It is what refuses a multi-replica target, which
-  # matters because the claim is ReadWriteOnce and two writers on one checkout is
-  # a race with no winner. The ReplicaSet is only ever read: annotating it would
-  # be discarded by the next rollout.
+  # Read-only, and that is the whole grant now. It used to include `patch` on
+  # deployments and statefulsets, and `patch`/`delete` on pods, because
+  # provenance went on the workload's pod template and the template edit was
+  # also what rolled the workload. That verb deployed code, and it was the most
+  # privileged thing podbench asked for anywhere.
+  #
+  # None of it is needed since the relaunch moved inside the container. The
+  # provenance lives on the claim, where a GitOps controller cannot strip it,
+  # and `apply` holds and re-execs the application's own child rather than
+  # replacing the pod. Hotfix mode is now, in cluster terms, no more privileged
+  # than watching — `rbac.observe` plus a read-only walk to the owning workload.
+  #
+  # That walk is what refuses a multi-replica target, which matters because the
+  # claim is ReadWriteOnce and two writers on one checkout is a race with no
+  # winner.
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "replicasets"]
     verbs: ["get"]
-  # The provenance annotations go on the workload's pod template, because pod
-  # annotations do not survive the reschedule Hotfix mode relies on. That one
-  # write is therefore also what rolls the workload — the mechanism `kubectl
-  # rollout restart` uses — so this verb deploys code, and it is the most
-  # privileged thing podbench asks for anywhere.
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets"]
-    verbs: ["patch"]
-  # A pod with no pod template — unowned, or owned by something podbench does not
-  # template — takes the annotations directly, and when it does have a controller
-  # it is deleted so the controller replaces it with the hotfix picked up. An
-  # unowned pod is never deleted: nothing would bring it back.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["patch", "delete"]
   {{- end }}
 {{- if .Values.rbac.subjects }}
 ---
