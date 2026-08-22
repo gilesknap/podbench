@@ -251,6 +251,50 @@ rbac:
 work against any pod from any chart, unmodified — that is the design principle
 the tool is built on.
 
+### The hotfix claim, declared beside the pod
+
+Hotfix mode is the one exception, and it needs exactly one cluster object a
+target's own chart has to create: a `PersistentVolumeClaim` carrying the
+project. The chart above can create these from a central
+`hotfixProject.claims[]` list, and that still works — but it is a namespace-wide
+release naming every application that might ever be hotfixed, and a claim there
+outlives every service that ever used it.
+
+A second chart is published for the other shape: one claim, declared by the
+target's own chart, with the pod's lifecycle. It is a **dependency**, not a
+release:
+
+```yaml
+# the target's Chart.yaml
+dependencies:
+  - name: podbench-hotfix-claim
+    version: "0.7.1"                          # the podbench release
+    repository: "oci://ghcr.io/gilesknap/charts"
+```
+
+It renders **nothing at all** unless `enabled` is set, which is the whole point:
+the dependency can sit in one shared `Chart.yaml` that every service inherits,
+hotfix-enabled or not, and a service that never asks for it is not changed by
+having it. Asking costs one line in that service's values:
+
+```yaml
+podbench-hotfix-claim:
+  enabled: true
+```
+
+That renders `<release>-podbench-project`, which is the name `podbench hotfix
+--print-values` puts in the pod's `volumes:` entry. `size` and
+`storageClassName` are the only other keys; `claimName` exists for a claim that
+already exists under another name. Its schema is attached to every release as
+`podbench-hotfix-claim.values.schema.json`.
+
+Only the claim moves. `volumes:`, `volumeMounts:`, `command`/`args` and
+`podSecurityContext` are fields inside the target's *own* pod template — a
+subchart cannot reach into a sibling's StatefulSet, and a pod's volumes are
+immutable once it exists — so those are in the target's values at deploy time or
+not at all. `podbench hotfix --print-values` is what makes writing them cost
+nothing.
+
 ## Next
 
 [Your first session](first-session.md) takes you from here to a connected

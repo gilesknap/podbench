@@ -1,0 +1,41 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "podbench hotfix claim",
+    "description": "The PersistentVolumeClaim podbench Hotfix mode needs beside a pod",
+    "type": "object",
+    "properties": {
+        "annotations": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "claimName": {
+            "type": "string"
+        },
+        "enabled": {
+            "type": "boolean"
+        },
+        "global": {
+            "description": "Global values shared between all subcharts",
+            "$comment": "Added automatically by 'helm schema' to allow this chart to be used as a Helm dependency, as the `additionalProperties` setting would otherwise collide with Helm's special 'global' values key.",
+            "type": [
+                "object",
+                "null"
+            ]
+        },
+        "labels": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "size": {
+            "type": "string"
+        },
+        "storageClassName": {
+            "type": "string"
+        }
+    },
+    "additionalProperties": false
+}

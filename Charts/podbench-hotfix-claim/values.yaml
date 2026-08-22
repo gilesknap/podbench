@@ -1,0 +1,40 @@
+# podbench Hotfix mode's claim, declared beside the pod it serves.
+#
+# This chart exists to be a *dependency*. A target chart names it once in its
+# `Chart.yaml` and every service that chart renders can be hotfixed by setting
+# one boolean — which is what lets the dependency sit in a shared Chart.yaml
+# inherited by services that will never use it.
+#
+# Only the claim is here, and that split is forced rather than chosen:
+# `volumes:`, `volumeMounts:`, `command`/`args` and `podSecurityContext` are
+# fields inside the *target's own pod template*, which its own chart renders. A
+# subchart cannot reach into a sibling's StatefulSet, and a pod's volumes are
+# immutable once it exists, so those are in the target's values at deploy time
+# or not at all. `podbench hotfix --print-values` is what makes writing them
+# cost nothing.
+#
+# Renders nothing whatsoever while this is false, which is the whole contract:
+# a chart that depends on this one is not changed by depending on it.
+enabled: false
+
+# The claim's name. Defaults to `<release>-podbench-project`, and the default is
+# the one to use: it is what `podbench hotfix --print-values` emits into the
+# target's `volumes:` entry, and the two have to agree or the pod mounts a claim
+# that does not exist. Override only where a claim already exists under another
+# name.
+claimName: ""
+
+# 2Gi is a python-copier-template checkout plus a venv with room to grow. The
+# claim holds a project and its interpreter, not data.
+size: 2Gi
+
+# Empty means the cluster's default class, which is the right answer almost
+# everywhere. Name one only where the default cannot satisfy ReadWriteOnce.
+storageClassName: ""
+
+# Added to the claim's own. The two podbench sets itself are filtered out
+# here - see the template for why neither is optional.
+# @schema additionalProperties: {type: string}
+annotations: {}
+# @schema additionalProperties: {type: string}
+labels: {}
