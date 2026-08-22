@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.7.1.dev11+g022c65a9a documentation</title>
+    <title>Command-line reference &#8212; podbench 0.7.1.dev13+ge62ee0d7b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=1dee4147"></script>
+    <script src="../_static/documentation_options.js?v=e3da20f2"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1573,7 +1573,6 @@ wins.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--local</span></code> remains the alternative when <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> is run from a terminal inside the
 seat, where the claim is already in this process’s own mount namespace.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
-
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
  Durable in-place fixes: the project on a claim beside the application, every change a commit, and
@@ -1605,6 +1604,18 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 │                                      --no-from-pod turns it off)                                 │
 │ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
 │                                      offline machine, or a pod that does not exist yet           │
+│ --values                  PATH       the target service&#39;s own values file: emit it back whole    │
+│                                      with podbench&#39;s keys merged in, rather than a fragment to   │
+│                                      merge by hand                                               │
+│ --parent-values           PATH       a shared values file the service inherits from. A helm list │
+│                                      replaces rather than merges, so this is what stops a        │
+│                                      service declaring `volumes:` for the first time silently    │
+│                                      dropping the shared ones                                    │
+│ --values-under            KEY        dotted path to the mapping the target chart keeps its pod   │
+│                                      template keys under (`ioc-instance`). Read from the files   │
+│                                      when not given, and the output says where they went         │
+│ --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`      │
+│                                      entry instead of the podbench-hotfix-claim chart dependency │
 │ --claim-venv              NAME       the venv&#39;s directory name on the claim, which the emitted   │
 │                                      runtime switch looks for (default: .venv). Must match       │
 │                                      `hotfix init --claim-venv`                                  │
@@ -1621,7 +1632,6 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 </pre></div>
 </div>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1740,6 +1750,33 @@ one it has and the kubelet will restart the pod out from under the seat at
 <code class="docutils literal notranslate"><span class="pre">failureThreshold</span></code> × <code class="docutils literal notranslate"><span class="pre">periodSeconds</span></code>. Without the warning that absence looks
 identical to the fastcs case, and the difference is whether a held pod
 survives.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--values</span> <span class="pre">PATH</span></code> emits the whole file, not a fragment.</strong> Given the service’s
+own values file, podbench merges its keys into it and prints the result — the
+same file, its comments intact, ready to be pasted back or redirected over
+itself. The notes go to stderr so stdout stays exactly the file.</p>
+<p>Three things it decides, and it says which on stderr each time:</p>
+<ul class="simple">
+<li><p><strong>where the keys go.</strong> <code class="docutils literal notranslate"><span class="pre">ioc-instance</span></code> nests all five under an
+<code class="docutils literal notranslate"><span class="pre">ioc-instance:</span></code> key; a chart with no subchart of its own has them at the
+root. Read from the files — a file that already declares one of these keys
+has answered the question, and a shared file that declares one has answered
+it for every service that inherits it. <code class="docutils literal notranslate"><span class="pre">--values-under</span> <span class="pre">KEY</span></code> overrides.</p></li>
+<li><p><strong>what the service would otherwise have inherited.</strong> A helm list <em>replaces</em>
+across the parent/child values merge; it does not merge. A service declaring
+<code class="docutils literal notranslate"><span class="pre">volumes:</span></code> for the first time therefore takes the shared one over completely,
+and anything it inherited is silently gone. Pass the shared file with
+<code class="docutils literal notranslate"><span class="pre">--parent-values</span> <span class="pre">PATH</span></code> and those entries are absorbed, with a comment in the
+output saying why they are repeated. Without it, podbench says it cannot
+tell — absence of a parent file looks exactly like a service with nothing to
+inherit, and that is the one thing this cannot decide for you.</p></li>
+<li><p><strong>which claim route.</strong> The <code class="docutils literal notranslate"><span class="pre">podbench-hotfix-claim</span></code> dependency by default;
+<code class="docutils literal notranslate"><span class="pre">--central-claim</span></code> for the older namespace-wide <code class="docutils literal notranslate"><span class="pre">hotfixProject.claims[]</span></code>. The
+claim’s key goes to the root of the file either way, because it is a
+subchart’s values and helm looks for those by chart name.</p></li>
+</ul>
+<p>Matching is by <code class="docutils literal notranslate"><span class="pre">name</span></code>, which is what Kubernetes matches volumes and mounts on,
+so running it again over its own output changes nothing.</p>
+</li>
 <li><p><strong>A container already carrying the layout is unwrapped, not wrapped twice.</strong>
 Re-emitting the values for a pod that is already hotfixed — after a chart bump,
 or to see what is deployed — is a normal thing to do, and a supervisor nested
@@ -1755,9 +1792,13 @@ matters. Measured against <code class="docutils literal notranslate"><span class
 declare <code class="docutils literal notranslate"><span class="pre">dev-shm</span></code> alone and its pod carries six volumes — the chart’s five and
 that one. A chart appends what the values give it, so what the chart generates
 for itself is unaffected either way and <strong>must not be copied in here</strong>;
-doing so declares it twice. Podbench cannot do the merge itself and does not
-pretend to: read from a live pod, a chart-generated volume and one the service
-declared are indistinguishable.</p>
+doing so declares it twice. Read from a live pod podbench cannot do the merge
+itself and does not pretend to: a chart-generated volume and one the service
+declared for itself are indistinguishable from there.</p>
+<p><strong>Read from the values file it is decidable, and <code class="docutils literal notranslate"><span class="pre">--values</span></code> does it.</strong> The file
+says exactly what the service declares and everything else came from the chart,
+so there is nothing left to guess. Prefer it; the warning above is what is left
+for a target whose values file you do not have.</p>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> stays the literal placeholder <code class="docutils literal notranslate"><span class="pre">&lt;the</span> <span class="pre">application's</span> <span class="pre">runAsGroup&gt;</span></code> only
 where nothing could say what it should be: under <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> with no

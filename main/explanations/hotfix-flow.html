@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What hotfix does &#8212; podbench 0.7.1.dev11+g022c65a9a documentation</title>
+    <title>What hotfix does &#8212; podbench 0.7.1.dev13+ge62ee0d7b documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=1dee4147"></script>
+    <script src="../_static/documentation_options.js?v=e3da20f2"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -432,6 +432,7 @@
 <li class="toctree-l2"><a class="reference internal" href="decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
 <li class="toctree-l2"><a class="reference internal" href="decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0005-spend-a-second-runtime-dependency-on-round-tripping-yaml.html">5. Spend a second runtime dependency on round-tripping YAML</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="design-brief.html">The original design brief</a></li>
@@ -631,13 +632,39 @@ renders that chart at the pinned version and asserts all five arrive.</p>
 │   the target&#39;s own   volumes: and volumeMounts: *replace* the    │
 │   volumes            chart&#39;s keys rather than adding to them, so │
 │                      they are named and the resolution is spelt  │
-│                      out. Podbench cannot merge them itself:     │
-│                      from a live pod, a chart-generated volume   │
-│                      and one the service declared for itself are │
-│                      indistinguishable.                          │
+│                      out. From a live pod podbench cannot merge  │
+│                      them itself: a chart-generated volume and   │
+│                      one the service declared for itself are     │
+│                      indistinguishable from there. --values is   │
+│                      the way out - see below.                    │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
                                   the five keys, needing no hand-editing
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--values</span> <span class="pre">PATH</span></code> is the other read, and it closes the one thing <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code>
+cannot. A pod cannot say which of its volumes the service asked for; the
+service’s <strong>values file</strong> can, and says nothing else. Given it, podbench merges
+its own keys in and emits the file whole:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  ../values.yaml   ─┐
+  (--parent-values) │   a helm list REPLACES across the parent/child merge.
+                    │   A service declaring volumes: for the first time takes
+                    │   the shared one over completely, so the shared entries
+                    │   are absorbed first or a beamline directory is silently
+                    ├─► unmounted. Without this file podbench says so rather
+                    │   than assuming there is nothing to inherit.
+                    │
+  values.yaml      ─┤   what this service declares, and nothing else. Its own
+  (--values)        │   entries win; its comments survive; matching is by
+                    │   `name`, so re-running changes nothing.
+                    │
+  values_snippet   ─┘   the claim&#39;s key, at the root, and the five
+                        passthroughs wherever the chart keeps them.
+                        --values-under names that; otherwise it is read.
+                                  │
+                                  ▼
+                        the whole file, on stdout. Every note on stderr, so
+                        stdout can be redirected straight over the input.
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is the escape, for CI, an offline machine, or a pod that does not
@@ -647,10 +674,12 @@ failure reading the pod names it <em>and</em> what taking it costs. kubectl tell
 missing kubeconfig, an absent pod and a forbidden <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> apart only in the
 text of its own message, so podbench relays that verbatim rather than guessing at
 a category and getting it wrong.</p>
-<p><code class="docutils literal notranslate"><span class="pre">values_snippet</span></code> itself takes no cluster: <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> is a thin reading wrapper
-that fills the arguments the emitter already had, and a test asserts the emitter
-acquires no cluster dependency. That is what lets every shape of the output be
-asserted without one.</p>
+<p><code class="docutils literal notranslate"><span class="pre">values_snippet</span></code> itself takes no cluster <strong>and no file</strong>: <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--values</span></code> are both thin reading wrappers, and <code class="docutils literal notranslate"><span class="pre">merged_values</span></code> — which does the
+whole of the merge — takes two strings and returns one. Tests assert both
+functions acquire neither dependency. That is what lets every shape of the
+output be asserted without a cluster or a filesystem, and it is why the one
+thing this mode cannot get wrong from a desk is checked from one.</p>
 </section>
 <section id="the-supervisor">
 <h3>The supervisor<a class="headerlink" href="#the-supervisor" title="Link to this heading">#</a></h3>
