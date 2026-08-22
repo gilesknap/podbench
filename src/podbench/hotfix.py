@@ -2722,9 +2722,10 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--liveness",
                 metavar="CMD",
                 help=(
-                    "the target's existing exec livenessProbe command, which is "
-                    "emitted wrapped to honour the hold; omit if it has none. "
-                    "Carries no timings - prefer --liveness-probe"
+                    "the target's existing exec livenessProbe command, for "
+                    "--no-from-pod; emitted wrapped to honour the hold. Carries "
+                    "no timings, so prefer --liveness-probe - or --from-pod, "
+                    "which carries them without being asked"
                 ),
             ),
         ] = None,
@@ -2734,7 +2735,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--liveness-probe",
                 metavar="JSON",
                 help=(
-                    "the target's whole livenessProbe as json, e.g. from "
+                    "the target's whole livenessProbe as json, for "
+                    "--no-from-pod. --from-pod reads it off the target itself, "
+                    "which is what this flag existed to make you do by hand: "
                     "`kubectl get pod POD -o jsonpath='{.spec.containers[0]"
                     ".livenessProbe}'`. Its exec command is wrapped and its "
                     "timings are carried over; a chart renders a supplied probe "

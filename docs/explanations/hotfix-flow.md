@@ -17,7 +17,7 @@ It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.
 
 Four verbs: `init`, `apply`, `status`, `consolidate` — plus `--print-values`, which
-emits the chart snippet the whole thing depends on.
+reads the target pod and emits the chart snippet the whole thing depends on.
 
 ## The layout it requires
 
@@ -53,17 +53,17 @@ The claim mounts **beside** the application's project, never over it.
   └────────────────────────────────────────────────────────────────────┘
 ```
 
-`podbench hotfix --print-values --app NAME --entrypoint 'CMD'` emits five keys, and
+`podbench hotfix --print-values --app NAME --from-pod POD` emits five keys, and
 every one is a passthrough an application's chart already has:
 
 ```text
   volumes            the claim, plus podbench-home for the seat
   volumeMounts       the claim at /podbench/app — beside, never over
-  command / args     the supervisor, wrapping the entrypoint you named
-  livenessProbe      your existing exec probe, wrapped to honour the hold
-                     (emitted only with --liveness; omit it if the target
-                      declares no probe — 7 of 18 containers on a real
-                      beamline do, and the canonical target is not one)
+  command / args     the supervisor, wrapping the entrypoint the pod runs today
+  livenessProbe      the target's own exec probe, wrapped to honour the hold and
+                     carrying its own timings (nothing is emitted where the
+                     target declares no probe — 7 of 18 containers on a real
+                     beamline do, and the canonical target is not one)
   podSecurityContext fsGroup, without which the claim is present and unwritable
 ```
 
@@ -72,6 +72,81 @@ needed a seeding initContainer at a staging path, and `ioc-instance` — the cha
 EPICS IOC at Diamond is deployed with — cannot express one, because every initContainer
 there inherits the main container's `volumeMounts`. `tests/test_ioc_instance_contract.py`
 renders that chart at the pinned version and asserts all five arrive.
+
+### `--print-values` — read the target, emit the snippet
+
+```text
+podbench hotfix --print-values --app NAME --from-pod POD [-n NS]
+                [--container NAME] [--entrypoint CMD] [--gid GID] [--context C]
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ READ THE TARGET       get pod POD -o json — one call, and the    │
+│                       only one --print-values makes              │
+│                                                                  │
+│   Reading is the default, and #176 is why: the entrypoint, the   │
+│   probe and the gid used to be supplied by hand. A chart renders │
+│   a supplied livenessProbe wholesale, so a timing left out       │
+│   silently became the Kubernetes default and a compiled IOC went │
+│   from 120s/30s to 0s/10s — probed from the moment it started,   │
+│   before it had reached its hardware.                            │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ no --from-pod, no --no-from-pod ──▶ exit 2
+                                  ├─ kubectl could not read it ────────▶ exit 2
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ TAKE THE THREE OFF THE CONTAINER  --container NAME, or the first │
+│                                                                  │
+│   entrypoint  command + args, shell-quoted back into the one     │
+│               string the supervisor execs. A container already   │
+│               carrying the layout is *unwrapped*, never wrapped  │
+│               twice: a supervisor inside a supervisor would hold │
+│               on a file the inner one never sees.                │
+│   gid         runAsGroup, or the placeholder where the pod       │
+│               states none. Never 0.                              │
+│   probe       the whole livenessProbe, timings and all, where it │
+│               is an exec one. No probe at all is not an error.   │
+│                                                                  │
+│   A flag you passed wins over the pod, every time. That is what  │
+│   makes --entrypoint an answer to a target whose command lives   │
+│   in the image's ENTRYPOINT — nowhere in the pod spec, so        │
+│   nothing read from the cluster finds it — without giving up the │
+│   other two as well.                                             │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ SAY WHAT THE OUTPUT CANNOT SAY FOR ITSELF        → stderr        │
+│                                                                  │
+│   a non-exec probe   emitted around, with a warning: an httpGet  │
+│                      probe answers from the application, and the │
+│                      application is what is down while a pod is  │
+│                      held. An absent probe block otherwise looks │
+│                      identical to the fastcs case, and the       │
+│                      difference is whether a held pod survives.  │
+│   the target's own   volumes: and volumeMounts: *replace* the    │
+│   volumes            chart's keys rather than adding to them, so │
+│                      they are named and the resolution is spelt  │
+│                      out. Podbench cannot merge them itself:     │
+│                      from a live pod, a chart-generated volume   │
+│                      and one the service declared for itself are │
+│                      indistinguishable.                          │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+                                  the five keys, needing no hand-editing
+```
+
+`--no-from-pod` is the escape, for CI, an offline machine, or a pod that does not
+exist yet; it emits from `--entrypoint`, `--gid`, `--liveness` and
+`--liveness-probe` alone. It is also the exact route that produced #176, so every
+failure reading the pod names it *and* what taking it costs. kubectl tells a
+missing kubeconfig, an absent pod and a forbidden `get pods` apart only in the
+text of its own message, so podbench relays that verbatim rather than guessing at
+a category and getting it wrong.
+
+`values_snippet` itself takes no cluster: `--from-pod` is a thin reading wrapper
+that fills the arguments the emitter already had, and a test asserts the emitter
+acquires no cluster dependency. That is what lets every shape of the output be
+asserted without one.
 
 ### The supervisor
 
@@ -442,6 +517,12 @@ the fix is now in the image too.
    2  kubectl -n NS exec -c APP POD -- sh -c 'cat manifest; cat hold; date'
                                                      # per candidate pod
    3  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
+
+  --print-values:
+   1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
+   2  kubectl -n NS get pod POD -o json                # nothing else, and
+                                                       # nothing at all under
+                                                       # --no-from-pod
 ```
 
 Nothing patches a workload and nothing deletes a pod. `rbac.hotfix` — on top of
