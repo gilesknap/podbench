@@ -27,7 +27,7 @@ $ podbench --help
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
 │ dev            create or delete the dev pod                                                      │
-│ hotfix         durable in-place fixes on a claim-backed venv                                     │
+│ hotfix         durable in-place fixes on a claim beside the application                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Inside the debug container ─────────────────────────────────────────────────────────────────────╮
 │ agent          prepare the container for ssh and idle as its PID 1                               │
@@ -432,8 +432,8 @@ Notes:
     rejects the whole request — and dropping it silently would give the seat the
     volume root where the application sees one directory inside it, so every
     path Hotfix mode recorded would resolve to the wrong thing. Deploy the claim
-    mounted whole over the venv path, or use `podbench dev`, whose seat is an
-    ordinary container.
+    mounted whole at its own mountPath, beside the application's project, or use
+    `podbench dev`, whose seat is an ordinary container.
   * Mounts are fixed when a container is created, so `--mount` against a
     reconnect warns and does nothing. Use `--new` for a seat with a new mount.
 * **The seat's home is mounted by convention, not by flag.** If the pod declares
@@ -1073,8 +1073,8 @@ seat, where the claim is already in this process's own mount namespace.
 │ --help                               Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
-│ init         verify the seeded claim, clone the source, editable-install                         │
-│ apply        commit the change on the claim and roll the workload                                │
+│ init         seed the claim from the running container, clone the source, rebuild the venv       │
+│ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -1089,8 +1089,8 @@ seat, where the claim is already in this process's own mount namespace.
 | `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags:
-`--venv` (the mountPath the claim is mounted at, which *is* the application's
-venv path), `--container`, `--seat`, `--local`, `--author`.
+`--venv` (the mountPath the claim is mounted at, beside the application's own
+project and never over it), `--container`, `--seat`, `--local`, `--author`.
 
 Notes:
 
@@ -1651,8 +1651,8 @@ missing the architecture helper.
 
 Only **Observe** mode needs any of this. A `dev` pod relaunches the app as the
 seat's own child in this container, where debugpy is an ordinary workspace-venv
-dependency; Hotfix mounts the same PVC over the venv at the same path in both
-containers. `--provision` says so rather than installing anyway.
+dependency; Hotfix mounts the same PVC beside the application at the same path
+in both containers. `--provision` says so rather than installing anyway.
 
 `miDebuggerPath` names `/usr/local/bin/gdb-podbench`, never `/usr/bin/gdb`:
 cpptools launches gdb inheriting its own extension directory as a working

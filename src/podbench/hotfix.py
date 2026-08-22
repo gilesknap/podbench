@@ -2601,7 +2601,8 @@ _Venv = Annotated[
     typer.Option(
         "--venv",
         metavar="PATH",
-        help="the mountPath the claim is mounted at, i.e. the application's venv path",
+        help="the mountPath the claim is mounted at, beside the application's "
+        "own project and never over it",
     ),
 ]
 _Container = Annotated[
@@ -3027,7 +3028,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     # closure would shadow them into a recursion.
     @app.command(
         name="init",
-        help="verify the seeded claim, clone the source, editable-install",
+        help="seed the claim from the running container, clone the source, "
+        "rebuild the venv",
     )
     def init_command(
         target: _Target,
@@ -3090,7 +3092,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         )
         raise typer.Exit(_report(actions))
 
-    @app.command(help="commit the change on the claim and roll the workload")
+    @app.command(help="commit the change on the claim and relaunch the running child")
     def apply(
         target: _Target,
         message: Annotated[

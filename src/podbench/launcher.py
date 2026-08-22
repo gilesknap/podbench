@@ -2070,6 +2070,15 @@ class Session:
     ``attach`` still cannot project it. :func:`features` says so rather than
     leaving them to wonder why ssh is unavailable on a pod they prepared."""
 
+    hotfixed: bool = False
+    """Whether the pod this seat is in carries the hotfix layout.
+
+    Read once in :func:`attach` and carried, because :func:`features` is handed
+    a ``Session`` and never the pod json — and the two questions it changes are
+    both asked there. Defaulted so a ``Session`` built in a test states only
+    what it is about.
+    """
+
     probes: tuple[ProbeBudget, ...] = ()
     """The target's probes, and the deadline each puts on a pause.
 
@@ -2464,6 +2473,10 @@ def attach(
     session = replace(
         session,
         headroom=headroom,
+        # Carried rather than re-read: `features` is handed a Session and never
+        # the pod, and this is the last place both are in hand. It changes two
+        # rows of the report, and #179 is what they said without it.
+        hotfixed=is_hotfixed(pod_json),
         identity_declared=identity_declared,
         probes=budgets,
         seat_version=seat_version,
@@ -3457,7 +3470,7 @@ def features(session: Session) -> tuple[Feature, ...]:
             Feature("live attach (gdb -p <pid>)", False, unknown, note=deadline),
             Feature(READS_FEATURE, False, unknown),
             Feature(LAUNCH_FEATURE, False, unknown),
-            _iterate_feature(),
+            _iterate_feature(session.hotfixed),
             *_seat_features(session),
         )
     return (
@@ -3488,7 +3501,7 @@ def features(session: Session) -> tuple[Feature, ...]:
             if report.child_attach_ok is False
             else "the scratch attach was not measured, so this is not claimed",
         ),
-        _iterate_feature(),
+        _iterate_feature(session.hotfixed),
         *_seat_features(session),
     )
 
@@ -3609,7 +3622,27 @@ def _identity_note(session: Session, *, usable: bool) -> str:
     )
 
 
-def _iterate_feature() -> Feature:
+def _iterate_feature(hotfixed: bool = False) -> Feature:
+    """The relaunch loop, which a pod carrying the hotfix layout *does* support.
+
+    The reason below is right about an ordinary pod and was reported unchanged
+    on both p47 pods, where it was false in both of its halves: the supervisor
+    is PID 1, so killing the child does not restart the container, and the probe
+    is the hold-aware wrapper, which returns 0 while the hold exists. That is
+    #179 — a true sentence about a pod other than the one in front of the user.
+
+    Decided from the same spec-derived predicate the mount is
+    (:func:`is_hotfixed`), so the tick and the claim in the seat cannot disagree.
+    """
+    if hotfixed:
+        return Feature(
+            "iterate (edit, relaunch, verify through the Service)",
+            True,
+            note="`podbench hotfix apply` relaunches the application's own "
+            "child in place: this pod carries the supervisor, so the loop runs "
+            "on the live workload without a second pod and without restarting "
+            "the container.",
+        )
     return Feature(
         "iterate (edit, relaunch, verify through the Service)",
         False,

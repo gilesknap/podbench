@@ -22,6 +22,7 @@ from podbench.budget import (
     probe_budgets,
     probe_qualifier,
 )
+from podbench.hotfix import wrapped_liveness_probe
 
 APP = "app"
 
@@ -193,3 +194,89 @@ def test_the_qualifier_leads_with_the_soonest_deadline() -> None:
 
 def test_a_container_the_pod_does_not_have_has_no_budget() -> None:
     assert probe_budgets(pod_document(DEMO_PROBES), "sidecar") == ()
+
+
+# -- the hold-aware wrapper imposes no deadline (issue #179) ----------------
+
+
+def wrapped(inner: str = "/bin/true") -> dict[str, Any]:
+    """A livenessProbe as `hotfix --print-values` emits it."""
+    return {
+        "exec": {"command": ["bash", "-c", wrapped_liveness_probe([inner])]},
+        "initialDelaySeconds": 120,
+        "periodSeconds": 30,
+    }
+
+
+def one_probe(probe: dict[str, Any], field: str = "livenessProbe") -> dict[str, Any]:
+    return {"spec": {"containers": [{"name": "app", field: probe}]}}
+
+
+def test_a_hold_aware_probe_is_recognised_from_its_command() -> None:
+    """Read from the handler and not from the pod carrying the layout: it is the
+    *handler* that decides whether the kubelet restarts a held container, and a
+    pod can be given one without the other."""
+    (budget,) = probe_budgets(one_probe(wrapped()), "app")
+
+    assert budget.hold_aware
+    # The numbers are still right - they are what it costs once the hold is gone.
+    assert budget.window == "61-91s"
+
+
+def test_an_ordinary_probe_is_not_hold_aware() -> None:
+    probe = {"exec": {"command": ["/bin/true"]}, "periodSeconds": 30}
+    (budget,) = probe_budgets(one_probe(probe), "app")
+
+    assert not budget.hold_aware
+
+
+def test_a_non_exec_probe_is_not_hold_aware() -> None:
+    """An httpGet probe answers from the application, which is what is down
+    while a pod is held - there is nothing there to short-circuit."""
+    probe = {"httpGet": {"path": "/healthz", "port": 8080}}
+    (budget,) = probe_budgets(one_probe(probe), "app")
+
+    assert not budget.hold_aware
+
+
+def test_the_qualifier_reports_no_deadline_while_the_hold_is_in_place() -> None:
+    """Issue #179. On `bl47p-mo-ioc-01` this said `liveness at 61-91s` about a
+    probe that was already podbench's wrapper - a true budget about a restart
+    that cannot happen."""
+    text = probe_qualifier("app", probe_budgets(one_probe(wrapped()), "app"))
+
+    assert "TIME-LIMITED" not in text
+    assert "no deadline while the hold is in place" in text
+    assert "/tmp/podbench-hold" in text
+    # And it does not pretend the probe is absent: the budget is still named as
+    # what applies once the hold is gone.
+    assert "61-91s" in text
+
+
+def test_a_target_probe_beside_a_wrapped_one_keeps_its_own_deadline() -> None:
+    """Only the liveness probe is wrapped. A readiness probe is still the
+    target's own and still drops it out of the Service, so suppressing both
+    would trade one wrong report for another."""
+    pod = {
+        "spec": {
+            "containers": [
+                {
+                    "name": "app",
+                    "livenessProbe": wrapped(),
+                    "readinessProbe": {
+                        "exec": {"command": ["/bin/true"]},
+                        "periodSeconds": 5,
+                        "initialDelaySeconds": 2,
+                    },
+                }
+            ]
+        }
+    }
+
+    text = probe_qualifier("app", probe_budgets(pod, "app"))
+
+    assert "TIME-LIMITED" in text
+    assert "readiness at 11-16s" in text
+    # The liveness one is named as imposing none, rather than silently dropped.
+    assert "hold-aware wrapper and imposes none" in text
+    assert "liveness at 61-91s" not in text
