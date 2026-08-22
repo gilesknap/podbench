@@ -12,7 +12,21 @@ metadata:
     # A hotfix is an emergency fix that has to survive every restart and reschedule
     # until the next shutdown. Losing the volume loses the fix and, worse, silently
     # reverts the running code to the released image.
+    #
+    # Two annotations, because they guard different events and neither implies the
+    # other. Argo CD does honour Helm's - its docs list it as equivalent to
+    # `Delete=false` - but that is the *Application* being deleted, and ending a
+    # hotfix is never that: somebody flips the boolean off, removes the values or
+    # reverts a repoint, and the claim leaves the desired state on an ordinary
+    # sync. That is `Prune=false`.
+    #
+    # Measured rather than assumed (issue #190, p47-beamline, 2026-08-22): a claim
+    # carrying `keep` alone was pruned three minutes after it left the desired
+    # state, and its `Delete`-reclaim PV was deleted with it. Keeping Helm's
+    # annotation is not redundant either - it is what a plain `helm uninstall`
+    # honours for anyone not running Argo at all.
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     {{- with $.Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

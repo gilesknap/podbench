@@ -3,8 +3,8 @@ name: podbench
 description: >-
   Cluster-side prerequisites for podbench — the RBAC that lets a team attach a
   debug seat to their own pods, the optional scratch PVC that makes Iterate-mode
-  workspaces survive dev-pod teardown, and the venv PVC that Hotfix mode mounts
-  over an application's site-packages.
+  workspaces survive dev-pod teardown, and the project PVC that Hotfix mode
+  mounts beside an application's own code, never over it.
 
 # A chart can be either an 'application' or a 'library' chart.
 type: application
