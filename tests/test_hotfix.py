@@ -18,12 +18,15 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
+from unittest import mock
 
 import pytest
 import yaml
 
 from podbench import hotfix, model
 from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
+from podbench.launcher import Session
+from podbench.model import ContainerRef, PodRef, Rung
 
 VENV = "/opt/venv"
 CHECKOUT = "/podbench/app"
@@ -289,21 +292,6 @@ def test_manifest_from_a_newer_schema_version_is_refused() -> None:
     payload = json.dumps({"version": hotfix.MANIFEST_VERSION + 1, "commit": HEAD_SHA})
     with pytest.raises(hotfix.ManifestVersionError, match="Upgrade podbench"):
         hotfix.HotfixManifest.from_json(payload)
-
-
-def test_manifest_annotations_carry_the_marker_and_the_document() -> None:
-    manifest = a_manifest()
-    annotations = hotfix.manifest_annotations(manifest)
-    assert annotations[hotfix.HOTFIXED_ANNOTATION] == "true"
-    assert annotations[hotfix.APPLIED_ANNOTATION] == manifest.timestamp
-    assert (
-        hotfix.HotfixManifest.from_json(annotations[hotfix.MANIFEST_ANNOTATION])
-        == manifest
-    )
-
-
-def test_manifest_from_pod_is_none_without_the_annotation() -> None:
-    assert hotfix.manifest_from_pod(pod_json()) is None
 
 
 # -- paths and small pure helpers ------------------------------------------
@@ -1498,8 +1486,57 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
 
 
 def test_seat_is_required_and_says_how_to_get_one() -> None:
+    """The verbs *after* `init`. By then the seat existed, so a missing one
+    means it died or the pod was replaced - a thing to be told about, not to
+    paper over by spending another ephemeral container name."""
     runner = FakeRunner(
         {"get pod solo -o json": json.dumps(pod_json(name="solo", seat=False))}
     )
     with pytest.raises(hotfix.HotfixError, match="podbench attach"):
         hotfix.seat_container(kube(runner), "solo", None)
+
+
+def test_init_lands_its_own_seat_rather_than_sending_the_user_to_attach(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Issue #177's other half. `podbench vscode` lands a seat sized for an
+    editor instead of telling somebody to go and attach one, and there is no
+    reason `hotfix init` should be the verb that makes the user do it by hand -
+    least of all now that the attach it would ask for is the one that mounts the
+    claim."""
+    runner = FakeRunner(
+        {"get pod solo -o json": json.dumps(pod_json(name="solo", seat=False))}
+    )
+    landed: list[tuple[str, str]] = []
+
+    def fake_attach(kube: Kubectl, pod: str, **kwargs: object) -> Session:
+        landed.append((kube.namespace, pod))
+        return Session(
+            seat=ContainerRef(PodRef("demo", pod), "podbench-1"),
+            workload="app",
+            rung=Rung.DEGRADED,
+            reused=False,
+            warnings=("the claim was mounted at /podbench/app",),
+        )
+
+    with mock.patch.object(hotfix, "attach", fake_attach):
+        name = hotfix.seat_container(kube(runner), "solo", None, land=True)
+
+    assert name == "podbench-1"
+    assert landed == [("demo", "solo")]
+    out = capsys.readouterr().out
+    # Said before the attach, because landing a seat is the slow part and a user
+    # watching a silent minute deserves to know what podbench chose to do.
+    assert "no seat is running in solo" in out
+    # And the mount nobody typed is named, because that is the only thing that
+    # makes taking it acceptable.
+    assert "/podbench/app" in out
+
+
+def test_a_named_seat_is_never_second_guessed_by_landing_another() -> None:
+    """`--seat` is for a seat named something other than podbench-N, and taking
+    it at its word is the whole of what it is for."""
+    runner = FakeRunner({})
+
+    assert hotfix.seat_container(kube(runner), "solo", "mine", land=True) == "mine"
+    assert runner.calls == []

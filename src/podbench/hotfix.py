@@ -73,27 +73,23 @@ from .kubectl import (
     Runner,
     run_subprocess,
 )
-from .launcher import CONTAINER_BASE, kubectl_for, running_seat
+from .launcher import CONTAINER_BASE, attach, kubectl_for, running_seat
 from .model import (
     HOTFIX_APP_PATH,
     HOTFIX_CHILD_PID_PATH,
     HOTFIX_CLAIM_VOLUME,
     HOTFIX_HOLD_PATH,
     HOTFIX_INTERPRETER_PATH,
-    HOTFIXED_ANNOTATION,
     SEAT_HOME_VOLUME,
     PodRef,
     as_dict,
 )
 
 __all__ = [
-    "APPLIED_ANNOTATION",
-    "MANIFEST_ANNOTATION",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
     "MAX_RECORDED_COMMITS",
     "METADATA_FILES",
-    "HOTFIXED_ANNOTATION",
     "SEAT_HOME_SIZE",
     "InterpreterProbe",
     "LocalStore",
@@ -123,11 +119,9 @@ __all__ = [
     "interpreter_warning",
     "main",
     "claim_container",
-    "manifest_annotations",
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
-    "manifest_from_pod",
     "manifest_path",
     "metadata_changed",
     "normalise_interpreter",
@@ -161,17 +155,6 @@ all, which is version 0) loads with defaults for what it lacks, because a future
 podbench will meet volumes written by this one and by whatever came before it. A
 *higher* version is refused outright — guessing at fields we have never seen is
 how a fix silently loses its provenance.
-"""
-
-MANIFEST_ANNOTATION = "podbench.dev/hotfix-manifest"
-"""The manifest itself, so ``status`` needs one ``get pods`` and no exec."""
-
-APPLIED_ANNOTATION = "podbench.dev/hotfix-applied-at"
-"""A timestamp that changes on every apply.
-
-Annotating a pod template with an unchanged body is a no-op and no rollout
-happens, which would leave the fix on the volume and the old process running.
-This is the same trick ``kubectl rollout restart`` uses.
 """
 
 MAX_RECORDED_COMMITS = 20
@@ -436,24 +419,6 @@ def seed_source(container_root: str = "/proc/1/root") -> tuple[str, str]:
     """
     root = container_root.rstrip("/")
     return f"{root}/app", f"{root}/python"
-
-
-def manifest_annotations(manifest: HotfixManifest) -> dict[str, str]:
-    """The annotations that mark a pod (or pod template) as hotfixed."""
-    return {
-        HOTFIXED_ANNOTATION: "true",
-        MANIFEST_ANNOTATION: manifest.to_json(),
-        APPLIED_ANNOTATION: manifest.timestamp,
-    }
-
-
-def manifest_from_pod(pod_json: Mapping[str, Any]) -> HotfixManifest | None:
-    """The manifest a pod's annotations carry, or ``None`` if it has none."""
-    annotations = as_dict(as_dict(pod_json.get("metadata")).get("annotations"))
-    raw = _as_str(annotations.get(MANIFEST_ANNOTATION))
-    if raw is None:
-        return None
-    return HotfixManifest.from_json(raw)
 
 
 # -- reaching the volume ---------------------------------------------------
@@ -1064,25 +1029,55 @@ def _phase(pod_json: Mapping[str, Any]) -> str:
     return _as_str(as_dict(pod_json.get("status")).get("phase")) or ""
 
 
-def seat_container(kube: Kubectl, pod: str, requested: str | None) -> str:
+def seat_container(
+    kube: Kubectl, pod: str, requested: str | None, *, land: bool = False
+) -> str:
     """The podbench container that mounts the same claim.
 
     Hotfix mode's premise is that this container exists: it is the one with git
     and a shell, and — because it mounts the claim at the identical mountPath —
     the one place where the checkout and the venv resolve to the same paths the
     application sees.
+
+    ``land`` makes that premise this function's job rather than the user's, the
+    way ``podbench vscode`` lands a seat sized for an editor instead of telling
+    somebody to go and attach one. ``init`` passes it: needing to type ``attach``
+    before ``hotfix init`` is ceremony for a step podbench can take itself, and
+    it is the same ``attach`` either way - since #177 that attach mounts the
+    claim on its own, so the seat it lands is one this mode can use.
+
+    The verbs that follow ``init`` deliberately do **not** pass it. By then the
+    seat exists, and a missing one means it died or the pod was replaced -
+    which is a thing to be told about, not to paper over by silently spending
+    another ephemeral container name.
     """
     if requested is not None:
         return requested
     seat = running_seat(kube.get_pod(pod))
-    if seat is None:
+    if seat is not None:
+        return seat.name
+    if not land:
         raise HotfixError(
             f"no running podbench container in pod {pod}. Hotfix mode reaches the "
             "claim through the seat, which must mount it at the same mountPath "
             f"as the application: run `podbench attach {pod}` first, or "
             f"pass --seat if it is named something other than {CONTAINER_BASE}-N."
         )
-    return seat.name
+    # Said before the attach rather than after it: landing a seat is the slow
+    # part of `hotfix init` and a user watching a silent minute deserves to know
+    # what podbench decided to do on their behalf.
+    emit(
+        f"podbench: no seat is running in {pod}, so one is being landed - "
+        "hotfix mode reaches the claim through a seat, and `attach` mounts the "
+        "claim itself on a pod carrying the layout."
+    )
+    session = attach(kube, pod)
+    # `attach`'s own report is not printed here, but the lines that describe
+    # *this* seat's mounts are: the claim is mounted without being asked for,
+    # and a mount nobody typed is only acceptable if the output names it.
+    for warning in session.warnings:
+        emit(f"podbench: {warning}")
+    return session.seat.container
 
 
 # -- health ----------------------------------------------------------------
@@ -2415,11 +2410,13 @@ _KubectlBinary = Annotated[
 
 
 def _store_for(
-    kube: Kubectl, pod: str, *, seat: str | None, local: bool
+    kube: Kubectl, pod: str, *, seat: str | None, local: bool, land: bool = False
 ) -> HotfixStore:
     if local:
         return LocalStore()
-    return PodStore(kube=kube, pod=pod, container=seat_container(kube, pod, seat))
+    return PodStore(
+        kube=kube, pod=pod, container=seat_container(kube, pod, seat, land=land)
+    )
 
 
 def _report(actions: Sequence[str]) -> int:
@@ -2590,7 +2587,12 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
-        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
+        # The one verb that lands its own seat when none is running. See
+        # `seat_container`: `init` is where the seat first has to exist, so it
+        # is where podbench should be the one to arrange it.
+        store = _store_for(
+            kube, resolved.pod.name, seat=seat, local=local, land=not local
+        )
         _, actions = init(
             kube,
             store,

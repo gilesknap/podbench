@@ -43,7 +43,6 @@ __all__ = [
     "TARGET_CID_ENV",
     "TARGET_NAME_ENV",
     "DEVPOD_LABEL",
-    "HOTFIXED_ANNOTATION",
     "HOTFIX_APP_PATH",
     "HOTFIX_CLAIM_VOLUME",
     "HOTFIX_CHILD_PID_PATH",
@@ -743,12 +742,13 @@ class Blocker(enum.Enum):
 DEVPOD_LABEL = "podbench.dev/devpod"
 """Marks a pod as Iterate mode's sacrificial clone.
 
-Here rather than in :mod:`podbench.spec`, beside the annotation below, because
-the pair is one vocabulary: they are how a *listing* tells podbench's three
-modes apart, and a listing reads them together or not at all.
+Here rather than in :mod:`podbench.spec` because it is half of how a *listing*
+tells podbench's three modes apart, and a listing reads that vocabulary
+together or not at all. Hotfix mode's half used to be an annotation beside
+this; it is now :data:`HOTFIX_CLAIM_VOLUME` and the supervisor in the pod spec,
+because Argo strips pod-template annotations on self-heal and a label podbench
+never gets to write is a signal that reads ``False`` forever (#32, #177).
 """
-
-HOTFIXED_ANNOTATION = "podbench.dev/hotfixed"
 
 HOTFIX_CLAIM_VOLUME = "podbench-app"
 """The volume carrying a hotfixed project, mounted *beside* the application.
@@ -830,11 +830,12 @@ class SeatKind(enum.Enum):
     invisible to anything reading ``spec.ephemeralContainers``."""
 
     HOTFIX = "hotfix"
-    """An ephemeral container in a pod annotated :data:`HOTFIXED_ANNOTATION`
-    that mounts one of the workload's own volumes - the claim the venv lives
-    on. The mount is what makes it this kind and not :attr:`ATTACH`: a seat
-    without it resolves the image's venv while the application runs the
-    claim's."""
+    """An ephemeral container in a pod carrying the hotfix layout - it declares
+    :data:`HOTFIX_CLAIM_VOLUME` and runs the supervisor
+    (``podbench.launcher.is_hotfixed``) - that mounts one of the workload's own
+    volumes, the claim the project lives on. The mount is what makes it this
+    kind and not :attr:`ATTACH`: a seat without it resolves the image's venv
+    while the application runs the claim's."""
 
 
 class Rung(enum.Enum):

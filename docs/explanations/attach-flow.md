@@ -66,10 +66,15 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
 │   workload container = --target, else spec.containers[0]         │
 │   --mount CLAIM:PATH → resolved against spec.volumes only        │
 │   podbench-home volume declared? → mounted by convention         │
+│   hotfix layout on the pod?      → the claim, at the app's own   │
+│                                    mountPath, also by convention │
 │   podbench-identity declared?    → *never* mounted here          │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ├─ --mount names no declared volume ▶ exit 2
                                   ├─ the app mounts it with subPath ─▶ exit 2
+                                  │     — for a --mount you typed. A convention
+                                  │       that cannot copy the path notes it and
+                                  │       lands without, rather than refusing
                                   ▼
                    ┌────────────────────────────────┐
                    │ is a podbench-N container      │
@@ -317,7 +322,7 @@ subresource takes the spec verbatim, so the launcher posts to it directly.
 |---|---|
 | public key read before the pod is chosen | picking a pod, then being told the attach was never possible |
 | `--mount` resolved against `spec.volumes` | an API-server error naming a volume podbench invented — pod volumes are immutable, so an attach can never *add* one |
-| application mount uses `subPath` → refuse | a seat that silently resolves a different tree at the same path (an ephemeral container may not carry `subPath`) |
+| application mount uses `subPath` → refuse the `--mount`, note the convention | a seat that silently resolves a different tree at the same path (an ephemeral container may not carry `subPath`) |
 | `runAsNonRoot: true` read up front | the kubelet accepting-then-refusing a root container seconds later, burning the name |
 | target uid absent → skip the degraded rung | a root seat that quietly loses the sysroot, maps, environ and exe reads that rung exists for |
 | `SYS_PTRACE` beside a non-zero `runAsUser` → raise | a container that looks privileged and behaves unprivileged (`CapEff: 0`, bare `EPERM` on every ptrace) |

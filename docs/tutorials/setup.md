@@ -184,9 +184,7 @@ Read the whole list, with the reasoning for each, in
 | `services` | `get`, `list`, `patch` | Iterate mode with `--take-traffic`/`--cutover` only |
 | `pods/resize` | `get`, `patch` | `attach --resize`, and `podbench vscode` unless `--no-resize` |
 | `persistentvolumeclaims` | `get`, `list` | Iterate mode, optional scratch claim |
-| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | Hotfix mode |
-| `apps`: `deployments`, `statefulsets` | `patch` | Hotfix mode — writes the provenance annotations, and that same edit rolls the workload |
-| `pods` | `patch`, `delete` | Hotfix mode |
+| `apps`: `deployments`, `statefulsets`, `replicasets` | `get` | Hotfix mode — a read-only walk to refuse a multi-replica target, and all it needs |
 
 `podbench doctor` asks the cluster this table one verb at a time and reports it
 per feature, so you find out before the attach rather than during it.

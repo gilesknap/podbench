@@ -23,6 +23,7 @@ import pytest
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
 from podbench.console import console, wrap, wrap_width
+from podbench.hotfix import hold_loop_args
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
     DEFAULT_CALL_TIMEOUT,
@@ -55,6 +56,8 @@ from podbench.launcher import (
     format_seats,
     format_session,
     host_alias_in,
+    hotfix_claim_mounts,
+    is_hotfixed,
     kubectl_for,
     main,
     match_pod_names,
@@ -68,9 +71,11 @@ from podbench.launcher import (
     resolve_pod,
     resolve_pod_name,
     running_seat,
+    runs_hotfix_supervisor,
     same_build,
     seat_layout,
     seats,
+    shares_workload_volume,
     ssh_config_path,
     superseded_seats,
     target_container_name,
@@ -80,7 +85,8 @@ from podbench.launcher import (
 )
 from podbench.model import (
     DEVPOD_LABEL,
-    HOTFIXED_ANNOTATION,
+    HOTFIX_APP_PATH,
+    HOTFIX_CLAIM_VOLUME,
     PTRACE_READ_PATHS,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
@@ -197,6 +203,7 @@ def pod_document(
     phase: str = "Running",
     ready: bool = True,
     probes: Mapping[str, Any] | None = None,
+    args: Sequence[str] = (),
     host_network: bool = False,
     siblings: Sequence[str] = (),
     reported_uid: int | None = None,
@@ -215,6 +222,8 @@ def pod_document(
     workload: dict[str, Any] = {"name": container, "securityContext": security}
     if volume_mounts:
         workload["volumeMounts"] = [dict(mount) for mount in volume_mounts]
+    if args:
+        workload["args"] = list(args)
     workload.update(probes or {})
     return {
         "apiVersion": "v1",
@@ -1681,6 +1690,156 @@ def identity_pod(**overrides: Any) -> dict[str, Any]:
     }
     settings.update(overrides)
     return pod_document(**settings)
+
+
+# -- the claim, mounted by the same convention (issue #177) -----------------
+
+HOTFIX_CLAIM: dict[str, Any] = {
+    "name": HOTFIX_CLAIM_VOLUME,
+    "persistentVolumeClaim": {"claimName": "myapp-podbench"},
+}
+
+
+def layout_pod(**overrides: Any) -> dict[str, Any]:
+    """A pod deployed with the hotfix layout: the claim, mounted, supervised.
+
+    Exactly what `podbench hotfix --print-values` emits and Argo renders, and
+    the two halves `is_hotfixed` reads. The home volume comes along because a
+    real deployment has both - the values emit them together - and because the
+    claim has to be shown not to displace it.
+    """
+    settings: dict[str, Any] = {
+        "uid": 1000,
+        "volumes": [HOME_VOLUME, HOTFIX_CLAIM],
+        "volume_mounts": [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH}],
+        "args": [hold_loop_args("myapp serve")],
+    }
+    settings.update(overrides)
+    return pod_document(**settings)
+
+
+def test_a_seat_on_a_hotfixed_pod_gets_the_claim_without_being_asked() -> None:
+    """The whole of #177 from the attach end.
+
+    The claim was mounted, the pod was prepped and the PVC was Bound, and
+    `hotfix init` still refused with "/podbench/app is not present" - because
+    `attach` mounted `podbench-home` and nothing else, so the *seat* was the one
+    container in the pod that could not see it. An ephemeral container's
+    volumeMounts are fixed at creation, so this is the only moment it can be
+    fixed at all.
+    """
+    cluster = FakeCluster(layout_pod())
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    mounts = cluster.added[0]["volumeMounts"]
+    assert {"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH} in mounts
+    # And it did not cost the home volume its place.
+    assert {"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH} in mounts
+    # A mount nobody typed is only acceptable if the output names it.
+    assert any(HOTFIX_CLAIM_VOLUME in warning for warning in session.warnings)
+    assert any("/podbench/app" in warning for warning in session.warnings)
+
+
+def test_the_seat_that_gets_the_claim_reads_back_as_a_hotfix_seat() -> None:
+    """The mount is not merely present, it is the one `seat_kind` keys on -
+    which is what makes `SeatKind.HOTFIX` reachable again. It would not be if
+    the claim had been added to `_CONVENTION_VOLUMES` beside the home volume."""
+    pod = layout_pod()
+    cluster = FakeCluster(pod)
+    attach(talking_to(cluster), "target", probe=False)
+
+    assert shares_workload_volume(pod, cluster.added[0], "app")
+
+
+def test_a_pod_without_the_layout_is_attached_to_exactly_as_before() -> None:
+    """The falsification this convention has to survive: a plain `gdb` or
+    `vscode` seat on a pod that knows nothing about hotfix mode must land with
+    the mounts it always had. The claim is authored off `is_hotfixed`, so a pod
+    that fails either half of it is untouched by this."""
+    cluster = FakeCluster(identity_pod())
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert cluster.added[0]["volumeMounts"] == EXPECTED_SEAT_MOUNTS
+    assert not any(HOTFIX_CLAIM_VOLUME in warning for warning in session.warnings)
+
+
+def test_a_claim_volume_without_a_supervisor_is_not_mounted_by_convention() -> None:
+    """Half the layout is not the layout. A pod that happens to carry a volume
+    of that name gets no mount it did not ask for - the seat is the user's, and
+    podbench may only take a liberty where the deployment plainly invited it."""
+    cluster = FakeCluster(layout_pod(args=[]))
+    attach(talking_to(cluster), "target", probe=False)
+
+    assert not any(
+        mount["name"] == HOTFIX_CLAIM_VOLUME
+        for mount in cluster.added[0].get("volumeMounts", [])
+    )
+
+
+def test_the_claim_is_mounted_at_the_applications_own_path_not_the_constant() -> None:
+    """Hotfix mode's premise is that the claim resolves identically in both: the
+    venv's bin/python and the checkout's editable install are absolute paths
+    recorded on the claim. So the application's mountPath is copied, and the
+    constant is only the fallback."""
+    cluster = FakeCluster(
+        layout_pod(
+            volume_mounts=[{"name": HOTFIX_CLAIM_VOLUME, "mountPath": "/srv/podbench"}]
+        )
+    )
+    attach(talking_to(cluster), "target", probe=False)
+
+    assert {
+        "name": HOTFIX_CLAIM_VOLUME,
+        "mountPath": "/srv/podbench",
+    } in cluster.added[0]["volumeMounts"]
+
+
+def test_an_explicit_mount_still_wins_over_the_claim_convention() -> None:
+    """`--mount` is what somebody typed on purpose, and two mounts of one path
+    is not a tie the kubelet breaks sensibly."""
+    cluster = FakeCluster(layout_pod())
+    attach(
+        talking_to(cluster),
+        "target",
+        mounts=[f"{HOTFIX_CLAIM_VOLUME}:{HOTFIX_APP_PATH}"],
+        probe=False,
+    )
+
+    claims = [
+        mount
+        for mount in cluster.added[0]["volumeMounts"]
+        if mount["name"] == HOTFIX_CLAIM_VOLUME
+    ]
+    assert claims == [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH}]
+
+
+def test_a_claim_the_seat_cannot_carry_is_a_note_and_not_a_dead_attach() -> None:
+    """`resolve_mounts` refuses an application mount carrying a subPath, because
+    an ephemeral container may not have one and dropping it silently would
+    resolve a different tree at the same path. That refusal is right for a mount
+    somebody typed and wrong for one podbench added on its own initiative."""
+    cluster = FakeCluster(
+        layout_pod(
+            volume_mounts=[
+                {
+                    "name": HOTFIX_CLAIM_VOLUME,
+                    "mountPath": HOTFIX_APP_PATH,
+                    "subPath": "app",
+                }
+            ]
+        )
+    )
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert cluster.added, "the attach must still land a seat"
+    assert any("could not be mounted" in warning for warning in session.warnings), (
+        session.warnings
+    )
+
+
+def test_hotfix_claim_mounts_authors_nothing_on_an_ordinary_pod() -> None:
+    """The pure half, stated on its own: absence is not an error."""
+    assert hotfix_claim_mounts(identity_pod(), "app") == ([], [])
 
 
 def test_the_home_volume_is_mounted_by_convention_not_by_flag() -> None:
@@ -6328,25 +6487,43 @@ def test_features_without_a_report_claim_nothing() -> None:
 # -- which of the three modes a seat is serving (issue #141) ----------------
 
 
-def hotfixed_pod(*, mounted: bool) -> dict[str, Any]:
-    """A pod whose venv is on a claim, with a seat that shares it or does not.
+HOTFIX_MOUNT = {"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH}
 
-    Mirrors what `hotfix init` leaves behind: the annotation on the pod, the
-    claim in `spec.volumes`, and the application mounting it at the path the
-    manifest on the volume records.
+
+def hotfixed_pod(
+    *, mounted: bool, claim: bool = True, supervisor: bool = True
+) -> dict[str, Any]:
+    """A pod deployed to carry a hotfix, with a seat that shares it or does not.
+
+    Mirrors what `podbench hotfix --print-values` emits and Argo then renders:
+    the claim in `spec.volumes`, the application mounting it at
+    `HOTFIX_APP_PATH`, and the supervisor loop as the container's `args`. Not
+    an annotation - podbench never got to write one, because Argo strips
+    pod-template annotations on self-heal (#32), which is the whole of #177.
+
+    `claim` and `supervisor` drop one half each, because the predicate is an
+    `and` and a test that only ever builds both halves cannot see that.
     """
-    mount = {"name": "myapp-venv", "mountPath": "/opt/venv"}
     return pod_document(
         uid=1000,
-        annotations={HOTFIXED_ANNOTATION: "true"},
-        volumes=[{"name": "myapp-venv", "persistentVolumeClaim": {"claimName": "c"}}],
-        volume_mounts=[mount],
+        volumes=(
+            [
+                {
+                    "name": HOTFIX_CLAIM_VOLUME,
+                    "persistentVolumeClaim": {"claimName": "myapp-podbench"},
+                }
+            ]
+            if claim
+            else []
+        ),
+        volume_mounts=[HOTFIX_MOUNT],
+        args=[hold_loop_args("myapp serve")] if supervisor else [],
         ephemeral=[
             {
                 "name": "podbench-1",
                 "targetContainerName": "app",
                 "securityContext": {"runAsUser": 1000},
-                **({"volumeMounts": [mount]} if mounted else {}),
+                **({"volumeMounts": [HOTFIX_MOUNT]} if mounted else {}),
             }
         ],
         ephemeral_statuses=[running_status("podbench-1")],
@@ -6428,16 +6605,40 @@ def test_a_seat_in_a_hotfixed_pod_that_shares_nothing_is_flagged() -> None:
     assert seat.in_hotfixed_pod
 
 
-def test_the_hotfix_kind_needs_the_annotation_as_well_as_the_mount() -> None:
+def test_the_hotfix_kind_needs_the_layout_as_well_as_the_mount() -> None:
     """A ``--mount`` on a pod nobody hotfixed is somebody mounting a volume, and
     calling it Hotfix mode would claim a provenance that is not there."""
-    pod = hotfixed_pod(mounted=True)
-    pod["metadata"]["annotations"] = {}
-
-    (seat,) = seats(pod)
+    (seat,) = seats(hotfixed_pod(mounted=True, claim=False, supervisor=False))
 
     assert seat.kind is SeatKind.ATTACH
     assert not seat.in_hotfixed_pod
+
+
+def test_a_claim_by_that_name_alone_is_not_the_hotfix_layout() -> None:
+    """The half of the predicate a spec-derived read could get wrong. Somebody
+    else's volume happening to be called ``podbench-app`` is not evidence that
+    podbench deployed anything, and reading only the volume would turn three
+    features on against a pod that never carried a hotfix."""
+    pod = hotfixed_pod(mounted=True, supervisor=False)
+
+    assert not is_hotfixed(pod)
+    assert seats(pod)[0].kind is SeatKind.ATTACH
+
+
+def test_the_supervisor_alone_is_not_the_hotfix_layout() -> None:
+    """And the other half. A container can wrap its entrypoint in a relaunch
+    loop for its own reasons; without the claim there is nothing to hotfix."""
+    assert not is_hotfixed(hotfixed_pod(mounted=True, claim=False))
+
+
+def test_the_supervisor_is_read_from_both_of_its_paths() -> None:
+    """Not from the entrypoint it wraps, which is the application's and differs
+    per deployment, and not from either path alone: a container that merely
+    records a child pid, or merely reads a flag file, is not this loop."""
+    assert runs_hotfix_supervisor({"args": [hold_loop_args("anything at all")]})
+    assert not runs_hotfix_supervisor({"args": ["echo $! > /tmp/podbench-child.pid"]})
+    assert not runs_hotfix_supervisor({"args": ["[ -e /tmp/podbench-hold ] || exit"]})
+    assert not runs_hotfix_supervisor({})
 
 
 def test_the_convention_volumes_do_not_make_a_seat_a_hotfix_seat() -> None:
@@ -6448,9 +6649,15 @@ def test_the_convention_volumes_do_not_make_a_seat_a_hotfix_seat() -> None:
     home = {"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}
     pod = pod_document(
         uid=1000,
-        annotations={HOTFIXED_ANNOTATION: "true"},
-        volumes=[{"name": SEAT_HOME_VOLUME, "emptyDir": {}}],
-        volume_mounts=[home],
+        volumes=[
+            {"name": SEAT_HOME_VOLUME, "emptyDir": {}},
+            {
+                "name": HOTFIX_CLAIM_VOLUME,
+                "persistentVolumeClaim": {"claimName": "myapp-podbench"},
+            },
+        ],
+        volume_mounts=[home, HOTFIX_MOUNT],
+        args=[hold_loop_args("myapp serve")],
         ephemeral=[
             {
                 "name": "podbench-1",
