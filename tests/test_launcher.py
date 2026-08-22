@@ -23,7 +23,7 @@ import pytest
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
 from podbench.console import console, wrap, wrap_width
-from podbench.hotfix import hold_loop_args
+from podbench.hotfix import hold_loop_args, wrapped_liveness_probe
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
     DEFAULT_CALL_TIMEOUT,
@@ -1716,6 +1716,62 @@ def layout_pod(**overrides: Any) -> dict[str, Any]:
     }
     settings.update(overrides)
     return pod_document(**settings)
+
+
+def test_the_report_says_iterate_is_available_on_a_hotfixed_pod() -> None:
+    """Issue #179. On both p47 pods `attach` reported `[ ] iterate ... needs a
+    sacrificial dev pod`, which is true of an ordinary pod and false in both its
+    halves here: the supervisor is PID 1, so killing the child does not restart
+    the container, and the probe is the hold-aware wrapper."""
+    cluster = FakeCluster(layout_pod())
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert session.hotfixed
+    (iterate,) = [f for f in features(session) if f.name.startswith("iterate")]
+    assert iterate.available
+    assert "hotfix apply" in iterate.note
+    # The sentence that was wrong here is gone, not merely outvoted.
+    assert "sacrificial" not in iterate.note
+    assert "sacrificial" not in iterate.reason
+
+
+def test_an_ordinary_pod_still_says_iterate_needs_a_dev_pod() -> None:
+    """The reason is right about a pod with no supervisor, and stays."""
+    cluster = FakeCluster(identity_pod())
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert not session.hotfixed
+    (iterate,) = [f for f in features(session) if f.name.startswith("iterate")]
+    assert not iterate.available
+    assert "sacrificial dev pod" in iterate.reason
+
+
+def test_a_hold_aware_probe_costs_the_report_its_restart_deadline() -> None:
+    """The other half of #179, end to end through `attach`: `bl47p-mo-ioc-01`
+    was told `liveness at 61-91s` on a pod whose probe already returned 0 while
+    held."""
+    pod = layout_pod()
+    pod["spec"]["containers"][0]["livenessProbe"] = {
+        "exec": {"command": ["bash", "-c", wrapped_liveness_probe(["/bin/true"])]},
+        "initialDelaySeconds": 120,
+        "periodSeconds": 30,
+    }
+    cluster = FakeCluster(pod)
+
+    session = attach(talking_to(cluster), "target", probe=False)
+    text = format_session(session)
+
+    # The framing is what was wrong, not the arithmetic: 61-91s is a true
+    # statement about this probe once the hold is gone, and it survives as
+    # exactly that. What must not survive is it being called a deadline on a
+    # pause, which is the thing that cannot happen while the pod is held.
+    # Flowed, because the report wraps the note across lines.
+    flowed = " ".join(text.split())
+    assert "TIME-LIMITED" not in flowed
+    assert "no deadline while the hold is in place" in flowed
+    assert "Once the hold is gone the target's own check applies again, at" in flowed
+    (live,) = [f for f in features(session) if f.name.startswith("live attach")]
+    assert "TIME-LIMITED" not in live.note
 
 
 def test_a_seat_on_a_hotfixed_pod_gets_the_claim_without_being_asked() -> None:

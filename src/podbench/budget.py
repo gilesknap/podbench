@@ -30,9 +30,9 @@ from __future__ import annotations
 import enum
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
-from .model import as_dict
+from .model import HOTFIX_HOLD_PATH, and_list, as_dict
 
 __all__ = [
     "DEFAULT_FAILURE_THRESHOLD",
@@ -109,6 +109,22 @@ class ProbeBudget:
     running the kubelet disables the other two — so on a container that is
     Running but not yet started, the liveness deadline the spec states is not
     the deadline in effect.
+    """
+
+    hold_aware: bool = False
+    """Whether this probe is podbench's wrapper, which honours the hold.
+
+    A separate question from :attr:`in_force`, which is about the kubelet's own
+    sequencing. This one is about the *handler*: a probe whose exec command
+    short-circuits on :data:`podbench.model.HOTFIX_HOLD_PATH` returns 0 for as
+    long as the hold exists, so it imposes no deadline on a pause at all — the
+    numbers below are what it costs *once the hold is gone*, and they are
+    correct then.
+
+    Reported against `bl47p-mo-ioc-01` as a ``61-91s`` restart deadline on
+    2026-08-22, on a pod whose probe was already the wrapper. That is #179: a
+    true budget about the wrong probe. #21's arithmetic is right in general and
+    wrong here.
     """
 
     @property
@@ -218,14 +234,37 @@ def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
     arrives first and says least, and a reader who only sees it would take the
     quiet consequence for the whole of it.
 
+    A hold-aware probe imposes no deadline and is not counted as one. It
+    returns 0 for as long as the hold exists, so reporting its arithmetic beside
+    a pause describes a restart that cannot happen — measured on
+    `bl47p-mo-ioc-01` on 2026-08-22 as a confident `61-91s` about the wrong
+    probe, which is #179.
+
     >>> budgets = (ProbeBudget(ProbeKind.READINESS, 5, 1, 3, 2),)
     >>> print(probe_qualifier("app", budgets))  # doctest: +NORMALIZE_WHITESPACE
     TIME-LIMITED: 'app' answers probes, so a pause has a deadline - readiness
     at 11-16s (drops out of the Service, and leaves no trace afterwards).
     Probes cannot be changed on a running pod; `podbench dev` strips all three
+    >>> held = (ProbeBudget(ProbeKind.LIVENESS, 30, 1, 3, 120, hold_aware=True),)
+    >>> print(probe_qualifier("app", held))  # doctest: +NORMALIZE_WHITESPACE
+    no deadline while the hold is in place: 'app' answers its liveness probe
+    through podbench's hold-aware wrapper, which returns 0 whenever
+    /tmp/podbench-hold exists - so nothing restarts it while it is held. Once
+    the hold is gone the target's own check applies again, at 61-91s
     """
-    live = [budget for budget in budgets if budget.in_force]
+    in_force = [budget for budget in budgets if budget.in_force]
+    held = [budget for budget in in_force if budget.hold_aware]
+    live = [budget for budget in in_force if not budget.hold_aware]
     if not live:
+        if held:
+            return (
+                "no deadline while the hold is in place: "
+                f"{container!r} answers its {_and_kinds(held)} probe through "
+                "podbench's hold-aware wrapper, which returns 0 whenever "
+                f"{HOTFIX_HOLD_PATH} exists - so nothing restarts it while it "
+                "is held. Once the hold is gone the target's own check applies "
+                f"again, at {_and_windows(held)}"
+            )
         if budgets:
             return (
                 f"no deadline right now: {container!r} declares probes but none "
@@ -240,6 +279,14 @@ def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
     deadlines = ", ".join(
         budget.deadline for budget in sorted(live, key=lambda budget: budget.earliest)
     )
+    if held:
+        # Both halves matter on a pod carrying the layout: the readiness probe
+        # is the target's own and still drops it out of the Service, while the
+        # liveness one is podbench's and will not restart it.
+        deadlines += (
+            f"; its {_and_kinds(held)} probe is podbench's hold-aware wrapper "
+            "and imposes none while the hold exists"
+        )
     return (
         f"TIME-LIMITED: {container!r} answers probes, so a pause has a deadline "
         f"- {deadlines}. Probes cannot be changed on a running pod; `podbench "
@@ -247,11 +294,39 @@ def probe_qualifier(container: str, budgets: Sequence[ProbeBudget]) -> str:
     )
 
 
+def _hold_aware(probe: Mapping[str, Any]) -> bool:
+    """Whether *probe*'s handler is podbench's hold-aware wrapper.
+
+    Read from the command rather than from the pod carrying the layout, and the
+    two are not the same question: the values deploy the wrapper and the
+    supervisor together, but a pod can be given one without the other, and it is
+    the *handler* that decides whether the kubelet will restart a held
+    container. Matching the path is enough — nothing else in a probe has reason
+    to name it.
+    """
+    words: Any = as_dict(probe.get("exec")).get("command")
+    if not isinstance(words, list):
+        return False
+    return any(
+        isinstance(word, str) and HOTFIX_HOLD_PATH in word
+        for word in cast("list[Any]", words)
+    )
+
+
+def _and_kinds(budgets: Sequence[ProbeBudget]) -> str:
+    return and_list([budget.kind.value for budget in budgets])
+
+
+def _and_windows(budgets: Sequence[ProbeBudget]) -> str:
+    return and_list([budget.window for budget in budgets])
+
+
 def _budget(
     kind: ProbeKind, probe: Mapping[str, Any], *, in_force: bool
 ) -> ProbeBudget:
     return ProbeBudget(
         kind=kind,
+        hold_aware=_hold_aware(probe),
         period_seconds=_count(probe.get("periodSeconds"), DEFAULT_PERIOD_SECONDS),
         timeout_seconds=_count(probe.get("timeoutSeconds"), DEFAULT_TIMEOUT_SECONDS),
         failure_threshold=_count(

@@ -148,7 +148,10 @@ ENTRY_POINTS: dict[str, Verb] = {
     # `hotfix status` is a *sub*-verb of that parser and does not collide with
     # the launcher's own `status`.
     "hotfix": Verb(
-        _hotfix, True, "durable in-place fixes on a claim-backed venv", LAPTOP
+        _hotfix,
+        True,
+        "durable in-place fixes on a claim beside the application",
+        LAPTOP,
     ),
     # In-pod: PID 1 and the helpers on PATH.
     "agent": Verb(
