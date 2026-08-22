@@ -1676,6 +1676,38 @@ def test_every_cluster_failure_names_the_escape_and_its_cost(
     assert "#176" in err
 
 
+def test_a_target_that_is_not_a_pod_is_refused_cleanly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--from-pod` is a pod and only a pod - the entrypoint, the probe and the
+    gid are read off a running container and a Deployment has none. LauncherError
+    is not one of the three `main` folds into exit 2, so this used to come out as
+    a traceback rather than an answer."""
+    runner = FakeRunner()
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "--print-values",
+            "--app",
+            "api",
+            "-n",
+            "demo",
+            "--from-pod",
+            "deployment/api",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "works on pods" in err
+    assert "--no-from-pod" in err
+    assert runner.calls == []
+
+
 def test_a_container_that_is_not_in_the_pod_names_the_escape_too(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

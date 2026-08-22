@@ -75,6 +75,7 @@ from .kubectl import (
 )
 from .launcher import (
     CONTAINER_BASE,
+    LauncherError,
     attach,
     kubectl_for,
     resolve_pod_name,
@@ -2613,7 +2614,14 @@ def _read_print_values_from_pod(
             "\n" + FROM_POD_ESCAPE
         )
     kube = kubectl_for(namespace, context=context, binary=binary, runner=runner)
-    name = resolve_pod_name(pod)
+    try:
+        # `--from-pod` is a pod and only a pod: the entrypoint, the probe and
+        # the gid are read off a running container, and a Deployment has none.
+        # `LauncherError` is not one of the three `main` folds into exit 2, so
+        # letting it out here is a traceback rather than an answer.
+        name = resolve_pod_name(pod)
+    except LauncherError as error:
+        _print_values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
     try:
         pod_json = kube.get_pod(name)
     except KubectlError as error:
