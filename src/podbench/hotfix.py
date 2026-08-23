@@ -3117,15 +3117,13 @@ not pass --gid" and the sentinel is the only signal there is."""
 
 
 FROM_POD_ESCAPE = (
-    "`hotfix values` reads the target itself and there is no offline emission to "
-    "fall back to: supplying these values by hand is what produced #176, where "
-    "a probe timing left out silently became a Kubernetes default in the "
-    "restart-sooner direction.\n"
+    "`hotfix values` reads the target itself and there is no offline emission. "
+    "Supplying these values by hand is what produced #176: a probe timing left "
+    "out becomes a Kubernetes default, in the restart-sooner direction.\n"
     "\n"
     "So make the read work - `--from-pod POD` names the pod, `-n NS` and "
-    "`--context NAME` say where to look for it - or, where the read reaches the "
-    "pod and the pod cannot answer for one field, state that field on top of it "
-    "with `--entrypoint`, `--gid` or `--liveness-probe`."
+    "`--context NAME` say where - or state one field on top of it with "
+    "`--entrypoint`, `--gid` or `--liveness-probe`."
 )
 """Why reading the pod is not optional, appended to every failure of it.
 
@@ -3147,6 +3145,12 @@ supplied ``livenessProbe`` wholesale, measured as 120s/30s going to 0s/10s on a
 compiled IOC - is in ``docs/how-to/hotfix-a-running-pod.md``, said once, where
 somebody reading about the mode will meet it. A terminal is where you find out
 *that* it applies to the command in front of you.
+
+What went off it in the 6c pass is only compression - "there is no offline
+emission to fall back to" and "where the read reaches the pod and the pod
+cannot answer for one field" - and the three beats are unchanged: there is no
+fallback, hand-supplying costs a restart-sooner probe, and here are the flags
+that fix the read or override one field of it.
 
 The consequence is stated as a *direction*, not an event, because #176 was
 caught in review and the values were hand-corrected before they deployed: no
@@ -3389,10 +3393,9 @@ def values_snippet(
 
 
 ABSORBED_FROM_PARENT_NOTE = (
-    "podbench: {key} came from {parent} and has been copied into this file. A "
-    "helm list replaces across the parent/child values merge, it does not merge "
-    "- so a service declaring {key} for the first time takes the shared one over "
-    "completely and anything it declared is silently gone. Copied: {names}."
+    "podbench: {key} came from {parent} and has been copied into this file, "
+    "because a helm list replaces across the parent/child merge rather than "
+    "merging into it. Copied: {names}."
 )
 """Said when the merge absorbs the shared file's entries into the target's own.
 
@@ -3400,14 +3403,21 @@ The live proof is ``bl47p-mo-ioc-01``, which declares ``dev-shm`` and whose
 running pod carries no ``beamline-data`` at all - the shared entry every other
 IOC on that beamline inherits. This is the difference between output that is
 correct and output that silently unmounts a beamline directory, so it is said
-out loud rather than done quietly."""
+out loud rather than done quietly.
+
+What the replace costs when it is *not* handled - the service takes the shared
+list over completely and anything it declared is gone - is in
+``docs/how-to/hotfix-a-running-pod.md`` under ``--parent-values``. Here it has
+been handled, so the note names the fact, the reason and the entries copied, and
+:data:`NO_PARENT_NOTE` carries the cost because that is the case where it is
+still to be paid."""
 
 NO_PARENT_NOTE = (
-    "podbench: {path} declares no {key} of its own, and no shared values file "
+    "podbench: {path} declares no {key} of its own and no shared values file "
     "was given. If this service inherits {key} from one, pass it with "
-    "--parent-values: the emitted file declares {key} for the first time, and a "
-    "helm list replaces across the parent/child merge rather than merging, so "
-    "an inherited entry would be silently dropped."
+    "`--parent-values`: the emitted file declares {key} for the first time, "
+    "and a helm list replaces across that merge, so an inherited entry would "
+    "be silently dropped."
 )
 """Said when the target declares no list and podbench cannot see whether one
 was inherited.
@@ -5306,13 +5316,11 @@ def _warn(message: str) -> None:
 
 
 NON_EXEC_PROBE_WARNING = (
-    "{pod}'s {container!r} declares a {kind} livenessProbe, which "
-    "cannot be short-circuited by the hold - only an exec probe can, because an "
-    "httpGet or tcpSocket probe answers from the application, and the "
-    "application is exactly what is down while a pod is held. No livenessProbe "
-    "is emitted below, so the chart keeps the one it has and the kubelet will "
-    "restart the pod out from under the seat at failureThreshold x "
-    "periodSeconds. Deal with that before holding this pod."
+    "{pod}'s {container!r} declares a {kind} livenessProbe, which the hold "
+    "cannot short-circuit - only an exec probe can. No livenessProbe is "
+    "emitted below, so the chart keeps this one and the kubelet will restart "
+    "the pod out from under the seat at failureThreshold x periodSeconds. "
+    "Deal with that before holding this pod."
 )
 """Said when the target's probe is real, readable, and of no use to hold mode.
 
@@ -5324,17 +5332,21 @@ the whole of whether a held pod survives.
 Printed through :func:`_warn`, which supplies :data:`podbench.console.WARNING_LEAD`
 - so the text opens on the fact rather than on a ``podbench:`` prefix that is
 neither coloured nor findable in a pasted terminal.
+
+*Why* only an exec probe can be short-circuited - an httpGet or tcpSocket probe
+answers from the application, and the application is exactly what is down while
+a pod is held - is in ``docs/how-to/hotfix-a-running-pod.md`` under the
+``--liveness-probe`` bullet. The line says which pod it applies to and what the
+kubelet will do about it.
 """
 
 
 EXISTING_MOUNTS_WARNING = (
-    "{pod}'s {container!r} already mounts {mounts}. Some of those come "
-    "from your chart and some from the service's own values; podbench cannot "
-    "tell which from here. The `volumes:` and `volumeMounts:` keys below are a "
-    "whole key each, so pasting them over a values file that already sets one "
-    "drops whatever it declared - merge into it rather than replacing it. What "
-    "the chart generates for itself is not affected either way, and must not be "
-    "copied in here."
+    "{pod}'s {container!r} already mounts {mounts}, and podbench cannot tell "
+    "from here which of those the service's own values declared. The "
+    "`volumes:` and `volumeMounts:` keys below are a whole key each, so merge "
+    "them into that file rather than pasting over it - or let `--values` do "
+    "the merge."
 )
 """Said when the target carries volumes that are not podbench's.
 
@@ -5354,7 +5366,13 @@ end up with them declared twice.
 Podbench cannot do the merge itself and must not pretend to: read from a live
 pod, a chart-generated volume and one the service declared are
 indistinguishable. Naming them and saying which key is at risk is the whole of
-what can honestly be done here.
+what can honestly be done here - and beat three is now ``--values``, which is
+the merge, rather than an instruction to do it by hand.
+
+That what the chart renders for itself is unaffected and must not be copied into
+the values file is in ``docs/how-to/hotfix-a-running-pod.md`` and in full in
+``docs/reference/cli.md``: it is the second mistake a reader of this warning
+makes, and it is a paragraph rather than a clause.
 
 Printed through :func:`_warn`, for :data:`NON_EXEC_PROBE_WARNING`'s reason.
 """

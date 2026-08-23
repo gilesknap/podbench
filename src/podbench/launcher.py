@@ -355,10 +355,9 @@ target's uid, so the agent registers one at start-up when it can (see
 the image names that account something else."""
 
 MEMORY_HEADROOM_WARNING = (
-    "only {free} of memory headroom here ({used} in use of {limit}), and an "
-    "ephemeral container may not reserve its own. A seat measured {footprint} "
-    "(DLS p47, 2026-08-19); `--resize MEMORY` raises the target's limit in "
-    "place, and `podbench dev` gives the seat its own."
+    "only {free} of memory headroom here, and an ephemeral container may not "
+    "reserve its own: a seat measured {footprint}. `--resize MEMORY` raises "
+    "the target's limit in place, `podbench dev` gives the seat its own."
 )
 """Printed only where *this* pod's measured headroom is genuinely thin.
 
@@ -379,13 +378,17 @@ Every warning the report prints is one line by rule. The mechanism behind each
 is in ``docs/how-to/attach-to-a-pod.md``, said once, where somebody reading
 about the mode will meet it; a terminal is where you find out *that* it applies
 to the pod in front of you.
+
+The numerator and denominator behind ``free`` are not repeated here: the report
+prints ``used of limit`` on its own ``memory`` row a few lines up, and a warning
+that recites the row above it is the same measurement twice. The footprint's
+provenance is ten live seats on DLS p47, 2026-08-19.
 """
 
 EDITOR_HEADROOM_WARNING = (
-    "vscode-server lands here and it measured {needed} live with one "
-    "extension, against {free} of headroom ({used} in use of {limit}): the "
-    "overflow OOM-kills something in the pod cgroup and an ephemeral container "
-    "does not come back. `--resize MEMORY` first, or `podbench dev`."
+    "vscode-server measured {needed} live and this pod has {free}: the "
+    "overflow OOM-kills something in the pod cgroup, and an ephemeral "
+    "container does not come back. `--resize MEMORY`, or `podbench dev`."
 )
 """The memory cost that survived the measurement, on the verb that spends it.
 
@@ -401,18 +404,28 @@ Since the verb sizes the pod itself, reaching this line means the raise did not
 take: a container holding a ``resources.claims`` entry refuses every resize
 (#107), and `--no-resize` declines one. Both leave the hazard exactly as it was,
 which is why the warning still names the flag.
+
+It states the two numbers that decide, and no more. ``used of limit`` is on the
+report's ``memory`` row, and where a raise was attempted
+:data:`EDITOR_RESIZE_NOTE` and :func:`try_resize` have already said what was
+asked for and what came of it - three lines for one resize was #203's
+"do not announce the same event twice".
 """
 
 EDITOR_RESIZE_NOTE = (
-    "sized for the editor: {free} free is under the {needed} vscode-server "
-    "measured, so {container}'s memory limit was raised to {limit}. "
-    "`--no-resize` declines it; `--resize MEMORY` chooses the number."
+    "sized for the editor: {container}'s memory limit was raised to {limit}, "
+    "for the {needed} vscode-server measured. `--no-resize` declines it; "
+    "`--resize MEMORY` chooses the number."
 )
 """Why ``vscode`` raised a limit nobody typed, printed before it tries.
 
 Before, so that a refusal - which :func:`try_resize` reports on the next line -
 is read against the intent rather than as an act with no motive. The two are one
 mutation and they are two lines because the second is the one that can fail.
+
+It states the intent and the new limit, not the shortfall that produced them:
+this line, :func:`try_resize`'s outcome and :data:`EDITOR_HEADROOM_WARNING` are
+three reports of one resize, so each says only the part the others cannot.
 
 The number is arithmetic, not a default: :func:`podbench.resize.editor_limit`
 raises the target by the shortfall against
@@ -423,11 +436,10 @@ at all and the pod's ceiling is the sum of its containers'.
 """
 
 EDITOR_STORAGE_WARNING = (
-    "this pod declares no {volume!r} volume, so vscode-server unpacks into the "
-    "seat's own writable layer: 1.1-1.3 GB on the *workload's* "
-    "ephemeral-storage budget, which a seat may not reserve and whose overrun "
-    "evicts the whole pod, application included. Declaring the volume is a "
-    "chart change - `spec.volumes` cannot be added to a running pod."
+    "this pod declares no {volume!r} volume, so vscode-server's 1.1-1.3 GB "
+    "unpacks onto the workload's ephemeral-storage budget and an overrun "
+    "evicts the pod, application included. Declaring the volume is a chart "
+    "change: `spec.volumes` cannot be added to a running pod."
 )
 """The editor cost that no flag on this verb can pay.
 
@@ -439,15 +451,18 @@ workload, not just the seat - and nothing else in the run mentions it.
 Not keyed on the target's declared ``ephemeral-storage`` limit, deliberately. A
 pod with no limit is not safe here, it is unbounded against the *node's* disk,
 and the eviction then arrives from the kubelet's imagefs pressure instead.
+
+Where the 1.1-1.3 GB physically goes - the seat's own writable layer, which is
+on the workload's budget because a seat may not reserve one of its own - is in
+``docs/how-to/vscode-remote-ssh.md``. The line says which pod it applies to.
 """
 
 EDITOR_ORPHAN_HOME_WARNING = (
-    "this pod declares {volume!r} and a root seat does not use it: sshd takes "
-    "a session's $HOME from the passwd record, which for uid 0 is the image's "
-    "own {home!r}. So vscode-server's 1.1-1.3 GB lands on the workload's "
-    "ephemeral-storage budget after all, and an overrun evicts the pod "
-    "(#42). `--max-rung degraded` lands a seat at the target's uid, which gets "
-    "a written record and uses the volume."
+    "this pod declares {volume!r} and a root seat cannot use it - sshd gives "
+    "uid 0 the image's own {home!r} instead. So vscode-server's 1.1-1.3 GB "
+    "lands on the workload's ephemeral-storage budget after all, and an "
+    "overrun evicts the pod (#42). `--max-rung degraded` lands a seat that "
+    "uses the volume, at the cost of the live attach."
 )
 """The volume is there, was deployed on purpose, and this rung ignores it.
 
@@ -462,13 +477,17 @@ It names ``--max-rung degraded`` rather than the volume, because the volume is
 already correct. That is a real trade and not a fix: the degraded rung has no
 ``SYS_PTRACE``, so it buys the storage with the live attach. #42 is where the
 right answer - a passwd record for root that names the mount - is tracked.
+
+That sshd takes ``$HOME`` from the passwd record rather than from the
+environment, and that the degraded rung gets a written record, are both in
+``docs/how-to/vscode-remote-ssh.md`` under the same #42 caveat. The line keeps
+the consequence and the flag.
 """
 
 EDITOR_UNMEASURED_WARNING = (
-    "this pod's memory is not measured (no metrics API here), so nothing sized "
-    "it for the editor: vscode-server measured {needed} live, and overflowing "
-    "the pod cgroup OOM-kills a seat that cannot be restarted. `--resize "
-    "MEMORY` sets the limit yourself."
+    "this pod's memory is unmeasured (no metrics API here), so nothing sized "
+    "it for vscode-server's {needed}: overflowing the pod cgroup OOM-kills a "
+    "seat that cannot be restarted. `--resize MEMORY` sets the limit yourself."
 )
 """The one unmeasured case that earns a line, because this verb promised a size.
 
@@ -485,9 +504,8 @@ warning is noisy, and the remedy is one flag away.
 
 EDITOR_PROBE_REMINDER = (
     "before the first breakpoint: this pod is probed, and the deadline under "
-    "`supports` above is what a pause spends - symbol fetches included, since "
-    "gdb fetches a library's debuginfo after the stop. `podbench dbg "
-    "--no-debuginfod` in the seat spends none."
+    "`supports` above is what a pause spends - debuginfod fetches included. "
+    "`podbench dbg --no-debuginfod` in the seat spends none."
 )
 """The last thing ``podbench vscode`` says, and the only thing it repeats.
 
@@ -495,6 +513,11 @@ The numbers are :func:`podbench.budget.probe_qualifier`'s and stay there — a
 second copy is a second thing to keep true. What this adds is the timing: the
 report is several blocks up by the time the window opens, and the reader's
 attention is about to leave the terminal for a GUI.
+
+"debuginfod fetches included" is the whole of what used to be a clause about
+gdb resolving a library's debuginfo *after* the stop, which is the mechanism and
+is in ``docs/how-to/attach-to-a-pod.md``. What the reader needs on the terminal
+is that those fetches are inside the deadline, not outside it.
 
 It names debuginfod because that is the one item of the spend the reader can
 still decide, and because it is not obviously part of a "pause" at all: the
@@ -504,12 +527,11 @@ to this budget. The mechanism is in ``docs/how-to/attach-to-a-pod.md``.
 """
 
 VERSION_SKEW_WARNING = (
-    "this seat runs a different build of podbench from this launcher (the "
-    "`version` line above carries both): the two halves share the agent's argv "
-    "and capreport's JSON, so a fix in one of them is absent from the other and "
-    "the difference degrades quietly. `--pull always --new` lands a seat from "
-    "the tag as it stands now, at the cost of a container name; `--image` pins "
-    "a version instead."
+    "this seat and this launcher are different builds of podbench (the "
+    "`version` row above carries both), and the two halves share a protocol, "
+    "so a fix in one is missing from the other. `--pull always --new` re-lands "
+    "from the tag as it stands now, at the cost of a container name; `--image` "
+    "pins a version."
 )
 """Printed when the seat answered ``--version`` with something other than ours.
 
@@ -518,6 +540,10 @@ stay there, so this line is the consequence and the way out and nothing else.
 It replaces :func:`moving_tag_note` where a reading exists - a guess from the
 tag string next to a measured mismatch is two answers to one question, and the
 guess is the one that can be wrong in both directions.
+
+Which protocol the two halves share - the agent's argv and ``capreport``'s JSON
+- is :data:`VERSION_ARGV`'s to state, and it is the reason this is a hazard
+rather than untidiness. The line says there is one and what to do about it.
 """
 
 UNKNOWN_SEAT_VERSION = "unknown - this seat did not answer `podbench --version`"
@@ -805,20 +831,23 @@ def seat_identity_mounts(
 
 HOTFIX_CLAIM_MOUNTED_NOTE = (
     "this pod carries the hotfix layout, so the claim {volume!r} was mounted "
-    "into the seat at {path} without being asked for - Hotfix mode needs the "
-    "claim at the same path in both, and an ephemeral container's volumeMounts "
-    "are fixed once it is created, so there is no adding it afterwards"
+    "into the seat at {path} without being asked for: hotfix mode needs it at "
+    "the same path in both"
 )
 """Said whenever :func:`hotfix_claim_mounts` authors a mount nobody typed.
 
 A mount the user did not ask for is only acceptable if the output names it, and
 this is the line that does. It is a note and not a warning: nothing went wrong,
-the seat simply has one more mount than the command line accounts for."""
+the seat simply has one more mount than the command line accounts for.
+
+Naming it is what is licensed, not arguing for it. That an ephemeral container's
+``volumeMounts`` are fixed once it is created - so the mount has to be authored
+now or not at all - is in ``docs/how-to/attach-to-a-pod.md``, and it is podbench
+justifying itself rather than anything the reader has to act on."""
 
 EDITOR_FOLDER_CLAIM_NOTE = (
-    "opening {folder} and not the seat's home {home} - this pod carries the "
-    "hotfix layout, and the claim is the only tree here where an edit reaches "
-    "the running process"
+    "opening {folder}, not the seat's home {home}: on a hotfixed pod the claim "
+    "is the only tree here where an edit reaches the running process"
 )
 """Said when ``vscode`` opens the claim rather than the home.
 
@@ -827,10 +856,10 @@ is :data:`HOTFIX_CLAIM_MOUNTED_NOTE`'s rule applied to the other unasked-for
 answer in the same command."""
 
 EDITOR_FOLDER_HOME_NOTE = (
-    "opening the seat's home {home} and not the claim - this pod carries the "
+    "opening the seat's home {home}, not the claim: this pod carries the "
     "hotfix layout but the claim is not mounted into this seat, so there is no "
-    "{path} here to open. The block above says why; an editor here reads the "
-    "image's code, which is not the code running"
+    "{path} here. An editor here reads the image's code, not the code running "
+    "- the block above says why"
 )
 """Said when the pod is hotfixed and the seat did not get the claim anyway.
 
@@ -843,8 +872,8 @@ put an editor on an empty directory in the seat's own rootfs."""
 
 HOTFIX_CLAIM_UNMOUNTABLE_NOTE = (
     "this pod carries the hotfix layout, but the claim could not be mounted "
-    "into the seat: {reason}. The seat will resolve the image's code rather "
-    "than the claim's, so an editor here reads code that is not running"
+    "into the seat: {reason}. An editor here reads the image's code, not the "
+    "code running"
 )
 """Said when the convention mount is refused rather than authored.
 
@@ -1646,18 +1675,22 @@ def superseded_seats(present: Sequence[SeatInfo]) -> dict[str, str]:
 
 
 DEV_SIDECAR_REUSED_NOTE = (
-    "reconnected to `{seat}`, this dev pod's own sidecar, rather than landing "
-    "an ephemeral seat beside it - so this is an Iterate-mode seat: the "
-    "application runs as its child and is relaunched from here with `podbench "
-    "run`, and the workload container is idled. `--new` lands an Observe-mode "
-    "seat instead, which is worth a permanent container name only where this "
-    "pod's sidecar is non-root and the cluster will admit `SYS_PTRACE`"
+    "reconnected to `{seat}`, this dev pod's own sidecar, so this is an "
+    "Iterate-mode seat: the application runs as its child and is relaunched "
+    "from here with `podbench run`, and the workload container is idled. "
+    "`--new` lands an Observe-mode seat beside it instead"
 )
 """Said whenever an attach hands back Iterate mode's sidecar.
 
-The mode is the whole of it. Everything else `attach` prints is true of both
-kinds of seat, and the one fact that is not - which process the debugger will be
-looking at - is the one that decides whether a breakpoint binds. Reporting it is
+The mode is the whole of it, which is why ``--new`` is named and not argued
+for: when an Observe-mode seat is worth a permanent container name - a non-root
+sidecar on a cluster that will admit ``SYS_PTRACE`` - is a question for
+``docs/how-to/vscode-remote-ssh.md``, and the reader here is being told which
+seat they got.
+
+Everything else `attach` prints is true of both kinds of seat, and the one fact
+that is not - which process the debugger will be looking at - is the one that
+decides whether a breakpoint binds. Reporting it is
 issue #141's second decision, arrived at from the other side: the mode is
 measured here rather than declared, so there is nothing to disagree with.
 """
@@ -1665,8 +1698,7 @@ measured here rather than declared, so there is nothing to disagree with.
 OTHER_MODES_NOTE = (
     "other modes are their own verbs: `podbench hotfix init` for a venv on a "
     "claim that survives restarts, `podbench dev` for a clone the application "
-    "relaunches from. Both change the workload in ways this verb was given no "
-    "arguments for, so neither is offered as a choice here"
+    "relaunches from. Both change the workload, so neither is offered here"
 )
 """Named once, on the run that landed a seat where there was none.
 
@@ -1676,6 +1708,10 @@ is the only one of the three this verb could carry out, and the other two answer
 would both have been "go and run a different command". A prompt whose default is
 the only actionable answer is a keystroke on the commonest path in the product.
 
+"Both change the workload" is the whole of the reason now; that this verb was
+given no arguments for either of those changes is podbench explaining its own
+restraint, which is a docstring's job and not a line in a report.
+
 The explicitness #141 asked for is delivered by the *other* half of that issue:
 the mode is measured and reported - by the ``KIND`` column, and by
 :data:`DEV_SIDECAR_REUSED_NOTE` on a reconnect - rather than declared by a word
@@ -1684,10 +1720,9 @@ the user typed.
 
 DEV_SIDECAR_PROVISION_NOTE = (
     "not provisioning: this is Iterate mode's seat, where the application is "
-    "launched *from* the seat rather than found running in another container. "
-    "There is no live target process to install debugpy into or to inject a "
-    "server into, and the launch configuration needs neither - it starts the "
-    "interpreter under the debugger itself"
+    "launched from the seat rather than found running in another container. "
+    "There is no live target to install debugpy into, and the launch "
+    "configuration needs none"
 )
 """Why ``vscode`` spends nothing on provisioning a dev pod.
 
@@ -1695,19 +1730,27 @@ Not a decline that could have gone the other way: provisioning targets a running
 process in the *workload* container, and :func:`podbench.spec.dev_pod_spec` idles
 that container to ``sleep`` precisely so the seat can own the port. Injecting
 into it would succeed against ``sleep`` and report a debugger nobody can reach.
+
+Both halves of provisioning - the debugpy install and the server injection - are
+"there is no live target", so the line says it once. That Iterate mode's launch
+configuration starts the interpreter under the debugger instead is
+:mod:`podbench.vscode`'s to author and the how-to's to explain.
 """
 
 OTHER_OWNER_WARNING = (
-    "{seat} is running but was not reused because {owner} landed it: an "
-    "ephemeral container's authorized_keys is written when it starts and "
-    "cannot be added to from here, so a new container is being landed - and "
-    "its name is spent whether or not it works out"
+    "{seat} is running but {owner} landed it, and its authorized_keys cannot "
+    "be added to from here: a new container is being landed, and its name is "
+    "spent whether or not it works out"
 )
 """Why a running seat was passed over for a fresh one (issue #113).
 
 A warning and not a note, unlike :data:`SUPERSEDED_NOTE`: it is said on the
 attach that spends the name, to the person spending it, and the fact it carries
 - somebody else is working in this pod - is one they did not have.
+
+*When* an ephemeral container's ``authorized_keys`` is written, and why that
+makes a colleague's seat unreachable rather than merely impolite, is in
+``docs/how-to/attach-to-a-pod.md`` under "Reconnecting only reaches your seat".
 """
 
 UNKNOWN_OWNER = "unknown - this seat records none"
@@ -1720,17 +1763,20 @@ would tell somebody a colleague's seat was theirs.
 """
 
 SUPERSEDED_NOTE = (
-    "superseded by {later}, which corrected this seat's group id - an "
-    "ephemeral container's securityContext is fixed for its lifetime, so the "
-    "correction cost a second name and this one cannot be removed. "
-    "`--target-gid <gid>` pins the group up front and costs one name instead"
+    "superseded by {later}, which corrected this seat's group id. The "
+    "correction cost a second name and this one cannot be removed; "
+    "`--target-gid <gid>` pins the group up front and costs one name"
 )
 """What a listing says about a seat a later one replaced.
 
 Said here and not as a warning: by the time anyone runs ``list`` the correction
 is history, and :data:`ID_CORRECTION_WARNING` already spent its one line on the
 attach that made it. This is the fact a reader of two seats needs to have, which
-is why it is a row under the seat rather than a block under the pod."""
+is why it is a row under the seat rather than a block under the pod.
+
+Why the correction cost a name - an ephemeral container's ``securityContext`` is
+fixed for the pod's lifetime - is in ``docs/how-to/attach-to-a-pod.md``, and the
+row carries the consequence, which is that this seat is not going away."""
 
 
 def rung_of_spec(container: Mapping[str, Any]) -> Rung:
@@ -2654,9 +2700,8 @@ def attach(
 
 ID_CORRECTION_WARNING = (
     "{first} ran as {was} against a target measured at {now}, and "
-    "__ptrace_may_access compares the group ids as well as the user ids, so a "
-    "corrected seat was landed at {now} - {first}'s name is spent, because an "
-    "ephemeral container's securityContext is fixed for the pod's lifetime. "
+    "__ptrace_may_access compares group ids as well as user ids - so a "
+    "corrected seat was landed at {now} and {first}'s name is spent. "
     "--no-correct-ids keeps the first seat; `--target-gid <gid>` pins the "
     "group up front and costs one name instead of two"
 )
@@ -2666,7 +2711,11 @@ The reader has just had a permanent container name spent on their behalf, so it
 says which name, what was wrong with it, and the two flags that make the choice
 theirs next time. The mechanism - why six ids and not three - belongs to
 :attr:`podbench.model.Blocker.GID_MISMATCH`, which the same report prints
-whenever the correction could not be made."""
+whenever the correction could not be made.
+
+Why a correction costs a second name rather than editing the first - an
+ephemeral container's ``securityContext`` is fixed for the pod's lifetime - is
+in ``docs/how-to/attach-to-a-pod.md``. The line states that it was spent."""
 
 
 def id_correction(
@@ -2921,13 +2970,11 @@ def _walk_ladder(
 
 
 CAPABILITY_STRIPPED_WARNING = (
-    "admission removed {stripped} from this seat and it was taken anyway, "
-    "because there is no rung below to prefer: every lower rung pins the seat "
-    "to the target's own non-root uid, and this target offers none. What "
-    "{stripped} would have added is the exemption from Yama and from the "
-    "PTRACE_MODE_ATTACH check; where the target is root too the uids match, and "
-    "the read-only paths are unaffected. The `supports` block above is the "
-    "measurement."
+    "admission removed {stripped} from this seat and it was taken anyway: "
+    "every rung below pins a non-root uid and this target offers none. "
+    "{stripped} would have exempted the seat from Yama and from "
+    "PTRACE_MODE_ATTACH, and where the target is root too the uids match "
+    "anyway. The `supports` block above is the measurement."
 )
 """One line for a strip the walk cannot improve on.
 
@@ -2941,6 +2988,10 @@ It no longer points at the ``ladder`` block for why the target offers no lower
 rung, because a reconnect prints this warning too and its ladder block is one
 line saying it reconnected. The claim is the same on both paths; only the walk
 has somewhere to send the reader for the working.
+
+That the read-only ``/proc`` paths are unaffected by the strip is not stated any
+more: the ``supports`` block the last sentence points at ticks them one by one,
+and a warning that summarises the block below it is the same measurement twice.
 
 It used to cite §3.11's "three of the six probe paths", which is the wrong half
 of that table. §3.11 measured a root seat against a **non-root** target — a uid
@@ -4035,9 +4086,9 @@ stored it with a different comment, which is the guess this replaced.
 """
 
 RECONNECT_KEY_ABSENT_WARNING = (
-    "this seat does not authorise the key being offered, so ssh will be "
-    "refused: an ephemeral container's authorized_keys is written when it "
-    "starts and cannot be added to from here. {remedy}"
+    "this seat does not authorise the key being offered, and its "
+    "authorized_keys cannot be added to from here, so ssh will be refused. "
+    "{remedy}"
 )
 """Said on a reconnect whose ``authorized_keys`` was read and lacks this key.
 
@@ -5184,18 +5235,21 @@ def _seat_verdict(measured: CapabilityReport | str | None) -> str:
 
 
 UNMOUNTED_HOTFIX_NOTE = (
-    "this pod carries the hotfix layout and this seat mounts none of the "
-    "workload's volumes, so the application runs the code on the claim while an "
-    "editor or debugger here resolves the image's - the code you read is not "
-    "the code running, and breakpoints set on it never bind. An ephemeral "
-    "container's volumeMounts are fixed when it is created, so this seat cannot "
-    "be repaired: land a fresh one with `--new`, which mounts the claim itself"
+    "this seat mounts none of this hotfixed pod's volumes, so the application "
+    "runs the code on the claim while an editor or debugger here resolves the "
+    "image's - breakpoints set on it never bind. This seat cannot be repaired: "
+    "`--new` lands a fresh one, which mounts the claim itself"
 )
 """Said on a seat whose kind is ``attach`` in a pod carrying the hotfix layout.
 
 The one disagreement between the two that is silent in both directions: nothing
 refuses the attach, ``--mount`` on a *reconnect* is already warned about
 elsewhere, and the seat that results works perfectly - against the wrong tree.
+
+It no longer spells out that an ephemeral container's ``volumeMounts`` are fixed
+when it is created; that is in ``docs/how-to/attach-to-a-pod.md``, and what the
+reader needs here is that this seat cannot be repaired and which flag lands one
+that can.
 
 Since #177 this is a **reconnect's** note rather than every hotfixed pod's: a
 seat landed fresh gets the claim from :func:`hotfix_claim_mounts` without being
@@ -5216,17 +5270,20 @@ row of its own where no measured label can be mistaken for it."""
 
 REQUESTED_RUNG_FOOTNOTE = (
     "request: read from the seat's securityContext, which is what admission "
-    "stored and not what the kernel gave the container - the two differ in "
-    "both directions. It is what a listing has left when the seat's own "
-    "start-up report was not read: a seat that is no longer running, one "
-    "older than that report, a log the kubelet has rotated, or RBAC without "
-    "`pods/log`"
+    "stored and not what the kernel gave the container. It is what a listing "
+    "has left when the seat's own start-up report could not be read - a seat "
+    "no longer running, one older than that report, a rotated log, or RBAC "
+    "without `pods/log`"
 )
 """Said once per pod block, and only where a seat in it went unmeasured.
 
 The heading has room for the word and not for the reason, and the reason is the
 whole of why the word is there. Backticked runs so `wrap` cannot break a flag or
-a path across the margin (issue #120)."""
+a path across the margin (issue #120).
+
+That the stored spec and the kernel's answer differ *in both directions* is
+:func:`probe_seat_credentials`'s measurement and :data:`MEASURED_RUNG_HEADING`'s
+distinction; this footnote's job is to say which of the two this row is."""
 
 
 def recover_seat_reports(

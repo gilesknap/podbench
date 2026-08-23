@@ -37,6 +37,44 @@ a coincidence of the current texts.
   `supports` tick; there is no probe WARNING any more, and re-adding one would
   be the same numbers in two places.
 
+## Three beats, and the third one is the only one that acts
+
+Every user-facing note gets at most three beats, in this order (#203):
+
+1. **what happened** — the fact, about *this* pod, seat or target;
+2. **whether it matters here** — the consequence, not the mechanism;
+3. **what to do about it** — the flag, the command, or the page.
+
+Anything that is *why podbench is confident this is fine* belongs in the
+docstring, not on the terminal. Anything that is *how the thing works* belongs
+in `docs/how-to/` or `docs/reference/cli.md`, said once. What is left on the
+line is what a reader in front of a broken pod can act on.
+
+Two corollaries, both of which delete rather than shorten:
+
+- **Warn only where the outcome changed.** `ADMISSION_MUTATION_WARNING` fired on
+  every DLS attach to say that admission had rewritten a spec in a way that cost
+  the seat nothing — and the report already measures the seat itself. It is
+  gone; `spec.admission_rewrites` still computes the difference, and nothing
+  prints it.
+- **Do not announce one event twice.** A resize is an intent
+  (`EDITOR_RESIZE_NOTE`), an outcome (`try_resize`) and a residual hazard
+  (`EDITOR_HEADROOM_WARNING`); each says only the part the other two cannot, and
+  none of them repeats the `memory` row's `used of limit`.
+
+A measurement replaces a guess wherever one is available, and where it could not
+be taken the line says **unmeasured** — never "fine" by silence, and never a
+caution invented to fill the gap. #204 is the worked example: the reconnect
+ssh-key warning asserted that a seat could not carry the key without reading
+`authorized_keys`, so it fired on the common case where ssh works. It now
+`cat`s the file and says nothing when the key is there.
+
+When the whole set is being rewritten, read it end to end as a body of text
+before applying it. The property is consistency across the set — one voice, the
+same three beats in the same order, the same word for the same thing in
+`launcher.py`, `hotfix.py`, `editor.py` and `proc.py` — and that is invisible one
+constant at a time.
+
 ## Styles are applied by span, never by markup
 
 `console._styled` builds a `rich.text.Text` and calls `stylize(style, start,

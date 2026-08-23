@@ -84,6 +84,13 @@ wrong:
   which silently unmounts whatever the parent mounted. Given the parent file
   podbench absorbs its entries first; without it, podbench says so rather than
   assuming there is nothing to inherit.
+* **Do not paste the fragment over a values file that already sets these keys.**
+  `volumes:` and `volumeMounts:` are a whole key each, so a paste drops whatever
+  the file declared — which on `bl47p-mo-ioc-01` would have been its `dev-shm`.
+  What the chart renders for *itself* is unaffected either way and **must not be
+  copied in**: doing so declares it twice. Read from a live pod podbench cannot
+  tell the two apart, which is why it names the volumes and leaves the merge to
+  you; read from the values file it can, which is why `--values` does it.
 * **`--values-under KEY`** names the mapping the chart keeps its pod-template
   keys under — `ioc-instance` for an EPICS IOC. It is read from the files when
   you do not pass it, and the output says where the keys went.

@@ -2443,11 +2443,11 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     assert code == 0
     err = capsys.readouterr().err
     assert "dev-shm" in err
-    # The advice is to merge into the values file, and explicitly *not* to copy
-    # the chart's own volumes in - which is what "replaces the ones your chart
-    # renders" would have sent a reader off to do.
-    assert "merge into it rather than replacing it" in flowed(err)
-    assert "must not be copied in here" in flowed(err)
+    # The advice is to merge into the values file rather than paste over it,
+    # and it ends on the flag that does the merge - which is also the flag that
+    # suppresses this warning, because then the file has said which is whose.
+    assert "merge them into that file rather than pasting over it" in flowed(err)
+    assert "let `--values` do the merge" in flowed(err)
     # podbench's own two are not reported back to the user as theirs.
     assert model.HOTFIX_CLAIM_VOLUME not in err
 

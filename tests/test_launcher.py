@@ -3354,7 +3354,9 @@ def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
     full = {step.rung: step for step in session.steps}[Rung.FULL]
     assert full.admitted
     assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
-    assert any("no rung below to prefer" in text for text in session.warnings)
+    assert any(
+        "every rung below pins a non-root uid" in text for text in session.warnings
+    )
     # And it does not cite the number report 3.11 measured in the case this
     # line never covers. §3.11 put a root seat against a *non-root* target, a
     # uid mismatch; here the walk found no non-root uid to pin, so the uids
@@ -4159,7 +4161,7 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     # printed and the sentence under test spans the wrap.
     out = " ".join(capsys.readouterr().out.split())
     # A folder the user did not name, so the output names it.
-    assert f"opening {HOTFIX_APP_PATH} and not the seat's home" in out
+    assert f"opening {HOTFIX_APP_PATH}, not the seat's home" in out
     assert "the only tree here where an edit reaches the running process" in out
 
 
@@ -4221,9 +4223,9 @@ def test_open_keeps_the_home_when_the_seat_could_not_carry_the_claim(
     assert editor[-1][-1] == SEAT_HOME_PATH
     assert f"{HOTFIX_APP_PATH}/.vscode/settings.json" not in cluster.seat_files
     out = " ".join(capsys.readouterr().out.split())
-    assert f"opening the seat's home {SEAT_HOME_PATH} and not the claim" in out
-    assert f"there is no {HOTFIX_APP_PATH} here to open" in out
-    assert "reads the image's code, which is not the code running" in out
+    assert f"opening the seat's home {SEAT_HOME_PATH}, not the claim" in out
+    assert f"there is no {HOTFIX_APP_PATH} here" in out
+    assert "reads the image's code, not the code running" in out
 
 
 def test_open_separates_what_it_did_from_what_to_do_next(
@@ -6419,12 +6421,12 @@ def test_vscode_sizes_the_pod_from_the_headroom_it_already_reads(
     )
     assert code == 0
     out = " ".join(capsys.readouterr().out.split())
-    assert "1Gi free is under the 1215Mi vscode-server measured" in out
+    assert "for the 1215Mi vscode-server measured" in out
     assert "app's memory limit was raised to 5Gi" in out
     # Read back after the raise, which is the whole point of reading it there:
     # the editor now fits, so the OOM warning has nothing to say.
     assert "memory 2Gi free of 5Gi (3Gi in use)" in out
-    assert "vscode-server lands here" not in out
+    assert "the overflow OOM-kills" not in out
 
     # …and the same pod, attached without the editor, is neither warned nor
     # resized: nothing in `attach` decides to spend this pod's memory.
@@ -6450,7 +6452,7 @@ def test_no_resize_declines_the_raise_and_keeps_the_warning(
     out = " ".join(capsys.readouterr().out.split())
     assert not [call for call in cluster.calls if "patch" in call]
     assert "memory 1Gi free of 4Gi (3Gi in use)" in out
-    assert "vscode-server lands here and it measured 1215Mi" in out
+    assert "vscode-server measured 1215Mi live and this pod has 1Gi" in out
 
 
 def test_a_pod_with_room_is_left_alone(
@@ -6468,7 +6470,7 @@ def test_a_pod_with_room_is_left_alone(
     out = " ".join(capsys.readouterr().out.split())
     assert not [call for call in cluster.calls if "patch" in call]
     assert "sized for the editor" not in out
-    assert "vscode-server lands here" not in out
+    assert "the overflow OOM-kills" not in out
 
 
 def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
@@ -6489,7 +6491,7 @@ def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
     )
     out = " ".join(capsys.readouterr().out.split())
     assert not [call for call in cluster.calls if "patch" in call]
-    assert "not measured (no metrics API here), so nothing sized it" in out
+    assert "unmeasured (no metrics API here), so nothing sized it" in out
 
 
 def test_vscode_names_the_storage_cost_no_flag_of_its_can_pay(
@@ -6508,7 +6510,7 @@ def test_vscode_names_the_storage_cost_no_flag_of_its_can_pay(
     )
     out = " ".join(capsys.readouterr().out.split())
     assert "declares no 'podbench-home' volume" in out
-    assert "evicts the whole pod" in out
+    assert "evicts the pod, application included" in out
 
 
 def test_a_pod_deployed_with_the_home_volume_is_not_warned_about_it(
@@ -6525,7 +6527,7 @@ def test_a_pod_deployed_with_the_home_volume_is_not_warned_about_it(
     )
     out = " ".join(capsys.readouterr().out.split())
     assert "declares no 'podbench-home' volume" not in out
-    assert "a root seat does not use it" not in out
+    assert "a root seat cannot use it" not in out
 
 
 def test_a_root_seat_orphans_the_home_volume_and_is_told_so(
@@ -6547,7 +6549,7 @@ def test_a_root_seat_orphans_the_home_volume_and_is_told_so(
         == 0
     )
     out = " ".join(capsys.readouterr().out.split())
-    assert "a root seat does not use it" in out
+    assert "a root seat cannot use it" in out
     assert "'/root'" in out
 
 
