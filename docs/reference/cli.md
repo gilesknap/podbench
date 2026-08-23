@@ -1265,8 +1265,13 @@ Notes on `hotfix values`:
   survives.
 * **`--values PATH` emits the whole file, not a fragment.** Given the service's
   own values file, podbench merges its keys into it and prints the result — the
-  same file, its comments intact, ready to be pasted back or redirected over
-  itself. The notes go to stderr so stdout stays exactly the file.
+  same file, its comments intact, ready to be pasted back or redirected to a
+  new name and moved over the input. The notes go to stderr so stdout stays
+  exactly the file — but do not redirect straight over the input: a shell
+  truncates a redirect target before podbench starts, so the merge reads an
+  empty file, and the output that lands is the snippet alone with everything
+  the service declared silently gone. Exit 2 from a failed read leaves the
+  same emptied file behind.
 
   Three things it decides, and it says which on stderr each time:
 

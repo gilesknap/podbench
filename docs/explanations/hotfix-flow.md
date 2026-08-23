@@ -167,7 +167,11 @@ its own keys in and emits the file whole:
                                   │
                                   ▼
                         the whole file, on stdout. Every note on stderr, so
-                        stdout can be redirected straight over the input.
+                        stdout is exactly the file - redirect it to a new
+                        name and move that over the input. Not `> input`:
+                        a shell truncates a redirect target before podbench
+                        starts, so the merge reads an empty file and the
+                        output silently loses everything the input had.
 ```
 
 There is no escape from the read. `--no-from-pod` emitted from `--entrypoint`,

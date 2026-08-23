@@ -2939,8 +2939,10 @@ def values_snippet(
     vary.
     """
     claim = hotfix_claim(app)
-    # A whole probe carries its timings; a bare command cannot, and the caller is
-    # told so rather than left to find out from a restart ladder.
+    # Timings only ever come from a whole probe, and a probe is entitled to
+    # declare none - the read finds that shape on a target whose schedule lives
+    # in its chart. #176 is what an emitted probe missing them costs, so the
+    # empty case is warned about below rather than left to a restart ladder.
     exec_command = liveness_exec or (
         probe_exec_command(liveness_probe) if liveness_probe else []
     )
@@ -3023,11 +3025,13 @@ def values_snippet(
             ]
         else:
             lines += [
-                "  # WARNING: no timings were supplied, so this probe will use the",
-                "  # Kubernetes defaults - initialDelaySeconds 0, periodSeconds 10.",
-                "  # If the target declared its own, copy them in here or it will be",
-                "  # probed sooner and more often than it was before. A whole probe",
-                "  # carries its own timings; an exec command alone has none to carry.",
+                "  # WARNING: the probe this was built from declared no timings, so",
+                "  # this one gets the Kubernetes defaults, initialDelaySeconds 0",
+                "  # and periodSeconds 10. The chart may have been supplying its",
+                "  # own on a branch that a supplied livenessProbe takes instead",
+                "  # of: ioc-instance does, measured at 120s/30s. Check, and copy",
+                "  # those numbers in here, or the target is probed sooner and more",
+                "  # often than it was before.",
             ]
     lines += [
         f"{security_key}:",

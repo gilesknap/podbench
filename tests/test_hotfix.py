@@ -2335,16 +2335,19 @@ def test_the_offline_route_is_gone_rather_than_hidden(
 ) -> None:
     """#205 item 6, and no alias: a flag whose help had to talk you out of it.
 
-    A hidden flag would still emit, so the assertion is on stdout being empty
-    rather than on the exit code - an accepted `--no-from-pod` that printed a
-    snippet is exactly the state this removal exists to make impossible.
+    Each argv is otherwise complete - it names the fixture pod - so a
+    `--no-from-pod` re-added as a hidden option that is accepted and ignored
+    would emit a snippet and exit 0. Without that the refusal proves nothing:
+    an argv naming no pod is refused whether or not the flag exists. The
+    assertion is on click's own "No such option", because that is the only
+    evidence that the parser has never heard of it.
     """
-    for argv in (
-        ["hotfix", "values", "--no-from-pod", "--app", "api", "--entrypoint", ENTRY],
-        ["hotfix", "values", "--app", "api", "--liveness", "/bin/true"],
-    ):
-        assert hotfix.main(argv, runner=FakeRunner()) == 2
-        assert capsys.readouterr().out == ""
+    base = ["hotfix", "values", "--app", "api", "--entrypoint", ENTRY, *TARGET_ARGV]
+    for argv in ([*base, "--no-from-pod"], [*base, "--liveness", "/bin/true"]):
+        assert hotfix.main(argv, runner=values_runner()) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "No such option" in " ".join(captured.err.split())
 
 
 # -- --values: the whole file, not fragments to merge (#192) ---------------
@@ -2774,6 +2777,39 @@ def test_values_wraps_a_probe_stated_on_top_of_the_pod(
     assert model.HOTFIX_HOLD_PATH in out
     assert "/epics/ioc/liveness.sh" in out
     assert "initialDelaySeconds: 120" in out
+
+
+def test_a_probe_with_no_timings_warns_in_the_emitted_file(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The empty-timings warning through a route that survived #205 item 6.
+
+    A probe is entitled to declare no timings, so this shape reaches the
+    emitter from `--liveness-probe` and from the read alike, and both land on
+    the Kubernetes defaults 0s/10s unless somebody copies the real numbers in.
+    """
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "values",
+            "--app",
+            "api",
+            "--entrypoint",
+            ENTRY,
+            "--liveness-probe",
+            json.dumps({"exec": {"command": ["/bin/bash", "/epics/ioc/liveness.sh"]}}),
+            *TARGET_ARGV,
+        ],
+        # fmt: on
+        runner=values_runner(),
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "periodSeconds 10" in out
+    # and it does not claim the caller failed to supply a whole probe
+    assert "exec command alone" not in out
 
 
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
