@@ -1195,6 +1195,15 @@ def admission_rewrites(
     reciting the diff (#203). It stays because it is the measurement, and
     because the thing to do with it is a debug report rather than a WARNING.
 
+    That is a deliberate deviation from #203's wording, recorded here because
+    the shape it leaves is odd on its own: the ask was to *demote* the harmless
+    case to a debug report, and this repo has no debug report to demote it to,
+    so the call site was deleted rather than moved. The consequence is that both
+    keyword arguments below, and the scalar phrases the walk used to print, are
+    exercised only by ``tests/test_spec.py`` and ``tests/test_launcher.py``
+    until something grows one - which is the right way round, because a
+    measurement is cheap to keep and expensive to rediscover.
+
     ``include_removed_capabilities=False`` drops the one phrase that has a
     warning of its own — :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`
     is printed for the same event, and the two are emitted together on a

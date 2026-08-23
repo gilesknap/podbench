@@ -4111,11 +4111,17 @@ action, because the reader's next move is the same one either way.
 """
 
 _KEY_REMEDY_DEV = "`podbench dev --identity` recreates the pod with it."
+"""What installs a key into a dev pod's sidecar.
+
+A sidecar is not an ephemeral container: it is recreated with the pod, so the
+flag that changes its key is ``dev``'s rather than ``--new``.
+"""
+
 _KEY_REMEDY_SEAT = "`--new` lands a seat that takes it."
 """What installs a key an ephemeral container cannot be given.
 
-Two spellings because a dev pod's sidecar is not an ephemeral container: it is
-recreated with the pod, so the flag that changes its key is ``dev``'s.
+An ephemeral container's spec is immutable once it has been added, so the key
+arrives only with a new one.
 """
 
 

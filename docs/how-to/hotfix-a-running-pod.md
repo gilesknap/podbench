@@ -72,7 +72,7 @@ $ podbench hotfix values --app bl47p-ea-fastcs-01 \
 $ mv /tmp/values.yaml services/bl47p-ea-fastcs-01/values.yaml
 ```
 
-Three things about that invocation, each of which costs a deployment to get
+Four things about that invocation, each of which costs a deployment to get
 wrong:
 
 * **Write to a new file and move it.** Not `> services/…/values.yaml`: a shell

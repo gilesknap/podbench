@@ -192,10 +192,10 @@ the sidecar is non-root and the cluster admits `SYS_PTRACE`.
 was none, and asks nothing:
 
 ```
-  other modes are their own verbs: `podbench hotfix init` for a venv on a
-  claim that survives restarts, `podbench dev` for a clone the application
-  relaunches from. Both change the workload in ways this verb was given no
-  arguments for, so neither is offered as a choice here.
+  other modes are their own verbs: `podbench hotfix init` for a venv on
+  a claim that survives restarts, `podbench dev` for a clone the
+  application relaunches from. Both change the workload, so neither is
+  offered here
 ```
 
 Said rather than asked, because with no seat in the pod there is nothing
