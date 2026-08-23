@@ -10,16 +10,16 @@
 # fields inside the *target's own pod template*, which its own chart renders. A
 # subchart cannot reach into a sibling's StatefulSet, and a pod's volumes are
 # immutable once it exists, so those are in the target's values at deploy time
-# or not at all. `podbench hotfix --print-values` is what makes writing them
-# cost nothing.
+# or not at all. `podbench hotfix values` is what makes writing them cost
+# nothing.
 #
 # Renders nothing whatsoever while this is false, which is the whole contract:
 # a chart that depends on this one is not changed by depending on it.
 enabled: false
 
 # The claim's name. Defaults to `<release>-podbench-project`, and the default is
-# the one to use: it is what `podbench hotfix --print-values` emits into the
-# target's `volumes:` entry, and the two have to agree or the pod mounts a claim
+# the one to use: it is what `podbench hotfix values` emits into the target's
+# `volumes:` entry, and the two have to agree or the pod mounts a claim
 # that does not exist. Override only where a claim already exists under another
 # name.
 claimName: ""

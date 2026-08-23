@@ -1160,8 +1160,9 @@ Notes:
 │                                         entry instead of the podbench-hotfix-claim chart         │
 │                                         dependency                                               │
 │    --claim-venv              NAME       the venv's directory name on the claim, which the        │
-│                                         emitted runtime switch looks for (default: .venv). Must  │
-│                                         match `hotfix init --claim-venv`                         │
+│                                         runtime switch looks for and `uv sync` builds (default:  │
+│                                         .venv). `values` and `init` have to be given the same    │
+│                                         name                                                     │
 │                                         [default: .venv]                                         │
 │    --container               NAME       the application container (default: first)               │
 │    --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)        │

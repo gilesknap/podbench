@@ -1792,8 +1792,7 @@ def init(
     if not store.exists(checkout):
         raise HotfixError(
             f"{checkout} is not present: the claim is not mounted. Run "
-            "`podbench hotfix values` and deploy the five values it "
-            "emits."
+            "`podbench hotfix values` and deploy the five values it emits."
         )
 
     if store.exists(f"{checkout}/pyproject.toml"):
@@ -3159,13 +3158,18 @@ _ImageInterpreter = Annotated[
         f"(default: {IMAGE_INTERPRETER_PATH})",
     ),
 ]
+# Shared by `values` and `init` deliberately: the flag is a contract *between*
+# those two verbs (#209), so two declarations of it are two chances for the
+# sentence describing that contract to drift apart, which is what happened while
+# one copy lived on the root callback.
 _ClaimVenv = Annotated[
     str,
     typer.Option(
         "--claim-venv",
         metavar="NAME",
         help="the venv's directory name on the claim, which the runtime switch "
-        f"looks for and `uv sync` builds (default: {CLAIM_VENV_DIR})",
+        f"looks for and `uv sync` builds (default: {CLAIM_VENV_DIR}). `values` "
+        "and `init` have to be given the same name",
     ),
 ]
 _Seat = Annotated[
@@ -3402,8 +3406,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         """
         require_subcommand(ctx)
 
-    # `values_command`, not `values`: the parameter below is `--values`, and a
-    # closure of the same name would shadow it inside its own body.
+    # `values_command` for symmetry with the two verbs below, whose suffix is
+    # forced. Nothing forces it here - `values` is not a module-level name - so
+    # do not read a hazard into it.
     @app.command(
         name="values",
         help="emit the helm values an application's chart needs",
@@ -3525,16 +3530,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "entry instead of the podbench-hotfix-claim chart dependency",
             ),
         ] = False,
-        claim_venv: Annotated[
-            str,
-            typer.Option(
-                "--claim-venv",
-                metavar="NAME",
-                help="the venv's directory name on the claim, which the emitted "
-                f"runtime switch looks for (default: {CLAIM_VENV_DIR}). Must "
-                "match `hotfix init --claim-venv`",
-            ),
-        ] = CLAIM_VENV_DIR,
+        claim_venv: _ClaimVenv = CLAIM_VENV_DIR,
         container: _Container = None,
         namespace: _Namespace = None,
         context: _Context = None,

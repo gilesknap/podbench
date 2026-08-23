@@ -962,10 +962,10 @@ def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
         "exists, so podbench cannot add one now. This is exactly why Hotfix mode "
         "needs the chart's cooperation at deploy time - redeploy the workload "
         f"with a volume bound to claim {name!r}, mounted beside the "
-        "application's own project and never over it (`podbench hotfix "
-        "values` emits the volume, the volumeMount, the supervisor "
-        "entrypoint and the fsGroup). The pod currently declares: "
-        + (", ".join(str(entry) for entry in declared) or "no volumes")
+        "application's own project and never over it "
+        "(`podbench hotfix values` emits the volume, the volumeMount, "
+        "the supervisor entrypoint and the fsGroup). The pod currently "
+        "declares: " + (", ".join(str(entry) for entry in declared) or "no volumes")
     )
 
 
