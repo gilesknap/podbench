@@ -66,7 +66,8 @@ between a symptom and a cause.
 - **Base:** `main` at or after `9f8abdb`. Released state is 0.7.1.
 - **Decided:** 2026-08-23, by Giles, from the issues below.
 - **Issues:** #205 (seven usability findings), #203 (the verbosity rule), #204
-  (a warning that guesses where it could measure).
+  (a warning that guesses where it could measure), #209 (the `--claim-venv`
+  correctness defect this survey turned up).
 - **Evidence discipline:** unchanged, and it is the constraint this plan is most
   likely to break — *measure the seat, do not restate the request.* Where a
   measurement could not be taken, say so; **never "fine", and never a warning
@@ -292,9 +293,20 @@ actually is: **values, check, init, apply, consolidate/retire**.
 This phase is the one with the largest blast radius on tests and docs, and it is
 first on purpose: every later phase's help output is read against the new shape.
 
+**Delete `--print-values`. No alias, no deprecation period, no hidden flag.**
+Giles' instruction, 2026-08-23, and it is the governing principle for this whole
+plan: *hotfix mode is a new tool nobody outside this repo drives yet, so prune
+aggressively rather than carry compatibility for a surface no user has learned.*
+Update `docs/explanations/hotfix-flow.md` and any runbook text in the same
+commit — a doc naming a flag that no longer exists is worse than either
+spelling. The same principle licenses the removals in Phase 4 (`--no-from-pod`,
+`--liveness`) and the dead `--author` on `consolidate`: take them out, do not
+hide them.
+
 **Falsified if** the emitted values change at all. This is a relocation of a CLI
 surface, not a change to what it emits — diff the output of the old and new
-spellings against the same target and require them byte-identical.
+spellings against the same target, before and after, and require them
+byte-identical.
 
 ---
 
@@ -322,8 +334,9 @@ the set `consolidate` pushes. Read `org.opencontainers.image.revision` and
 neither label exists, record the base as **assumed** and have `status` say so,
 rather than printing a derived commit count as though it were measured.
 
-**`--claim-venv` is a silent correctness bug, found while surveying for this
-plan and not covered by #205.** It is documented as a cross-command contract that
+**`--claim-venv` is a silent correctness bug — now #209, filed separately
+because it is correctness rather than usability and must not vanish if this plan
+is descoped.** It is documented as a cross-command contract that
 must match between `init` and `values` (`hotfix.py:3529-3538`, `3162-3170`), and
 nothing checks it. Worse: `init` does not record it in the manifest
 (`hotfix.py:1848-1862`) and **`apply` has no such flag at all**, so `apply`'s
@@ -488,12 +501,27 @@ Measured baseline to beat, from `podbench vscode bl47p-ea-fastcs-01` on
 2026-08-22: **101 lines, four WARNING blocks, 333 words, nothing wrong in any of
 them.**
 
+**Rewriting all 33 is sanctioned** — Giles, 2026-08-23, on the same
+new-tool-prune-aggressively grounds as Phase 1. The bar is not "change as little
+as possible"; it is that **what comes out is a consistent, intelligible set**.
+One voice, one shape, the same three beats in the same order, the same
+vocabulary for the same concept across `launcher.py`, `hotfix.py`, `editor.py`
+and `proc.py`. A half-rewritten set where six constants follow the rule and
+twenty-seven do not is the worse outcome, and is what "minimal diff" would
+produce here.
+
+So treat this as one deliberate pass with a written style, not 33 independent
+edits. Draft the rewritten set and read it end to end as a body of text *before*
+applying it — the property being checked is consistency across the set, which is
+invisible one constant at a time.
+
 **Falsified if** shortening a note makes a real failure harder to act on.
 `VERSION_SKEW_WARNING`, `CAPABILITY_STRIPPED_WARNING` and
 `HOTFIX_CLAIM_UNMOUNTABLE_NOTE` describe states where the next action depends on
-the detail; the three-beat rule bounds beat 3, it does not delete it. Also
-falsified if this becomes a reword-everything pass: the aim is **fewer blocks on
-a normal run**, not uniformly terser prose.
+the detail; the three-beat rule bounds beat 3, it does not delete it. Every
+sentence removed lands in the docstring if it is not already there — that is what
+makes this a move rather than a loss, and it is the reason a wholesale rewrite is
+safe here.
 
 Read the `terminal-reports` skill before touching any of this. Wrapping collapses
 whitespace, so a column row or a `do this:  <command>` offer put through
