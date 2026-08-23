@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
 
 import typer
+from rich.text import Text
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
@@ -326,6 +327,64 @@ class MultiReplicaError(HotfixError):
 
 class ManifestVersionError(HotfixError):
     """A manifest written by a newer podbench than this one."""
+
+
+# -- output ------------------------------------------------------------------
+
+_FINISHED_INDENT = "  "
+"""What marks a line as authored finished rather than as prose to be wrapped.
+
+Any leading whitespace does; two spaces is what this module writes. The marker
+is the indent and not a flag on the data because a :class:`HotfixError` carries
+one string and nothing else, which is the difference from
+:func:`podbench.launcher._editor_step` - that one is handed a note and an
+``is_step`` predicate and can keep the two shapes apart without a convention.
+"""
+
+
+def _relay(text: str) -> str:
+    """Somebody else's output, marked so :func:`_laid_out` leaves it alone.
+
+    kubectl's and uv's stderr reach the user through a :class:`HotfixError` that
+    wraps a sentence round them. :func:`podbench.console.wrap` collapses runs of
+    whitespace and breaks on spaces, so reflowing a relayed line is how a paste
+    stops matching what the person actually saw - and one of these carries a
+    multi-line uv resolution report.
+
+    >>> _relay("error: no solution found\\n  hint: pin it")
+    '  error: no solution found\\n    hint: pin it'
+    """
+    return "\n".join(f"{_FINISHED_INDENT}{line}" for line in text.splitlines() or [""])
+
+
+def _laid_out(text: str) -> list[str | Text]:
+    """*text* as the terminal should draw it: prose wrapped, the rest untouched.
+
+    One rule, read off the line itself. A line the caller wrote **flush left**
+    is prose and is wrapped to :func:`podbench.console.wrap_width`. A line it
+    **indented** was authored finished - a numbered step, a ``do this:``
+    offer, a relayed error - and is printed exactly as it arrived, as a bare
+    :class:`~rich.text.Text` so none of ``console``'s line rules run over
+    somebody else's text.
+
+    Blank lines survive, which is what keeps a multi-paragraph message
+    (:data:`FROM_POD_ESCAPE` is appended to most of them) reading as paragraphs.
+
+    >>> for line in _laid_out("one\\n\\n  two  three"):
+    ...     print(repr(line if isinstance(line, str) else line.plain))
+    'one'
+    ''
+    '  two  three'
+    """
+    lines: list[str | Text] = []
+    for line in text.split("\n"):
+        if not line.strip():
+            lines.append("")
+        elif line[:1].isspace():
+            lines.append(Text(line))
+        else:
+            lines.extend(paragraph(line))
+    return lines
 
 
 # -- the manifest ----------------------------------------------------------
@@ -2504,11 +2563,11 @@ def _install(
     )
     if result.returncode != 0:
         raise HotfixError(
-            f"rebuilding the venv failed in container {target.container}: "
-            f"{result.stderr.strip() or result.stdout.strip()}. It has to run "
-            "there and not in the seat, whose interpreter is a different "
-            "image's. If the pod has no egress to an index, pre-build the venv "
-            "on the claim and re-run with --no-install."
+            f"rebuilding the venv failed in container {target.container}:\n"
+            f"{_relay(result.stderr.strip() or result.stdout.strip())}\n"
+            "It has to run there and not in the seat, whose interpreter is a "
+            "different image's. If the pod has no egress to an index, pre-build "
+            "the venv on the claim and re-run with --no-install."
         )
     return f"rebuilt the venv at {checkout}/{venv}"
 
@@ -2726,12 +2785,12 @@ def _relaunch(
     )
     if result.returncode != 0:
         raise HotfixError(
-            f"the relaunch failed in container {target.container}: "
-            f"{result.stderr.strip() or result.stdout.strip()}. The hold file is "
-            f"removed on every path, so the pod is fail-fast again either way - "
-            f"check {HOTFIX_CHILD_PID_PATH} exists, which is what tells you the "
-            "supervisor is the one from `hotfix values` and not the image's own "
-            "entrypoint."
+            f"the relaunch failed in container {target.container}:\n"
+            f"{_relay(result.stderr.strip() or result.stdout.strip())}\n"
+            "The hold file is removed on every path, so the pod is fail-fast "
+            f"again either way - check {HOTFIX_CHILD_PID_PATH} exists, which is "
+            "what tells you the supervisor is the one from `hotfix values` and "
+            "not the image's own entrypoint."
         )
     return f"relaunched the application in {target.container} without a restart"
 
@@ -3780,7 +3839,7 @@ def _merge_values_into_file(
         parent_path=parent_values or "the shared values file",
     )
     for note in notes:
-        print("\n".join(paragraph(note)), file=sys.stderr)
+        emit(_laid_out(note), stderr=True)
     return merged
 
 
@@ -5152,7 +5211,16 @@ def _store_for(
 
 
 def _report(actions: Sequence[str]) -> int:
-    emit("\n".join(actions))
+    """What a verb did, one wrapped paragraph per action.
+
+    :func:`_laid_out` and not a bare ``emit``: ``emit`` styles a line but never
+    breaks one, and several of these actions are a sentence rather than a row -
+    ``_install``'s and ``_relaunch``'s carry a whole remedy. The retirement
+    checklist is in here too and is already laid out, which is why the rule is
+    "wrap what was written flush left" rather than "wrap everything": its
+    numbered steps are indented, and step 1 is a command to be pasted.
+    """
+    emit(_laid_out("\n".join(actions)))
     return 0
 
 
@@ -5172,7 +5240,7 @@ def _warn(message: str) -> None:
 
 
 NON_EXEC_PROBE_WARNING = (
-    "podbench: {pod}'s {container!r} declares a {kind} livenessProbe, which "
+    "{pod}'s {container!r} declares a {kind} livenessProbe, which "
     "cannot be short-circuited by the hold - only an exec probe can, because an "
     "httpGet or tcpSocket probe answers from the application, and the "
     "application is exactly what is down while a pod is held. No livenessProbe "
@@ -5186,11 +5254,15 @@ Not an error, because the values are still correct and still worth emitting -
 and not silence either, because the emitted block being *absent* looks identical
 to the canonical fastcs case, which genuinely has no probe. The difference is
 the whole of whether a held pod survives.
+
+Printed through :func:`_warn`, which supplies :data:`podbench.console.WARNING_LEAD`
+- so the text opens on the fact rather than on a ``podbench:`` prefix that is
+neither coloured nor findable in a pasted terminal.
 """
 
 
 EXISTING_MOUNTS_WARNING = (
-    "podbench: {pod}'s {container!r} already mounts {mounts}. Some of those come "
+    "{pod}'s {container!r} already mounts {mounts}. Some of those come "
     "from your chart and some from the service's own values; podbench cannot "
     "tell which from here. The `volumes:` and `volumeMounts:` keys below are a "
     "whole key each, so pasting them over a values file that already sets one "
@@ -5217,11 +5289,24 @@ Podbench cannot do the merge itself and must not pretend to: read from a live
 pod, a chart-generated volume and one the service declared are
 indistinguishable. Naming them and saying which key is at risk is the whole of
 what can honestly be done here.
+
+Printed through :func:`_warn`, for :data:`NON_EXEC_PROBE_WARNING`'s reason.
 """
 
 
 def _values_failure(message: str) -> NoReturn:
-    print(f"podbench: {message}", file=sys.stderr)
+    """``hotfix values`` refusing, on stderr, laid out like everything else.
+
+    Through :func:`_laid_out` and not ``print``: every one of these messages
+    ends in :data:`FROM_POD_ESCAPE`, which is two paragraphs carrying seven
+    backticked flags, and a terminal wrapping that itself breaks mid-token -
+    which is exactly the pasteable half :data:`podbench.console._TOKEN` exists
+    to keep whole.
+
+    stderr because stdout is the values snippet and a shell redirects it over a
+    values file (the p47 run did): nothing this verb says may land in there.
+    """
+    emit(_laid_out(f"podbench: {message}"), stderr=True)
     raise typer.Exit(2)
 
 
@@ -5279,8 +5364,9 @@ def _read_values_from_pod(
         # in the text of its own message, so podbench relays that verbatim
         # rather than guessing at a category and getting it wrong.
         _values_failure(
-            f"could not read pod {name!r} in {kube.namespace!r}: "
-            f"{error}.\n\n{FROM_POD_ESCAPE}"
+            f"could not read pod {name!r} in {kube.namespace!r}:\n"
+            f"{_relay(str(error))}\n"
+            f"\n{FROM_POD_ESCAPE}"
         )
     try:
         target = _application_container(pod_json, container)
@@ -5313,11 +5399,10 @@ def _read_values_from_pod(
     # done for them, and names volumes the merge deliberately did not copy
     # because the chart renders them.
     if theirs and warn_mounts:
-        print(
+        _warn(
             EXISTING_MOUNTS_WARNING.format(
                 pod=name, container=target, mounts=and_list(theirs)
-            ),
-            file=sys.stderr,
+            )
         )
     if probe is None:
         declared = as_dict(spec.get("livenessProbe")) or None
@@ -5331,11 +5416,8 @@ def _read_values_from_pod(
                     (k for k in ("httpGet", "tcpSocket", "grpc") if k in declared),
                     "non-exec",
                 )
-                print(
-                    NON_EXEC_PROBE_WARNING.format(
-                        pod=name, container=target, kind=kind
-                    ),
-                    file=sys.stderr,
+                _warn(
+                    NON_EXEC_PROBE_WARNING.format(pod=name, container=target, kind=kind)
                 )
     return entrypoint, gid, probe
 
@@ -5463,20 +5545,17 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             try:
                 parsed_probe = _load_json(liveness_probe)
             except json.JSONDecodeError as exc:
-                print(
-                    f"podbench: --liveness-probe is not valid json: {exc}",
-                    file=sys.stderr,
-                )
-                raise typer.Exit(2) from exc
+                # `_values_failure` and not a `print` of its own: this is the
+                # same verb refusing the same way, and two spellings of that is
+                # how one of them stops being wrapped.
+                _values_failure(f"--liveness-probe is not valid json: {exc}")
             if not probe_exec_command(parsed_probe):
-                print(
-                    "podbench: --liveness-probe has no exec.command. Only an "
-                    "exec probe can be short-circuited by the hold - an "
-                    "httpGet or tcpSocket probe answers from the application, "
-                    "which is exactly what is down while a pod is held.",
-                    file=sys.stderr,
+                _values_failure(
+                    "--liveness-probe has no exec.command. Only an exec probe "
+                    "can be short-circuited by the hold - an httpGet or "
+                    "tcpSocket probe answers from the application, which is "
+                    "exactly what is down while a pod is held."
                 )
-                raise typer.Exit(2)
         # Unconditional since #205 item 6: `--no-from-pod` emitted from the
         # flags alone, and every field it left to be typed is one #176 says
         # costs a restart ladder to get wrong.
@@ -5822,7 +5901,12 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     # container that is not there. Those are all things the user has to fix, and
     # exit 2 with the sentence is the answer; a traceback is not.
     except (HotfixError, KubectlError, LauncherError, ValueError) as error:
-        print(f"podbench: {error}", file=sys.stderr)
+        # Through `_laid_out` rather than `print`: `TARGET_HAS_NO_PROJECT` is
+        # three paragraphs and 728 characters, and the terminal's own wrap puts
+        # a break through the middle of `--image-project PATH`. The relayed
+        # halves of the messages that carry kubectl's or uv's stderr are
+        # indented by `_relay`, so they come out exactly as they arrived.
+        emit(_laid_out(f"podbench: {error}"), stderr=True)
         return 2
 
 

@@ -234,6 +234,20 @@ def a_manifest(**overrides: Any) -> hotfix.HotfixManifest:
     return hotfix.HotfixManifest(**defaults)
 
 
+def flowed(text: str) -> str:
+    """*text* with its wrapping undone, for asserting on a phrase.
+
+    Everything this module's verbs print goes through `console` now, so a
+    sentence they emitted is not a contiguous substring of what came out — it
+    has a newline and a hanging indent somewhere in the middle of it. Collapsing
+    the whitespace is what `tests/test_doctor.py::flowed` does and for the same
+    reason; a test that cares how a line is *laid out* asserts on the raw
+    capture instead, so that flattening cannot hide a line that should have
+    wrapped.
+    """
+    return " ".join(text.split())
+
+
 # -- the manifest ----------------------------------------------------------
 
 
@@ -2386,7 +2400,7 @@ def test_a_non_exec_probe_is_emitted_around_and_said_out_loud(
     captured = capsys.readouterr()
     assert "livenessProbe:" not in captured.out
     assert "httpGet" in captured.err
-    assert "restart the pod out from under the seat" in captured.err
+    assert "restart the pod out from under the seat" in flowed(captured.err)
 
 
 def test_volumes_the_target_already_has_are_named_as_a_merge(
@@ -2431,8 +2445,8 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     # The advice is to merge into the values file, and explicitly *not* to copy
     # the chart's own volumes in - which is what "replaces the ones your chart
     # renders" would have sent a reader off to do.
-    assert "merge into it rather than replacing it" in err
-    assert "must not be copied in here" in err
+    assert "merge into it rather than replacing it" in flowed(err)
+    assert "must not be copied in here" in flowed(err)
     # podbench's own two are not reported back to the user as theirs.
     assert model.HOTFIX_CLAIM_VOLUME not in err
 
@@ -2477,7 +2491,7 @@ def test_values_answers_the_question_the_mount_warning_asks(
 
     assert code == 0
     err = capsys.readouterr().err
-    assert "merge into it rather than replacing it" not in err
+    assert "merge into it rather than replacing it" not in flowed(err)
     # The merge's own notes still say what it did.
     assert "went under" in err
 
@@ -2792,6 +2806,202 @@ def test_the_offline_route_is_gone_rather_than_hidden(
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "No such option" in " ".join(captured.err.split())
+
+
+# -- what reaches the terminal ----------------------------------------------
+#
+# The rest of this module asserts on *what* was said, flattening the wrap to do
+# it. These four assert on the layout itself, because flattening is exactly what
+# would hide a line that should have wrapped and did not - or one that wrapped
+# and should not have.
+
+
+def test_a_values_refusal_wraps_and_keeps_its_flags_pasteable(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`FROM_POD_ESCAPE` is two paragraphs carrying five backticked flags, and
+    it is appended to every failure of the pod read. Printed raw it was folded
+    by the terminal, mid-token, through the one half of the line the reader was
+    going to select."""
+    code = hotfix.main(["hotfix", "values", "--app", "api", "-n", "demo"])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    limit = console.wrap_width()
+    assert [line for line in err.splitlines() if len(line) > limit] == []
+    # Wrapped, and not merely short: the message is far longer than one line.
+    assert len(err.splitlines()) > 4
+    # `console._TOKEN`'s whole purpose: a flag and its argument survive on one
+    # line however the paragraph round them falls.
+    for token in ("`--from-pod POD`", "`--context NAME`", "`--liveness-probe`"):
+        assert any(token in line for line in err.splitlines()), (token, err)
+
+
+def test_relayed_kubectl_stderr_is_not_reflowed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Somebody else's output is quoted, not laid out again.
+
+    `console.wrap` collapses runs of whitespace and breaks on spaces, so a
+    reflowed relay is one that no longer matches what the person saw in their
+    own terminal - and these lines are what they will paste into an issue.
+    """
+    hint = (
+        "hint: renew the token your exec credential plugin returns, or run "
+        "`kubectl config set-credentials` against this context"
+    )
+    runner = FakeRunner()
+    runner.failures["get pod api-7f9-abc -o json"] = (
+        "error: You must be logged in to the server (Unauthorized)\n" + hint
+    )
+
+    code = hotfix.main(
+        ["hotfix", "values", "--app", "api", "-n", "demo", "--from-pod", "api-7f9-abc"],
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    # Longer than the window, so a line this length is proof it went through
+    # untouched rather than proof the window happened to be wide enough.
+    assert len(hint) > console.wrap_width()
+    assert hint in err
+    # ...while podbench's own prose either side of it did wrap. The relay is
+    # what the indent marks, so flush-left is exactly the half podbench wrote.
+    own = [line for line in err.splitlines() if line and not line.startswith(" ")]
+    assert own and all(len(line) <= console.wrap_width() for line in own)
+    assert "#176" in " ".join(err.split())
+
+
+def test_the_two_values_warnings_are_warnings(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both used to open on an unstyled `podbench:`, which `console` has no rule
+    for - so neither could be picked out of a pasted terminal, and neither was
+    coloured. `WARNING` is the one vocabulary every other verb already uses."""
+    pod = target_pod(
+        command=["python", "-m", "app"],
+        probe={"httpGet": {"path": "/healthz", "port": 8080}},
+    )
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": "dev-shm", "mountPath": "/dev/shm"}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    code = hotfix.main(
+        ["hotfix", "values", "--app", "api", "-n", "demo", "--from-pod", "api-7f9-abc"],
+        runner=runner,
+    )
+
+    assert code == 0
+    err = capsys.readouterr().err
+    leaders = [line for line in err.splitlines() if not line.startswith(" ")]
+    assert leaders and all(line.startswith(console.WARNING_LEAD) for line in leaders)
+    assert "podbench:" not in err
+    # Hung under the leader, so a continuation cannot be read as a new warning.
+    assert all(
+        line.startswith(" " * console.WARNING_HANG)
+        for line in err.splitlines()
+        if line.startswith(" ")
+    )
+
+
+def test_a_report_wraps_its_prose_and_leaves_an_authored_step_alone(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The half of `_report`'s rule that says what *not* to touch.
+
+    The retirement checklist is appended to `consolidate`'s actions already laid
+    out, and its step 1 is a `gh pr create` somebody selects and pastes —
+    longer than the window, and `console.wrap` breaks on spaces. It survives
+    because it is indented; the other half of the rule, that flush-left prose
+    does get wrapped, is
+    `test_a_long_action_is_wrapped_rather_than_left_to_the_terminal`.
+    """
+    seat = "exec -c podbench-1 api-7f9-abc --"
+    runner = FakeRunner(
+        {
+            "get deployment api -o json": json.dumps(workload_json()),
+            "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
+            "get pod api-7f9-abc -o json": json.dumps(pod_json()),
+            f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
+            f"{seat} {GIT} log": f"{HEAD_SHA}\x1fstop the beam tripping\n",
+        }
+    )
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "consolidate",
+            "deployment/api",
+            "--venv",
+            VENV,
+            "--branch",
+            "patch/beamtime-14",
+            "-n",
+            "demo",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    # Step 1 is the pasteable one, and it is longer than the window.
+    step = next(line for line in lines if "gh pr create" in line)
+    assert len(step) > console.wrap_width()
+    assert step.startswith("  1. gh pr create --head patch/beamtime-14 ")
+    # Everything podbench wrote flush left is inside the window.
+    own = [line for line in lines if line and not line.startswith(" ")]
+    assert own and all(len(line) <= console.wrap_width() for line in own)
+
+
+def test_a_long_action_is_wrapped_rather_than_left_to_the_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other half: an action that is a sentence takes the window.
+
+    `base_commit_from`'s assumed-base provenance is the longest of them at
+    around a hundred characters, and it is the one a reader most needs to take
+    in — it says the commit count `status` will print was measured from a guess.
+    Left to the terminal it folded mid-word.
+    """
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True)),
+            f"exec -c podbench-1 api-7f9-abc -- {GIT} rev-parse": f"{HEAD_SHA}\n",
+        }
+    )
+
+    def no_labels(image: str) -> dict[str, str]:
+        del image
+        return {}
+
+    with mock.patch.object(hotfix, "read_image_labels", no_labels):
+        code = hotfix.main(
+            # fmt: off
+            [
+                "hotfix",
+                "init",
+                "pod/api-7f9-abc",
+                "--no-install",
+                "--repo",
+                "https://example.invalid/acme/api.git",
+                "-n",
+                "demo",
+            ],
+            # fmt: on
+            runner=runner,
+        )
+
+    assert code == 0
+    report = capsys.readouterr().out
+    assert "ASSUMED" in " ".join(report.split())
+    limit = console.wrap_width()
+    assert [line for line in report.splitlines() if len(line) > limit] == []
+    # Wrapped, not merely short: the provenance alone overruns the window.
+    assert len(report.splitlines()) > 4
 
 
 # -- --values: the whole file, not fragments to merge (#192) ---------------
