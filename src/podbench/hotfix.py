@@ -168,6 +168,11 @@ __all__ = [
     "CLAIM_OUTLIVES_THE_FLIP",
     "CLAIM_GONE_BUT_STILL_WIRED",
     "CLAIM_STILL_MOUNTED",
+    "CLAIM_MOUNTERS_UNREADABLE",
+    "CLAIM_CONTENTS_UNVERIFIED",
+    "CLAIM_NOT_LABELLED_FOR_THIS_TARGET",
+    "CLAIM_UNMEASURED",
+    "STATUS_DOES_NOT_READ_CLAIMS",
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
@@ -1210,7 +1215,11 @@ def resolve_target(
 
 
 def _resolve_target(
-    kube: Kubectl, reference: str, *, container: str | None = None
+    kube: Kubectl,
+    reference: str,
+    *,
+    container: str | None = None,
+    require_single_replica: bool = True,
 ) -> tuple[HotfixTarget, dict[str, Any]]:
     """The target, and the pod JSON this walk resolved it out of.
 
@@ -1219,28 +1228,49 @@ def _resolve_target(
     a second time to re-read what this walk has just read is a call against an
     API server that answers nothing new, and it would put the report's rows a
     reconcile apart from the target they are about.
+
+    ``require_single_replica`` is off for :func:`retire` alone. The refusal is
+    about *writing* to a ReadWriteOnce claim, and the state a retirement report
+    exists to confirm — the wiring out, the team scaled back up — is precisely
+    the one it forbids, so asking "is this retired?" would answer with ``init``
+    at somebody who has already finished.
     """
     kind, separator, name = reference.partition("/")
     if not separator:
-        return _target_from_pod(kube, reference, container)
+        return _target_from_pod(
+            kube, reference, container, require_single_replica=require_single_replica
+        )
     if not name:
         raise HotfixError(f"no name in {reference!r}")
     if kind in ("pod", "pods", "po"):
-        return _target_from_pod(kube, name, container)
+        return _target_from_pod(
+            kube, name, container, require_single_replica=require_single_replica
+        )
     workload_kind = _WORKLOAD_KINDS.get(kind)
     if workload_kind is None:
         raise HotfixError(
             f"hotfix mode works on pods, deployments and statefulsets, not {kind!r}"
         )
-    return _target_from_workload(kube, workload_kind, name, container)
+    return _target_from_workload(
+        kube,
+        workload_kind,
+        name,
+        container,
+        require_single_replica=require_single_replica,
+    )
 
 
 def _target_from_workload(
-    kube: Kubectl, kind: str, name: str, container: str | None
+    kube: Kubectl,
+    kind: str,
+    name: str,
+    container: str | None,
+    *,
+    require_single_replica: bool = True,
 ) -> tuple[HotfixTarget, dict[str, Any]]:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
-    if replicas is not None and replicas != 1:
+    if require_single_replica and replicas is not None and replicas != 1:
         _refuse_multi_replica(kind, name, replicas)
     selector = as_dict(as_dict(workload.get("spec")).get("selector"))
     labels = as_dict(selector.get("matchLabels"))
@@ -1250,26 +1280,55 @@ def _target_from_workload(
     result = kube.run("get", "pods", "-l", query, "-o", "json")
     pods = [as_dict(item) for item in _as_list(_load_json(result.stdout).get("items"))]
     live = [pod for pod in pods if _phase(pod) not in ("Succeeded", "Failed")]
-    if len(live) != 1:
+    if not live or (len(live) != 1 and require_single_replica):
         raise HotfixError(
             f"{kind}/{name} matches {len(live)} live pods; hotfix mode needs "
             "exactly one. Name the pod directly if this is a rollout in flight."
         )
+    chosen = _still_wired_first(live)
     # The workload is already known and already checked, so the ownership walk
     # below is skipped: repeating it would be two more API calls to rediscover
     # the object the caller named.
-    target = _target_from_pod_json(kube, live[0], container, follow_owner=False)
+    target = _target_from_pod_json(kube, chosen, container, follow_owner=False)
     return (
         replace(target, workload_kind=kind, workload_name=name, replicas=replicas or 1),
-        live[0],
+        chosen,
     )
 
 
+def _still_wired_first(live: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Which of a workload's live pods a report must be measured against.
+
+    Only ever more than one under ``retire``, and the choice is the difference
+    between a report and a lie: the ``wiring`` row asserts the hotfix is out of
+    the application's pod template, so measuring the replica that has already
+    been rolled while another still mounts the claim would tick it. Sorted by
+    name so that the pick is stable between two runs that found the same thing.
+    """
+    ordered = sorted(
+        (as_dict(pod) for pod in live),
+        key=lambda pod: _as_str(as_dict(pod.get("metadata")).get("name")) or "",
+    )
+    return next((pod for pod in ordered if hotfix_wiring(pod)), ordered[0])
+
+
 def _target_from_pod(
-    kube: Kubectl, name: str, container: str | None
+    kube: Kubectl,
+    name: str,
+    container: str | None,
+    *,
+    require_single_replica: bool = True,
 ) -> tuple[HotfixTarget, dict[str, Any]]:
     pod_json = kube.get_pod(name)
-    return _target_from_pod_json(kube, pod_json, container), pod_json
+    return (
+        _target_from_pod_json(
+            kube,
+            pod_json,
+            container,
+            require_single_replica=require_single_replica,
+        ),
+        pod_json,
+    )
 
 
 def _target_from_pod_json(
@@ -1278,6 +1337,7 @@ def _target_from_pod_json(
     container: str | None,
     *,
     follow_owner: bool = True,
+    require_single_replica: bool = True,
 ) -> HotfixTarget:
     metadata = as_dict(pod_json.get("metadata"))
     name = _as_str(metadata.get("name"))
@@ -1297,16 +1357,30 @@ def _target_from_pod_json(
         return target
     kind, owner_name = owner
     if kind == "replicaset":
-        return _through_replicaset(kube, target, owner_name)
+        return _through_replicaset(
+            kube, target, owner_name, require_single_replica=require_single_replica
+        )
     if kind in ("statefulset", "deployment"):
-        return _with_workload(kube, target, kind, owner_name)
+        return _with_workload(
+            kube,
+            target,
+            kind,
+            owner_name,
+            require_single_replica=require_single_replica,
+        )
     # Something else owns it — a Job, an operator's CRD. Not refused: there is
     # one pod and the hotfix is legitimate, but the annotation cannot go on a
     # template podbench does not understand.
     return replace(target, workload_kind=kind, workload_name=owner_name, replicas=1)
 
 
-def _through_replicaset(kube: Kubectl, target: HotfixTarget, name: str) -> HotfixTarget:
+def _through_replicaset(
+    kube: Kubectl,
+    target: HotfixTarget,
+    name: str,
+    *,
+    require_single_replica: bool = True,
+) -> HotfixTarget:
     """Resolve a pod's ReplicaSet to the Deployment that owns it.
 
     The Deployment is what has to be annotated: annotating the ReplicaSet's
@@ -1315,22 +1389,33 @@ def _through_replicaset(kube: Kubectl, target: HotfixTarget, name: str) -> Hotfi
     """
     replicaset = _get_json(kube, "replicaset", name)
     replicas = replica_count(replicaset)
-    if replicas is not None and replicas != 1:
+    if require_single_replica and replicas is not None and replicas != 1:
         _refuse_multi_replica("replicaset", name, replicas)
     owner = _controller_of(as_dict(replicaset.get("metadata")))
     if owner is not None and owner[0] == "deployment":
-        return _with_workload(kube, target, "deployment", owner[1])
+        return _with_workload(
+            kube,
+            target,
+            "deployment",
+            owner[1],
+            require_single_replica=require_single_replica,
+        )
     return replace(
         target, workload_kind="replicaset", workload_name=name, replicas=replicas or 1
     )
 
 
 def _with_workload(
-    kube: Kubectl, target: HotfixTarget, kind: str, name: str
+    kube: Kubectl,
+    target: HotfixTarget,
+    kind: str,
+    name: str,
+    *,
+    require_single_replica: bool = True,
 ) -> HotfixTarget:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
-    if replicas is not None and replicas != 1:
+    if require_single_replica and replicas is not None and replicas != 1:
         _refuse_multi_replica(kind, name, replicas)
     return replace(
         target, workload_kind=kind, workload_name=name, replicas=replicas or 1
@@ -2713,24 +2798,44 @@ def _retirement_checklist(
     ``hotfix retire`` measures where the reader has got to.
     """
     workload = target.workload or f"pod/{target.pod.name}"
-    return "\n".join(
-        [
-            "",
-            "next, in order — the claim is now the only copy of this fix:",
-            f"  1. gh pr create --head {branch} --title 'consolidate hotfix "
-            f"{manifest.commit[:7]}'",
-            "  2. merge, and let CI build and publish the image",
-            f"  3. roll {workload} onto the new image and confirm it is healthy",
-            "  4. take the volume, volumeMount, args and podSecurityContext",
-            "     back out of the application's own values, and redeploy",
-            f"  5. turn the claim off ({SUBCHART_VALUES_KEY}.enabled=false, or",
-            "     hotfixProject.enabled=false on the central route) and delete",
-            "     it — it is annotated Prune=false, so the flip alone leaves it",
-            "",
-            f"`podbench hotfix retire pod/{target.pod.name}` says which of those",
-            "have landed, and deletes the claim once nothing mounts it.",
-        ]
+    # Steps 1 to 3 are authored finished, and step 1 for the reason the
+    # `terminal-reports` skill gives: it is a command somebody selects and
+    # pastes, and a wrap through it costs the report the one line that was for
+    # doing rather than reading. 4 and 5 are prose, so they go through
+    # `paragraph` and take their width from the terminal.
+    lines = [
+        "",
+        "next, in order — the claim is now the only copy of this fix:",
+        f"  1. gh pr create --head {branch} --title 'consolidate hotfix "
+        f"{manifest.commit[:7]}'",
+        "  2. merge, and let CI build and publish the image",
+        f"  3. roll {workload} onto the new image and confirm it is healthy",
+    ]
+    lines.extend(
+        paragraph(
+            "take the volume, volumeMount, args and podSecurityContext back out "
+            "of the application's own values, and redeploy",
+            first="  4. ",
+            indent="     ",
+        )
     )
+    lines.extend(
+        paragraph(
+            f"turn the claim off (`{SUBCHART_VALUES_KEY}.enabled=false`, or "
+            "`hotfixProject.enabled=false` on the central route) and delete it "
+            "— it is annotated Prune=false, so the flip alone leaves it",
+            first="  5. ",
+            indent="     ",
+        )
+    )
+    lines.append("")
+    lines.extend(
+        paragraph(
+            f"`podbench hotfix retire pod/{target.pod.name}` says which of those "
+            "have landed, and deletes the claim once nothing mounts it."
+        )
+    )
+    return "\n".join(lines)
 
 
 # -- helm values -----------------------------------------------------------
@@ -4223,10 +4328,10 @@ else's values file.
 class RetirementStep(Enum):
     """What retiring a hotfix consists of, in the order the steps happen.
 
-    Four rather than :func:`_retirement_checklist`'s six, because these are the
-    four a cluster can be *asked* about. Opening the PR and merging it leave no
-    trace podbench can read; rolling the image, unwiring the pod and deleting
-    the claim each do.
+    Four rather than :func:`_retirement_checklist`'s five, because these are
+    the four a cluster can be *asked* about. Opening the PR and merging it
+    leave no trace podbench can read; rolling the image, unwiring the pod and
+    deleting the claim each do.
     """
 
     BRANCH = "branch"
@@ -4329,6 +4434,12 @@ CLAIM_STILL_MOUNTED = (
     "fails to bind on the next reschedule, so the wiring comes out of the "
     "application's values first."
 )
+"""Why ``--delete-claim`` declines on a claim something still mounts.
+
+The refusal is reported on the claim's own row rather than raised, because the
+report is the point of the verb: the reader needs to see which step they are
+actually on, not an error about the one they asked for.
+"""
 
 CLAIM_MOUNTERS_UNREADABLE = (
     "not deleted: this namespace's pods could not be listed, so whether "
@@ -4341,12 +4452,6 @@ Unmeasured, and therefore no. The deletion is irreversible and its only
 precondition is a *negative* one, which is the shape that a failed read turns
 into a false yes if the caller treats "found no mounters" and "could not look"
 as the same answer.
-"""
-"""Why ``--delete-claim`` declines on a pod that is still wired.
-
-The refusal is reported on the claim's own row rather than raised, because the
-report is the point of the verb: the reader needs to see which step they are
-actually on, not an error about the one they asked for.
 """
 
 CLAIM_GONE_BUT_STILL_WIRED = (
@@ -4387,6 +4492,26 @@ Not "the claim is there". The pod in front of it names a claim, but a pod goes
 on running perfectly well after its claim is deleted - see
 :data:`CLAIM_GONE_BUT_STILL_WIRED` - so a listing that inferred the claim from
 the mount would report the one state that most needs finding as normal.
+"""
+
+CLAIM_NOT_LABELLED_FOR_THIS_TARGET = (
+    "not measured: no claim in {namespace} carries {label} for {names}, and "
+    "this pod declares none. The label is set from "
+    "`hotfixProject.claims[].name`, which nothing requires to match the "
+    "container, the workload or the pod, so that is an answer about labels and "
+    "not about the claim: `kubectl -n {namespace} get pvc` is the read podbench "
+    "cannot narrow."
+)
+"""Why an empty label listing leaves the claim unmeasured rather than gone.
+
+The one step of retirement that cannot be undone, so it is ticked only off a
+measurement of the claim. ``Charts/podbench/templates/pvc-hotfix-project.yaml``
+labels the claim with the ``hotfixProject.claims[]`` entry's own ``name``, which
+nothing requires to equal the container, the workload or the pod - the subchart
+route usually does match, since it labels from the release name, which is
+exactly what would make this silent. An empty listing is therefore evidence
+about labels, and reading it as "the claim is gone" would report a standing
+claim as a completed retirement.
 """
 
 
@@ -4741,9 +4866,16 @@ def claim_state(
         for name in (target.container, target.workload_name, target.pod.name)
         if name
     }
+    try:
+        items = _as_list(_load_json(result.stdout).get("items"))
+    except json.JSONDecodeError:
+        # rc=0 and unparseable is `_pods_mounting`'s case, and for its reason:
+        # the answer here decides an irreversible step, so anything short of a
+        # listing this code understood is unmeasured.
+        return ClaimState(None, None, _unreadable(result, "the namespace's claims"))
     found = sorted(
         name
-        for item in _as_list(_load_json(result.stdout).get("items"))
+        for item in items
         if (metadata := as_dict(as_dict(item).get("metadata")))
         and (name := _as_str(metadata.get("name"))) is not None
         and _as_str(as_dict(metadata.get("labels")).get(HOTFIX_TARGET_LABEL)) in wanted
@@ -4753,9 +4885,12 @@ def claim_state(
     if not found:
         return ClaimState(
             None,
-            False,
-            f"no claim in {kube.namespace} carries {HOTFIX_TARGET_LABEL} for "
-            f"{and_list(sorted(wanted))}, and this pod declares none",
+            None,
+            CLAIM_NOT_LABELLED_FOR_THIS_TARGET.format(
+                namespace=kube.namespace,
+                label=HOTFIX_TARGET_LABEL,
+                names=and_list(sorted(wanted)),
+            ),
         )
     return ClaimState(
         None,
@@ -4798,8 +4933,14 @@ def retire(
     verb's honest job is to say which of them have landed. Reading the claim's
     manifest costs no seat: it is exec'd out of the application container, the
     way ``status`` reads it.
+
+    The single-replica refusal is lifted here alone: it guards a write to a
+    ReadWriteOnce claim, and the state this verb exists to confirm is the one
+    after the wiring came out and the team scaled back up.
     """
-    target, pod_json = _resolve_target(kube, reference, container=container)
+    target, pod_json = _resolve_target(
+        kube, reference, container=container, require_single_replica=False
+    )
     mounting = claim_container(pod_json)
     manifest = (
         read_pod_state(kube, target.pod.name, mounting)[0]
@@ -4814,8 +4955,25 @@ def retire(
         manifest,
         claim=claim,
         current_digest=target.image_digest,
-        reference=reference,
+        reference=_pasteable(kube, reference),
     )
+
+
+def _pasteable(kube: Kubectl, reference: str) -> str:
+    """*reference* with the flags that make the offers under it work.
+
+    ``format_status`` reasons the same way about the same offer and for the
+    same reason: a command a reader pastes out of a report has to reach the
+    object the report was about, and one that silently means the kubeconfig's
+    default namespace instead is worse than a redundant flag. The namespace
+    goes in even when it is the current one, because nothing in the report says
+    which that was.
+
+    >>> _pasteable(Kubectl("demo", context="beam"), "pod/api")
+    'pod/api -n demo --context beam'
+    """
+    said = f"{reference} -n {kube.namespace}"
+    return said if kube.context is None else f"{said} --context {kube.context}"
 
 
 def _delete_claim(kube: Kubectl, claim: ClaimState) -> ClaimState:

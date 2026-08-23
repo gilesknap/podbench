@@ -1390,11 +1390,15 @@ def test_consolidate_pushes_and_records_the_branch() -> None:
     # outlives the boolean either way (#190).
     assert f"{hotfix.SUBCHART_VALUES_KEY}.enabled=false" in checklist
     assert "hotfixProject.enabled=false" in checklist
+    # Flattened, because steps 4 and 5 are prose and take their width from the
+    # terminal: a phrase asserted on unflattened passes only at the width the
+    # suite happens to run at.
+    flowed = " ".join(checklist.split())
     # The two steps nobody does, still stated as two - the values are the
     # application's own and the boolean is the claim chart's - and now with the
     # verb that measures which of them have landed.
-    assert "back out of the application's own values" in checklist
-    assert "podbench hotfix retire" in checklist
+    assert "back out of the application's own values" in flowed
+    assert "podbench hotfix retire" in flowed
 
 
 def test_consolidate_dry_run_pushes_nothing() -> None:
@@ -1856,6 +1860,98 @@ def test_a_claim_that_could_not_be_read_is_not_a_claim_that_is_gone() -> None:
     assert not runner.matching("delete")
 
 
+def test_a_label_listing_that_found_nothing_is_not_a_claim_that_is_gone() -> None:
+    """An empty listing is an answer about labels, not about the claim.
+
+    `Charts/podbench/templates/pvc-hotfix-project.yaml` labels the claim with
+    the `hotfixProject.claims[].name` entry's own name, which nothing requires
+    to equal the container, the workload or the pod. Reading "no claim carries
+    this label" as "the claim is gone" ticks the one step of retirement that
+    cannot be undone, and would call a namespace with a standing claim in it a
+    completed retirement.
+    """
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(wired_pod(wired=False)),
+            "get pods -o json": json.dumps({"items": [wired_pod(wired=False)]}),
+            "exec -c app": state_exec(),
+            # Labelled for a claims[] entry named neither for the container nor
+            # for the pod, which is the case the subchart's release-name route
+            # never produces and so never shows.
+            "get pvc -l": json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "myapp-podbench-project",
+                                "labels": {hotfix.HOTFIX_TARGET_LABEL: "myapp"},
+                            }
+                        }
+                    ]
+                }
+            ),
+        }
+    )
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc", delete_claim=True)
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert claim.done is None
+    assert claim.flag == "[ ]"
+    assert not runner.matching("delete")
+    report = hotfix.format_retirement(checks)
+    assert "VERDICT: retirement is complete" not in report
+    assert "NOT MEASURED" in report
+    assert "claim" in report.rsplit("NOT MEASURED", 1)[1]
+
+
+def test_retire_reports_on_a_workload_that_has_been_scaled_back_up() -> None:
+    """The single-replica refusal guards a write to a ReadWriteOnce claim.
+
+    A retirement report is a read, and the state it exists to confirm is
+    precisely the one it forbids - the wiring out and the team scaled back up -
+    so answering it with `init`'s refusal answers somebody who has finished.
+    And of two live pods it measures the one still wired, because ticking
+    `wiring` off the replica that was rolled first is the lie this verb exists
+    to stop.
+    """
+    runner = FakeRunner(
+        {
+            "get statefulset api -o json": json.dumps(
+                {"spec": {"replicas": 2, "selector": {"matchLabels": {"app": "api"}}}}
+            ),
+            "get pods -l app=api -o json": json.dumps(
+                {
+                    "items": [
+                        wired_pod(name="api-0", wired=False),
+                        wired_pod(name="api-1"),
+                    ]
+                }
+            ),
+            "get pods -o json": json.dumps({"items": [wired_pod(name="api-1")]}),
+            "exec -c app": state_exec(consolidated()),
+            f"get pvc {CLAIM} -o name": f"persistentvolumeclaim/{CLAIM}\n",
+        }
+    )
+    checks = hotfix.retire(kube(runner), "statefulset/api")
+    wiring = rows_by_step(checks)[hotfix.RetirementStep.WIRING]
+    assert wiring.remaining
+    assert "api-1" in wiring.detail
+
+
+def test_the_delete_claim_offer_names_the_namespace_it_was_read_from() -> None:
+    """`format_status` reasons about the same offer the same way: a command
+    pasted out of a report has to reach the object the report was about, and one
+    that silently means the kubeconfig's default namespace does not."""
+    runner = retire_runner(manifest=consolidated())
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc")
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert "podbench hotfix retire pod/api-7f9-abc -n demo --delete-claim" in (
+        claim.detail
+    )
+    # The `--context` half is the doctest on `_pasteable`: this module's fake
+    # kubectl keys on a fixed argv offset, so a client carrying one would match
+    # none of its canned responses.
+
+
 def test_status_says_which_retirement_steps_remain() -> None:
     """`superseded` was correct and indefinite, which is a state nobody can act
     on. The row now names the steps."""
@@ -1928,6 +2024,21 @@ def test_the_cluster_wide_listing_reassures_about_the_cluster() -> None:
         hotfix.format_status([], all_namespaces=True)
         == "no hotfixed pods in any namespace"
     )
+
+
+def test_the_cluster_wide_listing_fails_on_a_row_that_needs_attention() -> None:
+    """The other half of the same contract, and the half a regression would be
+    silent in: "no unretired hotfixes" is an assertion only if a hotfix that
+    needs attention in *any* namespace makes the command non-zero."""
+    runner = FakeRunner(
+        {
+            "get pods --all-namespaces -o json": json.dumps(
+                {"items": [wired_pod(name="ioc-0", namespace="other")]}
+            ),
+            "exec -c app": state_exec(consolidated()),
+        }
+    )
+    assert hotfix.main(["hotfix", "status", "-A", "-n", "demo"], runner=runner) == 1
 
 
 # -- helm values -----------------------------------------------------------

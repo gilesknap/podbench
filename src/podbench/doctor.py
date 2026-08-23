@@ -245,6 +245,16 @@ FEATURES: tuple[RbacFeature, ...] = (
         (
             Grant("get", "deployments.apps"),
             Grant("get", "replicasets.apps"),
+            # Retirement. `get` while the pod still names its claim, `list`
+            # once it does not and the label on the object is the only thing
+            # left pointing at it, and `delete` for the last step of the
+            # checklist. Checked here because `hotfix retire --delete-claim`
+            # issues all three: `chart_flag` licenses the *chart* being the
+            # more generous of the two lists, not podbench using a verb this
+            # one omits.
+            Grant("get", "persistentvolumeclaims"),
+            Grant("list", "persistentvolumeclaims"),
+            Grant("delete", "persistentvolumeclaims"),
         ),
     ),
 )

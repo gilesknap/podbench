@@ -790,7 +790,7 @@ Somebody had done step 5 and not step 4, and the state that leaves — a pod wir
 claim its chart no longer declares — is worse than either end of the checklist, because
 it fails only when that PVC is finally pruned and only at the next reschedule.
 
-Four rows and not six, because these are the four a cluster can be *asked* about:
+Four rows and not five, because these are the four a cluster can be *asked* about:
 opening the PR and merging it leave no trace podbench can read, while rolling the
 image, unwiring the pod and deleting the claim each do.
 
@@ -806,6 +806,18 @@ The rules the report keeps, each with the failure it exists to stop:
 * **A claim that could not be read is not a claim that is gone.** kubectl tells a 403
   from a 404 in its text alone, and ticking `claim` on a refusal would tick the one step
   nobody can undo.
+* **Nor is a label listing that found nothing.** Once the pod is unwired the only thing
+  pointing at the claim is `podbench.dev/hotfix-target`, and the central chart sets that
+  from the `hotfixProject.claims[].name` entry — a free-form name that nothing requires
+  to match the container, the workload or the pod. So an empty listing is an answer
+  about labels, and the `claim` row says so and stays unmeasured. The subchart route
+  labels from the release name and usually *does* match, which is what would have made
+  reading it as "gone" silent.
+* **`retire` is the one verb that does not refuse a multi-replica workload.** That
+  refusal guards a write to a `ReadWriteOnce` claim, and the state a retirement report
+  exists to confirm — the wiring out, the team scaled back up — is exactly the one it
+  forbids. Of several live pods it measures the one still carrying the wiring, so a
+  rollout in flight cannot tick that step off the replica that was rolled first.
 * **`--delete-claim` declines while anything still mounts the claim**, and the question
   is asked of the *namespace* rather than of the target: the second pod of a rollout
   holds the claim just as hard. A claim deleted out from under a running pod stays

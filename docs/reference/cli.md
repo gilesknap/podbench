@@ -1071,14 +1071,19 @@ seat, where the claim is already in this process's own mount namespace.
 across `init`, `apply` and `consolidate`: `--container`, `--seat`, `--local`,
 `--author`, and `--venv` — which is the mountPath the claim is mounted at,
 beside the application's own project and never over it, and which is **read off
-the pod** rather than asked for. `values` runs before any of that exists, so it
+the pod** rather than asked for. `check` takes `--container` and `--seat`, and
+`retire` takes `--container`. `values` runs before any of that exists, so it
 takes a `--from-pod POD` rather than a `TARGET` and has its own flags, listed
 below.
 
 Notes:
 
 * **Single replica only**, refused otherwise: the claim is `ReadWriteOnce`, so a
-  second replica either fails to schedule or races on one checkout.
+  second replica either fails to schedule or races on one checkout. `retire` is
+  the exception, because the refusal guards a *write* and the state a retirement
+  report exists to confirm is the one after the wiring came out and the team
+  scaled back up. Where it finds several live pods it measures the one that
+  still carries the wiring, so a rollout in flight cannot tick that step.
 * `init` **performs** the seed. It copies the project and the interpreter out of
   the running application container through `/proc/1/root`, and never out of the
   seat's own `/app`: the seat is a different image and its venv is podbench's,
