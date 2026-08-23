@@ -417,14 +417,25 @@ def test_a_seat_the_extrausers_floors_reject_takes_etc_passwd_instead(
     ``runAsUser`` and no ``runAsGroup``; since it, a target whose own group
     really is 0. Either way ``/etc/passwd`` has no floor and gid 0 can write it,
     which is what this asserts.
+
+    The uid is :data:`UNKNOWN_UID` and not the 1000 the prose names, because
+    :class:`FakePasswd` seeds a record for the *running* euid: hard-coding the
+    uid that Ubuntu gives its first user makes this test assert "already
+    resolves" — the early ``return False`` — on any developer machine, while
+    still passing as root in the devcontainer and in CI. Any uid over the
+    ``MINUID 500`` floor carries the same case.
     """
     layout = make_layout(tmp_path, root=False)
 
-    assert agent.ensure_passwd_entry(layout, uid=1000, gid=0) is True
+    assert agent.ensure_passwd_entry(layout, uid=UNKNOWN_UID, gid=0) is True
 
-    assert passwd.path.read_text().splitlines()[-1].startswith(f"{SEAT_USER}:x:1000:0:")
+    assert (
+        passwd.path.read_text()
+        .splitlines()[-1]
+        .startswith(f"{SEAT_USER}:x:{UNKNOWN_UID}:0:")
+    )
     assert passwd.nss_path.read_text() == "", "the floors leave the database alone"
-    assert passwd.name_for(1000) == SEAT_USER
+    assert passwd.name_for(UNKNOWN_UID) == SEAT_USER
 
     # A uid under the floor is rejected too, whatever its gid, because the
     # lookup short-circuits before the file is opened.
