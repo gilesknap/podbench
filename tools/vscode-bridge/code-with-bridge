@@ -42,7 +42,44 @@ here=$(cd "$(dirname "$self")" && pwd)
 # must keep the real ~/.vscode/extensions, because Remote-SSH lives there and
 # `podbench vscode` cannot work without it.
 data=${PODBENCH_BRIDGE_DATA:-$HOME/.local/state/podbench-vscode-bridge/user-data}
-mkdir -p "$data"
+mkdir -p "$data/User"
+
+# A fresh user-data-dir is a fresh *profile*: no theme, no keybindings, and a
+# "Welcome to VS Code" tab over the window you asked for. That is not a
+# cosmetic complaint - the point of driving this window is to see what a user
+# sees, and a default profile is not what any user has. So seed it once from
+# the real one and leave it alone afterwards, since the profile accumulates
+# state (window layout, Remote-SSH's own data) that must persist between runs.
+if [ ! -e "$data/User/.seeded-from-real-profile" ]; then
+    real=${PODBENCH_BRIDGE_REAL_PROFILE:-$HOME/.config/Code/User}
+    for item in settings.json keybindings.json snippets; do
+        [ -e "$real/$item" ] && cp -r "$real/$item" "$data/User/" 2>/dev/null
+    done
+    # The welcome tab is a setting, not a flag, so it can only be turned off by
+    # editing the copy. VS Code's settings.json is JSON *with comments*, which
+    # json.load refuses - Giles' has them - so parse when we can and otherwise
+    # insert the key after the opening brace, which JSONC accepts and which
+    # cannot reorder or drop anything already in the file.
+    python3 - "$data/User/settings.json" <<'SEED' 2>/dev/null || true
+import json, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+key, value = "workbench.startupEditor", "none"
+text = path.read_text() if path.exists() else "{}"
+try:
+    settings = json.loads(text)
+except ValueError:
+    brace = text.find("{")
+    if brace == -1:
+        raise SystemExit(0)
+    at = brace + 1
+    path.write_text(f'{text[:at]}\n    "{key}": "{value}",{text[at:]}')
+else:
+    settings[key] = value
+    path.write_text(json.dumps(settings, indent=4) + "\n")
+SEED
+    touch "$data/User/.seeded-from-real-profile"
+fi
 
 exec /usr/bin/code \
     --user-data-dir="$data" \

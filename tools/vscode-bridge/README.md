@@ -53,6 +53,20 @@ open since earlier in the day. `--extensions-dir` is deliberately left alone, so
 the new instance keeps the real `~/.vscode/extensions` — Remote-SSH lives there
 and `podbench vscode` cannot work without it.
 
+A separate `--user-data-dir` is also a separate *profile*, which arrives with no
+theme, no keybindings and a "Welcome to VS Code" tab over the window you asked
+for. That is not cosmetic: the point of driving this window is to see what a
+user sees, and nobody's VS Code looks like a default profile. So the shim seeds
+the profile once from `~/.config/Code/User` — `settings.json`, `keybindings.json`
+and `snippets` — and turns the welcome tab off, then leaves it alone, because the
+profile accumulates state that must persist between runs. `settings.json` is JSON
+*with comments*, so the setting is inserted after the opening brace when the file
+will not parse strictly, which cannot reorder or drop anything already in it.
+
+Closing a driven window is `vsc.py cmd workbench.action.closeWindow`. That
+disconnects the editor and nothing else — **the seat is an ephemeral container
+and outlives it**, until the pod is replaced.
+
 ## Proven against a real seat
 
 2026-08-23, `podbench vscode bl47p-ea-simdet-01-0` on the p47 test beamline,
