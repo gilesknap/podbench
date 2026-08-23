@@ -148,17 +148,20 @@ still mounts `podbench-app` → PVC `bl47p-ea-fastcs-01-podbench-project` (Bound
 is the truth before touching anything**; a half-retired pod is itself a finding,
 and #205 item 4 predicts exactly it.
 
-**Driving VS Code.** A bridge extension at `~/.local/share/podbench-vscode-bridge/`
-lets an agent drive a real VS Code window from the terminal: `bin/vsc` is the
-client, `bin/code` a shim that adds `--extensionDevelopmentPath` so nothing is
-installed into `~/.vscode/extensions`. Put `bin/` first on `PATH` and
-`podbench vscode` opens a window carrying the bridge, because `editor.py:423`
-resolves the editor with `shutil.which("code")` and offers no override flag.
-`vsc ls` finds windows, `vsc info` reports remote name and folders, and it can
-open files, run any palette command, set breakpoints, start a launch config and
-read stopped-frame variables. It is **deliberately not in this repo** — it is an
-iteration tool, and wiring cluster access into CI would mean storing
-high-powered credentials.
+**Driving VS Code.** The bridge lives in this repo at `tools/vscode-bridge/`;
+read its `README.md` first. `vsc.py` is the client, `code-with-bridge` a shim
+that adds `--extensionDevelopmentPath` so nothing is installed into
+`~/.vscode/extensions`. Symlink the shim as `code` into a directory, put that
+directory first on `PATH`, and `podbench vscode` opens a window carrying the
+bridge — because `editor.py:423` resolves the editor with `shutil.which("code")`
+and offers no override flag, and that directory's path must contain neither
+`/remote-cli/` nor `/.vscode-server/` or `resolve_editor` refuses it.
+
+`vsc.py ls` finds windows, `info` reports remote name and folders, and it can
+open files, run any palette command, set breakpoints, start a launch config, and
+read the frames and locals where a session stopped. It is a **development tool**
+— not shipped, not run by CI — but it *is* type-checked, so a change to it must
+keep `just types` clean.
 
 **Two things the bridge cannot do:** see the screen (GNOME refuses the
 screenshot D-Bus call) and synthesise keyboard input. Anything that exists only
