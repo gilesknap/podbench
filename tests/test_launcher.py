@@ -104,6 +104,7 @@ from podbench.model import (
 )
 from podbench.proc import Credentials
 from podbench.resize import Headroom
+from podbench.spec import admission_rewrites, requested_seat_spec
 from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
@@ -1403,11 +1404,12 @@ def test_a_reconnect_reports_the_capability_admission_took() -> None:
     assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
 
 
-def test_a_reconnect_reports_the_capabilities_admission_added() -> None:
+def test_a_reconnect_says_nothing_about_a_rewrite_that_cost_nothing() -> None:
     """The other half of the same pass: thirteen capabilities beside a
-    `drop: [ALL]` that asked for none of them (DLS, 2026-08-19). podbench adds
-    nothing but SYS_PTRACE and only on the full rung, so anything else in a
-    landed seat's capabilities.add came from a policy."""
+    `drop: [ALL]` that asked for none of them (DLS, 2026-08-19). It is still a
+    difference and it is still measurable - but the seat it produced is the seat
+    that was asked for, and #203's rule is that a warning fires where the
+    outcome changed. The measurement stays; the WARNING block goes."""
     seat = {
         "name": "podbench-1",
         "securityContext": {
@@ -1424,11 +1426,10 @@ def test_a_reconnect_reports_the_capabilities_admission_added() -> None:
     )
     session = attach(talking_to(cluster), "target")
 
-    rewrite = [
-        warning for warning in session.warnings if "admission rewrote" in warning
-    ]
-    assert len(rewrite) == 1
-    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+    assert not any("admission" in warning for warning in session.warnings)
+    assert admission_rewrites(
+        requested_seat_spec(seat), seat, include_scalars=False
+    ) == ("added CHOWN, SETGID to capabilities.add",)
 
 
 def test_a_reconnect_to_an_unmutated_seat_says_nothing_about_admission() -> None:
@@ -3363,14 +3364,14 @@ def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
     assert not any("three of the six" in text for text in session.warnings)
 
 
-def test_a_strip_and_a_rewrite_are_both_reported() -> None:
-    """Both DLS clusters do both, in one pass, and only the strip was printed.
+def test_a_strip_is_reported_and_the_rewrite_beside_it_is_not() -> None:
+    """Both DLS clusters do both, in one pass, and only one of them costs.
 
-    The stripped-capability arm used to return before the rewrite check, so on a
-    policy that removes ``SYS_PTRACE`` *and* hands the seat the thirteen
+    A policy that removes ``SYS_PTRACE`` *and* hands the seat the thirteen
     capabilities of its own baseline - which is every attach on p47-beamline and
-    on hgv27681 - the rewrite was dropped on the floor. Two facts, two lines: a
-    warning is one line, and these have two different remedies.
+    on hgv27681 - changed the outcome exactly once. The strip is the warning;
+    the addition is a diff against a request, and the seat it produced is the
+    one that was asked for.
     """
 
     def strip_and_add(container: dict[str, Any]) -> None:
@@ -3380,15 +3381,12 @@ def test_a_strip_and_a_rewrite_are_both_reported() -> None:
     cluster = FakeCluster(pod_document(uid=0), mutate=strip_and_add)
     session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
-    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
-    rewrite = [
-        warning for warning in session.warnings if "admission rewrote" in warning
-    ]
-    assert len(rewrite) == 1
-    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
-    # And the strip is named once. It has its own warning above; repeating it
-    # inside the rewrite list would be one event answered twice.
-    assert "removed SYS_PTRACE" not in rewrite[0]
+    strip = [w for w in session.warnings if "admission removed SYS_PTRACE" in w]
+    assert len(strip) == 1
+    # And nothing about the thirteen it handed the seat in the same pass: they
+    # land in `CapBnd` and never reach the effective set, so the rung the report
+    # measures is the whole of what they cost (#203).
+    assert not any("capabilities.add" in warning for warning in session.warnings)
 
 
 def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
@@ -3414,11 +3412,12 @@ def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
     assert "CreateContainerConfigError" in detail
 
 
-def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() -> None:
+def test_a_rewrite_that_costs_nothing_says_nothing_and_keeps_the_rung() -> None:
     """DLS, 2026-08-19: podbench asks for ``drop: [ALL]`` and adds nothing, and
     the pod comes back with thirteen capabilities added to it. Harmless to the
-    rung, and still not what was asked for - so it is said once, on the line the
-    rung is reported on, rather than acted on."""
+    rung, and harmless to the seat: at this uid they land in ``CapBnd`` and
+    never reach the effective set, so the rung row is already the whole
+    answer."""
 
     def add_baseline(container: dict[str, Any]) -> None:
         capabilities = cast(
@@ -3431,16 +3430,7 @@ def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() ->
     session = attach(talking_to(cluster), "target")
 
     assert landed_rung(session) is Rung.DEGRADED
-    rewrite = [
-        warning for warning in session.warnings if "admission rewrote" in warning
-    ]
-    assert len(rewrite) == 1
-    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
-    # The stored spec is not the container, so the warning does not send the
-    # reader to `status` to find out what landed - the rung line above it is
-    # already a measurement, and the capabilities admission added are in
-    # `CapBnd` at this uid rather than in the effective set (report 3.10).
-    assert "read from the seat itself" in rewrite[0]
+    assert not any("admission" in warning for warning in session.warnings)
     assert session.credentials is not None
     assert session.credentials.capabilities.effective == 0
 

@@ -130,7 +130,6 @@ from .spec import (
     DEFAULT_PULL_POLICY,
     PULL_POLICIES,
     InvalidSpecError,
-    admission_rewrites,
     admission_wedges_the_kubelet,
     capabilities_removed,
     container_id,
@@ -158,7 +157,6 @@ from .sshcfg import (
 )
 
 __all__ = [
-    "ADMISSION_MUTATION_WARNING",
     "CAPABILITY_STRIPPED_WARNING",
     "CAPREPORT_ARGV",
     "CONFIG_D",
@@ -2468,9 +2466,7 @@ def attach(
         # evidence than what would land, and it is already in `pod_json`.
         landed = ephemeral_container(pod_json, existing.name)
         if landed is not None:
-            warnings.extend(
-                _admission_warnings(requested_seat_spec(landed), landed, scalars=False)
-            )
+            warnings.extend(_admission_warnings(requested_seat_spec(landed), landed))
     else:
         # Asked of the mounts about to be authored rather than of the seat about
         # to land, because the seat does not exist yet and this is the last
@@ -2957,30 +2953,6 @@ contradicted the report it was printed in, which is the fastest way to teach a
 reader to skip both.
 """
 
-ADMISSION_MUTATION_WARNING = (
-    "admission rewrote this seat's securityContext before storing it: it "
-    "{rewrites}. Nothing in the response names the controller responsible. It "
-    "cost this rung nothing - a rewrite that did would have dropped it - and "
-    "the rung above is read from the seat itself, not from the spec this "
-    "changed."
-)
-"""One line for the half of admission that issues no refusal.
-
-Measured at DLS on 2026-08-19, in both directions: podbench asks for
-``capabilities: {drop: [ALL]}`` and the stored spec comes back with thirteen
-capabilities added, while the seat carrying them reports ``CapEff:
-0000000000000000`` at uid 37887 (report §3.10). So the *warning* is what the
-dry run saw admission do, and the *rung* is what the seat says it is - the two
-questions are answered by the two sources that can answer them, and neither
-answers the other's.
-
-That the controller cannot be named is a fact about the API and not an
-omission: a mutating webhook's changes are attributed to the requester's field
-manager rather than to the webhook, and ``mutatingwebhookconfigurations`` is a
-cluster-scoped resource a namespaced seat's credentials cannot list (both
-measured on the same cluster).
-"""
-
 
 def _dry_run_rung(
     kubectl: Kubectl,
@@ -3063,42 +3035,35 @@ def _dry_run_rung(
 def _admission_warnings(
     requested: Mapping[str, Any],
     admitted: Mapping[str, Any],
-    *,
-    scalars: bool = True,
 ) -> tuple[str, ...]:
-    """What admission did to a seat that was taken anyway, in at most two lines.
+    """What admission did to a seat that was taken anyway, where it cost it.
 
-    Both, where admission did both. A policy that strips a capability usually
-    rewrites the rest of the securityContext in the same pass - on both DLS
-    clusters every attach is stripped *and* handed the thirteen capabilities of
-    the cluster's own baseline - and reporting only the strip left
-    :data:`ADMISSION_MUTATION_WARNING` unreachable on every attach that had
-    anything to say. The strip keeps its own line rather than being folded into
-    the rewrite list, because a warning is one line and these are two facts with
-    two different costs.
+    One line at most, and only for a strip. The other half of what a mutating
+    policy does - the thirteen capabilities both DLS clusters add to a seat that
+    asked for none, and every scalar they rewrite alongside - is reported by
+    nothing, because by the time this is reached it has cost the seat nothing:
+    :func:`admission_wedges_the_kubelet` has already dropped the rung for the
+    rewrite that wedges the container, the strip below has its own line, and
+    what is left is a stored spec that differs from the request while the seat
+    it produced is exactly the seat asked for.
+
+    That was #203's first rule applied to the loudest case in the report: a
+    warning fires where the outcome changed, and "here is a difference that cost
+    you nothing" is *why podbench is confident this is fine*, which belongs in a
+    docstring. The measurement itself is not lost -
+    :func:`podbench.spec.admission_rewrites` still computes it, and the rung the
+    report prints is read from the seat's own ``/proc/self/status`` rather than
+    from the spec admission rewrote, which is the answer the warning was
+    standing in for.
 
     ``requested`` is the spec podbench submitted on the walk, and
     :func:`~podbench.spec.requested_seat_spec`'s reconstruction of it on a
-    reconnect, where the request is gone and the seat that landed is not. That
-    reconstruction covers the capability sets only, so ``scalars=False`` goes
-    with it: a securityContext field it never claims to know must not be read
-    as one admission rewrote.
+    reconnect, where the request is gone and the seat that landed is not.
     """
-    warnings: list[str] = []
     stripped = capabilities_removed(requested, admitted)
-    if stripped:
-        warnings.append(
-            CAPABILITY_STRIPPED_WARNING.format(stripped=", ".join(stripped))
-        )
-    rewrites = admission_rewrites(
-        requested,
-        admitted,
-        include_removed_capabilities=not stripped,
-        include_scalars=scalars,
-    )
-    if rewrites:
-        warnings.append(ADMISSION_MUTATION_WARNING.format(rewrites="; ".join(rewrites)))
-    return tuple(warnings)
+    if not stripped:
+        return ()
+    return (CAPABILITY_STRIPPED_WARNING.format(stripped=", ".join(stripped)),)
 
 
 def _refusal_detail(error: KubectlError, *, dry_run: bool = False) -> str:
