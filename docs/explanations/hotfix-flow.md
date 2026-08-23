@@ -233,6 +233,7 @@ Every verb reaches the claim through a `HotfixStore`:
 
 ```text
 podbench hotfix check TARGET [-n NS] [--container NAME] [--seat NAME]
+                             [--repo URL]
                              [--image-project PATH] [--image-interpreter PATH]
 ```
 
@@ -253,13 +254,13 @@ one read-only pass and gives the answer an exit code.
   [ok]    interpreter    the image keeps one at /python
   [warn]  liveness       a httpGet livenessProbe cannot be short-circuited …
   [ok]    source         the image names https://github.com/…
-  ------------------------------------------------------------------------
-  VERDICT: 1 blocker before `podbench hotfix init` can work (exit 1)
-  BLOCKERS: supervisor
+------------------------------------------------------------------------
+VERDICT: 1 blocker before `podbench hotfix init` can work (exit 1)
+BLOCKERS: supervisor
 ```
 
 Nothing here is a new measurement: each row is the function that already enforces the
-thing, asked early and caught rather than raised. Four properties of it are deliberate
+thing, asked early and caught rather than raised. Six properties of it are deliberate
 and each has a failure mode behind it:
 
 * **It is read-only, and it lands no seat.** `init` lands one when none is running,
@@ -274,8 +275,24 @@ and each has a failure mode behind it:
 * **A `warn` is not a blocker**, the way it is not in `doctor`. A non-exec
   `livenessProbe` is one: `init` accepts such a target and it is `apply`'s hold the
   kubelet will cut short, so it is a thing to deal with rather than a reason for this
-  command to stop. An image that names no source repository is the other — `--repo`
-  answers it, and that is a property of the next command line and not of the target.
+  command to stop.
+* **It asks `init`'s questions in `init`'s terms, which is why it takes `--repo`.**
+  An image naming no source repository is a state `init` refuses outright, before it
+  seeds anything, so this row is a blocker and not a note — a `check` that passed it
+  would be sending the reader into precisely the second attempt the verb exists to
+  remove. Hearing the flag is the other half of the same rule: without it the row
+  would refuse a target `init --repo URL` accepts.
+* **A claim that is already seeded retires three rows.** `init` short-circuits its
+  whole seed on `{checkout}/pyproject.toml`, which makes the target root, the project
+  and the interpreter moot — so `check` does not ask them either. This is the state a
+  second run is in: after a fix, on a pod already hotfixed, whose seat may well be a
+  degraded one that cannot list `/proc/1/root`. Measuring those rows anyway is how
+  `check` came to fail a target `init` accepts.
+* **`--seat NAME` is corroborated against the pod, not restated.** A name nobody
+  landed was reported `[ok] … is running`, and the row it then broke was `target
+  root` — which sent the reader to CAP_SYS_PTRACE and `doctor` for a typo:
+  [#178](https://github.com/gilesknap/podbench/issues/178)'s false trail, by a new
+  route.
 * **What could not be measured says so.** With no seat running there is nothing to
   measure the ptrace rung *with*: whether a seat will be able to list `/proc/1/root` is
   a property of a container that does not exist yet. That row reads `not measured`, and
@@ -739,13 +756,21 @@ it (issue #190).
                                                        # --no-from-pod
 
   check:
-   1  the same target walk as init, rows 1-4 above
-   2  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
-   3  kubectl -n NS exec -c SEAT POD -- ls /proc/1/root/   # only with a seat
-   4  kubectl -n NS exec -c APP  POD -- test -d /app       # and /python
+   1  the same target walk as init, rows 1-4 above, and nothing re-read after
+                                                     # it: the walk's own pod
+                                                     # JSON is what the rows
+                                                     # are measured against
+   2  kubectl -n NS exec -c APP  POD -- test -e /podbench/app/pyproject.toml
+   3  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
+   4  kubectl -n NS exec -c SEAT POD -- ls /proc/1/root/   ┐ only with a seat,
+   5  kubectl -n NS exec -c APP  POD -- test -d /app       ┘ and only where 2
+                                                       # said the claim is not
+                                                       # seeded yet (and /python
+                                                       # beside /app)
                                                        # plus one anonymous
                                                        # registry read for the
-                                                       # image's own labels
+                                                       # image's own labels,
+                                                       # skipped under --repo
 ```
 
 Nothing patches a workload and nothing deletes a pod. `rbac.hotfix` — on top of

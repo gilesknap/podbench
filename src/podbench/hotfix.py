@@ -55,7 +55,7 @@ import io
 import json
 import shlex
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -145,8 +145,9 @@ __all__ = [
     "VENV_DISAGREES_WITH_POD",
     "VENV_INVISIBLE_TO_STATUS",
     "NO_SOURCE_REPO",
-    "NO_SOURCE_LABEL",
     "CLAIM_NOT_MOUNTED",
+    "CLAIM_ALREADY_SEEDED",
+    "SEAT_NOT_RUNNING",
     "IMAGE_HAS_NO_PROJECT",
     "IMAGE_HAS_NO_INTERPRETER",
     "NON_EXEC_PROBE_BLOCKS_THE_HOLD",
@@ -1189,6 +1190,20 @@ def resolve_target(
     reschedule — so both are accepted and both are checked for the single
     replica this mode requires.
     """
+    return _resolve_target(kube, reference, container=container)[0]
+
+
+def _resolve_target(
+    kube: Kubectl, reference: str, *, container: str | None = None
+) -> tuple[HotfixTarget, dict[str, Any]]:
+    """The target, and the pod JSON this walk resolved it out of.
+
+    Both, for :func:`preflight`, which needs the pod's own document as well —
+    the livenessProbe and the ephemeral container statuses. Asking ``get pod``
+    a second time to re-read what this walk has just read is a call against an
+    API server that answers nothing new, and it would put the report's rows a
+    reconcile apart from the target they are about.
+    """
     kind, separator, name = reference.partition("/")
     if not separator:
         return _target_from_pod(kube, reference, container)
@@ -1206,7 +1221,7 @@ def resolve_target(
 
 def _target_from_workload(
     kube: Kubectl, kind: str, name: str, container: str | None
-) -> HotfixTarget:
+) -> tuple[HotfixTarget, dict[str, Any]]:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
     if replicas is not None and replicas != 1:
@@ -1228,13 +1243,17 @@ def _target_from_workload(
     # below is skipped: repeating it would be two more API calls to rediscover
     # the object the caller named.
     target = _target_from_pod_json(kube, live[0], container, follow_owner=False)
-    return replace(
-        target, workload_kind=kind, workload_name=name, replicas=replicas or 1
+    return (
+        replace(target, workload_kind=kind, workload_name=name, replicas=replicas or 1),
+        live[0],
     )
 
 
-def _target_from_pod(kube: Kubectl, name: str, container: str | None) -> HotfixTarget:
-    return _target_from_pod_json(kube, kube.get_pod(name), container)
+def _target_from_pod(
+    kube: Kubectl, name: str, container: str | None
+) -> tuple[HotfixTarget, dict[str, Any]]:
+    pod_json = kube.get_pod(name)
+    return _target_from_pod_json(kube, pod_json, container), pod_json
 
 
 def _target_from_pod_json(
@@ -1939,9 +1958,15 @@ def _now() -> str:
 NO_SOURCE_REPO = (
     "hotfix init has no source repository to clone: the target image carries "
     "no {label} label, or its registry would not answer without credentials. "
-    "Pass --repo URL."
+    "Pass `--repo URL`."
 )
-"""#205 item 2's other half. ``--repo`` is a value the image usually states."""
+"""#205 item 2's other half. ``--repo`` is a value the image usually states.
+
+One constant, said by ``init`` when it refuses and by ``check`` before it, for
+:data:`CLAIM_NOT_MOUNTED`'s reason: ``check``'s whole job is to say ``init``'s
+refusals earlier, and a second spelling is how the two come to describe
+different remedies for one state.
+"""
 
 LABELS_FROM_BASE_IMAGE = (
     "the image's labels name {labelled}, not {source}: inherited from its base "
@@ -3636,16 +3661,39 @@ not being emitted. There is no block here, and a reader of this report has not
 asked for one.
 """
 
-NO_SOURCE_LABEL = (
-    "the image carries no {label} label, or its registry would not answer "
-    "without credentials: `hotfix init` will need `--repo URL`."
+CLAIM_ALREADY_SEEDED = (
+    "{container} mounts {volume} at {checkout}, and it already carries a "
+    "project: `hotfix init` seeds nothing over one, so the target root, the "
+    "project and the interpreter are not asked."
 )
-"""Said when the image does not name the repository ``init`` would clone.
+"""Why three rows are not measured on a claim that has already been seeded.
 
-A ``WARN``: it is fixed by an argument to the next command rather than by
-anything about the target, so it is a thing to know and not a thing standing in
-the way. :func:`podbench.oci.image_labels` answers ``None`` for every failure
-alike, which is why this sentence covers both.
+``init`` short-circuits its entire seed on ``{checkout}/pyproject.toml``, which
+makes the target root, the image's project and the image's interpreter moot -
+so a ``check`` that measured them anyway would refuse a target ``init``
+accepts, which is the second half of #205 item 3's falsification.
+
+Said once, here, on the row that measured it; the three rows beneath carry the
+short form. The mechanism belongs to the fact and not to each of its
+consequences - three copies of this sentence is fifteen lines of identical
+prose in the middle of a nine-line report.
+"""
+
+SEAT_NOT_RUNNING = (
+    "--seat {seat} names no running container in {pod}: every claim read hotfix "
+    "mode makes goes through it, so the next command would fail on kubectl's "
+    "refusal to exec into it. Drop the flag to use the seat podbench finds, or "
+    "name one that is running."
+)
+"""Said when ``--seat`` names something the pod's statuses do not.
+
+Corroborated rather than restated. ``--seat`` is taken at its word by
+:func:`seat_container` - which is what it is for - but a report that answered
+``[ok] {seat} is running`` for a name nobody landed would be restating the
+request as a measurement, and the row it then breaks is ``target root``: a seat
+that is not there cannot list ``/proc/1/root``, so the reader is sent to
+CAP_SYS_PTRACE and ``doctor`` for a typo. #178's false trail, reached by a new
+route.
 """
 
 _TEST_SAID_NO = 1
@@ -3666,13 +3714,16 @@ def _target_check(target: HotfixTarget) -> PreflightCheck:
     )
 
 
-def _claim_check(target: HotfixTarget) -> PreflightCheck:
+def _claim_check(target: HotfixTarget, seeded: bool) -> PreflightCheck:
     if target.claim_mount == HOTFIX_APP_PATH:
-        return PreflightCheck(
-            "claim",
-            CheckStatus.OK,
-            f"{target.container} mounts {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}",
-        )
+        mounts = f"{target.container} mounts {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}"
+        if seeded:
+            mounts = CLAIM_ALREADY_SEEDED.format(
+                container=target.container,
+                volume=HOTFIX_CLAIM_VOLUME,
+                checkout=HOTFIX_APP_PATH,
+            )
+        return PreflightCheck("claim", CheckStatus.OK, mounts)
     if not target.claim_mount:
         return PreflightCheck(
             "claim",
@@ -3689,6 +3740,28 @@ def _claim_check(target: HotfixTarget) -> PreflightCheck:
             venv=target.claim_mount, default=HOTFIX_APP_PATH
         ),
     )
+
+
+def _claim_seeded(kube: Kubectl, target: HotfixTarget) -> bool:
+    """Whether the claim already carries a project, asked where ``init`` asks.
+
+    Exactly :func:`init`'s own predicate — ``{checkout}/pyproject.toml`` — and
+    it is the one that decides how much of the seed happens at all. See
+    :data:`CLAIM_ALREADY_SEEDED` for why measuring the three rows underneath it
+    anyway makes ``check`` refuse targets ``init`` accepts.
+
+    A claim mounted anywhere else is already a blocker, and its rows are read
+    against the default path, so it is not asked there.
+    """
+    if target.claim_mount != HOTFIX_APP_PATH:
+        return False
+    probe = kube.exec_(
+        target.pod.name,
+        ["test", "-e", f"{checkout_path()}/pyproject.toml"],
+        container=target.container,
+        check=False,
+    )
+    return probe.returncode == 0
 
 
 def _supervisor_check(kube: Kubectl, target: HotfixTarget) -> PreflightCheck:
@@ -3730,15 +3803,43 @@ def _image_path_check(
     )
 
 
-def _seat_check(target: HotfixTarget, seat: str | None) -> PreflightCheck:
-    if seat is not None:
+def _running_containers(pod_json: Mapping[str, Any]) -> set[str]:
+    """Every container of the pod that is running now, ephemeral ones included.
+
+    Ephemeral statuses are where a seat appears, and the ordinary ones are here
+    because ``--seat`` may legitimately name a sidecar that mounts the claim.
+    """
+    status = as_dict(pod_json.get("status"))
+    return {
+        name
+        for key in (
+            "containerStatuses",
+            "initContainerStatuses",
+            "ephemeralContainerStatuses",
+        )
+        for entry in _as_list(status.get(key))
+        if (name := _as_str(as_dict(entry).get("name")))
+        and "running" in as_dict(as_dict(entry).get("state"))
+    }
+
+
+def _seat_check(
+    target: HotfixTarget, seat: str | None, running: Collection[str]
+) -> PreflightCheck:
+    if seat is None:
+        return PreflightCheck(
+            "seat",
+            CheckStatus.WARN,
+            f"no podbench container is running in {target.pod.name}. Not a "
+            "blocker - `hotfix init` lands one itself - but it is why `target "
+            "root` below is unmeasured.",
+        )
+    if seat in running:
         return PreflightCheck("seat", CheckStatus.OK, f"{seat} is running")
     return PreflightCheck(
         "seat",
-        CheckStatus.WARN,
-        f"no podbench container is running in {target.pod.name}. Not a blocker - "
-        "`hotfix init` lands one itself - but it is why `target root` below is "
-        "unmeasured.",
+        CheckStatus.FAIL,
+        SEAT_NOT_RUNNING.format(seat=seat, pod=target.pod.name),
     )
 
 
@@ -3750,9 +3851,9 @@ def _target_root_check(
             "target root",
             CheckStatus.WARN,
             f"not measured: listing {container_root} is a property of the seat's "
-            "ptrace rung and there is no seat yet. `podbench attach "
-            f"{target.pod.name}` lands one, or let `hotfix init` land it and "
-            "answer this on its own.",
+            "ptrace rung, and this check has no running seat to ask. `podbench "
+            f"attach {target.pod.name}` lands one, or let `hotfix init` land it "
+            "and answer this on its own.",
         )
     store = PodStore(kube=kube, pod=target.pod.name, container=seat)
     if target_root_readable(store, container_root):
@@ -3799,13 +3900,29 @@ def _liveness_check(pod_json: Mapping[str, Any], container: str) -> PreflightChe
     )
 
 
-def _source_check(target: HotfixTarget) -> PreflightCheck:
+def _source_check(target: HotfixTarget, repo: str | None) -> PreflightCheck:
+    """Whether anything names the repository ``init`` is going to clone.
+
+    A blocker, and ``--repo`` is asked here because ``init`` asks it: that verb
+    refuses outright when neither the flag nor the image's label names one
+    (:data:`NO_SOURCE_REPO`), and it refuses *before* the seed, so a ``check``
+    that passed the state would be sending the reader into precisely the second
+    attempt this verb exists to remove. Hearing the flag is the other half:
+    without it this row would refuse a target ``init --repo URL`` accepts.
+
+    The registry is not read at all when the flag answers it - a round trip on
+    the way into an emergency, for a value already in hand, which is the
+    ordering ``init`` uses too.
+    """
+    named = (repo or "").strip()
+    if named:
+        return PreflightCheck("source", CheckStatus.OK, f"--repo names {named}")
     labels = read_image_labels(target.image_digest or target.image) or {}
     source = (labels.get(SOURCE_LABEL) or "").strip()
     if source:
         return PreflightCheck("source", CheckStatus.OK, f"the image names {source}")
     return PreflightCheck(
-        "source", CheckStatus.WARN, NO_SOURCE_LABEL.format(label=SOURCE_LABEL)
+        "source", CheckStatus.FAIL, NO_SOURCE_REPO.format(label=SOURCE_LABEL)
     )
 
 
@@ -3815,6 +3932,7 @@ def preflight(
     *,
     container: str | None = None,
     seat: str | None = None,
+    repo: str | None = None,
     image_project: str = IMAGE_PROJECT_PATH,
     image_interpreter: str = IMAGE_INTERPRETER_PATH,
     container_root: str = "/proc/1/root",
@@ -3828,14 +3946,18 @@ def preflight(
     (#205 item 3). Nothing here is a new measurement - each row is the function
     that already enforces it, asked early and caught rather than raised.
 
-    Two things it deliberately does not decide, because neither is a fact about
-    the target. The **repository**: ``init`` refuses when neither ``--repo`` nor
-    the image's label names one, which is a property of the next command line,
-    so it is a ``WARN`` naming the flag rather than a blocker. The **seat's view
-    of the target root**, when no seat is running: whether one will be able to
-    list ``/proc/1/root`` is a property of a container that does not exist yet,
-    so it is reported *unmeasured* rather than guessed at either way - and the
-    verdict says "nothing measured here" for exactly that reason.
+    It asks ``init``'s own questions in ``init``'s own order of relevance, which
+    is why it takes ``--repo`` and why it asks whether the claim is seeded
+    before anything about the image: both are conditions ``init`` evaluates, and
+    a row measured where ``init`` does not look is a row that can disagree with
+    it. See :data:`CLAIM_ALREADY_SEEDED` and :func:`_source_check`.
+
+    One thing it deliberately does not decide, because it is not a fact about
+    the target: the **seat's view of the target root**, when no seat is running.
+    Whether one will be able to list ``/proc/1/root`` is a property of a
+    container that does not exist yet, so it is reported *unmeasured* rather
+    than guessed at either way - and the verdict says "nothing measured here"
+    for exactly that reason.
 
     What is left to ``init`` is what only performing the seed can find: an
     ``attach`` the cluster refuses, or an interpreter directory the copy lands
@@ -3843,23 +3965,66 @@ def preflight(
     that claimed those would be claiming to have run the seed.
     """
     try:
-        target = resolve_target(kube, reference, container=container)
+        target, pod_json = _resolve_target(kube, reference, container=container)
     except HotfixError as error:
         # The whole report rather than its first row: nothing below can be
         # measured without a pod, and eight "not measured" lines under one real
         # refusal would bury it.
         return [PreflightCheck("target", CheckStatus.FAIL, str(error))]
-    pod_json = kube.get_pod(target.pod.name)
     found = running_seat(pod_json)
-    resolved_seat = (
-        seat if seat is not None else (None if found is None else found.name)
-    )
+    running = _running_containers(pod_json)
+    named = seat if seat is not None else (None if found is None else found.name)
+    # A seat that is not running is no seat to measure through: exec'ing into it
+    # would fail, and TARGET_ROOT_UNREADABLE is the ptrace false trail this
+    # report must not lay for what is a mistyped --seat.
+    usable_seat = named if named in running else None
+    seeded = _claim_seeded(kube, target)
     return [
         _target_check(target),
-        _claim_check(target),
+        _claim_check(target, seeded),
         _supervisor_check(kube, target),
-        _seat_check(target, resolved_seat),
-        _target_root_check(kube, target, resolved_seat, container_root),
+        _seat_check(target, named, running),
+        *_seed_checks(
+            kube,
+            target,
+            seeded=seeded,
+            seat=usable_seat,
+            container_root=container_root,
+            image_project=image_project,
+            image_interpreter=image_interpreter,
+        ),
+        _liveness_check(pod_json, target.container),
+        _source_check(target, repo),
+    ]
+
+
+def _seed_checks(
+    kube: Kubectl,
+    target: HotfixTarget,
+    *,
+    seeded: bool,
+    seat: str | None,
+    container_root: str,
+    image_project: str,
+    image_interpreter: str,
+) -> list[PreflightCheck]:
+    """The three rows that only a seed reads, and which a seeded claim retires.
+
+    ``init`` short-circuits the whole seed on a claim that already carries a
+    project, so on an already-hotfixed pod - the state ``check`` is most likely
+    to be run in a second time - these three are not measured at all rather
+    than measured and reported as blockers ``init`` would never raise.
+    """
+    if seeded:
+        # Short, because the `claim` row above says why (CLAIM_ALREADY_SEEDED)
+        # and a mechanism is said once.
+        moot = f"not asked: {checkout_path()} is already seeded"
+        return [
+            PreflightCheck(name, CheckStatus.OK, moot)
+            for name in ("target root", "project", "interpreter")
+        ]
+    return [
+        _target_root_check(kube, target, seat, container_root),
         _image_path_check(
             kube,
             target,
@@ -3876,8 +4041,6 @@ def preflight(
                 image_interpreter=f"/{image_interpreter.strip('/')}"
             ),
         ),
-        _liveness_check(pod_json, target.container),
-        _source_check(target),
     ]
 
 
@@ -3988,6 +4151,20 @@ _Seat = Annotated[
         f"(default: the running {CONTAINER_BASE}-N)",
     ),
 ]
+_Repo = Annotated[
+    str | None,
+    typer.Option(
+        "--repo",
+        metavar="URL",
+        help=f"git URL to clone (default: the target image's {SOURCE_LABEL} label)",
+    ),
+]
+"""``init``'s flag, and ``check``'s because it is ``check``'s question too.
+
+``init`` refuses a target nothing names a repository for, so the pre-flight has
+to ask the same thing to reach the same answer: a ``check`` that could not hear
+``--repo`` would refuse a target the very next command accepts.
+"""
 _Local = Annotated[
     bool,
     typer.Option(
@@ -4432,6 +4609,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     )
     def check_command(
         target: _Target,
+        repo: _Repo = None,
         image_project: _ImageProject = IMAGE_PROJECT_PATH,
         image_interpreter: _ImageInterpreter = IMAGE_INTERPRETER_PATH,
         container: _Container = None,
@@ -4452,6 +4630,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             target,
             container=container,
             seat=seat,
+            repo=repo,
             image_project=image_project,
             image_interpreter=image_interpreter,
         )
@@ -4468,15 +4647,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     )
     def init_command(
         target: _Target,
-        repo: Annotated[
-            str | None,
-            typer.Option(
-                "--repo",
-                metavar="URL",
-                help="git URL to clone (default: the target image's "
-                f"{SOURCE_LABEL} label)",
-            ),
-        ] = None,
+        repo: _Repo = None,
         venv: _Venv = None,
         ref: Annotated[
             str | None,

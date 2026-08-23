@@ -1151,11 +1151,15 @@ Notes:
 * `check` exits **1** when anything it measured would block an `init`, and it is
   read-only: it writes nothing and lands no seat, because an ephemeral container
   cannot be taken back off a pod and a verb run to ask a question must not spend
-  one. Two rows are `warn` rather than blockers by design — a non-exec
-  `livenessProbe`, which breaks `apply`'s hold rather than `init`, and an image
-  that names no source repository, which `--repo` answers. Where no seat is
-  running yet, the seat's view of the target's root is reported **unmeasured**
-  rather than either way, and the verdict says "nothing measured here".
+  one. A non-exec `livenessProbe` is `warn` rather than a blocker by design: it
+  breaks `apply`'s hold rather than `init`. `check` takes `--repo` because `init`
+  does — an image naming no source repository is a state `init` refuses, so it is
+  a blocker here, and a check that could not hear the flag would refuse a target
+  the next command accepts. On a claim that is already seeded the three rows only
+  a seed reads — the target root, the project and the interpreter — are **not
+  asked**, because `init` does not read them either. Where no seat is running yet,
+  the seat's view of the target's root is reported **unmeasured** rather than
+  either way, and the verdict says "nothing measured here".
 
 ```
 

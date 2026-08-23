@@ -3155,6 +3155,20 @@ def stated_labels(image: str) -> dict[str, str]:
     return IMAGE_LABELS
 
 
+SEEDED_PROBES = (
+    f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
+    f"{APP_EXEC} test -e /podbench/app/pyproject.toml",
+)
+"""Both readings of "the claim already carries a project", which is one fact.
+
+`init` asks it through the seat and `check` in the application container — one
+volume, two mounts of it, deliberately, because `check` must answer before a
+seat exists. A case that wants an unseeded claim has to deny both, or the fake
+cluster is one the real one could not be and the two verbs disagree for a
+reason nothing in the code shares.
+"""
+
+
 def hotfixable(pod: dict[str, Any]) -> FakeRunner:
     """A cluster on which `init` succeeds, so that a case can break one thing.
 
@@ -3221,8 +3235,8 @@ def test_check_passes_a_target_init_then_accepts() -> None:
             "project",
             True,
             [
+                *SEEDED_PROBES,
                 f"{APP_EXEC} test -d /app",
-                f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
                 f"{SEAT_EXEC} test -e /proc/1/root/app",
             ],
         ),
@@ -3230,7 +3244,7 @@ def test_check_passes_a_target_init_then_accepts() -> None:
             "target root",
             True,
             [
-                f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
+                *SEEDED_PROBES,
                 f"{SEAT_EXEC} test -e /proc/1/root/app",
                 f"{SEAT_EXEC} ls /proc/1/root/",
             ],
@@ -3239,8 +3253,8 @@ def test_check_passes_a_target_init_then_accepts() -> None:
             "interpreter",
             True,
             [
+                *SEEDED_PROBES,
                 f"{APP_EXEC} test -d /python",
-                f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
                 f"{SEAT_EXEC} cp -a /proc/1/root/python",
             ],
         ),
@@ -3329,6 +3343,8 @@ def test_an_unmeasurable_check_says_so_rather_than_fine(
     does not exist yet. Reporting it either way would be an invention, and the
     verdict says `measured here` for exactly this reason."""
     runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+    for probe in SEEDED_PROBES:
+        runner.failures[probe] = ""
 
     with mock.patch.object(hotfix, "read_image_labels", stated_labels):
         assert hotfix.main(CHECK, runner=runner) == 0
@@ -3393,6 +3409,8 @@ def test_a_test_that_could_not_run_is_not_an_answer_about_the_image(
     """A distroless application container may have no `test` at all, and 127 is
     not the same finding as a project that is absent."""
     runner = hotfixable(pod_json(owner=None, claim=True))
+    for probe in SEEDED_PROBES:
+        runner.failures[probe] = ""
 
     def no_test(argv: Sequence[str], **kwargs: Any) -> CommandResult:
         if " -- test -d /app" in " ".join(argv):
@@ -3404,6 +3422,110 @@ def test_a_test_that_could_not_run_is_not_an_answer_about_the_image(
 
     assert code == 0
     assert rows(capsys.readouterr().out)["project"].startswith("[warn]")
+
+
+def test_an_image_naming_no_repository_blocks_because_init_refuses_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The falsification the other way round, and the one that was live: `init`
+    raises NO_SOURCE_REPO before it seeds anything, so a `check` that passed
+    this state would send the reader into exactly the second attempt this verb
+    exists to remove."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    def unlabelled(image: str) -> None:
+        return None
+
+    with mock.patch.object(hotfix, "read_image_labels", unlabelled):
+        check = hotfix.main(CHECK, runner=runner)
+        init = hotfix.main(INIT, runner=runner)
+
+    assert (check, init) == (1, 2)
+    out = capsys.readouterr().out
+    assert rows(out)["source"].startswith("[FAIL]")
+    assert "BLOCKERS: source" in out
+
+
+def test_check_hears_repo_the_way_init_does() -> None:
+    """The other half of the same row: `--repo` is what answers it, so a check
+    that could not hear the flag would refuse a target `init --repo URL`
+    accepts. And the registry is not read at all once the flag has answered -
+    it is a round trip on the way into an emergency."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+    repo = ["--repo", "https://github.com/acme/api"]
+    reads: list[str] = []
+
+    def never_labelled(image: str) -> None:
+        reads.append(image)
+        return None
+
+    with mock.patch.object(hotfix, "read_image_labels", never_labelled):
+        check = hotfix.main([*CHECK, *repo], runner=runner)
+        assert reads == []
+        init = hotfix.main([*INIT, *repo], runner=runner)
+
+    assert (check, init) == (0, 0)
+    # `init` reads them anyway, for the revision that dates the base commit.
+    assert reads
+
+
+def test_an_already_seeded_claim_is_not_blocked_on_rows_init_never_reads(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`init` short-circuits its entire seed on a seeded claim, which makes the
+    target root, the project and the interpreter moot - so measuring them anyway
+    refuses a target `init` accepts. This is the state a second `check` is run
+    in: after a fix, on a pod already hotfixed, whose seat may well be a
+    degraded one that cannot list /proc/1/root."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+    runner.failures[f"{SEAT_EXEC} ls /proc/1/root/"] = ""
+    runner.failures[f"{APP_EXEC} test -d /app"] = ""
+
+    assert check_and_init(runner) == (0, 0)
+    report = rows(capsys.readouterr().out)
+    assert "already carries a project" in report["claim"]
+    for name in ("target root", "project", "interpreter"):
+        assert report[name].startswith("[ok]"), report[name]
+        assert "not asked" in report[name]
+
+
+def test_a_named_seat_is_corroborated_rather_than_restated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--seat` naming a container nobody landed used to be reported as `[ok]
+    ghost is running`, and the row it broke was `target root` - so the report
+    sent a reader chasing CAP_SYS_PTRACE and `doctor` for a typo. #178's false
+    trail, by a new route."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+    for probe in SEEDED_PROBES:
+        runner.failures[probe] = ""
+    # kubectl's own answer for an exec into a container that is not there.
+    runner.failures["exec -c ghost"] = "container ghost not found in pod"
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        check = hotfix.main([*CHECK, "--seat", "ghost"], runner=runner)
+        init = hotfix.main([*INIT, "--seat", "ghost"], runner=runner)
+
+    assert (check, init) == (1, 2)
+    report = rows(capsys.readouterr().out)
+    assert report["seat"].startswith("[FAIL]")
+    assert "ghost" in report["seat"]
+    # And no trail is laid to the ptrace rung for what is a name.
+    assert report["target root"].startswith("[warn]")
+    assert "not measured" in report["target root"]
+    assert not runner.matching("exec -c ghost api-7f9-abc -- ls")
+
+
+def test_the_pod_is_read_once_and_not_again() -> None:
+    """The target walk has already read this pod, and a second `get pod` to
+    re-read it is a call that answers nothing new - and one that puts the
+    report's rows a reconcile apart from the target they are about."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    assert len(runner.matching("get pod api-7f9-abc -o json")) == 1
 
 
 def test_the_report_uses_the_status_tokens_console_knows(
