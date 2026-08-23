@@ -191,12 +191,12 @@ names what denied it; see [Attach to a pod](attach-to-a-pod.md).
 ```
 $ podbench hotfix init bl47p-ea-fastcs-01-0 -n p47-beamline \
       --repo https://github.com/DiamondLightSource/fastcs-example
-seeded /podbench/app/src from /proc/1/root/app
+seeded /podbench/app from /proc/1/root/app
 copied the interpreter to /podbench/app/.python
-claim seeded, venv interpreter /podbench/app/.python/bin/python3
-cloned https://github.com/DiamondLightSource/fastcs-example to /podbench/app/src
+claim seeded, venv interpreter 3.12.7
+cloned https://github.com/DiamondLightSource/fastcs-example to /podbench/app
 base commit 4d9a1c2, from the image's org.opencontainers.image.revision
-rebuilt the venv at /podbench/app/src/.venv
+rebuilt the venv at /podbench/app/.venv
 wrote /podbench/app/.podbench-hotfix.json
 ```
 
@@ -220,12 +220,14 @@ the whole seed.
 ## 4. Edit, then apply
 
 The edit happens **in the seat**, in the checkout on the claim. Get a seat the
-usual way and work in `/podbench/app/src`:
+usual way and work in `/podbench/app`, which is the claim's mount point and the
+checkout both — the project sits at the root of the volume exactly as it sits in
+the image:
 
 ```
 $ podbench attach bl47p-ea-fastcs-01-0 -n p47-beamline
 $ ssh podbench-p47-beamline-bl47p-ea-fastcs-01-0
-$ cd /podbench/app/src && $EDITOR src/fastcs_example/temp_controller.py
+$ cd /podbench/app && $EDITOR src/fastcs_example/temp_controller.py
 ```
 
 [Attach to a pod](attach-to-a-pod.md) and [VS Code over
@@ -266,8 +268,8 @@ at the next restart instead.
 ```
 $ podbench hotfix status -n p47-beamline
   [ok]    p47-beamline/bl47p-ea-fastcs-01-0  +1 commit(s)  9c1f2ab  active — hotfixed, base image unchanged
-    base image unchanged
-    base 1111111 · giles · 2026-08-23T10:14:02Z
+    1 commit(s) ahead of the image
+    base 4d9a1c2 · giles · 2026-08-23T10:14:02Z
       9c1f2ab  clamp the setpoint before the ramp
 ```
 
@@ -301,8 +303,9 @@ $ podbench hotfix consolidate bl47p-ea-fastcs-01-0 -n p47-beamline \
 
 That pushes the claim's checkout as a branch (`--dry-run` says what it would
 push), records the branch in the manifest, and prints the checklist: open the PR,
-merge it, let CI build the image, roll the workload onto it, take the five values
-back out of the application's chart, and turn the claim off.
+merge it, let CI build the image, roll the workload onto it, take the volume,
+volumeMount, args and podSecurityContext back out of the application's own
+values, and turn the claim off.
 
 The last two are the ones nobody does, so they are measured rather than
 remembered:

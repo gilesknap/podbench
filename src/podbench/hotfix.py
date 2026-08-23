@@ -665,8 +665,8 @@ def seed_source(
 
 TARGET_ROOT_UNREADABLE = (
     "{root} cannot be listed, so the seed cannot run: reading the target's own "
-    "filesystem through PID 1 needs the ptrace rung, and this seat does not "
-    "have it. `podbench doctor` names what denied it."
+    "filesystem through PID 1 needs the ptrace rung. `podbench doctor` measures "
+    "it and names what denied it."
 )
 """Said when the seat genuinely cannot see the target's root.
 
@@ -683,6 +683,14 @@ into a namespace whose policy denies it - is said once in
 will meet it, and measured by ``doctor``, which is where the reader is sent.
 Naming it here as well spent three lines restating the report the next sentence
 tells them to run.
+
+It names what the listing *needs*, and stops short of asserting that this seat
+lacks it. :func:`target_root_readable` is one ``ls`` exit status, so any non-zero
+- an exec that failed, a seat that died mid-command - reaches here too, and a
+flat "this seat does not have it" followed by "run ``doctor``" is #178's shape
+again: podbench asserts the rung, ``doctor`` measures it healthy, and the reader
+has a contradiction and no next step. Pointing at the measurement costs nothing
+and cannot be contradicted by it.
 """
 
 TARGET_HAS_NO_PROJECT = (
@@ -3111,8 +3119,8 @@ not pass --gid" and the sentinel is the only signal there is."""
 FROM_POD_ESCAPE = (
     "`hotfix values` reads the target itself and there is no offline emission to "
     "fall back to: supplying these values by hand is what produced #176, where "
-    "a probe timing left out silently became a Kubernetes default and the "
-    "target was restarted for it.\n"
+    "a probe timing left out silently became a Kubernetes default in the "
+    "restart-sooner direction.\n"
     "\n"
     "So make the read work - `--from-pod POD` names the pod, `-n NS` and "
     "`--context NAME` say where to look for it - or, where the read reaches the "
@@ -3135,11 +3143,17 @@ is a convenience, and their next move is to hand-write the five keys into the
 chart anyway - the same footgun, off the tool and unwarned.
 
 What stays is the *consequence*; the mechanism behind it - a chart renders a
-supplied ``livenessProbe`` wholesale, so an omitted timing becomes a Kubernetes
-default in the restart-sooner direction, measured as 120s/30s going to 0s/10s on
-a compiled IOC - is in ``docs/how-to/hotfix-a-running-pod.md``, said once, where
+supplied ``livenessProbe`` wholesale, measured as 120s/30s going to 0s/10s on a
+compiled IOC - is in ``docs/how-to/hotfix-a-running-pod.md``, said once, where
 somebody reading about the mode will meet it. A terminal is where you find out
 *that* it applies to the command in front of you.
+
+The consequence is stated as a *direction*, not an event, because #176 was
+caught in review and the values were hand-corrected before they deployed: no
+target was ever restarted for it. Saying it was would be one word's worth of
+length and the whole of the message's authority - a reader who opens the issue
+finds it overstated, and a warning caught exaggerating once is discounted
+thereafter.
 """
 
 
@@ -3940,9 +3954,9 @@ different remedies for one state.
 
 IMAGE_HAS_NO_PROJECT = (
     "the target's image has no project at {image_project}, so there is nothing "
-    "to seed the claim from. Point podbench at the layout this image actually "
-    "has with `--image-project PATH` and `--image-interpreter PATH`, or check "
-    "you are targeting the container you meant with `--container NAME`."
+    "to seed the claim from. Name the paths this image really uses with "
+    "`--image-project PATH` and `--image-interpreter PATH`, or the container "
+    "you meant with `--container NAME`."
 )
 """Said when the application container answers that the project is not there.
 
@@ -3956,6 +3970,14 @@ seat and must not borrow the claim.
 Like that message it names neither ptrace nor ``doctor``. Both are the false
 trail the old wording opened (#178), and a message that mentions a mechanism at
 all - even to rule it out - is one a reader will go and chase.
+
+Its remedy sentence names the same three flags in the same order and the same
+words as :data:`TARGET_HAS_NO_PROJECT`'s, for the reason
+:data:`CLAIM_NOT_MOUNTED` is one constant and not two: ``check``'s job is
+to say ``init``'s refusals earlier, in ``init``'s terms. Two spellings of one
+remedy read as two different fixes to the reader who meets them an hour apart.
+Not merged into one constant, because the halves that differ - "{root} lists"
+here and not there - are the measurements each one actually made.
 """
 
 IMAGE_HAS_NO_INTERPRETER = (
