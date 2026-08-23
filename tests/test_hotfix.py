@@ -2112,11 +2112,42 @@ def test_a_service_that_already_declares_volumes_keeps_its_own() -> None:
 def test_running_the_merge_twice_changes_nothing() -> None:
     """Matched on `name`, which is what Kubernetes matches these on. A merge
     that duplicated its own entries would be unusable on a values file that has
-    already been through it once - which is every re-run."""
+    already been through it once - which is every re-run.
+
+    Asserted on the **text** and not on the parsed values, which is the whole
+    point. This test compared `yaml.safe_load` and passed while podbench's own
+    comments appended a fresh copy of themselves on every run - found by running
+    the command by hand on p47 the day after the first run, not by this suite.
+    """
     snippet = hotfix.values_snippet("api", ENTRY, gid="37887")
     once, _ = hotfix.merged_values(CHILD, snippet, parent=PARENT)
     twice, _ = hotfix.merged_values(once, snippet, parent=PARENT)
-    assert yaml.safe_load(once) == yaml.safe_load(twice)
+    assert twice == once
+    thrice, _ = hotfix.merged_values(twice, snippet, parent=PARENT)
+    assert thrice == once
+
+
+def test_podbenchs_own_comments_are_written_once_and_not_once_per_run() -> None:
+    """The specific failure, named so a regression is legible.
+
+    Re-emitting is a normal thing to do - after a chart bump, or to see what is
+    deployed - and the second run reads the first run's output.
+    """
+    snippet = hotfix.values_snippet("api", ENTRY, gid="37887")
+    once, _ = hotfix.merged_values(CHILD, snippet, parent=PARENT)
+    twice, _ = hotfix.merged_values(once, snippet, parent=PARENT)
+    for comment in (
+        hotfix.SEAT_HOME_COMMENT,
+        hotfix.CLAIM_COMMENT,
+        hotfix.FSGROUP_COMMENT,
+    ):
+        marker = next(line for line in comment.splitlines() if line.strip())
+        assert twice.count(marker) == 1, marker
+    # The absorbed-list comment is written once per list key, and the shared
+    # opening line is the same for both - so it is the key-naming line that has
+    # to be counted, or this asserts the wrong thing.
+    for key in ("volumes", "volumeMounts"):
+        assert twice.count(f"declared no `{key}` of its own before") == 1, key
 
 
 def test_where_the_keys_go_is_read_from_the_files_and_then_named() -> None:
