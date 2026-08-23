@@ -283,7 +283,7 @@ podbench-hotfix-claim:
 ```
 
 That renders `<release>-podbench-project`, which is the name `podbench hotfix
---print-values` puts in the pod's `volumes:` entry. `size` and
+values` puts in the pod's `volumes:` entry. `size` and
 `storageClassName` are the only other keys; `claimName` exists for a claim that
 already exists under another name. Its schema is attached to every release as
 `podbench-hotfix-claim.values.schema.json`.
@@ -292,7 +292,7 @@ Only the claim moves. `volumes:`, `volumeMounts:`, `command`/`args` and
 `podSecurityContext` are fields inside the target's *own* pod template — a
 subchart cannot reach into a sibling's StatefulSet, and a pod's volumes are
 immutable once it exists — so those are in the target's values at deploy time or
-not at all. `podbench hotfix --print-values` is what makes writing them cost
+not at all. `podbench hotfix values` is what makes writing them cost
 nothing.
 
 ## Next

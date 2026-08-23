@@ -16,8 +16,8 @@ kubelet's CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relaunc
 It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.
 
-Four verbs: `init`, `apply`, `status`, `consolidate` — plus `--print-values`, which
-reads the target pod and emits the chart snippet the whole thing depends on.
+Five verbs: `values`, `init`, `apply`, `status`, `consolidate`. `values` reads the
+target pod and emits the chart snippet the whole thing depends on.
 
 ## The layout it requires
 
@@ -58,7 +58,7 @@ podbench assumes and not a requirement — see *The layout is the image's, not
 podbench's* under `hotfix init` below, and the `--image-project` flag it describes.
 What the mode genuinely requires is the claim, mounted beside.
 
-`podbench hotfix --print-values --app NAME --from-pod POD` emits five keys, and
+`podbench hotfix values --app NAME --from-pod POD` emits five keys, and
 every one is a passthrough an application's chart already has:
 
 ```text
@@ -78,17 +78,17 @@ EPICS IOC at Diamond is deployed with — cannot express one, because every init
 there inherits the main container's `volumeMounts`. `tests/test_ioc_instance_contract.py`
 renders that chart at the pinned version and asserts all five arrive.
 
-### `--print-values` — read the target, emit the snippet
+### `hotfix values` — read the target, emit the snippet
 
 ```text
-podbench hotfix --print-values --app NAME --from-pod POD [-n NS]
-                [--container NAME] [--entrypoint CMD] [--gid GID] [--context C]
-                [--claim-venv NAME]
+podbench hotfix values --app NAME --from-pod POD [-n NS] [--container NAME]
+                       [--entrypoint CMD] [--gid GID] [--context C]
+                       [--claim-venv NAME]
     │
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ READ THE TARGET       get pod POD -o json — one call, and the    │
-│                       only one --print-values makes              │
+│                       only one `hotfix values` makes             │
 │                                                                  │
 │   Reading is the default, and #176 is why: the entrypoint, the   │
 │   probe and the gid used to be supplied by hand. A chart renders │
@@ -389,7 +389,7 @@ for and the one `uv sync` builds, so both ends have to agree. `init` sets
 `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own `.venv`, because a rebuild that
 landed beside the venv the supervisor is looking for would leave the pod quietly
 running the image's code — the one failure this whole mode exists to avoid. Passing it
-to `init` means passing the same value to `--print-values`.
+to `init` means passing the same value to `hotfix values`.
 
 ## `hotfix apply` — commit, rebuild if needed, relaunch
 
@@ -620,7 +620,7 @@ it (issue #190).
                                                      # per candidate pod
    3  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
 
-  --print-values:
+  values:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
    2  kubectl -n NS get pod POD -o json                # nothing else, and
                                                        # nothing at all under

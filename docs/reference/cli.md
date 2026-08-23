@@ -415,8 +415,8 @@ Notes:
   introduce one — `spec.volumes` is immutable once the pod exists — so a name
   the pod does not carry is refused with that explanation rather than submitted.
   That immutability is the whole reason Hotfix mode asks for the chart's
-  cooperation at deploy time; `podbench hotfix --print-values` emits the volume,
-  the volumeMount, the supervisor entrypoint and the fsGroup that put it there.
+  cooperation at deploy time; `podbench hotfix values` emits the volume, the
+  volumeMount, the supervisor entrypoint and the fsGroup that put it there.
   * The argument is a **claim** name or the pod's **volume** name; a claim is
     resolved to the volume entry that references it.
   * `MOUNTPATH` is optional and usually should be. Where the application
@@ -1020,7 +1020,7 @@ Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC's running
 code with `restartCount` unchanged and both seats alive. Two things about it are
 still undemonstrated — survival across pod replacement, which needs a real claim
 rather than the generic ephemeral volume that run used, and `consolidate`, which
-no cluster has run. `--print-values --from-pod` was measured against the live
+no cluster has run. `hotfix values --from-pod` was measured against the live
 `bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01` targets, and is where the volume and
 probe warnings below came from.
 :::
@@ -1044,54 +1044,10 @@ seat, where the claim is already in this process's own mount namespace.
  a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --print-values                       emit the helm values an application's chart needs, and exit │
-│ --app                     NAME       application name, for --print-values                        │
-│ --entrypoint              CMD        the command the container runs today, which the supervisor  │
-│                                      wraps, for --print-values                                   │
-│ --liveness                CMD        the target's existing exec livenessProbe command, for       │
-│                                      --no-from-pod; emitted wrapped to honour the hold. Carries  │
-│                                      no timings, so prefer --liveness-probe - or --from-pod,     │
-│                                      which carries them without being asked                      │
-│ --liveness-probe          JSON       the target's whole livenessProbe as json, for               │
-│                                      --no-from-pod. --from-pod reads it off the target itself,   │
-│                                      which is what this flag existed to make you do by hand:     │
-│                                      `kubectl get pod POD -o                                     │
-│                                      jsonpath='{.spec.containers[0].livenessProbe}'`. Its exec   │
-│                                      command is wrapped and its timings are carried over; a      │
-│                                      chart renders a supplied probe wholesale, so a timing left  │
-│                                      out becomes the k8s default                                 │
-│ --size                    SIZE       claim size, for --print-values [default: 2Gi]               │
-│ --gid                     GID        the application container's gid, for --print-values         │
-│                                      (default: read from the target)                             │
-│                                      [default: <the application's runAsGroup>]                   │
-│ --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, so │
-│                                      the emitted values need no hand-editing (the default;       │
-│                                      --no-from-pod turns it off)                                 │
-│ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
-│                                      offline machine, or a pod that does not exist yet           │
-│ --values                  PATH       the target service's own values file: emit it back whole    │
-│                                      with podbench's keys merged in, rather than a fragment to   │
-│                                      merge by hand                                               │
-│ --parent-values           PATH       a shared values file the service inherits from. A helm list │
-│                                      replaces rather than merges, so this is what stops a        │
-│                                      service declaring `volumes:` for the first time silently    │
-│                                      dropping the shared ones                                    │
-│ --values-under            KEY        dotted path to the mapping the target chart keeps its pod   │
-│                                      template keys under (`ioc-instance`). Read from the files   │
-│                                      when not given, and the output says where they went         │
-│ --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`      │
-│                                      entry instead of the podbench-hotfix-claim chart dependency │
-│ --claim-venv              NAME       the venv's directory name on the claim, which the emitted   │
-│                                      runtime switch looks for (default: .venv). Must match       │
-│                                      `hotfix init --claim-venv`                                  │
-│                                      [default: .venv]                                            │
-│ --container               NAME       the application container (default: first)                  │
-│ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)           │
-│ --context                 NAME       kubeconfig context                                          │
-│ --kubectl                 BIN        kubectl binary to use [default: kubectl]                    │
-│ --help                               Show this message and exit.                                 │
+│ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ values       emit the helm values an application's chart needs                                   │
 │ init         seed the claim from the running container, clone the source, rebuild the venv       │
 │ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
@@ -1101,14 +1057,18 @@ seat, where the claim is already in this process's own mount namespace.
 
 | Sub-verb | Does |
 |---|---|
+| `values --app NAME --from-pod POD` | read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place |
 | `init --repo URL --venv PATH TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
 | `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
 | `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
 | `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
 
-`TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags:
-`--venv` (the mountPath the claim is mounted at, beside the application's own
-project and never over it), `--container`, `--seat`, `--local`, `--author`.
+`TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
+across `init`, `apply` and `consolidate`: `--venv` (the mountPath the claim is
+mounted at, beside the application's own project and never over it),
+`--container`, `--seat`, `--local`, `--author`. `values` runs before any of
+that exists, so it takes a `--from-pod POD` rather than a `TARGET` and has its
+own flags, listed below.
 
 Notes:
 
@@ -1144,7 +1104,7 @@ Notes:
   beside it is a design question this does not settle.
 * **`--claim-venv` must match on both ends.** It names the venv directory on the
   claim, which the supervisor's runtime switch looks for and which `uv sync`
-  builds, so `hotfix init --claim-venv` and `hotfix --print-values --claim-venv`
+  builds, so `hotfix init --claim-venv` and `hotfix values --claim-venv`
   have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
   `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
   looking for and the pod goes on quietly running the image's code.
@@ -1155,7 +1115,64 @@ Notes:
   a testable shutdown assertion.
 
 ```
-$ podbench hotfix --print-values --app myapp --from-pod myapp-0
+
+ Usage: podbench hotfix values [OPTIONS]
+
+ emit the helm values an application's chart needs
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --app                     NAME       application name [required]                              │
+│    --entrypoint              CMD        the command the container runs today, which the          │
+│                                         supervisor wraps                                         │
+│    --liveness                CMD        the target's existing exec livenessProbe command, for    │
+│                                         --no-from-pod; emitted wrapped to honour the hold.       │
+│                                         Carries no timings, so prefer --liveness-probe - or      │
+│                                         --from-pod, which carries them without being asked       │
+│    --liveness-probe          JSON       the target's whole livenessProbe as json, for            │
+│                                         --no-from-pod. --from-pod reads it off the target        │
+│                                         itself, which is what this flag existed to make you do   │
+│                                         by hand: `kubectl get pod POD -o                         │
+│                                         jsonpath='{.spec.containers[0].livenessProbe}'`. Its     │
+│                                         exec command is wrapped and its timings are carried      │
+│                                         over; a chart renders a supplied probe wholesale, so a   │
+│                                         timing left out becomes the k8s default                  │
+│    --size                    SIZE       claim size [default: 2Gi]                                │
+│    --gid                     GID        the application container's gid (default: read from the  │
+│                                         target)                                                  │
+│                                         [default: <the application's runAsGroup>]                │
+│    --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, │
+│                                         so the emitted values need no hand-editing (the default; │
+│                                         --no-from-pod turns it off)                              │
+│    --no-from-pod                        do not read any pod: emit from the flags alone, for CI,  │
+│                                         an offline machine, or a pod that does not exist yet     │
+│    --values                  PATH       the target service's own values file: emit it back whole │
+│                                         with podbench's keys merged in, rather than a fragment   │
+│                                         to merge by hand                                         │
+│    --parent-values           PATH       a shared values file the service inherits from. A helm   │
+│                                         list replaces rather than merges, so this is what stops  │
+│                                         a service declaring `volumes:` for the first time        │
+│                                         silently dropping the shared ones                        │
+│    --values-under            KEY        dotted path to the mapping the target chart keeps its    │
+│                                         pod template keys under (`ioc-instance`). Read from the  │
+│                                         files when not given, and the output says where they     │
+│                                         went                                                     │
+│    --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`   │
+│                                         entry instead of the podbench-hotfix-claim chart         │
+│                                         dependency                                               │
+│    --claim-venv              NAME       the venv's directory name on the claim, which the        │
+│                                         emitted runtime switch looks for (default: .venv). Must  │
+│                                         match `hotfix init --claim-venv`                         │
+│                                         [default: .venv]                                         │
+│    --container               NAME       the application container (default: first)               │
+│    --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)        │
+│    --context                 NAME       kubeconfig context                                       │
+│    --kubectl                 BIN        kubectl binary to use [default: kubectl]                 │
+│    --help                               Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+```
+$ podbench hotfix values --app myapp --from-pod myapp-0
 ```
 
 emits both halves of the chart wiring: `hotfixProject` values for the podbench
@@ -1178,7 +1195,7 @@ reaches the cluster the way every other verb does — `-n`/`--namespace`,
 context when `-n` is not given — and `--container NAME` picks the application
 container where the pod has more than one, defaulting to the first.
 
-Notes on `--print-values`:
+Notes on `hotfix values`:
 
 * `--no-from-pod` is the way to emit without a cluster — CI, an offline machine,
   or a pod that does not exist yet — and it is the only way `--entrypoint`,

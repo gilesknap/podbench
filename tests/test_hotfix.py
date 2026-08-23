@@ -1424,10 +1424,10 @@ def test_values_snippet_gid_defaults_to_a_placeholder_not_a_plausible_number() -
 # -- CLI -------------------------------------------------------------------
 
 
-def test_print_values_needs_the_two_things_it_cannot_guess(
+def test_values_needs_the_two_things_it_cannot_guess(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert hotfix.main(["hotfix", "--print-values"]) == 2
+    assert hotfix.main(["hotfix", "values"]) == 2
     assert "--app" in capsys.readouterr().err
 
 
@@ -1468,7 +1468,7 @@ def target_pod(
 
 
 def test_from_pod_needs_no_hand_editing(capsys: pytest.CaptureFixture[str]) -> None:
-    """The whole point. `--print-values` used to take the entrypoint, the probe
+    """The whole point. `hotfix values` used to take the entrypoint, the probe
     and the gid by hand, and #176 is what a hand-supplied probe cost: a chart
     renders it wholesale, so an omitted timing silently became the Kubernetes
     default."""
@@ -1482,7 +1482,7 @@ def test_from_pod_needs_no_hand_editing(capsys: pytest.CaptureFixture[str]) -> N
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1527,7 +1527,7 @@ def test_a_target_with_no_liveness_probe_is_not_an_error(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1563,7 +1563,7 @@ def test_a_non_exec_probe_is_emitted_around_and_said_out_loud(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1605,7 +1605,7 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1653,7 +1653,7 @@ def test_values_answers_the_question_the_mount_warning_asks(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1687,7 +1687,7 @@ def test_a_target_carrying_only_podbenchs_volumes_is_not_warned_about_them(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1722,7 +1722,7 @@ def test_from_pod_unwraps_a_target_that_already_carries_the_layout(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1755,7 +1755,7 @@ def test_an_unknown_gid_keeps_the_placeholder_rather_than_becoming_root(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1803,7 +1803,7 @@ def test_every_cluster_failure_names_the_escape_and_its_cost(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1834,7 +1834,7 @@ def test_a_target_that_is_not_a_pod_is_refused_cleanly(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1867,7 +1867,7 @@ def test_a_container_that_is_not_in_the_pod_names_the_escape_too(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1898,7 +1898,7 @@ def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1928,7 +1928,7 @@ def test_a_flag_the_user_passed_beats_the_pod(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1955,7 +1955,7 @@ def test_reading_the_pod_is_the_default_and_says_so_when_none_is_named(
     runner = FakeRunner()
 
     code = hotfix.main(
-        ["hotfix", "--print-values", "--app", "api", "-n", "demo"], runner=runner
+        ["hotfix", "values", "--app", "api", "-n", "demo"], runner=runner
     )
 
     assert code == 2
@@ -1973,7 +1973,7 @@ def test_no_from_pod_asks_the_cluster_nothing_at_all() -> None:
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--no-from-pod",
             "--app",
             "api",
@@ -2231,7 +2231,7 @@ def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "--no-from-pod",
@@ -2270,7 +2270,7 @@ def test_the_merge_flags_mean_nothing_without_the_file_they_merge_into(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "--no-from-pod",
@@ -2293,7 +2293,7 @@ def test_a_values_file_that_is_not_there_is_refused_by_name(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "--no-from-pod",
@@ -2332,11 +2332,11 @@ def test_values_snippet_has_no_cluster_dependency() -> None:
     assert "get_pod" not in referenced
 
 
-def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
+def test_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--no-from-pod",
             "--app",
             "api",
@@ -2350,12 +2350,12 @@ def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> 
     assert ENTRY in out
 
 
-def test_print_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> None:
+def test_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--no-from-pod",
             "--app",
             "api",
@@ -2370,7 +2370,7 @@ def test_print_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> 
     assert "fsGroup: 65532" in capsys.readouterr().out
 
 
-def test_print_values_wraps_a_named_liveness_probe(
+def test_values_wraps_a_named_liveness_probe(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The probe is only emitted when the target has one to wrap."""
@@ -2378,7 +2378,7 @@ def test_print_values_wraps_a_named_liveness_probe(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--no-from-pod",
             "--app",
             "api",
@@ -2398,7 +2398,43 @@ def test_print_values_wraps_a_named_liveness_probe(
 
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert hotfix.main(["hotfix"]) == 2
-    assert "consolidate" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "consolidate" in out
+    assert "values" in out, "the emitter is a verb, so it belongs in the verb list"
+
+
+def test_the_root_help_carries_no_option_belonging_to_one_verb(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#205 item 7: the root opened on fourteen options none of the four verbs
+    could reach, which is what buried the verbs themselves. Every one of them
+    now sits on `hotfix values`, so the root has only the flags typer gives it.
+    """
+    assert hotfix.main(["hotfix"]) == 2
+    root = capsys.readouterr().out
+    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness"):
+        assert flag not in root
+
+    assert hotfix.main(["hotfix", "values", "--help"]) == 0
+    verb = capsys.readouterr().out
+    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness"):
+        assert flag in verb
+
+
+def test_the_flag_the_verb_replaced_is_gone_rather_than_hidden(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No alias and no deprecation: hotfix mode is a surface nobody outside this
+    repo drives yet, so a second spelling would only be a second thing to keep
+    working. A hidden flag would still emit, which is the failure worth
+    catching — the assertion is on stdout being empty, not on the exit code.
+    """
+    code = hotfix.main(
+        ["hotfix", "--print-values", "--app", "api", "--no-from-pod", ENTRY]
+    )
+
+    assert code == 2
+    assert capsys.readouterr().out == ""
 
 
 def test_status_exits_non_zero_when_a_pod_needs_attention(

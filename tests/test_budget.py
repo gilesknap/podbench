@@ -200,7 +200,7 @@ def test_a_container_the_pod_does_not_have_has_no_budget() -> None:
 
 
 def wrapped(inner: str = "/bin/true") -> dict[str, Any]:
-    """A livenessProbe as `hotfix --print-values` emits it."""
+    """A livenessProbe as `hotfix values` emits it."""
     return {
         "exec": {"command": ["bash", "-c", wrapped_liveness_probe([inner])]},
         "initialDelaySeconds": 120,

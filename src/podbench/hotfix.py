@@ -1703,7 +1703,7 @@ def require_supervisor(kube: Kubectl, target: HotfixTarget) -> None:
             f"container {target.container} is not running the podbench "
             f"supervisor: {HOTFIX_CHILD_PID_PATH} does not exist. Hotfix mode "
             "relaunches the application in place, which needs the supervisor "
-            "from `podbench hotfix --print-values` to be this container's "
+            "from `podbench hotfix values` to be this container's "
             "command. Without it there is nothing to relaunch, and applying a "
             "fix would restart the container and kill your seat with it."
         )
@@ -1792,7 +1792,7 @@ def init(
     if not store.exists(checkout):
         raise HotfixError(
             f"{checkout} is not present: the claim is not mounted. Run "
-            "`podbench hotfix --print-values` and deploy the five values it "
+            "`podbench hotfix values` and deploy the five values it "
             "emits."
         )
 
@@ -2102,7 +2102,7 @@ def _relaunch(
             f"{result.stderr.strip() or result.stdout.strip()}. The hold file is "
             f"removed on every path, so the pod is fail-fast again either way - "
             f"check {HOTFIX_CHILD_PID_PATH} exists, which is what tells you the "
-            "supervisor is the one from `--print-values` and not the image's own "
+            "supervisor is the one from `hotfix values` and not the image's own "
             "entrypoint."
         )
     return f"relaunched the application in {target.container} without a restart"
@@ -2356,7 +2356,7 @@ not pass --gid" and the sentinel is the only signal there is."""
 
 
 FROM_POD_ESCAPE = (
-    "`--print-values` reads the target by default so the emitted values need no "
+    "`hotfix values` reads the target by default so the emitted values need no "
     "hand-editing. To emit them without a cluster, pass `--no-from-pod` and "
     "supply `--entrypoint`, `--gid` and `--liveness-probe` yourself.\n"
     "\n"
@@ -2783,7 +2783,7 @@ mounts, so a reader who is not told assumes it was left half-finished."""
 CLAIM_COMMENT = (
     "\npodbench Hotfix mode: a claim carrying the project, mounted beside the\n"
     "application's own and never over it. The claim's name comes from the\n"
-    "release, and `podbench hotfix --print-values` wrote the matching\n"
+    "release, and `podbench hotfix values` wrote the matching\n"
     "volume into the application's own values.\n"
 )
 """Written above the claim's key in a merged file."""
@@ -3074,16 +3074,16 @@ def _read_values_file(path: str, what: str) -> str:
     """*path*'s text, or a refusal naming what it was for.
 
     Read here and not in :func:`merged_values` for the reason the pod is read in
-    :func:`_read_print_values_from_pod` and not in :func:`values_snippet`: the
+    :func:`_read_values_from_pod` and not in :func:`values_snippet`: the
     thing that decides the output has to be assertable with no filesystem.
     """
     try:
         return Path(path).read_text()
     except OSError as exc:
-        _print_values_failure(f"could not read {what} {path}: {exc}")
+        _values_failure(f"could not read {what} {path}: {exc}")
 
 
-def _merge_print_values_into_file(
+def _merge_values_into_file(
     snippet: str,
     *,
     values: str,
@@ -3271,12 +3271,12 @@ what can honestly be done here.
 """
 
 
-def _print_values_failure(message: str) -> NoReturn:
+def _values_failure(message: str) -> NoReturn:
     print(f"podbench: {message}", file=sys.stderr)
     raise typer.Exit(2)
 
 
-def _read_print_values_from_pod(
+def _read_values_from_pod(
     pod: str | None,
     *,
     container: str | None,
@@ -3308,8 +3308,8 @@ def _read_print_values_from_pod(
     is the way #176 happened.
     """
     if pod is None:
-        _print_values_failure(
-            "--print-values reads the target by default, so it needs to know "
+        _values_failure(
+            "`hotfix values` reads the target by default, so it needs to know "
             "which pod: pass `--from-pod POD`.\n"
             "\n" + FROM_POD_ESCAPE
         )
@@ -3321,7 +3321,7 @@ def _read_print_values_from_pod(
         # letting it out here is a traceback rather than an answer.
         name = resolve_pod_name(pod)
     except LauncherError as error:
-        _print_values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
+        _values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
     try:
         pod_json = kube.get_pod(name)
     except KubectlError as error:
@@ -3329,14 +3329,14 @@ def _read_print_values_from_pod(
         # exist and a forbidden `get pods` alike: kubectl tells those apart only
         # in the text of its own message, so podbench relays that verbatim
         # rather than guessing at a category and getting it wrong.
-        _print_values_failure(
+        _values_failure(
             f"could not read pod {name!r} in {kube.namespace!r}: "
             f"{error}.\n\n{FROM_POD_ESCAPE}"
         )
     try:
         target = _application_container(pod_json, container)
     except HotfixError as error:
-        _print_values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
+        _values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
     spec = next(
         as_dict(entry)
         for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
@@ -3347,7 +3347,7 @@ def _read_print_values_from_pod(
             entrypoint = container_entrypoint(spec)
         except HotfixError as error:
             # Already carries the escape: it has an extra way out of its own.
-            _print_values_failure(str(error))
+            _values_failure(str(error))
     if gid == DEFAULT_GID_PLACEHOLDER:
         gid = pod_gid(pod_json, target) or DEFAULT_GID_PLACEHOLDER
     # `volume` and not `name`: a walrus inside a comprehension binds in the
@@ -3395,29 +3395,31 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     app = new_app()
 
     @app.callback(invoke_without_command=True)
-    def root(
-        ctx: typer.Context,
-        print_values: Annotated[
-            bool,
-            typer.Option(
-                "--print-values",
-                help="emit the helm values an application's chart needs, and exit",
-            ),
-        ] = False,
+    def root(ctx: typer.Context) -> None:
+        """Durable in-place fixes: the project on a claim beside the
+        application, every change a commit, and a status command that will not
+        let a hotfixed pod go unnoticed.
+        """
+        require_subcommand(ctx)
+
+    # `values_command`, not `values`: the parameter below is `--values`, and a
+    # closure of the same name would shadow it inside its own body.
+    @app.command(
+        name="values",
+        help="emit the helm values an application's chart needs",
+    )
+    def values_command(
         app_name: Annotated[
-            str | None,
-            typer.Option(
-                "--app", metavar="NAME", help="application name, for --print-values"
-            ),
-        ] = None,
+            str,
+            typer.Option("--app", metavar="NAME", help="application name"),
+        ],
         entrypoint: Annotated[
             str | None,
             typer.Option(
                 "--entrypoint",
                 metavar="CMD",
                 help=(
-                    "the command the container runs today, which the supervisor "
-                    "wraps, for --print-values"
+                    "the command the container runs today, which the supervisor wraps"
                 ),
             ),
         ] = None,
@@ -3452,9 +3454,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         ] = None,
         size: Annotated[
             str,
-            typer.Option(
-                "--size", metavar="SIZE", help="claim size, for --print-values"
-            ),
+            typer.Option("--size", metavar="SIZE", help="claim size"),
         ] = "2Gi",
         # Left as a placeholder when unset, so that a snippet pasted without
         # reading it fails at `helm install` rather than deploying an fsGroup
@@ -3465,8 +3465,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             typer.Option(
                 "--gid",
                 metavar="GID",
-                help="the application container's gid, for --print-values "
-                "(default: read from the target)",
+                help="the application container's gid (default: read from the target)",
             ),
         ] = DEFAULT_GID_PLACEHOLDER,
         from_pod: Annotated[
@@ -3541,84 +3540,73 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
-        """Durable in-place fixes: the project on a claim beside the
-        application, every change a commit, and a status command that will not
-        let a hotfixed pod go unnoticed.
-        """
-        if print_values:
-            if app_name is None:
-                print("podbench: --print-values needs --app NAME", file=sys.stderr)
-                raise typer.Exit(2)
-            parsed_probe: Mapping[str, Any] | None = None
-            if liveness_probe is not None:
-                try:
-                    parsed_probe = _load_json(liveness_probe)
-                except json.JSONDecodeError as exc:
-                    print(
-                        f"podbench: --liveness-probe is not valid json: {exc}",
-                        file=sys.stderr,
-                    )
-                    raise typer.Exit(2) from exc
-                if not probe_exec_command(parsed_probe):
-                    print(
-                        "podbench: --liveness-probe has no exec.command. Only an "
-                        "exec probe can be short-circuited by the hold - an "
-                        "httpGet or tcpSocket probe answers from the application, "
-                        "which is exactly what is down while a pod is held.",
-                        file=sys.stderr,
-                    )
-                    raise typer.Exit(2)
-            if not no_from_pod:
-                entrypoint, gid, parsed_probe = _read_print_values_from_pod(
-                    from_pod,
-                    container=container,
-                    namespace=namespace,
-                    context=context,
-                    binary=kubectl,
-                    runner=runner,
-                    entrypoint=entrypoint,
-                    gid=gid,
-                    probe=parsed_probe,
-                    liveness=liveness,
-                    warn_mounts=values is None,
-                )
-            if entrypoint is None:
+        parsed_probe: Mapping[str, Any] | None = None
+        if liveness_probe is not None:
+            try:
+                parsed_probe = _load_json(liveness_probe)
+            except json.JSONDecodeError as exc:
                 print(
-                    "podbench: --print-values needs --entrypoint CMD when the "
-                    "target is not read. Pass --from-pod POD to read it, or "
-                    "--entrypoint CMD to state it.",
+                    f"podbench: --liveness-probe is not valid json: {exc}",
+                    file=sys.stderr,
+                )
+                raise typer.Exit(2) from exc
+            if not probe_exec_command(parsed_probe):
+                print(
+                    "podbench: --liveness-probe has no exec.command. Only an "
+                    "exec probe can be short-circuited by the hold - an "
+                    "httpGet or tcpSocket probe answers from the application, "
+                    "which is exactly what is down while a pod is held.",
                     file=sys.stderr,
                 )
                 raise typer.Exit(2)
-            snippet = values_snippet(
-                app_name,
-                entrypoint,
-                size=size,
+        if not no_from_pod:
+            entrypoint, gid, parsed_probe = _read_values_from_pod(
+                from_pod,
+                container=container,
+                namespace=namespace,
+                context=context,
+                binary=kubectl,
+                runner=runner,
+                entrypoint=entrypoint,
                 gid=gid,
-                venv=claim_venv,
-                liveness_exec=shlex.split(liveness) if liveness else None,
-                liveness_probe=parsed_probe,
-                central_claim=central_claim,
+                probe=parsed_probe,
+                liveness=liveness,
+                warn_mounts=values is None,
             )
-            if values is not None:
-                snippet = _merge_print_values_into_file(
-                    snippet,
-                    values=values,
-                    parent_values=parent_values,
-                    values_under=values_under,
-                    claim_key=SUBCHART_VALUES_KEY,
-                )
-            elif parent_values is not None or values_under is not None:
-                _print_values_failure(
-                    "--parent-values and --values-under are what --values does "
-                    "with the file it is given, so neither means anything "
-                    "without it."
-                )
-            print(snippet, end="" if values is not None else "\n")
-            raise typer.Exit(0)
-        # `hotfix --print-values` is a legitimate whole command line, so the
-        # subcommand is only required once that flag has been ruled out.
-        require_subcommand(ctx)
+        if entrypoint is None:
+            print(
+                "podbench: hotfix values needs --entrypoint CMD when the "
+                "target is not read. Pass --from-pod POD to read it, or "
+                "--entrypoint CMD to state it.",
+                file=sys.stderr,
+            )
+            raise typer.Exit(2)
+        snippet = values_snippet(
+            app_name,
+            entrypoint,
+            size=size,
+            gid=gid,
+            venv=claim_venv,
+            liveness_exec=shlex.split(liveness) if liveness else None,
+            liveness_probe=parsed_probe,
+            central_claim=central_claim,
+        )
+        if values is not None:
+            snippet = _merge_values_into_file(
+                snippet,
+                values=values,
+                parent_values=parent_values,
+                values_under=values_under,
+                claim_key=SUBCHART_VALUES_KEY,
+            )
+        elif parent_values is not None or values_under is not None:
+            _values_failure(
+                "--parent-values and --values-under are what --values does "
+                "with the file it is given, so neither means anything "
+                "without it."
+            )
+        print(snippet, end="" if values is not None else "\n")
+        raise typer.Exit(0)
 
     # `init_command`/`consolidate_command`, not `init`/`consolidate`: the
     # module-level functions of those names are what they call, and a same-named

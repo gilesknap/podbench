@@ -670,7 +670,7 @@ def resolve_mounts(
     would then resolve a different tree at the same path).
 
     A claim name is accepted as well as a volume name because that is what the
-    user has in hand (``hotfix --print-values`` names the claim), while a mount
+    user has in hand (``hotfix values`` names the claim), while a mount
     refers to the pod's volume *entry*.
     """
     volumes = [
@@ -963,7 +963,7 @@ def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
         "needs the chart's cooperation at deploy time - redeploy the workload "
         f"with a volume bound to claim {name!r}, mounted beside the "
         "application's own project and never over it (`podbench hotfix "
-        "--print-values` emits the volume, the volumeMount, the supervisor "
+        "values` emits the volume, the volumeMount, the supervisor "
         "entrypoint and the fsGroup). The pod currently declares: "
         + (", ".join(str(entry) for entry in declared) or "no volumes")
     )

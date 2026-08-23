@@ -102,7 +102,7 @@ def configmap() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def snippet() -> dict[str, Any]:
-    """``hotfix --print-values``, parsed - the pod spec the user is told to write.
+    """``hotfix values``, parsed - the pod spec the user is told to write.
 
     It no longer carries seat identity. That was always for a seat which is an
     *ordinary* container, and Hotfix mode's seat attaches to the live pod - so
@@ -242,7 +242,7 @@ def identity_volume() -> list[dict[str, Any]]:
 
 
 def origin_from_snippet(snippet: dict[str, Any]) -> dict[str, Any]:
-    """A pod deployed as ``hotfix --print-values`` says, plus the identity volume.
+    """A pod deployed as ``hotfix values`` says, plus the identity volume.
 
     The identity is declared here rather than taken from the snippet because the
     snippet no longer emits it: it serves a seat that is an *ordinary*

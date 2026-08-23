@@ -1557,7 +1557,7 @@ def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created
     # The refusal has to explain that this is not podbench being unhelpful: a
     # pod's volumes are immutable, which is why Hotfix mode needs the chart.
     assert "immutable" in message
-    assert "--print-values" in message
+    assert "podbench hotfix values" in message
     assert cluster.added == [], "nothing may be submitted, and no name burnt"
 
 
@@ -1703,7 +1703,7 @@ HOTFIX_CLAIM: dict[str, Any] = {
 def layout_pod(**overrides: Any) -> dict[str, Any]:
     """A pod deployed with the hotfix layout: the claim, mounted, supervised.
 
-    Exactly what `podbench hotfix --print-values` emits and Argo renders, and
+    Exactly what `podbench hotfix values` emits and Argo renders, and
     the two halves `is_hotfixed` reads. The home volume comes along because a
     real deployment has both - the values emit them together - and because the
     claim has to be shown not to displace it.
@@ -6643,7 +6643,7 @@ def hotfixed_pod(
 ) -> dict[str, Any]:
     """A pod deployed to carry a hotfix, with a seat that shares it or does not.
 
-    Mirrors what `podbench hotfix --print-values` emits and Argo then renders:
+    Mirrors what `podbench hotfix values` emits and Argo then renders:
     the claim in `spec.volumes`, the application mounting it at
     `HOTFIX_APP_PATH`, and the supervisor loop as the container's `args`. Not
     an annotation - podbench never got to write one, because Argo strips
