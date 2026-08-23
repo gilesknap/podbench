@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -24,6 +24,7 @@ from unittest import mock
 
 import pytest
 import yaml
+from rich.text import Text
 
 from podbench import console, hotfix, model, oci
 from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
@@ -2811,9 +2812,9 @@ def test_the_offline_route_is_gone_rather_than_hidden(
 # -- what reaches the terminal ----------------------------------------------
 #
 # The rest of this module asserts on *what* was said, flattening the wrap to do
-# it. These four assert on the layout itself, because flattening is exactly what
-# would hide a line that should have wrapped and did not - or one that wrapped
-# and should not have.
+# it. The tests below assert on the layout itself, because flattening is exactly
+# what would hide a line that should have wrapped and did not - or one that
+# wrapped and should not have.
 
 
 def test_a_values_refusal_wraps_and_keeps_its_flags_pasteable(
@@ -2871,6 +2872,68 @@ def test_relayed_kubectl_stderr_is_not_reflowed(
     own = [line for line in err.splitlines() if line and not line.startswith(" ")]
     assert own and all(len(line) <= console.wrap_width() for line in own)
     assert "#176" in " ".join(err.split())
+
+
+def test_a_kubectl_refusal_reaching_main_is_not_reflowed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other route somebody else's stderr takes out of this module.
+
+    The three messages that quote kubectl or uv mark the quoted half with
+    `_relay`, but `KubectlError._message` inlines `result.stderr` behind an argv
+    and an exit code, and every `KubectlError` that nothing catches is printed by
+    `main`. Laid out as prose it came back with podbench's own line breaks
+    through an RBAC refusal - which is the paste that no longer matches the
+    terminal it was copied from.
+    """
+    denial = (
+        'pods "api-7f9-abc" is forbidden: User "system:serviceaccount:demo:api" '
+        'cannot get resource "pods" in API group "" in the namespace "demo"'
+    )
+    runner = FakeRunner()
+    runner.failures["get pod api-7f9-abc -o json"] = f"Error from server:\n{denial}"
+
+    code = hotfix.main(
+        ["hotfix", "check", "pod/api-7f9-abc", "-n", "demo"], runner=runner
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    # Longer than the window, so its survival is evidence and not luck.
+    assert len(denial) > console.wrap_width()
+    assert denial in err.splitlines()
+
+
+def test_podbenchs_own_prose_never_reaches_the_consoles_line_rules(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`console`'s line rules read a rendered line's *shape*, and they are safe
+    only because wrapped prose does not reach them flush left - `_SHOUT` and
+    `_SECTION_LINE` both say so in as many words. This module's messages are
+    flush-left prose, so every line of them is handed over as a `Text`, which
+    `emit` prints with no rule run over it.
+
+    Asserted on what the console is *handed*, because the suite runs with
+    `NO_COLOR` and cannot see the damage. Measured at `FORCE_COLOR=1
+    COLUMNS=80` before the fix: the last paragraph of `FROM_POD_ESCAPE` opened
+    on a bold cyan `S`, drawn as a section heading because "So" is a capital at
+    the start of a line.
+    """
+    handed: list[str | Text] = []
+    real_emit = hotfix.emit
+
+    def record(text: str | Iterable[str | Text], *, stderr: bool = False) -> None:
+        lines = [text] if isinstance(text, str) else list(text)
+        handed.extend(lines)
+        real_emit(lines, stderr=stderr)
+
+    monkeypatch.setattr(hotfix, "emit", record)
+
+    code = hotfix.main(["hotfix", "values", "--app", "api", "-n", "demo"])
+
+    assert code == 2
+    assert "So make the read work" in " ".join(capsys.readouterr().err.split())
+    assert handed and all(isinstance(line, Text) for line in handed)
 
 
 def test_the_two_values_warnings_are_warnings(

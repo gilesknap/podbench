@@ -351,39 +351,72 @@ def _relay(text: str) -> str:
     stops matching what the person actually saw - and one of these carries a
     multi-line uv resolution report.
 
+    A stream that said nothing is named rather than relayed as an empty line:
+    an indented blank is a blank to :func:`_laid_out`, which would leave the
+    sentence's trailing colon promising a quote that is not there - and output
+    that looks truncated is read as podbench having lost it.
+
     >>> _relay("error: no solution found\\n  hint: pin it")
     '  error: no solution found\\n    hint: pin it'
+    >>> _relay("")
+    '  (no output)'
     """
-    return "\n".join(f"{_FINISHED_INDENT}{line}" for line in text.splitlines() or [""])
+    lines = text.splitlines() if text.strip() else ["(no output)"]
+    return "\n".join(f"{_FINISHED_INDENT}{line}" for line in lines)
 
 
-def _laid_out(text: str) -> list[str | Text]:
+def _verbatim(text: str) -> list[Text]:
+    """*text* printed as it arrived, with nothing of podbench's laid over it.
+
+    The whole-message counterpart of :func:`_relay`, which marks somebody else's
+    output *inside* a sentence podbench wrote. A :class:`KubectlError` is the
+    other shape: ``KubectlError._message`` inlines kubectl's stderr behind an
+    argv and an exit code, so wrapping the "prose" would break lines through the
+    only part of it that matters.
+
+    >>> [line.plain for line in _verbatim("error: forbidden\\n  by RBAC")]
+    ['error: forbidden', '  by RBAC']
+    """
+    return [Text(line) for line in text.split("\n")]
+
+
+def _laid_out(text: str) -> list[Text]:
     """*text* as the terminal should draw it: prose wrapped, the rest untouched.
 
     One rule, read off the line itself. A line the caller wrote **flush left**
     is prose and is wrapped to :func:`podbench.console.wrap_width`. A line it
     **indented** was authored finished - a numbered step, a ``do this:``
-    offer, a relayed error - and is printed exactly as it arrived, as a bare
-    :class:`~rich.text.Text` so none of ``console``'s line rules run over
-    somebody else's text.
+    offer, a relayed error - and is printed exactly as it arrived.
+
+    Either way the line comes back as a :class:`~rich.text.Text`, so none of
+    ``console``'s line rules run over it. That is not caution about the relay
+    alone: those rules read a *rendered* line's shape, and both
+    :data:`podbench.console._SHOUT` and
+    :data:`podbench.console._SECTION_LINE` say in as many words that they are
+    safe because prose never reaches them flush left ("the prose is wrapped and
+    its continuations are indented"). Here it does, so an ordinary sentence
+    opening on a capital had that capital drawn as a section heading - measured
+    on :data:`FROM_POD_ESCAPE`'s last paragraph, whose "So" came out with a bold
+    cyan ``S`` - and a wrap leaving one word on the last line drew the whole
+    word as one. Prose earns no leader, so nothing is lost by saying so.
 
     Blank lines survive, which is what keeps a multi-paragraph message
     (:data:`FROM_POD_ESCAPE` is appended to most of them) reading as paragraphs.
 
     >>> for line in _laid_out("one\\n\\n  two  three"):
-    ...     print(repr(line if isinstance(line, str) else line.plain))
+    ...     print(repr(line.plain))
     'one'
     ''
     '  two  three'
     """
-    lines: list[str | Text] = []
+    lines: list[Text] = []
     for line in text.split("\n"):
         if not line.strip():
-            lines.append("")
+            lines.append(Text(""))
         elif line[:1].isspace():
             lines.append(Text(line))
         else:
-            lines.extend(paragraph(line))
+            lines.extend(Text(wrapped) for wrapped in paragraph(line))
     return lines
 
 
@@ -5297,11 +5330,12 @@ Printed through :func:`_warn`, for :data:`NON_EXEC_PROBE_WARNING`'s reason.
 def _values_failure(message: str) -> NoReturn:
     """``hotfix values`` refusing, on stderr, laid out like everything else.
 
-    Through :func:`_laid_out` and not ``print``: every one of these messages
-    ends in :data:`FROM_POD_ESCAPE`, which is two paragraphs carrying seven
-    backticked flags, and a terminal wrapping that itself breaks mid-token -
-    which is exactly the pasteable half :data:`podbench.console._TOKEN` exists
-    to keep whole.
+    Through :func:`_laid_out` and not ``print``: most of these messages end in
+    :data:`FROM_POD_ESCAPE`, which is two paragraphs carrying seven backticked
+    flags, and a terminal wrapping that itself breaks mid-token - which is
+    exactly the pasteable half :data:`podbench.console._TOKEN` exists to keep
+    whole. The two ``--liveness-probe`` refusals carry no escape, because what
+    they are refusing is the flag and not the pod read.
 
     stderr because stdout is the values snippet and a shell redirects it over a
     values file (the p47 run did): nothing this verb says may land in there.
@@ -5895,12 +5929,20 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
         argv = argv[1:]
     try:
         return run(_build_app(runner), argv, prog="podbench hotfix")
+    except KubectlError as error:
+        # Its own arm because it is not podbench's prose: `KubectlError._message`
+        # inlines `result.stderr` behind an argv and an exit code, so there is no
+        # flush-left half to wrap, and laying it out would put podbench's line
+        # breaks through somebody else's error - the paste then stops matching
+        # the terminal it came from, which is the whole of `_relay`'s reason.
+        emit(_verbatim(f"podbench: {error}"), stderr=True)
+        return 2
     # `LauncherError` is here because `hotfix init` lands its own seat now
     # (#177): the landing goes through `launcher.attach`, which refuses in its
     # own currency - an unknown --mount, a pod with no containers, a target
     # container that is not there. Those are all things the user has to fix, and
     # exit 2 with the sentence is the answer; a traceback is not.
-    except (HotfixError, KubectlError, LauncherError, ValueError) as error:
+    except (HotfixError, LauncherError, ValueError) as error:
         # Through `_laid_out` rather than `print`: `TARGET_HAS_NO_PROJECT` is
         # three paragraphs and 728 characters, and the terminal's own wrap puts
         # a break through the middle of `--image-project PATH`. The relayed
