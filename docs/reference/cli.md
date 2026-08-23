@@ -1048,6 +1048,7 @@ seat, where the claim is already in this process's own mount namespace.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
 │ values       emit the helm values an application's chart needs                                   │
+│ check        say what would stop a hotfix on this target, before starting one                    │
 │ init         seed the claim from the running container, clone the source, rebuild the venv       │
 │ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
@@ -1058,6 +1059,7 @@ seat, where the claim is already in this process's own mount namespace.
 | Sub-verb | Does |
 |---|---|
 | `values --app NAME --from-pod POD` | read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place |
+| `check TARGET` | every prerequisite `init` has, measured in one read-only pass, with a verdict and an exit code |
 | `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
 | `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
 | `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
@@ -1146,6 +1148,14 @@ Notes:
 * `consolidate` does not open a PR; it prints the `gh pr create` line.
 * `status` exits **1** when any pod needs attention, so "no unretired hotfixes" is
   a testable shutdown assertion.
+* `check` exits **1** when anything it measured would block an `init`, and it is
+  read-only: it writes nothing and lands no seat, because an ephemeral container
+  cannot be taken back off a pod and a verb run to ask a question must not spend
+  one. Two rows are `warn` rather than blockers by design — a non-exec
+  `livenessProbe`, which breaks `apply`'s hold rather than `init`, and an image
+  that names no source repository, which `--repo` answers. Where no seat is
+  running yet, the seat's view of the target's root is reported **unmeasured**
+  rather than either way, and the verdict says "nothing measured here".
 
 ```
 
@@ -1953,6 +1963,6 @@ session inherits the image's value regardless, where `podbench dbg
 | Code | Meaning |
 |---|---|
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
-| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; or `doctor` found something blocking an attach |
+| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; `hotfix check` found something blocking an `init`; or `doctor` found something blocking an attach |
 | `2` | a launcher error, a `hotfix` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
 | `0` / `10` / `15` / `20` | `capreport` only: the capability verdict |

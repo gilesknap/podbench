@@ -68,7 +68,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .cli import new_app, require_subcommand, run
-from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph
+from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph, rule
 from .kubectl import (
     DEFAULT_CALL_TIMEOUT,
     CommandResult,
@@ -108,8 +108,10 @@ __all__ = [
     "MAX_RECORDED_COMMITS",
     "METADATA_FILES",
     "SEAT_HOME_SIZE",
+    "CheckStatus",
     "InterpreterProbe",
     "LocalStore",
+    "PreflightCheck",
     "ManifestVersionError",
     "MultiReplicaError",
     "HotfixCommit",
@@ -127,6 +129,7 @@ __all__ = [
     "checkout_path",
     "consolidate",
     "drift_commits",
+    "format_preflight",
     "format_status",
     "identity_configmap",
     "init",
@@ -142,6 +145,12 @@ __all__ = [
     "VENV_DISAGREES_WITH_POD",
     "VENV_INVISIBLE_TO_STATUS",
     "NO_SOURCE_REPO",
+    "NO_SOURCE_LABEL",
+    "CLAIM_NOT_MOUNTED",
+    "IMAGE_HAS_NO_PROJECT",
+    "IMAGE_HAS_NO_INTERPRETER",
+    "NON_EXEC_PROBE_BLOCKS_THE_HOLD",
+    "preflight",
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
@@ -2158,10 +2167,7 @@ def init(
     checkout = checkout_path()
 
     if not store.exists(checkout):
-        raise HotfixError(
-            f"{checkout} is not present: the claim is not mounted. Run "
-            "`podbench hotfix values` and deploy the five values it emits."
-        )
+        raise HotfixError(CLAIM_NOT_MOUNTED.format(checkout=checkout))
 
     labelled = ((image_labels or {}).get(SOURCE_LABEL) or "").strip()
     # Resolved before the seed, not after it. The seed is a ~50s `cp -a` plus an
@@ -3526,6 +3532,393 @@ def _merge_values_into_file(
     return merged
 
 
+# -- pre-flight -------------------------------------------------------------
+
+
+class CheckStatus(Enum):
+    """How one pre-flight check came out.
+
+    Three tokens rather than ``status``'s two, because the distinction
+    ``doctor`` draws is the one ``check`` needs and it is the exit code: a
+    ``FAIL`` stands between this target and a working ``hotfix init``, a
+    ``WARN`` does not. The spellings are :mod:`podbench.console`'s - that module
+    is what colours every report podbench prints, and a token it has not been
+    taught is left uncoloured - rather than a second vocabulary for a reader of
+    this one to learn.
+    """
+
+    OK = "ok"
+    WARN = "warn"
+    FAIL = "FAIL"
+
+
+@dataclass(frozen=True)
+class PreflightCheck:
+    """One prerequisite of hotfix mode, and what was measured for it."""
+
+    name: str
+    status: CheckStatus
+    detail: str
+
+    @property
+    def blocks(self) -> bool:
+        """Whether this is a state ``init`` would refuse on.
+
+        >>> PreflightCheck("liveness", CheckStatus.WARN, "").blocks
+        False
+        >>> PreflightCheck("claim", CheckStatus.FAIL, "").blocks
+        True
+        """
+        return self.status is CheckStatus.FAIL
+
+
+CLAIM_NOT_MOUNTED = (
+    "{checkout} is not present: the claim is not mounted. Run `podbench hotfix "
+    "values` and deploy the five values it emits."
+)
+"""Said by ``init`` when the claim is not there, and by ``check`` before it.
+
+One constant and not two. ``check``'s whole job is to say ``init``'s refusals
+earlier, and a second copy of this sentence is how the two come to describe
+different remedies for one state.
+"""
+
+IMAGE_HAS_NO_PROJECT = (
+    "the target's image has no project at {image_project}, so there is nothing "
+    "to seed the claim from. Point podbench at the layout this image actually "
+    "has with `--image-project PATH` and `--image-interpreter PATH`, or check "
+    "you are targeting the container you meant with `--container NAME`."
+)
+"""Said when the application container answers that the project is not there.
+
+Measured in the application container itself, beside
+:func:`require_supervisor`'s own probe, so it is a statement about the image's
+*layout* and nothing else. :data:`TARGET_HAS_NO_PROJECT` is the same finding
+reached the other way round - through the seat's ``/proc/1/root`` - and says
+"{root} lists" because that is what it measured; this one has not looked at the
+seat and must not borrow the claim.
+
+Like that message it names neither ptrace nor ``doctor``. Both are the false
+trail the old wording opened (#178), and a message that mentions a mechanism at
+all - even to rule it out - is one a reader will go and chase.
+"""
+
+IMAGE_HAS_NO_INTERPRETER = (
+    "the target's image has no interpreter at {image_interpreter}, and the seed "
+    "copies one onto the claim: a rebuilt venv's console scripts carry an "
+    "absolute shebang, so an interpreter left behind in the image is one the "
+    "next restart takes away. `--image-interpreter PATH` names the layout this "
+    "image has."
+)
+"""Said when the interpreter half of :func:`seed_source` is not where it looked.
+
+``init`` refuses a missing project in its own words and a missing interpreter in
+nobody's: the copy is a ``cp -a`` that simply fails, ~50s into the seed and in
+kubectl's sentence rather than podbench's. That is the round trip this verb
+exists to save, so the second path is asked in the same breath as the first.
+"""
+
+NON_EXEC_PROBE_BLOCKS_THE_HOLD = (
+    "a {kind} livenessProbe cannot be short-circuited by the hold - only an exec "
+    "probe can - so the kubelet will restart the pod out from under the seat at "
+    "failureThreshold x periodSeconds. Deal with that before `hotfix apply` "
+    "holds this pod."
+)
+"""Said when the target's probe is real, readable, and of no use to hold mode.
+
+A ``WARN`` and not a ``FAIL`` because ``init`` accepts such a target: what this
+breaks is ``apply``'s hold, later, and the exit code is reserved for what stops
+the next command.
+
+Separate from :data:`NON_EXEC_PROBE_WARNING`, which says the same finding to
+somebody reading an emitted snippet and carries a second half about the block
+not being emitted. There is no block here, and a reader of this report has not
+asked for one.
+"""
+
+NO_SOURCE_LABEL = (
+    "the image carries no {label} label, or its registry would not answer "
+    "without credentials: `hotfix init` will need `--repo URL`."
+)
+"""Said when the image does not name the repository ``init`` would clone.
+
+A ``WARN``: it is fixed by an argument to the next command rather than by
+anything about the target, so it is a thing to know and not a thing standing in
+the way. :func:`podbench.oci.image_labels` answers ``None`` for every failure
+alike, which is why this sentence covers both.
+"""
+
+_TEST_SAID_NO = 1
+"""``test``'s exit code for a predicate that is false.
+
+Distinguished from 126 and 127 - ``test`` itself not running, which on a
+distroless application container is a real possibility - because those are not
+an answer about the image's layout and must not be reported as one.
+"""
+
+
+def _target_check(target: HotfixTarget) -> PreflightCheck:
+    where = f"{target.pod.name}, container {target.container}"
+    return PreflightCheck(
+        "target",
+        CheckStatus.OK,
+        f"{where}, {target.workload}" if target.workload else where,
+    )
+
+
+def _claim_check(target: HotfixTarget) -> PreflightCheck:
+    if target.claim_mount == HOTFIX_APP_PATH:
+        return PreflightCheck(
+            "claim",
+            CheckStatus.OK,
+            f"{target.container} mounts {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}",
+        )
+    if not target.claim_mount:
+        return PreflightCheck(
+            "claim",
+            CheckStatus.FAIL,
+            CLAIM_NOT_MOUNTED.format(checkout=checkout_path()),
+        )
+    # A claim mounted elsewhere is a refusal and not a note, because everything
+    # the seed writes names the default path - see VENV_INVISIBLE_TO_STATUS,
+    # whose last sentence is the one that applies here.
+    return PreflightCheck(
+        "claim",
+        CheckStatus.FAIL,
+        VENV_INVISIBLE_TO_STATUS.format(
+            venv=target.claim_mount, default=HOTFIX_APP_PATH
+        ),
+    )
+
+
+def _supervisor_check(kube: Kubectl, target: HotfixTarget) -> PreflightCheck:
+    try:
+        require_supervisor(kube, target)
+    except HotfixError as error:
+        return PreflightCheck("supervisor", CheckStatus.FAIL, str(error))
+    return PreflightCheck(
+        "supervisor",
+        CheckStatus.OK,
+        f"{target.container} is running it: {HOTFIX_CHILD_PID_PATH} exists",
+    )
+
+
+def _image_path_check(
+    kube: Kubectl, target: HotfixTarget, name: str, path: str, absent: str
+) -> PreflightCheck:
+    """Whether the image keeps something at *path*, asked in the target itself.
+
+    ``test -d`` in the application container rather than ``ls`` through the
+    seat's ``/proc/1/root``, because this is a question about the *image* and
+    the two are different questions - which is the whole of #178. It also needs
+    no seat, so the layout refusal that costs an attach and a round trip is the
+    one this verb can answer before either.
+    """
+    probe = kube.exec_(
+        target.pod.name, ["test", "-d", path], container=target.container, check=False
+    )
+    if probe.returncode == 0:
+        return PreflightCheck(name, CheckStatus.OK, f"the image keeps one at {path}")
+    if probe.returncode == _TEST_SAID_NO:
+        return PreflightCheck(name, CheckStatus.FAIL, absent)
+    return PreflightCheck(
+        name,
+        CheckStatus.WARN,
+        f"not measured: `test -d {path}` in {target.container} exited "
+        f"{probe.returncode}, which is `test` not running rather than an answer "
+        "about the image.",
+    )
+
+
+def _seat_check(target: HotfixTarget, seat: str | None) -> PreflightCheck:
+    if seat is not None:
+        return PreflightCheck("seat", CheckStatus.OK, f"{seat} is running")
+    return PreflightCheck(
+        "seat",
+        CheckStatus.WARN,
+        f"no podbench container is running in {target.pod.name}. Not a blocker - "
+        "`hotfix init` lands one itself - but it is why `target root` below is "
+        "unmeasured.",
+    )
+
+
+def _target_root_check(
+    kube: Kubectl, target: HotfixTarget, seat: str | None, container_root: str
+) -> PreflightCheck:
+    if seat is None:
+        return PreflightCheck(
+            "target root",
+            CheckStatus.WARN,
+            f"not measured: listing {container_root} is a property of the seat's "
+            "ptrace rung and there is no seat yet. `podbench attach "
+            f"{target.pod.name}` lands one, or let `hotfix init` land it and "
+            "answer this on its own.",
+        )
+    store = PodStore(kube=kube, pod=target.pod.name, container=seat)
+    if target_root_readable(store, container_root):
+        return PreflightCheck(
+            "target root",
+            CheckStatus.OK,
+            f"{seat} can list {container_root}, so the seed can read the target",
+        )
+    return PreflightCheck(
+        "target root",
+        CheckStatus.FAIL,
+        TARGET_ROOT_UNREADABLE.format(root=container_root),
+    )
+
+
+def _liveness_check(pod_json: Mapping[str, Any], container: str) -> PreflightCheck:
+    absent: dict[str, Any] = {}
+    spec = next(
+        (
+            as_dict(entry)
+            for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
+            if _as_str(as_dict(entry).get("name")) == container
+        ),
+        absent,
+    )
+    declared = as_dict(spec.get("livenessProbe"))
+    if not declared:
+        # Never a fault: the canonical fastcs target declares no probe, and 7 of
+        # 18 containers on a real beamline do.
+        return PreflightCheck(
+            "liveness", CheckStatus.OK, "no livenessProbe, so nothing cuts a hold short"
+        )
+    if probe_exec_command(declared):
+        return PreflightCheck(
+            "liveness",
+            CheckStatus.OK,
+            "an exec probe, which `hotfix values` wraps to honour the hold",
+        )
+    kind = next(
+        (k for k in ("httpGet", "tcpSocket", "grpc") if k in declared), "non-exec"
+    )
+    return PreflightCheck(
+        "liveness", CheckStatus.WARN, NON_EXEC_PROBE_BLOCKS_THE_HOLD.format(kind=kind)
+    )
+
+
+def _source_check(target: HotfixTarget) -> PreflightCheck:
+    labels = read_image_labels(target.image_digest or target.image) or {}
+    source = (labels.get(SOURCE_LABEL) or "").strip()
+    if source:
+        return PreflightCheck("source", CheckStatus.OK, f"the image names {source}")
+    return PreflightCheck(
+        "source", CheckStatus.WARN, NO_SOURCE_LABEL.format(label=SOURCE_LABEL)
+    )
+
+
+def preflight(
+    kube: Kubectl,
+    reference: str,
+    *,
+    container: str | None = None,
+    seat: str | None = None,
+    image_project: str = IMAGE_PROJECT_PATH,
+    image_interpreter: str = IMAGE_INTERPRETER_PATH,
+    container_root: str = "/proc/1/root",
+) -> list[PreflightCheck]:
+    """Every prerequisite hotfix mode has, asked in one pass instead of six.
+
+    Each was discovered serially and at the moment it bit: no supervisor, no
+    claim, a second replica, a root the seat cannot read, no project where
+    podbench looked, a probe the hold cannot short-circuit. Every one of those
+    costs a chart change and a redeploy, in an emergency, one per attempt
+    (#205 item 3). Nothing here is a new measurement - each row is the function
+    that already enforces it, asked early and caught rather than raised.
+
+    Two things it deliberately does not decide, because neither is a fact about
+    the target. The **repository**: ``init`` refuses when neither ``--repo`` nor
+    the image's label names one, which is a property of the next command line,
+    so it is a ``WARN`` naming the flag rather than a blocker. The **seat's view
+    of the target root**, when no seat is running: whether one will be able to
+    list ``/proc/1/root`` is a property of a container that does not exist yet,
+    so it is reported *unmeasured* rather than guessed at either way - and the
+    verdict says "nothing measured here" for exactly that reason.
+
+    What is left to ``init`` is what only performing the seed can find: an
+    ``attach`` the cluster refuses, or an interpreter directory the copy lands
+    and :func:`seeded_python` then finds nothing usable inside. A pre-flight
+    that claimed those would be claiming to have run the seed.
+    """
+    try:
+        target = resolve_target(kube, reference, container=container)
+    except HotfixError as error:
+        # The whole report rather than its first row: nothing below can be
+        # measured without a pod, and eight "not measured" lines under one real
+        # refusal would bury it.
+        return [PreflightCheck("target", CheckStatus.FAIL, str(error))]
+    pod_json = kube.get_pod(target.pod.name)
+    found = running_seat(pod_json)
+    resolved_seat = (
+        seat if seat is not None else (None if found is None else found.name)
+    )
+    return [
+        _target_check(target),
+        _claim_check(target),
+        _supervisor_check(kube, target),
+        _seat_check(target, resolved_seat),
+        _target_root_check(kube, target, resolved_seat, container_root),
+        _image_path_check(
+            kube,
+            target,
+            "project",
+            f"/{image_project.strip('/')}",
+            IMAGE_HAS_NO_PROJECT.format(image_project=f"/{image_project.strip('/')}"),
+        ),
+        _image_path_check(
+            kube,
+            target,
+            "interpreter",
+            f"/{image_interpreter.strip('/')}",
+            IMAGE_HAS_NO_INTERPRETER.format(
+                image_interpreter=f"/{image_interpreter.strip('/')}"
+            ),
+        ),
+        _liveness_check(pod_json, target.container),
+        _source_check(target),
+    ]
+
+
+_CHECK_NAMES = 14
+"""Width of the name column, which is ``doctor._NAMES`` because the two reports
+are the same shape and are read the same way. Every name is well short of it, so
+the two spaces that make a row a row are never spent down to one - which is what
+would leave half the names bold and half plain."""
+
+
+def format_preflight(checks: Sequence[PreflightCheck]) -> str:
+    """The pre-flight report: one line per check, then the verdict.
+
+    Shaped like ``doctor``'s, down to the column: the facts first so a reader
+    can see what was measured, then a verdict that names the blockers rather
+    than summarising them away. Only the detail is wrapped, and it hangs under
+    itself rather than under the name, so a wrapped one cannot be read as the
+    next check's.
+    """
+    lines: list[str] = []
+    for check in checks:
+        lead = (
+            f"  [{check.status.value}]".ljust(_FLAG) + f"{check.name:<{_CHECK_NAMES}} "
+        )
+        lines.extend(paragraph(check.detail, first=lead, indent=" " * len(lead)))
+    lines.append(rule(char="-"))
+    blockers = [check.name for check in checks if check.blocks]
+    if blockers:
+        count = len(blockers)
+        lines.append(
+            f"VERDICT: {count} blocker{'' if count == 1 else 's'} before "
+            "`podbench hotfix init` can work (exit 1)"
+        )
+        lines.extend(paragraph(", ".join(blockers), first="BLOCKERS: "))
+    else:
+        lines.append(
+            "VERDICT: nothing measured here blocks `podbench hotfix init` (exit 0)"
+        )
+    return "\n".join(lines)
+
+
 # -- CLI -------------------------------------------------------------------
 
 
@@ -4033,6 +4426,38 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         print(snippet, end="" if values is not None else "\n")
         raise typer.Exit(0)
 
+    @app.command(
+        name="check",
+        help="say what would stop a hotfix on this target, before starting one",
+    )
+    def check_command(
+        target: _Target,
+        image_project: _ImageProject = IMAGE_PROJECT_PATH,
+        image_interpreter: _ImageInterpreter = IMAGE_INTERPRETER_PATH,
+        container: _Container = None,
+        seat: _Seat = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        """Read-only, so it can be run on the way in and run again after a fix.
+
+        It writes nothing and lands nothing - notably not a seat, which ``init``
+        does: an ephemeral container cannot be taken back off a pod, and a verb
+        somebody runs to *ask a question* must not spend one.
+        """
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        checks = preflight(
+            kube,
+            target,
+            container=container,
+            seat=seat,
+            image_project=image_project,
+            image_interpreter=image_interpreter,
+        )
+        emit(format_preflight(checks))
+        raise typer.Exit(1 if any(check.blocks for check in checks) else 0)
+
     # `init_command`/`consolidate_command`, not `init`/`consolidate`: the
     # module-level functions of those names are what they call, and a same-named
     # closure would shadow them into a recursion.
@@ -4238,6 +4663,11 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     ``status`` exits non-zero when any pod needs attention, so that it is usable
     as a shutdown-checklist assertion — "no pod is still carrying an unretired
     hotfix" is a thing a facility wants to be able to test, not read.
+
+    ``check`` exits **1** the same way, and for the same reason: it is the
+    assertion "nothing on this target stands between here and ``hotfix init``".
+    Exit 2 stays what it has always been — podbench refusing the command it was
+    given — so a blocked target and a mistyped one are not the same answer.
     """
     argv = list(sys.argv[1:] if args is None else args)
     # The central dispatcher keeps the verb in argv; this app's subcommands are

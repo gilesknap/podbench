@@ -3134,3 +3134,297 @@ def test_a_named_seat_is_never_second_guessed_by_landing_another() -> None:
 
     assert hotfix.seat_container(kube(runner), "solo", "mine", land=True) == "mine"
     assert runner.calls == []
+
+
+# -- `hotfix check` ---------------------------------------------------------
+
+CHECK = ["hotfix", "check", "pod/api-7f9-abc", "-n", "demo"]
+INIT = ["hotfix", "init", "pod/api-7f9-abc", "--no-install", "-n", "demo"]
+
+IMAGE_LABELS = {
+    oci.SOURCE_LABEL: "https://github.com/acme/api",
+    oci.REVISION_LABEL: BASE_SHA,
+}
+
+SEAT_EXEC = "exec -c podbench-1 api-7f9-abc --"
+APP_EXEC = "exec -c app api-7f9-abc --"
+
+
+def stated_labels(image: str) -> dict[str, str]:
+    """What the target image says about itself, which both verbs read."""
+    return IMAGE_LABELS
+
+
+def hotfixable(pod: dict[str, Any]) -> FakeRunner:
+    """A cluster on which `init` succeeds, so that a case can break one thing.
+
+    The FakeRunner answers 0 to anything it was not told about, which is what
+    makes "the claim is already seeded, the supervisor is up, every path is
+    there" the default and each case below a single subtraction from it.
+    """
+    return FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(pod),
+            f"{SEAT_EXEC} {GIT} remote get-url origin": "https://github.com/acme/api\n",
+        }
+    )
+
+
+def check_and_init(runner: FakeRunner) -> tuple[int, int]:
+    """Both verbs over one cluster, which is the pairing this phase asserts."""
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        return (
+            hotfix.main(CHECK, runner=runner),
+            hotfix.main(INIT, runner=runner),
+        )
+
+
+def rows(out: str) -> dict[str, str]:
+    """The report's rows by name, flattened - several of them wrap at 80.
+
+    Flattened the way `tests/test_doctor.py::flowed` does, and split on the two
+    spaces that hold the name column apart from the detail: a name is several
+    words for `target root`, and the run of spaces is what ends it.
+    """
+    found: dict[str, str] = {}
+    name = ""
+    for line in out.splitlines():
+        if line.startswith(("-", "VERDICT", "BLOCKERS")):
+            break
+        head = line.strip()
+        if head.startswith("["):
+            status, _, rest = head.partition("]")
+            name, _, detail = rest.strip().partition("  ")
+            found[name] = f"{status}] {' '.join(detail.split())}"
+        elif name:
+            found[name] += " " + " ".join(line.split())
+    return found
+
+
+def test_check_passes_a_target_init_then_accepts() -> None:
+    """The phase's falsification, the way round that matters most: `check` has
+    one job, which is to make the second attempt unnecessary."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    assert check_and_init(runner) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("blocker", "claim", "denied"),
+    [
+        # The claim, read two different ways on purpose: `check` reads the pod
+        # spec, so it answers with no seat, and `init` finds out by asking the
+        # seat for the mountPath.
+        ("claim", False, [f"{SEAT_EXEC} test -e /podbench/app"]),
+        ("supervisor", True, [f"{APP_EXEC} test -e /tmp/podbench-child.pid"]),
+        (
+            "project",
+            True,
+            [
+                f"{APP_EXEC} test -d /app",
+                f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
+                f"{SEAT_EXEC} test -e /proc/1/root/app",
+            ],
+        ),
+        (
+            "target root",
+            True,
+            [
+                f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
+                f"{SEAT_EXEC} test -e /proc/1/root/app",
+                f"{SEAT_EXEC} ls /proc/1/root/",
+            ],
+        ),
+        (
+            "interpreter",
+            True,
+            [
+                f"{APP_EXEC} test -d /python",
+                f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
+                f"{SEAT_EXEC} cp -a /proc/1/root/python",
+            ],
+        ),
+    ],
+)
+def test_check_blocks_exactly_where_init_refuses(
+    blocker: str,
+    claim: bool,
+    denied: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The phase's falsification: `check` must refuse nothing `init` accepts and
+    accept nothing `init` refuses. Each case breaks one prerequisite and asserts
+    both verbs on the same cluster - which is also what stops the two drifting
+    apart later, since they measure the same state by different routes."""
+    runner = hotfixable(pod_json(owner=None, claim=claim))
+    for prefix in denied:
+        runner.failures[prefix] = ""
+
+    check, init = check_and_init(runner)
+
+    assert (check, init) == (1, 2)
+    out = capsys.readouterr().out
+    assert rows(out)[blocker].startswith("[FAIL]")
+    assert f"BLOCKERS: {blocker}" in out
+
+
+def test_a_multi_replica_target_is_the_whole_report() -> None:
+    """Nothing below the target can be measured without a pod, and eight "not
+    measured" lines under one real refusal would bury it."""
+    runner = FakeRunner(
+        {"get deployment api -o json": json.dumps(workload_json(replicas=3))}
+    )
+
+    code = hotfix.main(
+        ["hotfix", "check", "deployment/api", "-n", "demo"], runner=runner
+    )
+
+    assert code == 1
+    assert (
+        hotfix.main(
+            ["hotfix", "init", "deployment/api", "--no-install", "-n", "demo"],
+            runner=runner,
+        )
+        == 2
+    )
+
+
+def test_check_reports_every_blocker_in_one_pass(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#205 item 3 itself. Each of these was discovered one per attempt, and
+    each attempt is a chart change and a redeploy in an emergency."""
+    runner = hotfixable(pod_json(owner=None, claim=False))
+    runner.failures[f"{APP_EXEC} test -e /tmp/podbench-child.pid"] = ""
+    runner.failures[f"{APP_EXEC} test -d /app"] = ""
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        code = hotfix.main(CHECK, runner=runner)
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "BLOCKERS: claim, supervisor, project" in out
+
+
+def test_check_writes_nothing_and_lands_no_seat() -> None:
+    """Read-only is the verb's premise: an ephemeral container cannot be taken
+    back off a pod, so a verb somebody runs to ask a question must not spend
+    one - and `init` is the verb that lands seats."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    assert runner.stdins == [None] * len(runner.calls)
+    for argv in runner.calls:
+        key = runner.key(argv)
+        command = key.partition(" -- ")[2].split()
+        assert key.startswith("get ") or command[0] in ("test", "ls"), key
+
+
+def test_an_unmeasurable_check_says_so_rather_than_fine(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The seat's view of the target root is a property of a container that
+    does not exist yet. Reporting it either way would be an invention, and the
+    verdict says `measured here` for exactly this reason."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    out = capsys.readouterr().out
+    assert rows(out)["target root"].startswith("[warn]")
+    assert "not measured" in rows(out)["target root"]
+    assert "nothing measured here blocks" in out
+    # And no `ls` was issued through a seat that is not there.
+    assert not runner.matching("exec -c podbench-1")
+
+
+def test_a_non_exec_probe_is_a_warning_because_init_accepts_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """It is `apply`'s hold this breaks, not `init`, and the exit code is
+    reserved for what stops the next command. Saying nothing is not an option
+    either: the kubelet will restart the pod out from under the seat."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["livenessProbe"] = {"httpGet": {"path": "/healthz"}}
+    runner = hotfixable(pod)
+
+    assert check_and_init(runner) == (0, 0)
+    assert rows(capsys.readouterr().out)["liveness"].startswith("[warn]")
+
+
+def test_an_exec_probe_and_no_probe_at_all_are_both_fine(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """7 of 18 containers on a real beamline declare a probe, and the canonical
+    fastcs target is not one of them: an absent probe is never a fault."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["livenessProbe"] = {
+        "exec": {"command": ["/bin/check"]},
+        "periodSeconds": 30,
+    }
+    runner = hotfixable(pod)
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+    assert rows(capsys.readouterr().out)["liveness"].startswith("[ok]")
+
+
+def test_a_claim_mounted_somewhere_else_blocks_rather_than_warns() -> None:
+    """`init` seeds /podbench/app, copies the interpreter there and emits a
+    supervisor switch naming it, none of which move with the mount - so a claim
+    mounted elsewhere is a refusal and reporting it as a note would be a warning
+    contradicted by the next command."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/opt/venv"}
+    ]
+    runner = hotfixable(pod)
+    runner.failures[f"{SEAT_EXEC} test -e /podbench/app"] = ""
+
+    assert check_and_init(runner) == (1, 2)
+
+
+def test_a_test_that_could_not_run_is_not_an_answer_about_the_image(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A distroless application container may have no `test` at all, and 127 is
+    not the same finding as a project that is absent."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    def no_test(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        if " -- test -d /app" in " ".join(argv):
+            return CommandResult(tuple(argv), 127, "", "exec: test: not found")
+        return FakeRunner.__call__(runner, argv, **kwargs)
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        code = hotfix.main(CHECK, runner=no_test)
+
+    assert code == 0
+    assert rows(capsys.readouterr().out)["project"].startswith("[warn]")
+
+
+def test_the_report_uses_the_status_tokens_console_knows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A new verb uses one of the existing spellings rather than inventing one:
+    the bracket is what lets `console` colour it without either module saying
+    what a colour is. And the name column keeps the two spaces that make a row a
+    row - a name padded to exactly its width leaves one, the rule stops firing,
+    and half the names come out bold and half plain."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        hotfix.main(CHECK, runner=runner)
+
+    printed = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("  [")
+    ]
+    assert printed
+    for line in printed:
+        token, _, rest = line.strip().partition("]")
+        assert token[1:] in {status.value for status in hotfix.CheckStatus}
+        name, separator, detail = rest.strip().partition("  ")
+        assert name and separator and detail.strip(), line

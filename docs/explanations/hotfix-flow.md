@@ -16,8 +16,9 @@ kubelet's CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relaunc
 It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.
 
-Five verbs: `values`, `init`, `apply`, `status`, `consolidate`. `values` reads the
-target pod and emits the chart snippet the whole thing depends on.
+Six verbs: `values`, `check`, `init`, `apply`, `status`, `consolidate`. `values` reads
+the target pod and emits the chart snippet the whole thing depends on; `check` says
+whether the deployed result is one `init` can work on.
 
 ## The layout it requires
 
@@ -227,6 +228,59 @@ Every verb reaches the claim through a `HotfixStore`:
    --local        LocalStore → plain filesystem calls, for running the verb from
                               inside the seat's own terminal
 ```
+
+## `hotfix check` — every prerequisite at once
+
+```text
+podbench hotfix check TARGET [-n NS] [--container NAME] [--seat NAME]
+                             [--image-project PATH] [--image-interpreter PATH]
+```
+
+Every prerequisite this mode has used to be discovered serially, and mostly at the
+moment it bit: no supervisor, no claim, a second replica, a root the seat cannot read,
+no project where podbench looked, a probe the hold cannot short-circuit. Each of those
+is a chart change and a redeploy, in an emergency, discovered one per attempt
+([#205](https://github.com/gilesknap/podbench/issues/205)). `check` asks all of them in
+one read-only pass and gives the answer an exit code.
+
+```text
+  [ok]    target         bl47p-ea-fastcs-01-0, container bl47p-ea-fastcs-01
+  [ok]    claim          … mounts podbench-app at /podbench/app
+  [FAIL]  supervisor     container … is not running the podbench supervisor: …
+  [warn]  seat           no podbench container is running in … Not a blocker …
+  [warn]  target root    not measured: listing /proc/1/root is a property of …
+  [ok]    project        the image keeps one at /app
+  [ok]    interpreter    the image keeps one at /python
+  [warn]  liveness       a httpGet livenessProbe cannot be short-circuited …
+  [ok]    source         the image names https://github.com/…
+  ------------------------------------------------------------------------
+  VERDICT: 1 blocker before `podbench hotfix init` can work (exit 1)
+  BLOCKERS: supervisor
+```
+
+Nothing here is a new measurement: each row is the function that already enforces the
+thing, asked early and caught rather than raised. Four properties of it are deliberate
+and each has a failure mode behind it:
+
+* **It is read-only, and it lands no seat.** `init` lands one when none is running,
+  because that is its job; an ephemeral container cannot be taken back off a pod, so a
+  verb somebody runs to *ask a question* must not spend one.
+* **The project and the interpreter are asked in the application container** — `test -d`
+  beside the supervisor's own probe — and not through the seat's `/proc/1/root`. It is a
+  question about the *image's layout*, it needs no seat, and it is therefore answerable
+  before the attach. `test` exiting 126 or 127 is `test` itself not running, which on a
+  distroless container is a real possibility, and is reported as **not measured** rather
+  than as a project that is absent.
+* **A `warn` is not a blocker**, the way it is not in `doctor`. A non-exec
+  `livenessProbe` is one: `init` accepts such a target and it is `apply`'s hold the
+  kubelet will cut short, so it is a thing to deal with rather than a reason for this
+  command to stop. An image that names no source repository is the other — `--repo`
+  answers it, and that is a property of the next command line and not of the target.
+* **What could not be measured says so.** With no seat running there is nothing to
+  measure the ptrace rung *with*: whether a seat will be able to list `/proc/1/root` is
+  a property of a container that does not exist yet. That row reads `not measured`, and
+  the verdict says "nothing **measured here** blocks" rather than claiming more than was
+  asked.
 
 ## `hotfix init` — seed the claim
 
@@ -683,6 +737,15 @@ it (issue #190).
    2  kubectl -n NS get pod POD -o json                # nothing else, and
                                                        # nothing at all under
                                                        # --no-from-pod
+
+  check:
+   1  the same target walk as init, rows 1-4 above
+   2  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
+   3  kubectl -n NS exec -c SEAT POD -- ls /proc/1/root/   # only with a seat
+   4  kubectl -n NS exec -c APP  POD -- test -d /app       # and /python
+                                                       # plus one anonymous
+                                                       # registry read for the
+                                                       # image's own labels
 ```
 
 Nothing patches a workload and nothing deletes a pod. `rbac.hotfix` — on top of
