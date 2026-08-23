@@ -126,6 +126,10 @@ commands = [
         "{env:VIRTUAL_ENV}/bin/python",
         "src",
         "tests",
+        # Developer tooling, neither shipped nor run by CI - but a tool nobody
+        # type-checks is a tool that rots, and this one is how the VS Code half
+        # of `podbench vscode` gets tested at all. See tools/vscode-bridge/.
+        "tools",
         # CI tooling rather than shipped code, so it is not under `src` - but it
         # imports podbench and asserts a user-facing invariant, so it is held to
         # the same strict typing as the code it is checking.

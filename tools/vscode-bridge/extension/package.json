@@ -1,0 +1,13 @@
+{
+  "name": "vscode-bridge",
+  "displayName": "podbench VS Code bridge",
+  "description": "Local control socket for driving this window from a terminal agent.",
+  "publisher": "podbench",
+  "version": "0.0.1",
+  "license": "MIT",
+  "engines": { "vscode": "^1.90.0" },
+  "extensionKind": ["ui"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {}
+}
