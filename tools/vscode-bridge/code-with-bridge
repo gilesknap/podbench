@@ -55,16 +55,31 @@ if [ ! -e "$data/User/.seeded-from-real-profile" ]; then
     for item in settings.json keybindings.json snippets; do
         [ -e "$real/$item" ] && cp -r "$real/$item" "$data/User/" 2>/dev/null
     done
-    # The welcome tab is a setting, not a flag, so it can only be turned off by
-    # editing the copy. VS Code's settings.json is JSON *with comments*, which
-    # json.load refuses - Giles' has them - so parse when we can and otherwise
-    # insert the key after the opening brace, which JSONC accepts and which
-    # cannot reorder or drop anything already in the file.
-    python3 - "$data/User/settings.json" <<'SEED' 2>/dev/null || true
+    touch "$data/User/.seeded-from-real-profile"
+fi
+
+# Two settings the harness needs, enforced on *every* run rather than seeded
+# once, because they are this profile's job rather than the user's preference
+# and a hand-edit that turns either back on breaks an unattended run silently.
+#
+# Workspace trust is the one that actually blocks: a fresh profile trusts no
+# folder, so opening the seat's home raises a modal, and until somebody clicks
+# it extensions run restricted - which means the bridge does not start and
+# `vsc.py ls` reports no window while the window is plainly on screen. There is
+# no --disable-workspace-trust flag in VS Code 1.124, so it can only be a
+# setting. The startup editor is the "Welcome to VS Code" tab over the window
+# you asked for.
+#
+# settings.json is JSON *with comments*, which json.load refuses - Giles' has
+# them - so parse when we can and otherwise insert after the opening brace,
+# which JSONC accepts and which cannot reorder or drop anything already there.
+# The text path skips a key already present, or a repeat run would append a
+# duplicate every time.
+python3 - "$data/User/settings.json" <<'HARNESS' 2>/dev/null || true
 import json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
-key, value = "workbench.startupEditor", "none"
+wanted = {"workbench.startupEditor": "none", "security.workspace.trust.enabled": False}
 text = path.read_text() if path.exists() else "{}"
 try:
     settings = json.loads(text)
@@ -73,13 +88,17 @@ except ValueError:
     if brace == -1:
         raise SystemExit(0)
     at = brace + 1
-    path.write_text(f'{text[:at]}\n    "{key}": "{value}",{text[at:]}')
+    added = "".join(
+        f'\n    "{key}": {json.dumps(value)},'
+        for key, value in wanted.items()
+        if f'"{key}"' not in text
+    )
+    if added:
+        path.write_text(f"{text[:at]}{added}{text[at:]}")
 else:
-    settings[key] = value
+    settings.update(wanted)
     path.write_text(json.dumps(settings, indent=4) + "\n")
-SEED
-    touch "$data/User/.seeded-from-real-profile"
-fi
+HARNESS
 
 exec /usr/bin/code \
     --user-data-dir="$data" \

@@ -141,13 +141,25 @@ pod spec for the change you pushed, with a timeout.
 37887 with `temp-controller-simulator` alongside it. Its service definition is
 `../p47-services/services/bl47p-ea-fastcs-01`.
 
-**Git state as this plan opens.** `p47-services` is on branch
-`podbench-hotfix-claim`, whose top commit is *"turn off hotfix mode"* — so
-`values.yaml` carries `podbench-hotfix-claim.enabled: false` while the live pod
-still mounts `podbench-app` → PVC `bl47p-ea-fastcs-01-podbench-project` (Bound,
-2Gi) and still carries the supervisor-loop `args`. **Establish which of those two
-is the truth before touching anything**; a half-retired pod is itself a finding,
-and #205 item 4 predicts exactly it.
+**Git state as this plan opens, and a finding that came with it.**
+`p47-services` is on branch `podbench-hotfix-claim`, whose top commit is *"turn
+off hotfix mode"* — `values.yaml` carries `podbench-hotfix-claim.enabled: false`
+— yet the pod is still hotfix-wired. This was **not** a stale pod: every pod in
+the namespace was deleted on 2026-08-23 and ArgoCD recreated them from git, and
+`bl47p-ea-fastcs-01-0` came back still mounting `podbench-app` and still running
+the supervisor-loop `args`.
+
+The reason is the shape of the retirement checklist. `enabled: false` disables
+only the **claim subchart** — the PVC. The `volumes`, `volumeMounts`, `args` and
+`podSecurityContext` live in the target's own `ioc-instance` values and are
+untouched, and the PVC itself carries `Prune=false,Delete=false` so it outlives
+its chart. "Turning off hotfix mode" did step 5 and not step 4, which is exactly
+what #205 item 4 predicts nobody does — and the state it leaves is worse than
+either end: a pod wired to a claim whose chart no longer declares it, which would
+fail to schedule if that PVC were ever actually pruned.
+
+Treat this as the live specimen for Phase 5's `hotfix retire`, and as the first
+thing that phase should be able to detect and report.
 
 **Driving VS Code.** The bridge lives in this repo at `tools/vscode-bridge/`;
 read its `README.md` first. `vsc.py` is the client, `code-with-bridge` a shim

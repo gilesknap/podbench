@@ -63,6 +63,21 @@ profile accumulates state that must persist between runs. `settings.json` is JSO
 *with comments*, so the setting is inserted after the opening brace when the file
 will not parse strictly, which cannot reorder or drop anything already in it.
 
+**Workspace trust is the trap that stops an unattended run dead.** A fresh
+profile trusts no folder, so opening the seat's home raises a modal, and until
+somebody clicks it **extensions run restricted — the bridge does not start**.
+The window is plainly on screen while `vsc.py ls` reports nothing, which reads
+exactly like the extension being broken. VS Code 1.124 has no
+`--disable-workspace-trust` flag, so the shim writes
+`security.workspace.trust.enabled: false` into the profile, along with the
+startup-editor setting, on *every* run rather than once — they are the harness's
+requirements rather than the user's preference, and a hand-edit turning either
+back on breaks the next unattended run silently.
+
+Measured 2026-08-23: with trust disabled, `podbench vscode`'s window reached
+`vsc.py ls` **6 seconds after launch with no interaction**, against a run that
+had previously hung until a human clicked *Trust*.
+
 Closing a driven window is `vsc.py cmd workbench.action.closeWindow`. That
 disconnects the editor and nothing else — **the seat is an ephemeral container
 and outlives it**, until the pod is replaced.
