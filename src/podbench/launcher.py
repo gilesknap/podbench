@@ -46,7 +46,7 @@ from . import __version__
 from .agent import GROUP_PATH, PASSWD_PATH, PUBKEY_ENV, SEAT_NSS_PATH
 from .budget import ProbeBudget, probe_budgets, probe_qualifier
 from .cli import new_app, require_subcommand, run
-from .console import WARNING_LEAD, emit, paragraph
+from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph
 from .editor import (
     CONNECTION_HINT,
     OK,
@@ -193,6 +193,7 @@ __all__ = [
     "Session",
     "SshSeat",
     "above_ceiling",
+    "application_mount",
     "attach",
     "capability_report_from_json",
     "choose_pod",
@@ -686,7 +687,7 @@ def resolve_mounts(
             raise LauncherError(_no_such_volume(name, volumes))
         volume_name = _entry_name(volume) or name
 
-        application = _application_mount(pod_json, workload, volume_name)
+        application = application_mount(pod_json, workload, volume_name)
         app_path = _as_str(application.get("mountPath"))
         if requested_path is None and app_path is None:
             raise LauncherError(
@@ -881,7 +882,7 @@ def hotfix_claim_mounts(
     """
     if not is_hotfixed(pod_json):
         return [], []
-    application = _application_mount(pod_json, workload, HOTFIX_CLAIM_VOLUME)
+    application = application_mount(pod_json, workload, HOTFIX_CLAIM_VOLUME)
     path = _as_str(application.get("mountPath"))
     request = (
         HOTFIX_CLAIM_VOLUME
@@ -969,10 +970,16 @@ def _no_such_volume(name: str, volumes: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
-def _application_mount(
+def application_mount(
     pod_json: Mapping[str, Any], workload: str, volume_name: str
 ) -> Mapping[str, Any]:
-    """The workload container's own mount of ``volume_name``, or ``{}``."""
+    """The workload container's own mount of ``volume_name``, or ``{}``.
+
+    Public because ``hotfix`` asks the same question of the same volume - where
+    does this container mount the claim - and two copies of that loop is how
+    the seat-vs-application mount note and the ``--venv`` default come to
+    disagree about the answer.
+    """
     for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
         container = as_dict(entry)
         if _entry_name(container) != workload:
@@ -3731,11 +3738,6 @@ def _iterate_feature(hotfixed: bool = False) -> Feature:
 _TICK = " " * 6
 """Where the note under a ``supports`` tick starts, and stays on a wrap."""
 
-_WARNING_HANG = len(WARNING_LEAD) + 2
-"""Columns a warning's continuation lines are indented by, which is the width of
-the coloured leader plus its separator."""
-
-
 _BUILD_HASH = re.compile(r"(?:^|\.)g([0-9a-f]{7,40})(?:\.|$)")
 """The commit setuptools_scm put in a PEP 440 local segment.
 
@@ -3951,7 +3953,7 @@ def format_session(session: Session) -> str:
     # the how-to page carries the mechanism.
     for warning in session.warnings:
         lines.extend(
-            paragraph(warning, first=f"{WARNING_LEAD}  ", indent=" " * _WARNING_HANG)
+            paragraph(warning, first=f"{WARNING_LEAD}  ", indent=" " * WARNING_HANG)
         )
     return "\n".join(lines)
 
@@ -6483,7 +6485,7 @@ def _build_app(
                     paragraph(
                         EDITOR_PROBE_REMINDER,
                         first=f"{WARNING_LEAD}  ",
-                        indent=" " * _WARNING_HANG,
+                        indent=" " * WARNING_HANG,
                     )
                 )
             )

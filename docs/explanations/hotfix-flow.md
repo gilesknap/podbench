@@ -317,7 +317,9 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
 │                                                                  │
 │ THE BASE COMMIT, in descending order of confidence:              │
 │   --base-commit SHA                              → measured      │
-│   the image's …image.revision, if the clone has it → measured    │
+│   the image's …image.revision — only where the checkout's own    │
+│     origin says the labels are this repository's, and the clone  │
+│     has the commit                               → measured      │
 │   git -C … rev-parse HEAD                        → ASSUMED       │
 │                                                                  │
 │   Every git call names the checkout safe: the seed is a copy, so │
@@ -416,7 +418,9 @@ pod is **refused** — `hotfix status` finds a hotfixed pod by scanning for a
 `mountPath` of `/podbench/app`, so any other value used to write a manifest
 `status` could never see, and a hotfixed pod invisible to `status` is the precise
 failure this mode exists to prevent. A claim genuinely mounted elsewhere is still
-honoured; it just says out loud that `status` will not list it.
+honoured by the flag; the warning says out loud both that `status` will not list
+it and that `init` will refuse it, because the seed, the copied interpreter and
+the supervisor's runtime switch all name `/podbench/app`.
 
 `--base-commit` is the number every drift figure is a difference against, and its
 old default was `git rev-parse HEAD` of the fresh clone — without `--ref`, the
@@ -428,8 +432,19 @@ label naming a commit the clone does not contain is not believed — `--repo` ma
 be a fork or a mirror, and `git log base..HEAD` would fail later, which is a
 worse place to find out.
 
-Where neither is available — no labels, or a registry that wants credentials —
-the base is recorded as **assumed** and `status` says
+**Labels are corroborated before they are believed, because OCI labels are
+inherited.** A derived image carries its base image's `org.opencontainers.image.*`
+unless the build overrides them, and many builds do not: measured 2026-08-23,
+`ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1` advertises
+`source=…/ubuntu-devcontainer` and a revision in that repository, while the IOC's
+own source is `…/fastcs-example`. Checking the revision against the clone cannot
+catch this, because a clone made from the label's own repository contains the
+label's own revision. So podbench asks the seeded checkout's `origin` — the one
+naming of the repository that did not come out of the image. Where `origin`
+disagrees it wins, and the base is recorded as assumed.
+
+Where nothing corroborates them — no labels, a registry that wants credentials,
+or no checkout in the image to ask — the base is recorded as **assumed** and `status` says
 `+N commit(s) from an assumed base`. That is the point of the item rather than a
 fallback from it: a derived count printed as though it were measured is worse
 than one that admits what it stands on.

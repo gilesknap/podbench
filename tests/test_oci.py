@@ -9,6 +9,7 @@ whose provenance could not be measured.
 
 from __future__ import annotations
 
+import http.client
 import json
 from collections.abc import Mapping
 
@@ -185,8 +186,32 @@ def test_an_image_with_no_labels_is_an_empty_answer_not_a_failed_one() -> None:
     assert oci.image_labels("ghcr.io/acme/api:1.4.0", fetch=registry) == {}
 
 
+def test_a_truncated_response_is_the_same_answer() -> None:
+    """`http.client.HTTPException` is neither an OSError nor a ValueError, and
+    the read happens outside urllib's own URLError wrapping. "Never raises" is
+    the whole contract: a bad answer degrades to an assumed base rather than a
+    traceback out of `hotfix init`."""
+
+    def truncate(url: str, headers: Mapping[str, str]) -> oci.Response:
+        raise http.client.IncompleteRead(b"{")
+
+    assert oci.image_labels("ghcr.io/acme/api:1.4.0", fetch=truncate) is None
+
+
 def test_an_unparseable_reference_never_reaches_the_network() -> None:
     registry = a_registry()
 
     assert oci.image_labels("", fetch=registry) is None
+    assert registry.calls == []
+
+
+def test_a_bare_digest_is_not_a_reference_to_docker_hub() -> None:
+    """Some CRI configurations report a container's imageID as a bare
+    `sha256:<hex>`. Split like any other reference that is the Docker Hub
+    repository `library/sha256`, so podbench would fabricate a third-party
+    request out of somebody's image id and pay the timeout for it."""
+    registry = a_registry()
+
+    assert oci.parse_reference("sha256:" + "a" * 64) is None
+    assert oci.image_labels("sha256:" + "a" * 64, fetch=registry) is None
     assert registry.calls == []

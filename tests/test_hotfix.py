@@ -25,7 +25,7 @@ from unittest import mock
 import pytest
 import yaml
 
-from podbench import hotfix, model, oci
+from podbench import console, hotfix, model, oci
 from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
 from podbench.launcher import Session
 from podbench.model import ContainerRef, PodRef, Rung
@@ -940,7 +940,74 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
 
 def test_init_takes_the_repo_and_the_base_from_the_image() -> None:
     """#205 item 2. Both are things the image states about itself, so neither
-    is a thing to type into a six-flag command in an emergency."""
+    is a thing to type into a six-flag command in an emergency - and the
+    checkout the image ships is what says the labels are its own."""
+    runner = FakeRunner()
+    store = seeded_store()
+    store.outputs[f"{GIT} remote get-url origin"] = "git@github.com:acme/api.git\n"
+
+    manifest, _ = hotfix.init(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        image_labels={
+            oci.SOURCE_LABEL: "https://github.com/acme/api",
+            oci.REVISION_LABEL: BASE_SHA,
+        },
+        install=False,
+    )
+
+    assert manifest.repo == "git@github.com:acme/api.git"
+    # The image's revision, not the clone's HEAD - which is what HEAD_SHA is
+    # scripted to be, and is what this used to record.
+    assert manifest.base_commit == BASE_SHA
+    assert not manifest.base_commit_assumed
+
+
+def test_an_inherited_label_never_becomes_a_measured_base() -> None:
+    """OCI labels are inherited: measured 2026-08-23,
+    ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1 advertises the
+    *base image's* source and revision. Believing the pair would have measured
+    the IOC's drift against another project's history and called it measured,
+    because a clone made from the label's own repository contains the label's
+    own revision."""
+    runner = FakeRunner()
+    store = seeded_store()
+    store.outputs[f"{GIT} remote get-url origin"] = (
+        "https://github.com/DiamondLightSource/fastcs-example\n"
+    )
+
+    manifest, actions = hotfix.init(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        image_labels={
+            oci.SOURCE_LABEL: (
+                "https://github.com/DiamondLightSource/ubuntu-devcontainer"
+            ),
+            oci.REVISION_LABEL: BASE_SHA,
+        },
+        install=False,
+    )
+
+    # The checkout's own origin wins: it is a measurement of the project on the
+    # claim, and manifest.repo is where `consolidate` will push.
+    assert manifest.repo == "https://github.com/DiamondLightSource/fastcs-example"
+    assert manifest.base_commit == HEAD_SHA
+    assert manifest.base_commit_assumed
+    assert any("ubuntu-devcontainer" in action for action in actions)
+    assert not store.ran(f"{GIT} cat-file -e {BASE_SHA}"), (
+        "the guard cannot see this - the labels are not checked against a "
+        "clone made from the same labels"
+    )
+
+
+def test_a_clone_made_from_the_label_corroborates_nothing() -> None:
+    """With no checkout in the image there is no origin to ask, so the only
+    thing naming the repository is the label itself and `_has_commit` runs
+    against a clone of it. Honest uncertainty, not a measurement."""
     runner = FakeRunner()
     store = FakeStore(
         files={
@@ -966,10 +1033,27 @@ def test_init_takes_the_repo_and_the_base_from_the_image() -> None:
 
     assert store.ran(f"git clone https://github.com/acme/api {CHECKOUT}")
     assert manifest.repo == "https://github.com/acme/api"
-    # The image's revision, not the clone's HEAD - which is what HEAD_SHA is
-    # scripted to be, and is what this used to record.
-    assert manifest.base_commit == BASE_SHA
-    assert not manifest.base_commit_assumed
+    assert manifest.base_commit == HEAD_SHA
+    assert manifest.base_commit_assumed
+
+
+def test_init_refuses_a_missing_repo_before_it_copies_anything() -> None:
+    """`main`'s except clause prints the error alone, so a refusal on the far
+    side of a ~50s `cp -a` costs the wait and then discards the only record
+    that the claim was written to at all."""
+    store = FakeStore(files={CHECKOUT: "", PROJECT_SRC: "", "/proc/1/root/python": ""})
+
+    with pytest.raises(hotfix.HotfixError, match="--repo"):
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=model.HOTFIX_APP_PATH,
+            install=False,
+        )
+
+    assert not store.ran("bash -c shopt -s dotglob"), "the seed must not have run"
+    assert not store.ran("cp -a /proc/1/root/python")
 
 
 def test_init_refuses_when_neither_the_flag_nor_the_label_names_a_repo() -> None:
@@ -2721,7 +2805,15 @@ def test_init_needs_neither_venv_nor_repo_when_the_pod_and_the_image_answer() ->
     knows where it mounts the claim, and the image states what it was built
     from."""
     runner = FakeRunner(
-        {"get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True))}
+        {
+            "get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True)),
+            # The checkout the image ships, which is what corroborates the
+            # labels: OCI labels are inherited, so an uncorroborated one is
+            # recorded as an assumed base rather than believed.
+            f"exec -c podbench-1 api-7f9-abc -- {GIT} remote get-url origin": (
+                "https://github.com/acme/api\n"
+            ),
+        }
     )
     labels = {
         oci.SOURCE_LABEL: "https://github.com/acme/api",
@@ -2815,6 +2907,48 @@ def test_a_venv_that_disagrees_with_the_pod_exits_2(
 
     assert code == 2
     assert "disagrees with the pod" in capsys.readouterr().err
+
+
+def test_a_relocated_claim_is_warned_about_in_the_shared_warning_shape(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The one layout surface hotfix's `_warn` owns, driven through a verb.
+
+    A warning is one line under the coloured leader, hung at
+    `console.WARNING_HANG` - derived from `WARNING_LEAD`, so hotfix's warnings
+    re-align with the launcher's rather than silently staying where a
+    hand-counted indent put them.
+    """
+    relocated = pod_json(owner=None, claim=True)
+    relocated["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/opt/venv"}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(relocated)})
+    runner.failures["exec -c podbench-1 api-7f9-abc -- test -e /podbench/app"] = ""
+
+    def no_labels(image: str) -> dict[str, str]:
+        return {}
+
+    with mock.patch.object(hotfix, "read_image_labels", no_labels):
+        code = hotfix.main(
+            ["hotfix", "init", "pod/api-7f9-abc", "--no-install", "-n", "demo"],
+            runner=runner,
+        )
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    warning = lines[: next(i for i, line in enumerate(lines[1:], 1) if line[0] != " ")]
+    assert warning[0].startswith(f"{console.WARNING_LEAD}  ")
+    assert all(
+        line.startswith(" " * console.WARNING_HANG)
+        and line[console.WARNING_HANG] != " "
+        for line in warning[1:]
+    ), warning
+    # And the warning does not promise something the next line takes away:
+    # `init` seeds, copies the interpreter and writes the supervisor switch at
+    # the default path, so a claim mounted elsewhere is refused.
+    flowed = " ".join(" ".join(warning).split())
+    assert "will refuse a claim mounted anywhere else" in flowed
+    assert code == 2
 
 
 def test_status_exits_non_zero_when_a_pod_needs_attention(

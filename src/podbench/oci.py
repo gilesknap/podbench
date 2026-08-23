@@ -27,6 +27,7 @@ any of them, which is to record the base as *assumed* rather than invent one.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.error
@@ -93,6 +94,17 @@ _USER_AGENT = "podbench"
 _CHALLENGE = re.compile(r'(\w+)="([^"]*)"')
 """The ``key="value"`` pairs of a ``WWW-Authenticate: Bearer`` challenge."""
 
+_BARE_DIGEST = re.compile(r"[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}")
+"""A digest with no repository in front of it.
+
+Some containerd/CRI configurations report a container status ``imageID`` in
+exactly this form when the image has no repo digest. Split on the colon like
+any other reference it becomes the repository ``library/sha256`` on Docker Hub,
+so podbench would issue an anonymous GET fabricated out of somebody's image id
+and pay the timeout for it - having already discarded the tag that would have
+worked.
+"""
+
 _PREFERRED_PLATFORM = ("linux", "amd64")
 """Which manifest to read out of an index. The labels are the same on every
 architecture in practice, so this is a tie-break rather than a requirement —
@@ -148,11 +160,13 @@ def parse_reference(image: str) -> ImageRef | None:
     ImageRef(registry='registry:5000', repository='api', reference='v2')
     >>> parse_reference("") is None
     True
+    >>> parse_reference("sha256:" + "a" * 64) is None
+    True
     """
     # The kubelet reports an imageID with this prefix on some runtimes, and it
     # is the most accurate reference available — the digest actually running.
     text = image.strip().removeprefix("docker-pullable://")
-    if not text:
+    if not text or _BARE_DIGEST.fullmatch(text):
         return None
     remainder, _, digest = text.partition("@")
     head, slash, tail = remainder.partition("/")
@@ -191,9 +205,14 @@ def image_labels(image: str, *, fetch: Fetch | None = None) -> dict[str, str] | 
     base = f"https://{host}/v2/{urllib.parse.quote(reference.repository)}"
     try:
         return _labels(get, base, reference.reference)
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         # OSError covers urllib's whole transport family (URLError is one), and
         # ValueError covers a body that is not the JSON it claimed to be.
+        # HTTPException covers neither, and is what a truncated or malformed
+        # response raises - IncompleteRead and BadStatusLine inherit from it
+        # alone, and the read happens outside urllib's own URLError wrapping.
+        # "Never raises" is the whole contract: a registry that answers badly
+        # must degrade to an assumed base, not traceback out of `hotfix init`.
         return None
 
 

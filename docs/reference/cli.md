@@ -1118,7 +1118,9 @@ Notes:
   scanning for a `mountPath` of `/podbench/app`, so any other value wrote a
   manifest `status` could not see — a hotfixed pod nobody can list, which is the
   failure the mode exists to prevent. A claim genuinely mounted elsewhere is
-  still accepted, with a warning saying `status` will not list it.
+  still accepted by the flag, with a warning saying both that `status` will not
+  list it and that `init` will refuse it — the seed, the copied interpreter and
+  the supervisor's runtime switch all name `/podbench/app`.
 * **`--base-commit` and `--repo` default to what the image says about itself.**
   podbench reads `org.opencontainers.image.revision` and
   `org.opencontainers.image.source` off the target image over the registry API,
@@ -1127,7 +1129,16 @@ Notes:
   branch's tip and is almost never what the released image was built from —
   while `status`'s `+N commit(s)` and everything `consolidate` pushes are
   differences against it. A revision the clone does not contain is not believed.
-  Where nothing can be read the base is recorded as **assumed** and `status`
+
+  **The labels themselves are corroborated first.** OCI labels are inherited, so
+  a derived image advertises its base image's repository and revision unless the
+  build overrides them — measured on
+  `ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1`, which names
+  `…/ubuntu-devcontainer`. Checking the revision against the clone cannot catch
+  that, because the clone came from the same label. podbench asks the seeded
+  checkout's `origin` instead, and where it disagrees `origin` wins.
+
+  Where nothing corroborates them the base is recorded as **assumed** and `status`
   prints `+N commit(s) from an assumed base` rather than a derived count wearing
   a measurement's clothes.
 * The editable install runs in the **application** container, not the seat: the

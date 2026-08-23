@@ -33,6 +33,7 @@ from rich.text import Text
 __all__ = [
     "MAX_WIDTH",
     "MIN_WIDTH",
+    "WARNING_HANG",
     "WARNING_LEAD",
     "Column",
     "Row",
@@ -78,6 +79,16 @@ WARNING_LEAD = "WARNING"
 Named here rather than spelled twice: :func:`_styled` colours exactly this
 prefix, and the callers that author warnings use the same constant, so the two
 cannot drift into a warning that is not highlighted.
+"""
+
+WARNING_HANG = len(WARNING_LEAD) + 2
+"""Columns a warning's continuation lines are indented by.
+
+Derived from :data:`WARNING_LEAD` and its two-space separator rather than
+spelled as a number, because a hand-counted copy re-aligns nowhere when the
+leader's length changes - and a hanging indent that no longer sits under its
+leader is the class of defect that looks right in the source and wrong on the
+terminal.
 """
 
 _SECTION_LINE = re.compile(r"^(\S+)$")

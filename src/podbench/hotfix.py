@@ -68,7 +68,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .cli import new_app, require_subcommand, run
-from .console import WARNING_LEAD, emit, paragraph
+from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph
 from .kubectl import (
     DEFAULT_CALL_TIMEOUT,
     CommandResult,
@@ -80,6 +80,7 @@ from .kubectl import (
 from .launcher import (
     CONTAINER_BASE,
     LauncherError,
+    application_mount,
     attach,
     kubectl_for,
     resolve_pod_name,
@@ -191,10 +192,19 @@ how a fix silently loses its provenance.
 
 Version 2 adds :attr:`HotfixManifest.claim_venv` and
 :attr:`HotfixManifest.base_commit_assumed`. Both default safely, so the bump is
-not needed to *load* a v1 manifest — it is here so that one is flagged
-:attr:`~HotfixManifest.stale_schema` and ``status`` says the provenance may be
-absent, which for these two fields it is: a v1 manifest cannot say whether its
-base was measured or whether ``--claim-venv`` was ever passed.
+not needed to *load* a v1 manifest. It is needed to keep ``apply`` from
+laundering one: a v1 manifest cannot say whether its base was measured, and
+rewriting it at the current version with the field's default would turn "this
+schema could not record it" into "it was measured" — the one direction that
+field must never move in. :attr:`~HotfixManifest.stale_schema` is what carries
+that, and it is also what makes ``status`` say the provenance may be absent.
+
+The cost, which is real and is the reason the rule exists rather than a bump
+being free: a podbench that predates this one refuses a v2 manifest outright.
+For ``status`` that is one row, not the listing — :func:`read_pod_state`
+catches :class:`ManifestVersionError` along with every other unreadable
+manifest and reports the pod as such, so the exit-code contract still holds per
+row.
 """
 
 MAX_RECORDED_COMMITS = 20
@@ -1041,6 +1051,11 @@ def claim_mount_path(pod_json: Mapping[str, Any], container: str) -> str:
     this stays chart-agnostic in the way keying on a chart's own names would
     not.
 
+    The search itself is :func:`podbench.launcher.application_mount`, which the
+    launcher already runs over the same volume for the seat-vs-application mount
+    note. A second copy of it here is how the two come to disagree about where
+    the claim is.
+
     >>> pod = {"spec": {"containers": [{"name": "app", "volumeMounts": [
     ...     {"name": "podbench-app", "mountPath": "/podbench/app"}]}]}}
     >>> claim_mount_path(pod, "app")
@@ -1048,15 +1063,8 @@ def claim_mount_path(pod_json: Mapping[str, Any], container: str) -> str:
     >>> claim_mount_path(pod, "sidecar")
     ''
     """
-    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
-        spec = as_dict(entry)
-        if _as_str(spec.get("name")) != container:
-            continue
-        for mount in _as_list(spec.get("volumeMounts")):
-            volume = as_dict(mount)
-            if _as_str(volume.get("name")) == HOTFIX_CLAIM_VOLUME:
-                return (_as_str(volume.get("mountPath")) or "").rstrip("/")
-    return ""
+    mount = application_mount(pod_json, container, HOTFIX_CLAIM_VOLUME)
+    return (_as_str(mount.get("mountPath")) or "").rstrip("/")
 
 
 VENV_DISAGREES_WITH_POD = (
@@ -1072,13 +1080,23 @@ VENV_DISAGREES_WITH_POD = (
 VENV_INVISIBLE_TO_STATUS = (
     "the claim is mounted at {venv}, not {default}, so `hotfix status` will "
     "not list this pod — it finds hotfixed pods by scanning for a mountPath of "
-    "{default}. The fix itself is unaffected; its provenance is invisible."
+    "{default}. The rest of the mode is fixed at {default} as well: the seed, "
+    "the copied interpreter and the supervisor's runtime switch all name it, "
+    "so `hotfix init` will refuse a claim mounted anywhere else."
 )
 """Said out loud on the one path that can still reach a non-default mount.
 
-Named rather than refused because a claim really can be mounted elsewhere, and
-a mode that refused it would be a mode with no escape hatch. What must not
+Named rather than refused *here* because ``apply`` and ``consolidate`` reach a
+claim through a manifest that already records where it is, and a mode that
+refused the value outright would be a mode with no escape hatch. What must not
 happen is that it goes unsaid.
+
+The second sentence is not a hedge. ``init`` seeds :func:`checkout_path`,
+copies the interpreter to :data:`~podbench.model.HOTFIX_INTERPRETER_PATH` and
+emits a supervisor switch naming :data:`~podbench.model.HOTFIX_APP_PATH`, none
+of which move with the mount — so it refuses with "the claim is not mounted".
+Saying "the fix itself is unaffected" would have been a warning contradicted by
+the refusal one line later, which is worse than either message alone.
 """
 
 
@@ -1916,6 +1934,108 @@ NO_SOURCE_REPO = (
 )
 """#205 item 2's other half. ``--repo`` is a value the image usually states."""
 
+LABELS_FROM_BASE_IMAGE = (
+    "the image's labels name {labelled}, not {source}: inherited from its base "
+    "image, so its revision is not this repository's"
+)
+"""Why an image's own ``org.opencontainers.image.*`` may describe something else.
+
+**OCI labels are inherited.** A derived image carries its base image's labels
+unless its build overrides them, and many builds do not. Measured 2026-08-23:
+``ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1`` — the IOC this
+mode was proved against — advertises
+``source=https://github.com/DiamondLightSource/ubuntu-devcontainer``, a revision
+in *that* repository and ``title=ubuntu-devcontainer``, while the IOC's own
+source is ``.../fastcs-example``.
+
+:func:`_has_commit` cannot catch this on its own: when the repository *also*
+came from the label, the clone made from it contains the label's own revision,
+so the check passes and the drift is recorded as measured against another
+project's history. Hence :func:`corroborate_source` — the label is believed
+only where something that did not come from the image agrees with it.
+"""
+
+
+def same_repository(one: str, other: str) -> bool:
+    """Whether two spellings of a git remote name the same repository.
+
+    Compared on host and path, because ``origin`` and a label are written by
+    different tools: one may be scp-style, carry a ``.git`` suffix, a scheme, a
+    username or a trailing slash, and none of that is a difference.
+
+    >>> same_repository("https://github.com/Acme/Api.git", "git@github.com:acme/api")
+    True
+    >>> same_repository("https://github.com/acme/api", "https://github.com/acme/web")
+    False
+    >>> same_repository("", "https://github.com/acme/api")
+    False
+    """
+    return bool(one) and bool(other) and _repo_key(one) == _repo_key(other)
+
+
+def _repo_key(url: str) -> str:
+    """A git remote URL reduced to ``host/path``.
+
+    >>> _repo_key("ssh://git@github.com/acme/api.git/")
+    'github.com/acme/api'
+    >>> _repo_key("git@github.com:acme/api")
+    'github.com/acme/api'
+    """
+    text = url.strip().lower().removeprefix("git+")
+    _, scheme, rest = text.partition("://")
+    text = rest if scheme else text
+    text = text.rpartition("@")[2]
+    head, colon, tail = text.partition(":")
+    if colon and "/" not in head:
+        # scp-style `host:path`, which has no slash before the colon.
+        text = f"{head}/{tail}"
+    return text.rstrip("/").removesuffix(".git").rstrip("/")
+
+
+def corroborate_source(
+    given: str | None, labelled: str, origin: str
+) -> tuple[str, bool, str | None]:
+    """The repository to record, whether the image's labels describe it, and why.
+
+    *given* is ``--repo``, *labelled* is the image's
+    :data:`~podbench.oci.SOURCE_LABEL` and *origin* is the seeded checkout's own
+    remote — ``""`` where there is none to read, which is also the case after a
+    clone, because a clone made from *labelled* corroborates nothing.
+
+    Corroboration is the whole point (see :data:`LABELS_FROM_BASE_IMAGE`): a
+    label is believed only where something *independent of the image* names the
+    same repository. Everything else records an assumed base, which is the
+    honest-uncertainty path #205 item 2 asks for rather than a fallback from it.
+
+    >>> corroborate_source(None, "https://github.com/acme/api",
+    ...                    "git@github.com:acme/api")[1:]
+    (True, None)
+    >>> source, ok, note = corroborate_source(
+    ...     None, "https://github.com/base/devcontainer",
+    ...     "https://github.com/acme/api")
+    >>> source, ok
+    ('https://github.com/acme/api', False)
+    >>> "inherited from its base image" in note
+    True
+    >>> corroborate_source(None, "https://github.com/acme/api", "")
+    ('https://github.com/acme/api', False, None)
+    """
+    independent = (given or "").strip() or origin
+    source = independent or labelled
+    corroborated = bool(labelled) and same_repository(labelled, independent)
+    note = (
+        None
+        if corroborated or not labelled or not independent
+        else LABELS_FROM_BASE_IMAGE.format(labelled=labelled, source=source)
+    )
+    return source, corroborated, note
+
+
+def _origin_url(store: HotfixStore, checkout: str) -> str:
+    """The checkout's ``origin`` remote, or ``""`` where there is none."""
+    probe = store.run(git_argv(checkout, "remote", "get-url", "origin"), check=False)
+    return probe.stdout.strip() if probe.returncode == 0 else ""
+
 
 def _has_commit(store: HotfixStore, checkout: str, sha: str) -> bool:
     """Whether the checkout actually contains *sha*.
@@ -1936,6 +2056,8 @@ def base_commit_from(
     checkout: str,
     stated: str | None,
     labels: Mapping[str, str] | None,
+    *,
+    corroborated: bool = True,
 ) -> tuple[str, bool, str]:
     """The commit drift is measured from, whether it was measured, and why.
 
@@ -1947,23 +2069,32 @@ def base_commit_from(
     a difference against this number, so a guess here is a guess everywhere,
     and one that reads as a measurement.
 
+    *corroborated* is :func:`corroborate_source`'s verdict on whether the labels
+    describe this repository at all. It gates the revision because
+    :func:`_has_commit` cannot: a clone made from the label's own repository
+    contains the label's own revision whatever project that repository is.
+
     Returns the sha, whether it was *assumed*, and the line ``init`` prints.
     """
     if stated:
         return stated, False, f"base commit {stated[:7]}, as given"
     revision = ((labels or {}).get(REVISION_LABEL) or "").strip()
-    if revision and _has_commit(store, checkout, revision):
+    if revision and corroborated and _has_commit(store, checkout, revision):
         return (
             revision,
             False,
             f"base commit {revision[:7]}, from the image's {REVISION_LABEL}",
         )
     head = store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
-    why = (
-        f"the image names {revision[:7]}, not in this checkout"
-        if revision
-        else f"no {REVISION_LABEL} on the image"
-    )
+    if not revision:
+        why = f"no {REVISION_LABEL} on the image"
+    elif not corroborated:
+        why = (
+            f"the image names {revision[:7]}, but nothing outside the image "
+            "confirms its labels are this repository's"
+        )
+    else:
+        why = f"the image names {revision[:7]}, not in this checkout"
     return (
         head,
         True,
@@ -2011,6 +2142,13 @@ def init(
     being two more things to type in an emergency. ``None`` is not an error:
     it means the base is recorded as assumed, which :func:`base_commit_from`
     is careful to say rather than paper over.
+
+    Labels are **corroborated before they are believed** — see
+    :data:`LABELS_FROM_BASE_IMAGE`, which is the measured case of an image
+    advertising its base image's repository and revision. The seeded checkout's
+    ``origin`` is what corroborates them, and where it disagrees it wins: it is
+    a measurement of the project actually on the claim, and ``manifest.repo`` is
+    where ``consolidate`` will push.
     """
     actions: list[str] = []
     require_supervisor(kube, target)
@@ -2024,6 +2162,15 @@ def init(
             f"{checkout} is not present: the claim is not mounted. Run "
             "`podbench hotfix values` and deploy the five values it emits."
         )
+
+    labelled = ((image_labels or {}).get(SOURCE_LABEL) or "").strip()
+    # Resolved before the seed, not after it. The seed is a ~50s `cp -a` plus an
+    # interpreter copy, and `main`'s except clause prints the error alone - so a
+    # refusal on the far side of it costs the wait and then discards the only
+    # record that the claim was written to at all. `--repo` was a required
+    # option until #205 item 2, which is why this ordering was unreachable.
+    if not (repo or "").strip() and not labelled:
+        raise HotfixError(NO_SOURCE_REPO.format(label=SOURCE_LABEL))
 
     if store.exists(f"{checkout}/pyproject.toml"):
         actions.append(f"claim already seeded at {checkout}")
@@ -2054,22 +2201,30 @@ def init(
     interpreter = _seeded_interpreter(store, checkout, venv=claim_venv)
     actions.append(f"claim seeded, venv interpreter {interpreter or 'unknown'}")
 
-    source = (repo or (image_labels or {}).get(SOURCE_LABEL) or "").strip()
-    if not source:
-        raise HotfixError(NO_SOURCE_REPO.format(label=SOURCE_LABEL))
-
     if store.exists(f"{checkout}/.git"):
         actions.append(f"checkout already present at {checkout}")
+        # The one naming of the repository that did not come out of the image,
+        # and so the only thing that can tell an inherited label from this
+        # image's own. Read after the seed because the checkout the image ships
+        # is what the seed just copied.
+        origin = _origin_url(store, checkout)
     else:
         clone = ["git", "clone"]
         if ref is not None:
             clone += ["--branch", ref]
-        clone += [source, checkout]
+        clone += [(repo or "").strip() or labelled, checkout]
         store.run(clone)
-        actions.append(f"cloned {source} to {checkout}")
+        actions.append(f"cloned {clone[-2]} to {checkout}")
+        # Deliberately not read back: a clone made from the label agrees with
+        # the label by construction, which is not corroboration.
+        origin = ""
+
+    source, corroborated, mismatch = corroborate_source(repo, labelled, origin)
+    if mismatch is not None:
+        actions.append(mismatch)
 
     resolved, assumed, provenance = base_commit_from(
-        store, checkout, base_commit, image_labels
+        store, checkout, base_commit, image_labels, corroborated=corroborated
     )
     actions.append(provenance)
 
@@ -3494,7 +3649,7 @@ def _warn(message: str) -> None:
     """
     emit(
         "\n".join(
-            paragraph(message, first=f"{WARNING_LEAD}  ", indent=" " * 9),
+            paragraph(message, first=f"{WARNING_LEAD}  ", indent=" " * WARNING_HANG),
         ),
         stderr=True,
     )
