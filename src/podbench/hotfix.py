@@ -68,7 +68,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .cli import new_app, require_subcommand, run
-from .console import emit, paragraph
+from .console import WARNING_LEAD, emit, paragraph
 from .kubectl import (
     DEFAULT_CALL_TIMEOUT,
     CommandResult,
@@ -97,6 +97,8 @@ from .model import (
     and_list,
     as_dict,
 )
+from .oci import REVISION_LABEL, SOURCE_LABEL
+from .oci import image_labels as read_image_labels
 from .spec import target_uid_gid
 
 __all__ = [
@@ -132,7 +134,13 @@ __all__ = [
     "seeded_python",
     "interpreter_warning",
     "main",
+    "base_commit_from",
     "claim_container",
+    "claim_mount_path",
+    "resolve_venv",
+    "VENV_DISAGREES_WITH_POD",
+    "VENV_INVISIBLE_TO_STATUS",
+    "NO_SOURCE_REPO",
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
@@ -172,7 +180,7 @@ and the volume root are the same directory. There is nowhere else on the volume
 to put it.
 """
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 """Schema version written by this podbench.
 
 Read leniently and written strictly: a manifest with a lower version (or none at
@@ -180,6 +188,13 @@ all, which is version 0) loads with defaults for what it lacks, because a future
 podbench will meet volumes written by this one and by whatever came before it. A
 *higher* version is refused outright — guessing at fields we have never seen is
 how a fix silently loses its provenance.
+
+Version 2 adds :attr:`HotfixManifest.claim_venv` and
+:attr:`HotfixManifest.base_commit_assumed`. Both default safely, so the bump is
+not needed to *load* a v1 manifest — it is here so that one is flagged
+:attr:`~HotfixManifest.stale_schema` and ``status`` says the provenance may be
+absent, which for these two fields it is: a v1 manifest cannot say whether its
+base was measured or whether ``--claim-venv`` was ever passed.
 """
 
 MAX_RECORDED_COMMITS = 20
@@ -235,6 +250,20 @@ finished by then has failed at something the user needs told about.
 
 LOG_SEPARATOR = "\x1f"
 _LOG_FORMAT = f"--pretty=format:%H{LOG_SEPARATOR}%s"
+
+CLAIM_VENV_DIR = ".venv"
+"""The venv's directory name on the claim, relative to the checkout.
+
+``uv`` creates ``.venv`` and the runtime switch looks for it, so the two have to
+agree - which is why this is one constant threaded to both ends rather than a
+literal at each. :func:`install_argv` sets ``UV_PROJECT_ENVIRONMENT`` when it is
+anything else, because otherwise uv would build ``.venv`` beside the venv the
+supervisor is looking for and the pod would quietly run the image's code.
+
+Up here beside the other vocabulary, and not beside :data:`IMAGE_PROJECT_PATH`
+where it reads more naturally, because :class:`HotfixManifest` defaults a field
+to it and a dataclass default is evaluated when the class is created.
+"""
 
 _WORKLOAD_KINDS: dict[str, str] = {
     "deployment": "deployment",
@@ -304,6 +333,29 @@ class HotfixManifest:
     base_commit: str = ""
     """The commit the released image was built from; drift is measured from it."""
 
+    base_commit_assumed: bool = False
+    """Whether :attr:`base_commit` was measured or merely stood in for.
+
+    Measured means the caller stated it, or the image's own
+    :data:`~podbench.oci.REVISION_LABEL` supplied it and the clone has that
+    commit. Everything else — an image with no labels, a registry that would not
+    answer, a revision the repository does not contain — falls back to the
+    clone's ``HEAD``, which without ``--ref`` is the default branch's tip and is
+    almost never what the image was built from. ``status`` says so rather than
+    print ``+N commit(s)`` as though the N were a measurement.
+    """
+
+    claim_venv: str = CLAIM_VENV_DIR
+    """The venv's *directory name* on the claim — ``--claim-venv``, not
+    :attr:`venv`, which is the mountPath.
+
+    Recorded because it is a cross-command contract nothing used to check
+    (#209): ``init`` took the flag, the manifest did not carry it, and ``apply``
+    had no such flag at all — so a rebuild triggered by a packaging change went
+    to ``.venv`` while the supervisor's runtime switch looked somewhere else,
+    and the pod quietly went on running the image's code.
+    """
+
     author: str = ""
     timestamp: str = ""
     ahead: int = 0
@@ -326,6 +378,8 @@ class HotfixManifest:
             "container": self.container,
             "commit": self.commit,
             "baseCommit": self.base_commit,
+            "baseCommitAssumed": self.base_commit_assumed,
+            "claimVenv": self.claim_venv,
             "author": self.author,
             "timestamp": self.timestamp,
             "ahead": self.ahead,
@@ -348,6 +402,8 @@ class HotfixManifest:
         0
         >>> HotfixManifest.from_mapping({"version": 1, "ahead": 2}).ahead
         2
+        >>> HotfixManifest.from_mapping({"version": 1}).claim_venv
+        '.venv'
         """
         version = _as_int(payload.get("version")) or 0
         if version > MANIFEST_VERSION:
@@ -374,6 +430,8 @@ class HotfixManifest:
             container=_as_str(payload.get("container")) or "",
             commit=_as_str(payload.get("commit")) or "",
             base_commit=_as_str(payload.get("baseCommit")) or "",
+            base_commit_assumed=payload.get("baseCommitAssumed") is True,
+            claim_venv=_as_str(payload.get("claimVenv")) or CLAIM_VENV_DIR,
             author=_as_str(payload.get("author")) or "",
             timestamp=_as_str(payload.get("timestamp")) or "",
             ahead=_as_int(payload.get("ahead")) or len(commits),
@@ -437,16 +495,6 @@ difference as a ptrace denial. A layout that differs is expressible with
 
 IMAGE_INTERPRETER_PATH = "/python"
 """The interpreter beside :data:`IMAGE_PROJECT_PATH`, in the same image."""
-
-CLAIM_VENV_DIR = ".venv"
-"""The venv's directory name on the claim, relative to the checkout.
-
-``uv`` creates ``.venv`` and the runtime switch looks for it, so the two have to
-agree - which is why this is one constant threaded to both ends rather than a
-literal at each. :func:`install_argv` sets ``UV_PROJECT_ENVIRONMENT`` when it is
-anything else, because otherwise uv would build ``.venv`` beside the venv the
-supervisor is looking for and the pod would quietly run the image's code.
-"""
 
 
 def seed_source(
@@ -969,6 +1017,12 @@ class HotfixTarget:
     workload_kind: str | None = None
     workload_name: str | None = None
     replicas: int | None = None
+    claim_mount: str = ""
+    """Where :attr:`container` mounts the hotfix claim, ``""`` when it does not.
+
+    Carried on the target because three verbs used to *ask* for it as
+    ``--venv``; see :func:`resolve_venv`.
+    """
 
     @property
     def workload(self) -> str | None:
@@ -976,6 +1030,103 @@ class HotfixTarget:
         if self.workload_kind is None or self.workload_name is None:
             return None
         return f"{self.workload_kind}/{self.workload_name}"
+
+
+def claim_mount_path(pod_json: Mapping[str, Any], container: str) -> str:
+    """Where *container* mounts the hotfix claim, or ``""`` if it does not.
+
+    Resolved by the **volume's name** rather than by its mountPath, because the
+    mountPath is the answer being looked for. :data:`HOTFIX_CLAIM_VOLUME` is
+    podbench's own vocabulary — :func:`values_snippet` is what emits it — so
+    this stays chart-agnostic in the way keying on a chart's own names would
+    not.
+
+    >>> pod = {"spec": {"containers": [{"name": "app", "volumeMounts": [
+    ...     {"name": "podbench-app", "mountPath": "/podbench/app"}]}]}}
+    >>> claim_mount_path(pod, "app")
+    '/podbench/app'
+    >>> claim_mount_path(pod, "sidecar")
+    ''
+    """
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        spec = as_dict(entry)
+        if _as_str(spec.get("name")) != container:
+            continue
+        for mount in _as_list(spec.get("volumeMounts")):
+            volume = as_dict(mount)
+            if _as_str(volume.get("name")) == HOTFIX_CLAIM_VOLUME:
+                return (_as_str(volume.get("mountPath")) or "").rstrip("/")
+    return ""
+
+
+VENV_DISAGREES_WITH_POD = (
+    "--venv {requested} disagrees with the pod: container {container} mounts "
+    "the claim at {mounted}. The manifest lives at the root of the claim, so a "
+    "--venv naming anywhere else writes this hotfix's provenance into the "
+    "container's own filesystem, where it dies with the pod and where "
+    "`hotfix status` cannot find it. Drop the flag — podbench reads the "
+    "mountPath off the pod."
+)
+"""#205 item 1. The refusal is the point: the old flag accepted this silently."""
+
+VENV_INVISIBLE_TO_STATUS = (
+    "the claim is mounted at {venv}, not {default}, so `hotfix status` will "
+    "not list this pod — it finds hotfixed pods by scanning for a mountPath of "
+    "{default}. The fix itself is unaffected; its provenance is invisible."
+)
+"""Said out loud on the one path that can still reach a non-default mount.
+
+Named rather than refused because a claim really can be mounted elsewhere, and
+a mode that refused it would be a mode with no escape hatch. What must not
+happen is that it goes unsaid.
+"""
+
+
+def _venv_note(venv: str) -> str | None:
+    return (
+        None
+        if venv == HOTFIX_APP_PATH
+        else VENV_INVISIBLE_TO_STATUS.format(venv=venv, default=HOTFIX_APP_PATH)
+    )
+
+
+def resolve_venv(target: HotfixTarget, requested: str | None) -> tuple[str, str | None]:
+    """The claim's mountPath, read off the pod, and a warning if it is unusual.
+
+    ``--venv`` was required by ``init``, ``apply`` and ``consolidate`` and used
+    by none of the measurement (#205 item 1): ``status`` reads the manifest at
+    :data:`~podbench.model.HOTFIX_APP_PATH` and finds the mounting container by
+    scanning for exactly that mountPath. So any other value wrote a manifest
+    ``status`` could not see, and a hotfixed pod invisible to ``status`` is the
+    precise failure the mode exists to prevent. Nothing warned.
+
+    The pod already knows the answer, so it is asked. A value that disagrees
+    with what the pod mounts is refused rather than obeyed, and a claim genuinely
+    mounted elsewhere is honoured with :data:`VENV_INVISIBLE_TO_STATUS` said out
+    loud.
+
+    >>> here = HotfixTarget(PodRef("d", "p"), "app", "", "",
+    ...                     claim_mount="/podbench/app")
+    >>> resolve_venv(here, None)
+    ('/podbench/app', None)
+    >>> resolve_venv(HotfixTarget(PodRef("d", "p"), "app", "", ""), None)
+    ('/podbench/app', None)
+    >>> resolve_venv(here, "/opt/venv")  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    podbench.hotfix.HotfixError: --venv /opt/venv disagrees with the pod: ...
+    """
+    mounted = target.claim_mount
+    if requested is None:
+        venv = mounted or HOTFIX_APP_PATH
+        return venv, _venv_note(venv)
+    venv = requested.rstrip("/") or requested
+    if mounted and venv != mounted:
+        raise HotfixError(
+            VENV_DISAGREES_WITH_POD.format(
+                requested=requested, container=target.container, mounted=mounted
+            )
+        )
+    return venv, _venv_note(venv)
 
 
 def replica_count(obj: Mapping[str, Any]) -> int | None:
@@ -1077,6 +1228,7 @@ def _target_from_pod_json(
         container=chosen,
         image=image,
         image_digest=digest,
+        claim_mount=claim_mount_path(pod_json, chosen),
     )
     owner = _controller_of(metadata) if follow_owner else None
     if owner is None:
@@ -1588,8 +1740,16 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
         # A column, not a clause in the health sentence: a held pod and an
         # unhealthy fix are different questions and either can be true alone.
         held = f"  {row.hold.summary()}" if row.hold is not None else ""
+        # The count is a difference against the base, so a base nobody measured
+        # makes it a guess — and it is qualified here, in the column the eye
+        # actually lands on, rather than only on the `base` line below.
+        drift = f"+{ahead} commit(s)" + (
+            " from an assumed base"
+            if manifest is not None and manifest.base_commit_assumed
+            else ""
+        )
         lines.append(
-            f"  {flag}".ljust(_FLAG) + f"{row.pod}  +{ahead} commit(s)  {commit}  "
+            f"  {flag}".ljust(_FLAG) + f"{row.pod}  {drift}  {commit}  "
             f"{row.health.value} — {row.health.summary}{held}"
         )
         lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
@@ -1749,13 +1909,76 @@ def _now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+NO_SOURCE_REPO = (
+    "hotfix init has no source repository to clone: the target image carries "
+    "no {label} label, or its registry would not answer without credentials. "
+    "Pass --repo URL."
+)
+"""#205 item 2's other half. ``--repo`` is a value the image usually states."""
+
+
+def _has_commit(store: HotfixStore, checkout: str, sha: str) -> bool:
+    """Whether the checkout actually contains *sha*.
+
+    An image label is a claim about *a* repository, and the one cloned may not
+    be it — a fork, a mirror, a history that was rewritten. A base the clone
+    does not have makes ``git log base..HEAD`` fail outright, so the label is
+    verified before it is believed rather than discovered to be wrong later.
+    """
+    probe = store.run(
+        git_argv(checkout, "cat-file", "-e", f"{sha}^{{commit}}"), check=False
+    )
+    return probe.returncode == 0
+
+
+def base_commit_from(
+    store: HotfixStore,
+    checkout: str,
+    stated: str | None,
+    labels: Mapping[str, str] | None,
+) -> tuple[str, bool, str]:
+    """The commit drift is measured from, whether it was measured, and why.
+
+    Three answers in a fixed order of confidence, and the third is the one
+    #205 item 2 is about: ``git rev-parse HEAD`` of a fresh clone is, without
+    ``--ref``, the default branch's tip, which is almost never the commit the
+    released image was built from. Everything downstream — ``status``'s
+    ``+N commit(s)``, :func:`drift_commits`, the set ``consolidate`` pushes — is
+    a difference against this number, so a guess here is a guess everywhere,
+    and one that reads as a measurement.
+
+    Returns the sha, whether it was *assumed*, and the line ``init`` prints.
+    """
+    if stated:
+        return stated, False, f"base commit {stated[:7]}, as given"
+    revision = ((labels or {}).get(REVISION_LABEL) or "").strip()
+    if revision and _has_commit(store, checkout, revision):
+        return (
+            revision,
+            False,
+            f"base commit {revision[:7]}, from the image's {REVISION_LABEL}",
+        )
+    head = store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
+    why = (
+        f"the image names {revision[:7]}, not in this checkout"
+        if revision
+        else f"no {REVISION_LABEL} on the image"
+    )
+    return (
+        head,
+        True,
+        f"base commit {head[:7]} ASSUMED ({why}); pass --base-commit SHA",
+    )
+
+
 def init(
     kube: Kubectl,
     store: HotfixStore,
     target: HotfixTarget,
     *,
     venv: str,
-    repo: str,
+    repo: str | None = None,
+    image_labels: Mapping[str, str] | None = None,
     ref: str | None = None,
     base_commit: str | None = None,
     author: str | None = None,
@@ -1781,6 +2004,13 @@ def init(
     It is a rebuild rather than a copy of the venv. A venv's absolute paths lie
     the moment it moves, so ``uv sync`` is run afterwards in the *application*
     container — the interpreter on the claim is the one the scripts must name.
+
+    *image_labels* are the target image's OCI labels, when they could be read
+    (:func:`podbench.oci.image_labels`). They default ``repo`` and the base
+    commit, which is what stops the two values the image already states from
+    being two more things to type in an emergency. ``None`` is not an error:
+    it means the base is recorded as assumed, which :func:`base_commit_from`
+    is careful to say rather than paper over.
     """
     actions: list[str] = []
     require_supervisor(kube, target)
@@ -1824,19 +2054,24 @@ def init(
     interpreter = _seeded_interpreter(store, checkout, venv=claim_venv)
     actions.append(f"claim seeded, venv interpreter {interpreter or 'unknown'}")
 
+    source = (repo or (image_labels or {}).get(SOURCE_LABEL) or "").strip()
+    if not source:
+        raise HotfixError(NO_SOURCE_REPO.format(label=SOURCE_LABEL))
+
     if store.exists(f"{checkout}/.git"):
         actions.append(f"checkout already present at {checkout}")
     else:
         clone = ["git", "clone"]
         if ref is not None:
             clone += ["--branch", ref]
-        clone += [repo, checkout]
+        clone += [source, checkout]
         store.run(clone)
-        actions.append(f"cloned {repo} to {checkout}")
+        actions.append(f"cloned {source} to {checkout}")
 
-    resolved = (
-        base_commit or store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
+    resolved, assumed, provenance = base_commit_from(
+        store, checkout, base_commit, image_labels
     )
+    actions.append(provenance)
 
     if install:
         actions.append(
@@ -1847,13 +2082,15 @@ def init(
     manifest = HotfixManifest(
         venv=venv,
         checkout=checkout,
-        repo=repo,
+        repo=source,
         base_image=target.image,
         base_image_digest=target.image_digest,
         interpreter=interpreter,
         container=target.container,
         commit=resolved,
         base_commit=resolved,
+        base_commit_assumed=assumed,
+        claim_venv=claim_venv,
         author=f"{name} <{email}>",
         timestamp=_now(),
         ahead=0,
@@ -1958,7 +2195,20 @@ def apply_hotfix(
     # commits either way.
     changed = changed_paths(store, checkout, manifest.commit, head)
     if metadata_changed(changed):
-        actions.append(_install(kube, target, seeded_python(store), checkout))
+        # The venv the *manifest* records, never the default (#209). `apply`
+        # has no --claim-venv of its own and never should have: a rebuild that
+        # landed in `.venv` while the supervisor's runtime switch looked in the
+        # directory `init` was told about is the silent revert this whole mode
+        # exists to prevent, and it is not something to ask twice about.
+        actions.append(
+            _install(
+                kube,
+                target,
+                seeded_python(store),
+                checkout,
+                venv=manifest.claim_venv or CLAIM_VENV_DIR,
+            )
+        )
     elif changed:
         actions.append("no packaging metadata changed; editable install still valid")
 
@@ -1975,10 +2225,17 @@ def apply_hotfix(
         commits=commits[:MAX_RECORDED_COMMITS],
         base_image=target.image or manifest.base_image,
         base_image_digest=target.image_digest or manifest.base_image_digest,
+        # Rewriting a v1 manifest as v2 would otherwise turn "this schema could
+        # not record whether the base was measured" into "it was measured",
+        # which is the one direction this field must never move in.
+        base_commit_assumed=manifest.base_commit_assumed or manifest.stale_schema,
         schema_version=MANIFEST_VERSION,
     )
     write_manifest(store, manifest)
-    actions.append(f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}")
+    actions.append(
+        f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}"
+        f"{' (an assumed base)' if manifest.base_commit_assumed else ''}"
+    )
 
     if bounce:
         actions.append(_relaunch(kube, target))
@@ -3124,12 +3381,14 @@ _Target = Annotated[
     ),
 ]
 _Venv = Annotated[
-    str,
+    str | None,
     typer.Option(
         "--venv",
         metavar="PATH",
         help="the mountPath the claim is mounted at, beside the application's "
-        "own project and never over it",
+        "own project and never over it (default: read off the pod, and "
+        f"{HOTFIX_APP_PATH} where it mounts no claim yet). A value that "
+        "disagrees with the pod is refused",
     ),
 ]
 _Container = Annotated[
@@ -3224,6 +3483,21 @@ def _store_for(
 def _report(actions: Sequence[str]) -> int:
     emit("\n".join(actions))
     return 0
+
+
+def _warn(message: str) -> None:
+    """One warning, on stderr, in the vocabulary the rest of podbench uses.
+
+    ``WARNING`` and a hung indent rather than a ``podbench:`` prefix, so it can
+    be picked out of a paste and coloured by span the way every other verb's is;
+    stderr because a verb's report is its stdout.
+    """
+    emit(
+        "\n".join(
+            paragraph(message, first=f"{WARNING_LEAD}  ", indent=" " * 9),
+        ),
+        stderr=True,
+    )
 
 
 NON_EXEC_PROBE_WARNING = (
@@ -3615,9 +3889,15 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     def init_command(
         target: _Target,
         repo: Annotated[
-            str, typer.Option("--repo", metavar="URL", help="git URL to clone")
-        ],
-        venv: _Venv,
+            str | None,
+            typer.Option(
+                "--repo",
+                metavar="URL",
+                help="git URL to clone (default: the target image's "
+                f"{SOURCE_LABEL} label)",
+            ),
+        ] = None,
+        venv: _Venv = None,
         ref: Annotated[
             str | None,
             typer.Option("--ref", metavar="REF", help="branch or tag to clone"),
@@ -3627,8 +3907,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             typer.Option(
                 "--base-commit",
                 metavar="SHA",
-                help="the commit the released image was built from "
-                "(default: cloned HEAD)",
+                help="the commit the released image was built from (default: "
+                f"the image's {REVISION_LABEL} label; failing that the clone's "
+                "HEAD, recorded as an assumed base and reported as one)",
             ),
         ] = None,
         no_install: Annotated[
@@ -3651,6 +3932,17 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
+        # Only when something is still missing, because it is a registry round
+        # trip on the way into an emergency. The digest is preferred over the
+        # tag: it is what is actually running, and a tag can have moved since.
+        labels = (
+            read_image_labels(resolved.image_digest or resolved.image)
+            if repo is None or base_commit is None
+            else None
+        )
         # The one verb that lands its own seat when none is running. See
         # `seat_container`: `init` is where the seat first has to exist, so it
         # is where podbench should be the one to arrange it.
@@ -3661,8 +3953,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             kube,
             store,
             resolved,
-            venv=venv,
+            venv=mount,
             repo=repo,
+            image_labels=labels,
             ref=ref,
             base_commit=base_commit,
             author=author,
@@ -3680,7 +3973,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             str,
             typer.Option("-m", "--message", metavar="TEXT", help="commit message"),
         ],
-        venv: _Venv,
+        venv: _Venv = None,
         no_bounce: Annotated[
             bool,
             typer.Option(
@@ -3699,12 +3992,15 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = apply_hotfix(
             kube,
             store,
             resolved,
-            venv=venv,
+            venv=mount,
             message=message,
             author=author,
             bounce=not no_bounce,
@@ -3742,7 +4038,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         branch: Annotated[
             str, typer.Option("--branch", metavar="NAME", help="branch to push")
         ],
-        venv: _Venv,
+        venv: _Venv = None,
         remote: Annotated[
             str, typer.Option("--remote", metavar="NAME", help="git remote to push to")
         ] = "origin",
@@ -3763,12 +4059,15 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         del author  # accepted for symmetry; this verb writes no commit
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = consolidate(
             kube,
             store,
             resolved,
-            venv=venv,
+            venv=mount,
             branch=branch,
             remote=remote,
             push=not dry_run,

@@ -1058,17 +1058,18 @@ seat, where the claim is already in this process's own mount namespace.
 | Sub-verb | Does |
 |---|---|
 | `values --app NAME --from-pod POD` | read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place |
-| `init --repo URL --venv PATH TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
-| `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
+| `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
+| `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
 | `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
-| `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
+| `consolidate --branch B TARGET` | push the checkout as a branch and print the retirement checklist |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
-across `init`, `apply` and `consolidate`: `--venv` (the mountPath the claim is
-mounted at, beside the application's own project and never over it),
-`--container`, `--seat`, `--local`, `--author`. `values` runs before any of
-that exists, so it takes a `--from-pod POD` rather than a `TARGET` and has its
-own flags, listed below.
+across `init`, `apply` and `consolidate`: `--container`, `--seat`, `--local`,
+`--author`, and `--venv` — which is the mountPath the claim is mounted at,
+beside the application's own project and never over it, and which is **read off
+the pod** rather than asked for. `values` runs before any of that exists, so it
+takes a `--from-pod POD` rather than a `TARGET` and has its own flags, listed
+below.
 
 Notes:
 
@@ -1107,7 +1108,28 @@ Notes:
   builds, so `hotfix init --claim-venv` and `hotfix values --claim-venv`
   have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
   `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
-  looking for and the pod goes on quietly running the image's code.
+  looking for and the pod goes on quietly running the image's code. `init`
+  records it in the manifest and `apply` reads it from there; `apply` has no such
+  flag, because a rebuild that has to be told twice is one that gets told once
+  ([#209](https://github.com/gilesknap/podbench/issues/209)).
+* **`--venv` is read off the pod, and a value that disagrees is refused.** The
+  claim is podbench's own `podbench-app` volume, so its `mountPath` in the
+  application container *is* the answer. `status` finds a hotfixed pod by
+  scanning for a `mountPath` of `/podbench/app`, so any other value wrote a
+  manifest `status` could not see — a hotfixed pod nobody can list, which is the
+  failure the mode exists to prevent. A claim genuinely mounted elsewhere is
+  still accepted, with a warning saying `status` will not list it.
+* **`--base-commit` and `--repo` default to what the image says about itself.**
+  podbench reads `org.opencontainers.image.revision` and
+  `org.opencontainers.image.source` off the target image over the registry API,
+  anonymously and with a short timeout. The old default for the base was
+  `git rev-parse HEAD` of the fresh clone, which without `--ref` is the default
+  branch's tip and is almost never what the released image was built from —
+  while `status`'s `+N commit(s)` and everything `consolidate` pushes are
+  differences against it. A revision the clone does not contain is not believed.
+  Where nothing can be read the base is recorded as **assumed** and `status`
+  prints `+N commit(s) from an assumed base` rather than a derived count wearing
+  a measurement's clothes.
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.

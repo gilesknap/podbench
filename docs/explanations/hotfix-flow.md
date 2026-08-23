@@ -231,8 +231,8 @@ Every verb reaches the claim through a `HotfixStore`:
 ## `hotfix init` — seed the claim
 
 ```text
-podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
-                            [--no-install] [--seat NAME]
+podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
+                            [--no-install] [--seat NAME] [--venv PATH]
                             [--image-project PATH] [--image-interpreter PATH]
                             [--claim-venv NAME]
     │
@@ -313,7 +313,12 @@ podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
 │ PUT THE SOURCE ON THE CLAIM      the claim *is* the checkout     │
 │   .git present (the image usually ships one) → left alone        │
 │   absent → git clone [--branch REF] URL /podbench/app            │
-│   git -C … rev-parse HEAD    → the base commit (or --base-commit)│
+│           URL is --repo, or the image's …image.source label      │
+│                                                                  │
+│ THE BASE COMMIT, in descending order of confidence:              │
+│   --base-commit SHA                              → measured      │
+│   the image's …image.revision, if the clone has it → measured    │
+│   git -C … rev-parse HEAD                        → ASSUMED       │
 │                                                                  │
 │   Every git call names the checkout safe: the seed is a copy, so │
 │   the files carry the image's ownership and git refuses the      │
@@ -390,6 +395,44 @@ for and the one `uv sync` builds, so both ends have to agree. `init` sets
 landed beside the venv the supervisor is looking for would leave the pod quietly
 running the image's code — the one failure this whole mode exists to avoid. Passing it
 to `init` means passing the same value to `hotfix values`.
+
+`init` records it in the manifest, and `apply` reads it from there rather than
+taking a flag of its own
+([#209](https://github.com/gilesknap/podbench/issues/209)). Before it did, a
+packaging change under `init --claim-venv env` was rebuilt into `.venv` while the
+switch went on looking in `env` — the same silent revert, arrived at from the one
+direction the flag existed to close.
+
+### Two values the flags no longer ask for
+
+`--venv` and `--base-commit` were required and were both things something else
+already knew ([#205](https://github.com/gilesknap/podbench/issues/205) items 1
+and 2).
+
+`--venv` is the mountPath of the claim, which is on the pod: the volume is
+podbench's own `podbench-app`, so its `mountPath` in the application container is
+the answer, and it is read rather than asked for. A value that disagrees with the
+pod is **refused** — `hotfix status` finds a hotfixed pod by scanning for a
+`mountPath` of `/podbench/app`, so any other value used to write a manifest
+`status` could never see, and a hotfixed pod invisible to `status` is the precise
+failure this mode exists to prevent. A claim genuinely mounted elsewhere is still
+honoured; it just says out loud that `status` will not list it.
+
+`--base-commit` is the number every drift figure is a difference against, and its
+old default was `git rev-parse HEAD` of the fresh clone — without `--ref`, the
+default branch's tip, which is almost never what the released image was built
+from. The image states it: podbench reads `org.opencontainers.image.revision` and
+`org.opencontainers.image.source` off the target image, over the registry API and
+with no credentials, and uses them to default `--base-commit` and `--repo`. A
+label naming a commit the clone does not contain is not believed — `--repo` may
+be a fork or a mirror, and `git log base..HEAD` would fail later, which is a
+worse place to find out.
+
+Where neither is available — no labels, or a registry that wants credentials —
+the base is recorded as **assumed** and `status` says
+`+N commit(s) from an assumed base`. That is the point of the item rather than a
+fallback from it: a derived count printed as though it were measured is worse
+than one that admits what it stands on.
 
 ## `hotfix apply` — commit, rebuild if needed, relaunch
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -24,7 +25,7 @@ from unittest import mock
 import pytest
 import yaml
 
-from podbench import hotfix, model
+from podbench import hotfix, model, oci
 from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
 from podbench.launcher import Session
 from podbench.model import ContainerRef, PodRef, Rung
@@ -243,6 +244,22 @@ def test_manifest_round_trips_through_json() -> None:
         consolidated_branch="patch/beamtime-14",
     )
     assert hotfix.HotfixManifest.from_json(manifest.to_json()) == manifest
+
+
+def test_a_v1_manifest_loads_with_the_new_fields_defaulted() -> None:
+    """The falsification for #205 item 2: an existing claim carrying a recorded
+    non-default venv must keep loading, and keep being honoured."""
+    payload = json.loads(a_manifest().to_json())
+    payload["version"] = 1
+    del payload["claimVenv"]
+    del payload["baseCommitAssumed"]
+
+    loaded = hotfix.HotfixManifest.from_mapping(payload)
+
+    assert loaded.venv == VENV
+    assert hotfix.manifest_path(loaded.venv) == f"{VENV}/.podbench-hotfix.json"
+    assert loaded.claim_venv == hotfix.CLAIM_VENV_DIR
+    assert loaded.stale_schema
 
 
 def test_manifest_round_trips_on_disk(tmp_path: Path) -> None:
@@ -601,6 +618,127 @@ def test_a_pod_read_keeps_the_bound_the_clone_is_exempt_from() -> None:
     ]
 
 
+# -- --venv is read off the pod (#205 item 1) -------------------------------
+
+
+def a_target(mount: str = "") -> hotfix.HotfixTarget:
+    return hotfix.HotfixTarget(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        container="app",
+        image="ghcr.io/acme/api:1.4.0",
+        image_digest=BASE_DIGEST,
+        claim_mount=mount,
+    )
+
+
+def test_the_claim_mount_is_resolved_by_volume_name_not_by_path() -> None:
+    """The mountPath is the answer being looked for, so it cannot also be the
+    key. `podbench-app` is podbench's own volume name, which is what keeps this
+    chart-agnostic where scanning a chart's keys would not be."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/elsewhere"}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    target = hotfix.resolve_target(kube(runner), "pod/api-7f9-abc")
+
+    assert target.claim_mount == "/elsewhere"
+
+
+def test_venv_defaults_to_the_mount_the_pod_declares() -> None:
+    assert hotfix.resolve_venv(a_target(model.HOTFIX_APP_PATH), None) == (
+        model.HOTFIX_APP_PATH,
+        None,
+    )
+
+
+def test_venv_defaults_to_the_convention_before_the_claim_exists() -> None:
+    """`init` is run against a pod that has just been given the claim, but the
+    same verbs are run against one that has not - and a default that guessed
+    nothing would make the flag required again for the case it exists to drop."""
+    assert hotfix.resolve_venv(a_target(), None) == (model.HOTFIX_APP_PATH, None)
+
+
+def test_a_venv_that_disagrees_with_the_pod_is_refused() -> None:
+    """The silent failure #205 item 1 names: any value other than the mountPath
+    writes a manifest at a path `status` never scans, and a hotfixed pod
+    invisible to `status` is the precise thing this mode exists to prevent."""
+    with pytest.raises(hotfix.HotfixError) as refusal:
+        hotfix.resolve_venv(a_target(model.HOTFIX_APP_PATH), "/opt/venv")
+
+    assert "/opt/venv" in str(refusal.value)
+    assert model.HOTFIX_APP_PATH in str(refusal.value)
+
+
+def test_a_claim_mounted_elsewhere_is_honoured_and_said_out_loud() -> None:
+    """The escape hatch stays open; what must not happen is that it is silent."""
+    venv, note = hotfix.resolve_venv(a_target("/opt/venv"), "/opt/venv")
+
+    assert venv == "/opt/venv"
+    assert note is not None
+    assert "hotfix status" in note
+
+
+def test_a_trailing_slash_is_not_a_disagreement() -> None:
+    assert hotfix.resolve_venv(a_target("/opt/venv"), "/opt/venv/")[0] == "/opt/venv"
+
+
+# -- the base commit's provenance (#205 item 2) -----------------------------
+
+
+REVISION = "3333333333333333333333333333333333333333"
+
+
+def a_clone(**outputs: str) -> FakeStore:
+    store = seeded_store()
+    store.outputs.update(outputs)
+    return store
+
+
+def test_a_stated_base_commit_is_measured() -> None:
+    sha, assumed, why = hotfix.base_commit_from(a_clone(), CHECKOUT, BASE_SHA, None)
+
+    assert (sha, assumed) == (BASE_SHA, False)
+    assert "as given" in why
+
+
+def test_the_image_label_supplies_the_base_commit() -> None:
+    """The number every drift figure is a difference against, taken from the
+    thing that actually knows it rather than from a fresh clone's HEAD."""
+    sha, assumed, why = hotfix.base_commit_from(
+        a_clone(), CHECKOUT, None, {oci.REVISION_LABEL: REVISION}
+    )
+
+    assert (sha, assumed) == (REVISION, False)
+    assert oci.REVISION_LABEL in why
+
+
+def test_a_revision_the_clone_does_not_have_is_not_believed() -> None:
+    """A label is a claim about *a* repository, and --repo may be a fork or a
+    mirror. Believing it anyway makes `git log base..HEAD` fail later, which is
+    a worse place to find out."""
+    store = a_clone()
+    store.failures[f"{GIT} cat-file -e {REVISION}"] = "not a commit"
+
+    sha, assumed, why = hotfix.base_commit_from(
+        store, CHECKOUT, None, {oci.REVISION_LABEL: REVISION}
+    )
+
+    assert (sha, assumed) == (HEAD_SHA, True)
+    assert "not in this checkout" in why
+
+
+def test_no_label_means_an_assumed_base_and_says_so() -> None:
+    """The honest-uncertainty path, which is the point of the item rather than
+    a fallback from it: without --ref the clone's HEAD is the default branch's
+    tip, which is almost never what the image was built from."""
+    sha, assumed, why = hotfix.base_commit_from(a_clone(), CHECKOUT, None, {})
+
+    assert (sha, assumed) == (HEAD_SHA, True)
+    assert "ASSUMED" in why
+
+
 # -- annotation ------------------------------------------------------------
 
 
@@ -800,6 +938,71 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert any("rebuilt the venv" in action for action in actions)
 
 
+def test_init_takes_the_repo_and_the_base_from_the_image() -> None:
+    """#205 item 2. Both are things the image states about itself, so neither
+    is a thing to type into a six-flag command in an emergency."""
+    runner = FakeRunner()
+    store = FakeStore(
+        files={
+            CHECKOUT: "",
+            PROJECT_SRC: "",
+            "/proc/1/root/python": "",
+            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+        },
+        outputs={f"{GIT} rev-parse HEAD": HEAD_SHA},
+    )
+
+    manifest, _ = hotfix.init(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        image_labels={
+            oci.SOURCE_LABEL: "https://github.com/acme/api",
+            oci.REVISION_LABEL: BASE_SHA,
+        },
+        install=False,
+    )
+
+    assert store.ran(f"git clone https://github.com/acme/api {CHECKOUT}")
+    assert manifest.repo == "https://github.com/acme/api"
+    # The image's revision, not the clone's HEAD - which is what HEAD_SHA is
+    # scripted to be, and is what this used to record.
+    assert manifest.base_commit == BASE_SHA
+    assert not manifest.base_commit_assumed
+
+
+def test_init_refuses_when_neither_the_flag_nor_the_label_names_a_repo() -> None:
+    store = FakeStore(files={CHECKOUT: "", f"{CHECKOUT}/pyproject.toml": ""})
+
+    with pytest.raises(hotfix.HotfixError, match="--repo"):
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=model.HOTFIX_APP_PATH,
+            install=False,
+        )
+
+
+def test_init_records_the_claim_venv_so_that_apply_need_not_be_told() -> None:
+    """#209's first half: the flag was a cross-command contract that nothing
+    recorded, so nothing downstream could honour it."""
+    store = seeded_store()
+
+    manifest, _ = hotfix.init(
+        kube(FakeRunner()),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        repo="https://example.invalid/acme/api.git",
+        claim_venv="env",
+        install=False,
+    )
+
+    assert manifest.claim_venv == "env"
+
+
 def test_init_is_idempotent_about_an_existing_checkout() -> None:
     runner = FakeRunner()
     store = seeded_store()
@@ -930,6 +1133,65 @@ def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
     assert not store.ran(f"{GIT} add")
     assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
     assert any("rebuilt the venv" in action for action in actions)
+
+
+def test_apply_rebuilds_into_the_venv_the_manifest_records() -> None:
+    """#209's other half. `apply` has no --claim-venv and never should have, so
+    before the manifest carried the name the reinstall defaulted to `.venv`
+    while the supervisor's runtime switch looked in the directory `init` was
+    told about - a packaging-change rebuild landing where nothing would ever run
+    it, and no error anywhere."""
+    runner = FakeRunner()
+    store = applied_store(changed="pyproject.toml")
+    store.files[hotfix.manifest_path(VENV)] = a_manifest(claim_venv="env").to_json()
+
+    hotfix.apply_hotfix(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=VENV,
+        message="new entry point",
+    )
+
+    rebuilt = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+    assert rebuilt
+    assert f"UV_PROJECT_ENVIRONMENT={CHECKOUT}/env" in " ".join(rebuilt[0])
+
+
+def test_apply_rebuilds_into_uvs_own_default_without_saying_so() -> None:
+    """The other side of the same switch: `install_argv` sets the variable only
+    when the name is not uv's own, so a default claim must not carry it."""
+    runner = FakeRunner()
+
+    hotfix.apply_hotfix(
+        kube(runner),
+        applied_store(changed="pyproject.toml"),
+        deployment_target(),
+        venv=VENV,
+        message="new entry point",
+    )
+
+    rebuilt = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+    assert "UV_PROJECT_ENVIRONMENT" not in " ".join(rebuilt[0])
+
+
+def test_apply_never_upgrades_an_unknown_base_into_a_measured_one() -> None:
+    """`apply` rewrites the manifest at the current schema version. A v1
+    manifest cannot say whether its base was measured, and rewriting it as v2
+    with the field's default would turn "unknown" into "measured" - the one
+    direction this field must never move in."""
+    payload = json.loads(a_manifest().to_json())
+    payload["version"] = 1
+    del payload["baseCommitAssumed"]
+    store = applied_store()
+    store.files[hotfix.manifest_path(VENV)] = json.dumps(payload)
+
+    manifest, _ = hotfix.apply_hotfix(
+        kube(FakeRunner()), store, deployment_target(), venv=VENV, message="fix"
+    )
+
+    assert manifest.schema_version == hotfix.MANIFEST_VERSION
+    assert manifest.base_commit_assumed
 
 
 def test_apply_after_a_code_only_hand_commit_does_not_reinstall() -> None:
@@ -1096,6 +1358,22 @@ def state_exec(
     sep = hotfix.STATE_SEPARATOR
     body = manifest.to_json() if manifest is not None else ""
     return f"{body}\n{sep}\n{hold}\n{sep}\n{now}\n"
+
+
+def test_status_says_when_the_drift_is_counted_from_an_assumed_base() -> None:
+    """A count is a difference against the base, so an unmeasured base makes it
+    a guess - and it is qualified in the column the eye lands on rather than
+    printed as though it were measured."""
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=a_manifest(ahead=2, base_commit_assumed=True),
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail="",
+    )
+
+    assert "+2 commit(s) from an assumed base" in hotfix.format_status([row])
+    measured = replace(row, manifest=a_manifest(ahead=2))
+    assert "assumed" not in hotfix.format_status([measured])
 
 
 def test_status_ignores_pods_without_a_hotfix() -> None:
@@ -2435,6 +2713,108 @@ def test_the_flag_the_verb_replaced_is_gone_rather_than_hidden(
 
     assert code == 2
     assert capsys.readouterr().out == ""
+
+
+def test_init_needs_neither_venv_nor_repo_when_the_pod_and_the_image_answer() -> None:
+    """#205 items 1 and 2 from the outside. Two of the flags in a four-flag
+    command typed in an emergency were values something already knew: the pod
+    knows where it mounts the claim, and the image states what it was built
+    from."""
+    runner = FakeRunner(
+        {"get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True))}
+    )
+    labels = {
+        oci.SOURCE_LABEL: "https://github.com/acme/api",
+        oci.REVISION_LABEL: BASE_SHA,
+    }
+
+    def labels_for(image: str) -> dict[str, str]:
+        assert image == BASE_DIGEST, "the digest running, not the tag it came in on"
+        return labels
+
+    with mock.patch.object(hotfix, "read_image_labels", labels_for):
+        code = hotfix.main(
+            ["hotfix", "init", "pod/api-7f9-abc", "--no-install", "-n", "demo"],
+            runner=runner,
+        )
+
+    assert code == 0
+    written = [
+        argv
+        for argv in runner.calls
+        if f"cat > {model.HOTFIX_APP_PATH}/.podbench-hotfix.json" in " ".join(argv)
+    ]
+    assert written, "the manifest goes where `status` scans, with no --venv typed"
+    manifest = hotfix.HotfixManifest.from_json(
+        runner.stdins[runner.calls.index(written[0])] or ""
+    )
+    assert manifest.venv == model.HOTFIX_APP_PATH
+    assert manifest.repo == "https://github.com/acme/api"
+    assert manifest.base_commit == BASE_SHA
+    assert not manifest.base_commit_assumed
+
+
+def test_the_registry_is_not_asked_when_both_flags_are_given() -> None:
+    """It is a network round trip on the way into an emergency, so it happens
+    only when something is actually missing."""
+    runner = FakeRunner(
+        {"get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True))}
+    )
+    asked: list[str] = []
+
+    def labels_for(image: str) -> dict[str, str]:
+        asked.append(image)
+        return {}
+
+    with mock.patch.object(hotfix, "read_image_labels", labels_for):
+        code = hotfix.main(
+            # fmt: off
+            [
+                "hotfix",
+                "init",
+                "pod/api-7f9-abc",
+                "--repo",
+                "https://example.invalid/acme/api.git",
+                "--base-commit",
+                BASE_SHA,
+                "--no-install",
+                "-n",
+                "demo",
+            ],
+            # fmt: on
+            runner=runner,
+        )
+
+    assert code == 0
+    assert asked == []
+
+
+def test_a_venv_that_disagrees_with_the_pod_exits_2(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = FakeRunner(
+        {"get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True))}
+    )
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "apply",
+            "pod/api-7f9-abc",
+            "-m",
+            "fix",
+            "--venv",
+            "/opt/venv",
+            "-n",
+            "demo",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 2
+    assert "disagrees with the pod" in capsys.readouterr().err
 
 
 def test_status_exits_non_zero_when_a_pod_needs_attention(
