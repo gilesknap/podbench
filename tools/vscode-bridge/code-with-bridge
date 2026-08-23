@@ -1,0 +1,106 @@
+#!/bin/sh
+# A `code` that loads the bridge into whatever window it opens.
+#
+# `podbench vscode` resolves the editor with shutil.which("code") and offers no
+# flag to override it (editor.py:423), so a PATH shim is the only seam. Symlink
+# this into a directory as `code`, put that directory first on PATH, and the
+# window podbench opens carries the bridge:
+#
+#     mkdir -p /tmp/bridge-bin
+#     ln -sf "$PWD/tools/vscode-bridge/code-with-bridge" /tmp/bridge-bin/code
+#     PATH="/tmp/bridge-bin:$PATH" podbench vscode <pod>
+#
+# That directory's path must contain none of editor.py's _REMOTE_CLI_MARKERS
+# ("/remote-cli/", "/.vscode-server/"), or resolve_editor refuses it as VS
+# Code's *remote* CLI rather than the desktop one.
+#
+# --extensionDevelopmentPath rather than an install, so nothing is added to the
+# user's real ~/.vscode/extensions and there is nothing to uninstall.
+set -eu
+
+# Follow the symlink back to the checkout, so the extension is found wherever
+# the shim was linked from.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+
+# --user-data-dir is not optional, and the reason is silent. `code` with no
+# user-data-dir hands the request to an already-running VS Code over its IPC
+# socket in $XDG_RUNTIME_DIR, and that process was started without
+# --extensionDevelopmentPath - so the window opens, Remote-SSH connects, and the
+# bridge is simply not in it. Nothing reports this: podbench says "[ok] asked VS
+# Code to open ... over Remote-SSH" because the CLI exited 0.
+#
+# A distinct user-data-dir forces its own instance, which is the only way the
+# flag survives. --extensions-dir is deliberately *not* set: the new instance
+# must keep the real ~/.vscode/extensions, because Remote-SSH lives there and
+# `podbench vscode` cannot work without it.
+data=${PODBENCH_BRIDGE_DATA:-$HOME/.local/state/podbench-vscode-bridge/user-data}
+mkdir -p "$data/User"
+
+# A fresh user-data-dir is a fresh *profile*: no theme, no keybindings, and a
+# "Welcome to VS Code" tab over the window you asked for. That is not a
+# cosmetic complaint - the point of driving this window is to see what a user
+# sees, and a default profile is not what any user has. So seed it once from
+# the real one and leave it alone afterwards, since the profile accumulates
+# state (window layout, Remote-SSH's own data) that must persist between runs.
+if [ ! -e "$data/User/.seeded-from-real-profile" ]; then
+    real=${PODBENCH_BRIDGE_REAL_PROFILE:-$HOME/.config/Code/User}
+    for item in settings.json keybindings.json snippets; do
+        [ -e "$real/$item" ] && cp -r "$real/$item" "$data/User/" 2>/dev/null
+    done
+    touch "$data/User/.seeded-from-real-profile"
+fi
+
+# Two settings the harness needs, enforced on *every* run rather than seeded
+# once, because they are this profile's job rather than the user's preference
+# and a hand-edit that turns either back on breaks an unattended run silently.
+#
+# Workspace trust is the one that actually blocks: a fresh profile trusts no
+# folder, so opening the seat's home raises a modal, and until somebody clicks
+# it extensions run restricted - which means the bridge does not start and
+# `vsc.py ls` reports no window while the window is plainly on screen. There is
+# no --disable-workspace-trust flag in VS Code 1.124, so it can only be a
+# setting. The startup editor is the "Welcome to VS Code" tab over the window
+# you asked for.
+#
+# settings.json is JSON *with comments*, which json.load refuses - Giles' has
+# them - so parse when we can and otherwise insert after the opening brace,
+# which JSONC accepts and which cannot reorder or drop anything already there.
+# The text path skips a key already present, or a repeat run would append a
+# duplicate every time.
+python3 - "$data/User/settings.json" <<'HARNESS' 2>/dev/null || true
+import json, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+wanted = {"workbench.startupEditor": "none", "security.workspace.trust.enabled": False}
+text = path.read_text() if path.exists() else "{}"
+try:
+    settings = json.loads(text)
+except ValueError:
+    brace = text.find("{")
+    if brace == -1:
+        raise SystemExit(0)
+    at = brace + 1
+    added = "".join(
+        f'\n    "{key}": {json.dumps(value)},'
+        for key, value in wanted.items()
+        if f'"{key}"' not in text
+    )
+    if added:
+        path.write_text(f"{text[:at]}{added}{text[at:]}")
+else:
+    settings.update(wanted)
+    path.write_text(json.dumps(settings, indent=4) + "\n")
+HARNESS
+
+exec /usr/bin/code \
+    --user-data-dir="$data" \
+    --extensionDevelopmentPath="$here/extension" \
+    "$@"
