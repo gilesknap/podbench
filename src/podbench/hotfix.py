@@ -55,7 +55,7 @@ import io
 import json
 import shlex
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -2807,12 +2807,37 @@ FSGROUP_COMMENT = (
 """Written above ``podSecurityContext`` in a merged file."""
 
 
+def _already_said(text: str, rendered: str) -> bool:
+    """Whether *rendered* already carries the comment *text*.
+
+    Asked of the **rendered result**, which is the only reliable place to ask.
+    Neither end of the round trip is reliable on its own: ruamel attaches a
+    comment it parsed to the node *before* it, so the key a comment sits above
+    has nothing on it to find - and replacing a key's value drops a comment that
+    had been parsed onto that value, so a comment present in the input can be
+    missing from the output. Rendering settles both.
+
+    Matched on the first line with anything on it, which identifies one of ours
+    and survives a user reflowing the rest.
+
+    This is what makes re-emitting safe, and re-emitting is a normal thing to do
+    - after a chart bump, or to see what is deployed - so the second run reads
+    the first run's output. The values were always idempotent; the comments were
+    not, and appended a fresh copy of themselves on every run. Found running the
+    command by hand against p47 the day after the first run, not by the suite:
+    the test compared parsed values, which cannot see a comment at all.
+    """
+    marker = next((line for line in text.splitlines() if line.strip()), "")
+    return bool(marker) and marker in rendered
+
+
 def _comment_before(scope: Any, key: str, text: str, indent: int) -> None:
     """Attach *text* above *key*, or do nothing if the node cannot carry it."""
-    if isinstance(scope, CommentedMap) and key in scope:
-        scope.yaml_set_comment_before_after_key(  # pyright: ignore[reportUnknownMemberType]
-            key, before=text, indent=indent
-        )
+    if not isinstance(scope, CommentedMap) or key not in scope:
+        return
+    scope.yaml_set_comment_before_after_key(  # pyright: ignore[reportUnknownMemberType]
+        key, before=text, indent=indent
+    )
 
 
 def _comment_before_entry(entries: Any, name: str, text: str, indent: int) -> None:
@@ -2907,10 +2932,20 @@ def merged_values(
     ours = cast(dict[str, Any], _strip_comments(_load_yaml(snippet)))
     notes: list[str] = []
 
+    # Every comment podbench writes is deferred until the tree has been rendered
+    # once, and then written only where the render did not already carry it.
+    # See :func:`_already_said` - this is what makes a second run a no-op.
+    pending: list[tuple[str, Callable[[], None]]] = []
+
     claim, claim_key = _take_claim(ours, claim_key)
     if claim is not None:
         target[claim_key] = claim
-        _comment_before(target, claim_key, CLAIM_COMMENT, 0)
+        pending.append(
+            (
+                CLAIM_COMMENT,
+                lambda key=claim_key: _comment_before(target, key, CLAIM_COMMENT, 0),
+            )
+        )
 
     if under is not None:
         where, why = tuple(under), "where --values-under put them"
@@ -2934,11 +2969,16 @@ def merged_values(
             )
             scope[key] = merge.entries
             if key == volumes_key:
-                _comment_before_entry(
-                    merge.entries,
-                    SEAT_HOME_VOLUME,
-                    SEAT_HOME_COMMENT,
-                    2 * len(where) + 4,
+                pending.append(
+                    (
+                        SEAT_HOME_COMMENT,
+                        lambda entries=merge.entries: _comment_before_entry(
+                            entries,
+                            SEAT_HOME_VOLUME,
+                            SEAT_HOME_COMMENT,
+                            2 * len(where) + 4,
+                        ),
+                    )
                 )
             if merge.absorbed:
                 notes.append(
@@ -2946,15 +2986,18 @@ def merged_values(
                         key=key, parent=parent_path, names=", ".join(merge.absorbed)
                     )
                 )
-                _comment_before(
-                    scope,
-                    key,
-                    ABSORBED_COMMENT.format(
-                        names=", ".join(merge.absorbed),
-                        verb="is" if len(merge.absorbed) == 1 else "are",
-                        key=key,
-                    ),
-                    2 * len(where),
+                absorbed_comment = ABSORBED_COMMENT.format(
+                    names=", ".join(merge.absorbed),
+                    verb="is" if len(merge.absorbed) == 1 else "are",
+                    key=key,
+                )
+                pending.append(
+                    (
+                        absorbed_comment,
+                        lambda k=key, t=absorbed_comment: _comment_before(
+                            scope, k, t, 2 * len(where)
+                        ),
+                    )
                 )
             elif merge.declared_first_time and inherited is None:
                 notes.append(NO_PARENT_NOTE.format(path=path, key=key))
@@ -2966,8 +3009,22 @@ def merged_values(
         else:
             scope[key] = value
 
-    _comment_before(scope, security_key, FSGROUP_COMMENT, 2 * len(where))
-    return _dump_yaml(target), notes
+    pending.append(
+        (
+            FSGROUP_COMMENT,
+            lambda: _comment_before(
+                scope, security_key, FSGROUP_COMMENT, 2 * len(where)
+            ),
+        )
+    )
+
+    rendered = _dump_yaml(target)
+    written = False
+    for text, write_it in pending:
+        if not _already_said(text, rendered):
+            write_it()
+            written = True
+    return (_dump_yaml(target) if written else rendered), notes
 
 
 def _take_claim(ours: dict[str, Any], claim_key: str) -> tuple[Any, str]:
