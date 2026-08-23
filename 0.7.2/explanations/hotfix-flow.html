@@ -1,0 +1,1284 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>What hotfix does &#8212; podbench 0.7.2 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=6dfdf7c3"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/hotfix-flow';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.7.2';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Architecture" href="architecture.html" />
+    <link rel="prev" title="What dev does" href="dev-flow.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.7.2" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="ways-in.html">Ways in</a></li>
+<li class="toctree-l1"><a class="reference internal" href="attach-flow.html">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dev-flow.html">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decisions/0005-spend-a-second-runtime-dependency-on-round-tripping-yaml.html">5. Spend a second runtime dependency on round-tripping YAML</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="design-brief.html">The original design brief</a></li>
+<li class="toctree-l1"><a class="reference internal" href="security.html">Security model</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="spikes.html">Spikes</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="spikes/phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s6.html">S6 — Suspending an Argo-managed workload: server-side apply field ownership</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spikes/s7.html">S7 — The hold loop: relaunching without restarting the container</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="status.html">What is proven, and what is not</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../explanations.html" class="nav-link">Explanations</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="what-hotfix-does">
+<h1>What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does<a class="headerlink" href="#what-hotfix-does" title="Link to this heading">#</a></h1>
+<p>Hotfix mode makes an edit <strong>outlive the session</strong>, and does it without restarting the
+container. The application’s project lives on a PersistentVolumeClaim mounted <em>beside</em>
+the image’s own copy, and a small supervisor in the deployment’s values relaunches the
+application in place.</p>
+<p>Not restarting is the point rather than a nicety. A podbench seat is an ephemeral
+container sharing the target container’s namespaces, so a container restart does not
+orphan it — it SIGKILLs it, <code class="docutils literal notranslate"><span class="pre">exitCode:</span> <span class="pre">137</span></code>
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/161">#161</a>), taking any attached editor
+and debugger with it. Measured on a Diamond beamline, a restart also costs the
+kubelet’s CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relaunch is
+~6.8s and costs the seat nothing (<a class="reference internal" href="spikes/s7.html"><span class="std std-doc">S7</span></a>).</p>
+<p>It is the one mode that needs deploy-time cooperation. It is Python-only and
+single-replica-only.</p>
+<p>Four verbs: <code class="docutils literal notranslate"><span class="pre">init</span></code>, <code class="docutils literal notranslate"><span class="pre">apply</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> — plus <code class="docutils literal notranslate"><span class="pre">--print-values</span></code>, which
+reads the target pod and emits the chart snippet the whole thing depends on.</p>
+<section id="the-layout-it-requires">
+<h2>The layout it requires<a class="headerlink" href="#the-layout-it-requires" title="Link to this heading">#</a></h2>
+<p>The claim mounts <strong>beside</strong> the application’s project, never over it.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  ┌─────────────────────────────── pod ────────────────────────────────┐
+  │                                                                    │
+  │  ┌──────────────────────┐         ┌──────────────────────────────┐ │
+  │  │ application          │         │ podbench seat                │ │
+  │  │                      │         │  (ephemeral, from `attach`)  │ │
+  │  │  PID 1 = supervisor  │         │  has git, a shell, podbench  │ │
+  │  │    └ child = the app │         │                              │ │
+  │  │                      │         │  reads the target&#39;s own      │ │
+  │  │  /app      ← image&#39;s │         │  filesystem through          │ │
+  │  │    .venv     project │         │  /proc/1/root, which is what │ │
+  │  │              (never  │         │  the seed copies from        │ │
+  │  │              hidden) │         │                              │ │
+  │  │                      │         │  /podbench/app               │ │
+  │  │  /podbench/app       │         │    the SAME mountPath, so    │ │
+  │  │    src/    ← checkout│         │    the checkout resolves     │ │
+  │  │    .venv   ← rebuilt │         │    identically on both sides │ │
+  │  │    .python ← the     │         │                              │ │
+  │  │              interpreter       │                              │ │
+  │  │    .podbench-hotfix. │         │                              │ │
+  │  │      json  ← manifest│         │                              │ │
+  │  └───────────┬──────────┘         └──────────────┬───────────────┘ │
+  │              │                                   │                 │
+  │              └─────────────────┬─────────────────┘                 │
+  │                                │                                   │
+  │        PVC  &lt;app&gt;-podbench-project  (ReadWriteOnce)                │
+  │                                                                    │
+  └────────────────────────────────────────────────────────────────────┘
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">/app</span></code> and <code class="docutils literal notranslate"><span class="pre">/python</span></code> in the application’s half of that picture are the <em>defaults</em>
+podbench assumes and not a requirement — see <em>The layout is the image’s, not
+podbench’s</em> under <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span></code> below, and the <code class="docutils literal notranslate"><span class="pre">--image-project</span></code> flag it describes.
+What the mode genuinely requires is the claim, mounted beside.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span> <span class="pre">--app</span> <span class="pre">NAME</span> <span class="pre">--from-pod</span> <span class="pre">POD</span></code> emits five keys, and
+every one is a passthrough an application’s chart already has:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  volumes            the claim, plus podbench-home for the seat
+  volumeMounts       the claim at /podbench/app — beside, never over
+  command / args     the supervisor, wrapping the entrypoint the pod runs today
+  livenessProbe      the target&#39;s own exec probe, wrapped to honour the hold and
+                     carrying its own timings (nothing is emitted where the
+                     target declares no probe — 7 of 18 containers on a real
+                     beamline do, and the canonical target is not one)
+  podSecurityContext fsGroup, without which the claim is present and unwritable
+</pre></div>
+</div>
+<p>That five-key list is the practical payoff of mounting beside. The earlier design
+needed a seeding initContainer at a staging path, and <code class="docutils literal notranslate"><span class="pre">ioc-instance</span></code> — the chart every
+EPICS IOC at Diamond is deployed with — cannot express one, because every initContainer
+there inherits the main container’s <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code>. <code class="docutils literal notranslate"><span class="pre">tests/test_ioc_instance_contract.py</span></code>
+renders that chart at the pinned version and asserts all five arrive.</p>
+<section id="print-values-read-the-target-emit-the-snippet">
+<h3><code class="docutils literal notranslate"><span class="pre">--print-values</span></code> — read the target, emit the snippet<a class="headerlink" href="#print-values-read-the-target-emit-the-snippet" title="Link to this heading">#</a></h3>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix --print-values --app NAME --from-pod POD [-n NS]
+                [--container NAME] [--entrypoint CMD] [--gid GID] [--context C]
+                [--claim-venv NAME]
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ READ THE TARGET       get pod POD -o json — one call, and the    │
+│                       only one --print-values makes              │
+│                                                                  │
+│   Reading is the default, and #176 is why: the entrypoint, the   │
+│   probe and the gid used to be supplied by hand. A chart renders │
+│   a supplied livenessProbe wholesale, so a timing left out       │
+│   silently became the Kubernetes default and a compiled IOC went │
+│   from 120s/30s to 0s/10s — probed from the moment it started,   │
+│   before it had reached its hardware.                            │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ no --from-pod, no --no-from-pod ──▶ exit 2
+                                  ├─ kubectl could not read it ────────▶ exit 2
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ TAKE THE THREE OFF THE CONTAINER  --container NAME, or the first │
+│                                                                  │
+│   entrypoint  command + args, shell-quoted back into the one     │
+│               string the supervisor execs. A container already   │
+│               carrying the layout is *unwrapped*, never wrapped  │
+│               twice: a supervisor inside a supervisor would hold │
+│               on a file the inner one never sees.                │
+│   gid         runAsGroup, or the placeholder where the pod       │
+│               states none. Never 0.                              │
+│   probe       the whole livenessProbe, timings and all, where it │
+│               is an exec one. No probe at all is not an error.   │
+│                                                                  │
+│   A flag you passed wins over the pod, every time. That is what  │
+│   makes --entrypoint an answer to a target whose command lives   │
+│   in the image&#39;s ENTRYPOINT — nowhere in the pod spec, so        │
+│   nothing read from the cluster finds it — without giving up the │
+│   other two as well.                                             │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ SAY WHAT THE OUTPUT CANNOT SAY FOR ITSELF        → stderr        │
+│                                                                  │
+│   a non-exec probe   emitted around, with a warning: an httpGet  │
+│                      probe answers from the application, and the │
+│                      application is what is down while a pod is  │
+│                      held. An absent probe block otherwise looks │
+│                      identical to the fastcs case, and the       │
+│                      difference is whether a held pod survives.  │
+│   the target&#39;s own   volumes: and volumeMounts: *replace* the    │
+│   volumes            chart&#39;s keys rather than adding to them, so │
+│                      they are named and the resolution is spelt  │
+│                      out. From a live pod podbench cannot merge  │
+│                      them itself: a chart-generated volume and   │
+│                      one the service declared for itself are     │
+│                      indistinguishable from there. --values is   │
+│                      the way out - see below.                    │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+                                  the five keys, needing no hand-editing
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--values</span> <span class="pre">PATH</span></code> is the other read, and it closes the one thing <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code>
+cannot. A pod cannot say which of its volumes the service asked for; the
+service’s <strong>values file</strong> can, and says nothing else. Given it, podbench merges
+its own keys in and emits the file whole:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  ../values.yaml   ─┐
+  (--parent-values) │   a helm list REPLACES across the parent/child merge.
+                    │   A service declaring volumes: for the first time takes
+                    │   the shared one over completely, so the shared entries
+                    │   are absorbed first or a beamline directory is silently
+                    ├─► unmounted. Without this file podbench says so rather
+                    │   than assuming there is nothing to inherit.
+                    │
+  values.yaml      ─┤   what this service declares, and nothing else. Its own
+  (--values)        │   entries win; its comments survive; matching is by
+                    │   `name`, so re-running changes nothing.
+                    │
+  values_snippet   ─┘   the claim&#39;s key, at the root, and the five
+                        passthroughs wherever the chart keeps them.
+                        --values-under names that; otherwise it is read.
+                                  │
+                                  ▼
+                        the whole file, on stdout. Every note on stderr, so
+                        stdout can be redirected straight over the input.
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is the escape, for CI, an offline machine, or a pod that does not
+exist yet; it emits from <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code>, <code class="docutils literal notranslate"><span class="pre">--gid</span></code>, <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> alone. It is also the exact route that produced #176, so every
+failure reading the pod names it <em>and</em> what taking it costs. kubectl tells a
+missing kubeconfig, an absent pod and a forbidden <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> apart only in the
+text of its own message, so podbench relays that verbatim rather than guessing at
+a category and getting it wrong.</p>
+<p><code class="docutils literal notranslate"><span class="pre">values_snippet</span></code> itself takes no cluster <strong>and no file</strong>: <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--values</span></code> are both thin reading wrappers, and <code class="docutils literal notranslate"><span class="pre">merged_values</span></code> — which does the
+whole of the merge — takes two strings and returns one. Tests assert both
+functions acquire neither dependency. That is what lets every shape of the
+output be asserted without a cluster or a filesystem, and it is why the one
+thing this mode cannot get wrong from a desk is checked from one.</p>
+</section>
+<section id="the-supervisor">
+<h3>The supervisor<a class="headerlink" href="#the-supervisor" title="Link to this heading">#</a></h3>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  while :; do
+    (
+      if [ -x /podbench/app/.venv/bin/python ]; then
+        export PATH=&quot;/podbench/app/.venv/bin:$PATH&quot;      ← the runtime switch
+      fi
+      exec &lt;your entrypoint&gt;
+    ) &amp;
+    child=$!
+    echo $child &gt; /tmp/podbench-child.pid                ← what `apply` kills
+    wait $child; rc=$?
+    kill -TERM -&quot;$child&quot; 2&gt;/dev/null || true             ← reap the strays
+    [ -e /tmp/podbench-hold ] || exit $rc                ← fail-fast by default
+  done
+</pre></div>
+</div>
+<p>Three things about it, each of which failed silently before it was measured:</p>
+<ul class="simple">
+<li><p><strong>The runtime switch is inside the loop.</strong> Evaluated once at container start it can
+never see a claim seeded afterwards, so the first <code class="docutils literal notranslate"><span class="pre">apply</span></code> after an <code class="docutils literal notranslate"><span class="pre">init</span></code> would
+relaunch the <em>image’s</em> code and report success — new pids, <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> 0, and the
+old binary still serving. The <code class="docutils literal notranslate"><span class="pre">.venv</span></code> it looks for is <code class="docutils literal notranslate"><span class="pre">--claim-venv</span></code>’s default, and
+the same value has to reach <code class="docutils literal notranslate"><span class="pre">init</span></code>: a switch looking for one directory and a rebuild
+landing in another is the same silent failure by another route.</p></li>
+<li><p><strong>With no hold file it is fail-fast.</strong> It exits with the child’s status and the
+kubelet restarts exactly as it does today, so a deployment carrying this behaves
+identically to one that does not until somebody deliberately holds the pod.</p></li>
+<li><p><strong>It has no backoff.</strong> The hold does not merely avoid the kubelet’s ladder, it
+replaces it with none at all, so a hold left standing over a child that cannot start
+is a spin. That is why the hold carries an absolute deadline.</p></li>
+</ul>
+<p>Every verb reaches the claim through a <code class="docutils literal notranslate"><span class="pre">HotfixStore</span></code>:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>   default        PodStore   → kubectl exec -c &lt;seat&gt; POD -- &lt;cmd&gt;
+                              the seat is the container with git and a shell;
+                              the application container is assumed to have neither
+                              and in this mode is quite likely distroless
+   --local        LocalStore → plain filesystem calls, for running the verb from
+                              inside the seat&#39;s own terminal
+</pre></div>
+</div>
+</section>
+</section>
+<section id="hotfix-init-seed-the-claim">
+<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span></code> — seed the claim<a class="headerlink" href="#hotfix-init-seed-the-claim" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix init TARGET --repo URL [--ref REF] [--base-commit SHA]
+                            [--no-install] [--seat NAME]
+                            [--image-project PATH] [--image-interpreter PATH]
+                            [--claim-venv NAME]
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ RESOLVE THE TARGET   pod/NAME, deployment/NAME or statefulset/…  │
+│                                                                  │
+│   The walk up to the owning workload is read-only now, and its   │
+│   only job is the multi-replica refusal: RWO claim, one          │
+│   checkout, and two writers is a race with no winner.            │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ replicas != 1 ──────────────▶ exit 2
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ FIND THE SEAT     get pod POD -o json → the running podbench-N,  │
+│                    or --seat NAME for one called something else  │
+│                                                                  │
+│   None running? `init` lands one itself, through the same        │
+│   `attach` you would have typed — which mounts the claim on a    │
+│   pod carrying the layout, so the seat it lands is one this      │
+│   mode can use. The verbs after `init` still refuse: by then     │
+│   a missing seat means it died or the pod was replaced, and      │
+│   that is a thing to be told about rather than to paper over     │
+│   by spending another ephemeral container name.                  │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ REQUIRE THE SUPERVISOR                                           │
+│   exec -c APP -- test -e /tmp/podbench-child.pid                 │
+│                                                                  │
+│   Checked against the *live container*, not the pod spec: a spec │
+│   can carry the supervisor while the container runs something    │
+│   else — an image whose ENTRYPOINT wins, values that never       │
+│   reached this pod. A refusal, not a warning: with nothing to    │
+│   relaunch, `apply` would kill the application, the kubelet      │
+│   would restart the container, and your seat would go with it.   │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ no supervisor ──────────────▶ exit 2
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ SEED THE CLAIM — from the container that is already running      │
+│   already seeded (pyproject.toml present) → left alone           │
+│   otherwise:                                                     │
+│     cp -a /proc/1/root/app/*    /podbench/app/                   │
+│     cp -a /proc/1/root/python   /podbench/app/.python            │
+│                                                                  │
+│   Through PID 1&#39;s root, and NOT from the seat&#39;s own /app: the    │
+│   seat is a different image and its venv is podbench&#39;s, not the  │
+│   application&#39;s — never quietly substituted.                     │
+│                                                                  │
+│   Where the project is not there, the root question is asked     │
+│   directly rather than inferred from it (#178):                  │
+│                                                                  │
+│     ls /proc/1/root/                                             │
+│       fails → the seat cannot see the target&#39;s root at all, so   │
+│               the seed cannot run. That is the ptrace rung, and  │
+│               the refusal names CAP_SYS_PTRACE and `podbench     │
+│               doctor`.                                           │
+│       lists → the root reads fine and this image simply keeps no │
+│               project at /app. A layout difference and not a     │
+│               permission one, so the refusal names               │
+│               --image-project and --image-interpreter — and      │
+│               names neither ptrace nor doctor.                   │
+│                                                                  │
+│   `ls` and not `test -e`: test -e follows the /proc/1/root       │
+│   symlink and answers for the target of the link, so it says yes │
+│   on precisely the seat that cannot traverse it.                 │
+│                                                                  │
+│   The *entries*, never the mount root: `cp -a` onto the claim&#39;s  │
+│   own directory fails with &quot;preserving times for &#39;.&#39;: Operation  │
+│   not permitted&quot;, after copying everything, which reads as an    │
+│   inexplicable failure at the end of a long copy.                │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ root unreadable ────────────▶ exit 2
+                                  ├─ no project / no claim ──────▶ exit 2
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ PUT THE SOURCE ON THE CLAIM      the claim *is* the checkout     │
+│   .git present (the image usually ships one) → left alone        │
+│   absent → git clone [--branch REF] URL /podbench/app            │
+│   git -C … rev-parse HEAD    → the base commit (or --base-commit)│
+│                                                                  │
+│   Every git call names the checkout safe: the seed is a copy, so │
+│   the files carry the image&#39;s ownership and git refuses the      │
+│   repository outright — &quot;detected dubious ownership&quot;.            │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ REBUILD THE VENV — in the APPLICATION container, not the seat    │
+│   exec -c APP -- env UV_CACHE_DIR=/podbench/app/.uv-cache \      │
+│        uv sync --project /podbench/app \                         │
+│                --python /podbench/app/.python/cpython-…/bin/python3 \
+│                --frozen                                          │
+│                                                                  │
+│   A rebuild and not a copy. A venv records absolute paths, so a  │
+│   copied one names an interpreter that is no longer where it     │
+│   says — and the symptom is a console script whose shebang       │
+│   points back into the image, which keeps working until the      │
+│   restart that was the whole point.                              │
+│                                                                  │
+│   --python is the interpreter *binary*, discovered rather than   │
+│   assumed: uv nests its installs one level down, so the obvious  │
+│   &lt;root&gt;/bin/python3 does not exist.                             │
+│   UV_CACHE_DIR is explicit because uv otherwise wants $HOME and  │
+│   falls back to /.cache/uv, which is a permission error in a pod │
+│   whose HOME is unset.                                           │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ├─ rebuild fails ──────────────▶ exit 2
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ RECORD THE PROVENANCE — on the claim, and only there             │
+│   write /podbench/app/.podbench-hotfix.json                      │
+│     checkout, repo, base image + digest, interpreter, container, │
+│     commit, base_commit, author, timestamp                       │
+│                                                                  │
+│   Not on the workload&#39;s pod template. A GitOps controller        │
+│   reconciles a volume towards its spec but strips an annotation  │
+│   as drift, so provenance written there went quiet within one    │
+│   sync interval — with the fix still running.                    │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+                        actions printed, exit 0
+</pre></div>
+</div>
+<section id="the-layout-is-the-image-s-not-podbench-s">
+<h3>The layout is the image’s, not podbench’s<a class="headerlink" href="#the-layout-is-the-image-s-not-podbench-s" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">/app</span></code> and <code class="docutils literal notranslate"><span class="pre">/python</span></code> are
+<a class="reference external" href="https://github.com/DiamondLightSource/python-copier-template">python-copier-template</a>’s
+convention and the defaults of <code class="docutils literal notranslate"><span class="pre">--image-project</span></code> and <code class="docutils literal notranslate"><span class="pre">--image-interpreter</span></code>; they are
+not a requirement. An epics-containers image has no <code class="docutils literal notranslate"><span class="pre">/app</span></code> at all — its venv is at
+<code class="docutils literal notranslate"><span class="pre">/venv</span></code>, with a separate <code class="docutils literal notranslate"><span class="pre">/python</span></code> — which is how the seed came to report a layout
+difference as a ptrace denial. Measured on <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> on 2026-08-22:
+<code class="docutils literal notranslate"><span class="pre">/proc/1/root</span></code> listed cleanly from that seat and <code class="docutils literal notranslate"><span class="pre">/app</span></code> did not exist, so podbench
+blamed the rung and sent the user to <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">doctor</span></code>, which correctly reported the
+rung healthy (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/178">#178</a>). A
+contradiction with no next step, and the reason the two failures are now asked about
+separately.</p>
+<p>The refusal prints the path <strong>inside the image</strong> rather than the <code class="docutils literal notranslate"><span class="pre">/proc/1/root/...</span></code>
+form podbench reads it through, because <code class="docutils literal notranslate"><span class="pre">--image-project</span></code> takes the former and an
+error should print what you would type. It names neither <em>ptrace</em> nor <em>doctor</em>, and
+not merely because neither is the cause: both are the false trail the old message
+opened, and a message that mentions a mechanism at all — even to rule it out — is one
+the reader will go and chase.</p>
+<p>This makes the paths <em>expressible</em>; it does not make a compiled IOC hotfixable. That
+process is a compiled binary, and whether the thing to fix is a Python support module
+installed into its venv or the ibek <code class="docutils literal notranslate"><span class="pre">ioc.yaml</span></code> beside it is a design question that
+stays on <a class="reference external" href="https://github.com/gilesknap/podbench/issues/34">#34</a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--claim-venv</span></code> is the third of the set and belongs to the <em>claim</em> rather than the
+image: it is the venv directory the runtime switch in the supervisor above looks
+for and the one <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code> builds, so both ends have to agree. <code class="docutils literal notranslate"><span class="pre">init</span></code> sets
+<code class="docutils literal notranslate"><span class="pre">UV_PROJECT_ENVIRONMENT</span></code> whenever it is not uv’s own <code class="docutils literal notranslate"><span class="pre">.venv</span></code>, because a rebuild that
+landed beside the venv the supervisor is looking for would leave the pod quietly
+running the image’s code — the one failure this whole mode exists to avoid. Passing it
+to <code class="docutils literal notranslate"><span class="pre">init</span></code> means passing the same value to <code class="docutils literal notranslate"><span class="pre">--print-values</span></code>.</p>
+</section>
+</section>
+<section id="hotfix-apply-commit-rebuild-if-needed-relaunch">
+<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">apply</span></code> — commit, rebuild if needed, relaunch<a class="headerlink" href="#hotfix-apply-commit-rebuild-if-needed-relaunch" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix apply TARGET -m &quot;message&quot; [--no-bounce]
+    │
+    ▼
+   resolve the target and the seat (exactly as init does)
+    │
+    ▼
+   cat /podbench/app/.podbench-hotfix.json
+    │
+    ├─ absent ──────────────────────────────────▶ exit 2  (&quot;run init first&quot;)
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ COMMIT                                                           │
+│   git -C SRC status --porcelain                                  │
+│     dirty → git add -A                                           │
+│             git -c user.name=… -c user.email=… commit -m &quot;…&quot;     │
+│     clean → &quot;nothing new to commit&quot; (a hand commit in the seat   │
+│             is a normal way to get here)                         │
+│                                                                  │
+│   Not optional: a hotfix that is only a working-tree edit has no │
+│   sha, and without a sha the manifest cannot say what is running │
+│   and `consolidate` has nothing to push.                         │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ MEASURE THE DRIFT                                                │
+│   git -C SRC rev-parse HEAD                                      │
+│   git -C SRC log &lt;base_commit&gt;..HEAD     → commits ahead         │
+│   git -C SRC diff --name-only &lt;last recorded commit&gt;..HEAD       │
+│                                                                  │
+│   Keyed on the commit range, not on whether the tree was dirty:  │
+│   several hand commits can accumulate between two applies.       │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+                 pyproject.toml / setup.py / setup.cfg / MANIFEST.in
+                 among the changed paths?
+                    │                          │
+                yes │                          │ no
+                    ▼                          ▼
+       rerun the venv rebuild          &quot;editable install still valid&quot;
+       in the application container    (an editable install is a path
+                    │                   redirection: new code is free,
+                    │                   a new entry point is not)
+                    └───────────┬─────────────┘
+                                ▼
+   write the manifest back      (commit, author, timestamp, ahead, commits[:20])
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ RELAUNCH  (unless --no-bounce) — one exec, three steps           │
+│                                                                  │
+│   1  date -u -d &quot;+120 seconds&quot; +%s &gt; /tmp/podbench-hold          │
+│      trap &#39;rm -f /tmp/podbench-hold&#39; EXIT                        │
+│   2  collect the child&#39;s descendant TREE through ppid links,     │
+│      signal deepest-first, SIGKILL any straggler                 │
+│   3  wait for the pid file to change; the trap releases the hold │
+│                                                                  │
+│   One exec and not three: a seat that died between them would    │
+│   leave the pod held — probe short-circuited, supervisor         │
+│   spinning without backoff. The deadline in the file is the belt │
+│   to the trap&#39;s brace.                                           │
+│                                                                  │
+│   The TREE and not the pid. A target that allocates a pty —      │
+│   `stdio-socket --ptty`, i.e. every epics-containers IOC — puts  │
+│   its real process in its own session, where it survives a       │
+│   signal aimed at the pid *or its process group* and is          │
+│   reparented onto PID 1 still holding the port. The relaunch     │
+│   then comes up deaf and the pod serves the old code with        │
+│   restartCount still 0. Verify by asking whether the port        │
+│   changed owner; &quot;the pid file moved&quot; and &quot;the port answers&quot;     │
+│   both pass while broken.                                        │
+│                                                                  │
+│   No pod is deleted and no workload is patched. Ownership stops  │
+│   mattering, which is what lets this work on a bare pod.         │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+                        actions printed, exit 0
+</pre></div>
+</div>
+</section>
+<section id="hotfix-status-the-point-of-the-whole-mode">
+<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> — the point of the whole mode<a class="headerlink" href="#hotfix-status-the-point-of-the-whole-mode" title="Link to this heading">#</a></h2>
+<p>Silently-diverged pods are the risk this mode creates, so <code class="docutils literal notranslate"><span class="pre">status</span></code> is cheap enough to
+run habitually and exits non-zero when anything needs attention — usable as a
+shutdown-checklist assertion.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix status [-n NS] [--no-probe]
+    │
+    ▼
+   get pods -o json                    ← ONE call for the whole namespace
+    │
+    ▼
+   for each pod with a container mounting /podbench/app
+    │                    ↑
+    │                    the filter is the CLAIM. It used to be a
+    │                    podbench.dev/hotfixed annotation on the pod
+    │                    template, which Argo self-heal strips — so a
+    │                    hotfixed pod under GitOps went quiet within one
+    │                    sync interval, which is the precise failure this
+    │                    command exists to prevent. A controller
+    │                    reconciles a volume towards its spec; it does
+    │                    not remove it. Nothing reads that annotation
+    │                    any more either: `is_hotfixed` was left reading
+    │                    a key nothing wrote, so it answered False on
+    │                    every pod podbench ever hotfixed. It now reads
+    │                    the same two things from the pod spec — the
+    │                    claim volume, and a container whose args are
+    │                    the supervisor loop — which is the filter above,
+    │                    applied everywhere else that signal is needed
+    │                    (#177).
+    │
+    ├─ ONE exec per candidate pod, returning three things at once:
+    │      cat /podbench/app/.podbench-hotfix.json   ← the manifest
+    │      cat /tmp/podbench-hold                    ← the hold, if any
+    │      date -u +%s                               ← the pod&#39;s clock
+    │
+    │   An exec per candidate rather than none at all is the price of
+    │   not being strippable. It is affordable because the claim is the
+    │   filter: only pods that mount one are exec&#39;d.
+    │
+    ├─ neither a manifest nor a hold → not listed
+    │      (a deployed-but-unused claim is not a hotfix)
+    │
+    ├─ read the container&#39;s current image + imageID from status
+    │
+    ├─ digest differs from the one recorded?
+    │      yes → exec -c APP -- python3 -V      (unless --no-probe)
+    │      no  → not probed
+    ▼
+   verdict, worst-first:
+
+     interpreter   the venv&#39;s bin/python will not run, or its version
+                   moved
+     superseded    consolidated onto a branch AND the image has changed
+                   since: the claim is now shadowing the released fix
+                   with an older copy of it
+     image-changed the image was upgraded under a live hotfix, so the
+                   upgrade has not reached the running code
+     unreadable    a manifest is present on the claim and will not parse
+     not-hotfixed  held, but nothing hotfixed here
+     active        hotfixed, base image unchanged, N commits ahead
+    │
+    ▼
+   plus a `held` column, orthogonal to all of the above:
+
+     held 284s left            a hold with time still on it
+     held EXPIRED              past its deadline; the supervisor has
+                               stopped honouring it
+     held expiry unmeasured    a hold file podbench could not parse —
+                               unmeasured, never &quot;no deadline&quot;
+    │
+    ▼
+   exit 0 only if every row is `active` AND unheld
+</pre></div>
+</div>
+<p>The hold is a column and not a clause in the health sentence because they are
+different questions and either can be true alone: a perfectly healthy hotfix can sit in
+a pod nobody released, and a pod that was <strong>never hotfixed at all</strong> can be left held by
+an <code class="docutils literal notranslate"><span class="pre">apply</span></code> that died mid-flight. That second case is real and nothing else will notice
+it — its liveness probe is short-circuited and its supervisor is relaunching without
+backoff — which is why a held pod is listed whether or not it carries a manifest, and
+why the hold moves the exit code.</p>
+</section>
+<section id="hotfix-consolidate-get-it-back-into-an-image">
+<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">consolidate</span></code> — get it back into an image<a class="headerlink" href="#hotfix-consolidate-get-it-back-into-an-image" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix consolidate TARGET --branch fix/thing [--dry-run]
+    │
+    ▼
+   read the manifest; git -C SRC log &lt;base&gt;..HEAD
+    │
+    ├─ not ahead ───────────────────────────────▶ exit 2
+    ▼        (&quot;if the fix is already in the image, retire the claim instead&quot;)
+   git -C SRC push origin HEAD:refs/heads/&lt;branch&gt;
+    │
+    ▼
+   record consolidated_branch in the manifest (on the claim)
+    │        → from now on `status` can call a stale claim `superseded`
+    ▼        rather than leaving it a mystery
+   print the retirement checklist:
+     1. gh pr create --head &lt;branch&gt; …
+     2. merge; let CI build and publish the image
+     3. roll the workload onto it and confirm it is healthy
+     4. remove the five values from the application&#39;s chart
+     5. turn the claim&#39;s boolean off and delete the claim
+</pre></div>
+</div>
+<p>The PR is not opened here: that needs a forge client podbench does not depend on, and
+a printed <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> is one paste. Until step 5 the claim keeps shadowing the
+image’s project — the runtime switch prefers a seeded claim, and it does not care that
+the fix is now in the image too.</p>
+<p>Step 5 is two actions and not one, deliberately. The claim carries both
+<code class="docutils literal notranslate"><span class="pre">helm.sh/resource-policy:</span> <span class="pre">keep</span></code> and
+<code class="docutils literal notranslate"><span class="pre">argocd.argoproj.io/sync-options:</span> <span class="pre">Prune=false,Delete=false</span></code>, so turning the
+boolean off takes the claim out of the desired state and leaves the object
+standing. That is the point — a hotfix has to survive somebody reverting a
+repoint mid-beamtime — and it means the deletion is a separate, deliberate act.
+Measured: a claim carrying Helm’s annotation <em>alone</em> is pruned about three
+minutes after it leaves the desired state, and a <code class="docutils literal notranslate"><span class="pre">Delete</span></code>-reclaim PV goes with
+it (issue #190).</p>
+</section>
+<section id="every-cluster-call-in-order">
+<h2>Every cluster call, in order<a class="headerlink" href="#every-cluster-call-in-order" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  init / apply / consolidate:
+   1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
+   2  kubectl -n NS get deployment NAME -o json     ┐ or get pod NAME -o json,
+   3  kubectl -n NS get pods -l &lt;matchLabels&gt; -o json│ then get replicaset / get
+   4  kubectl -n NS get pod POD -o json             ┘ deployment walking upwards
+                                                     (+ the seat lookup)
+   5  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
+                                                     # init: require the supervisor
+   6  kubectl -n NS exec -c SEAT POD -- &lt;cp / git / cat / test / sh -c &#39;cat &gt; …&#39;&gt;
+                                                     # the seed, and every claim
+                                                     # read and write
+   7  kubectl -n NS exec -c APP  POD -- env UV_CACHE_DIR=… uv sync …
+                                                     # init, and apply when
+                                                     # packaging metadata moved
+   8  kubectl -n NS exec -c APP  POD -- bash -c &#39;&lt;hold; kill the tree; release&gt;&#39;
+                                                     # apply, unless --no-bounce
+
+  status:
+   1  kubectl -n NS get pods -o json
+   2  kubectl -n NS exec -c APP POD -- sh -c &#39;cat manifest; cat hold; date&#39;
+                                                     # per candidate pod
+   3  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
+
+  --print-values:
+   1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
+   2  kubectl -n NS get pod POD -o json                # nothing else, and
+                                                       # nothing at all under
+                                                       # --no-from-pod
+</pre></div>
+</div>
+<p>Nothing patches a workload and nothing deletes a pod. <code class="docutils literal notranslate"><span class="pre">rbac.hotfix</span></code> — on top of
+<code class="docutils literal notranslate"><span class="pre">rbac.observe</span></code> — is now <strong><code class="docutils literal notranslate"><span class="pre">get</span></code> on <code class="docutils literal notranslate"><span class="pre">deployments</span></code>, <code class="docutils literal notranslate"><span class="pre">statefulsets</span></code> and <code class="docutils literal notranslate"><span class="pre">replicasets</span></code>, and
+nothing else</strong>. It used to add <code class="docutils literal notranslate"><span class="pre">patch</span></code> on workloads and <code class="docutils literal notranslate"><span class="pre">patch</span></code>/<code class="docutils literal notranslate"><span class="pre">delete</span></code> on pods,
+because the annotation write <em>was</em> the rollout and that verb therefore deployed code —
+the most privileged thing podbench asked for anywhere. Moving the provenance onto the
+claim and the relaunch inside the container removed the need for all of it, so in
+cluster terms Hotfix mode is now barely more privileged than watching.</p>
+</section>
+<section id="two-things-the-claim-does-not-fix">
+<h2>Two things the claim does not fix<a class="headerlink" href="#two-things-the-claim-does-not-fix" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p><strong>The claim’s project shadows the image’s.</strong> An image upgrade under a live hotfix
+keeps running the claim’s code, so the upgrade does not reach what is executing.
+The manifest records the digest it was made against and <code class="docutils literal notranslate"><span class="pre">status</span></code> compares it, which
+is what turns a silent shadow into <code class="docutils literal notranslate"><span class="pre">image-changed</span></code>.</p></li>
+<li><p><strong>Single replica only.</strong> RWO, one checkout, one venv; an <code class="docutils literal notranslate"><span class="pre">apply</span></code> on either of two
+pods is a race with no winner.</p></li>
+</ol>
+<p>There used to be a third — an interpreter bump breaking the venv, because <code class="docutils literal notranslate"><span class="pre">bin/python</span></code>
+pointed at a path inside the image. That is now <em>fixed</em> rather than reported: the
+interpreter is copied onto the claim and the venv is rebuilt against it, so the console
+scripts name a path that survives a restart. <code class="docutils literal notranslate"><span class="pre">head</span> <span class="pre">-1</span> <span class="pre">&lt;venv&gt;/bin/&lt;script&gt;</span></code> saying <code class="docutils literal notranslate"><span class="pre">/app</span></code>
+is the check that it has not regressed.</p>
+<p>The old known gap is closed too. Under a GitOps controller with self-heal the
+pod-template annotations were drift and got stripped, so the fix kept running while
+<code class="docutils literal notranslate"><span class="pre">status</span></code> stopped being able to see it
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/32">#32</a>). Keying the listing on the
+claim is the fix for exactly that.</p>
+</section>
+<section id="see-also">
+<h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../reference/glossary.html"><span class="std std-doc">Glossary</span></a> — PSA, Yama, the ambient set, <code class="docutils literal notranslate"><span class="pre">subPath</span></code> and every
+other term used here without explanation.</p></li>
+<li><p><a class="reference internal" href="ways-in.html"><span class="std std-doc">Ways in</span></a> — why you would reach for this rather than <code class="docutils literal notranslate"><span class="pre">attach</span></code> or <code class="docutils literal notranslate"><span class="pre">dev</span></code>.</p></li>
+<li><p><a class="reference internal" href="architecture.html"><span class="std std-doc">Architecture</span></a> — the mount-namespace rule this mode dissolves.</p></li>
+<li><p><a class="reference internal" href="attach-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</span></a> — the seat this mode reaches the claim through.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="dev-flow.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="architecture.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Architecture</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-layout-it-requires">The layout it requires</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#print-values-read-the-target-emit-the-snippet"><code class="docutils literal notranslate"><span class="pre">--print-values</span></code> — read the target, emit the snippet</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-supervisor">The supervisor</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-init-seed-the-claim"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span></code> — seed the claim</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-layout-is-the-image-s-not-podbench-s">The layout is the image’s, not podbench’s</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-apply-commit-rebuild-if-needed-relaunch"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">apply</span></code> — commit, rebuild if needed, relaunch</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-status-the-point-of-the-whole-mode"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> — the point of the whole mode</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-consolidate-get-it-back-into-an-image"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">consolidate</span></code> — get it back into an image</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#every-cluster-call-in-order">Every cluster call, in order</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#two-things-the-claim-does-not-fix">Two things the claim does not fix</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See also</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.7.2/docs/explanations/hotfix-flow.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/explanations/hotfix-flow.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
