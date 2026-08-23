@@ -2798,22 +2798,31 @@ not pass --gid" and the sentinel is the only signal there is."""
 
 
 FROM_POD_ESCAPE = (
-    "`hotfix values` reads the target by default so the emitted values need no "
-    "hand-editing. To emit them without a cluster, pass `--no-from-pod` and "
-    "supply `--entrypoint`, `--gid` and `--liveness-probe` yourself.\n"
+    "`hotfix values` reads the target itself and there is no offline emission to "
+    "fall back to: a chart renders a supplied `livenessProbe` wholesale, so a "
+    "timing left out by hand becomes the Kubernetes default and the target is "
+    "probed sooner and more often than it was before. That is #176, and it is "
+    "why the read is not optional.\n"
     "\n"
-    "Supplying them by hand is how #176 happened: a chart renders a supplied "
-    "`livenessProbe` wholesale, so a timing you leave out becomes the Kubernetes "
-    "default and the target is probed sooner and more often than it was before."
+    "So make the read work - `--from-pod POD` names the pod, `-n NS` and "
+    "`--context NAME` say where to look for it - or, where the read reaches the "
+    "pod and the pod cannot answer for one field, state that field on top of it "
+    "with `--entrypoint`, `--gid` or `--liveness-probe`."
 )
-"""The way out of every failure reading the pod, and what taking it costs.
+"""Why reading the pod is not optional, appended to every failure of it.
 
 Making a cluster read the default means every ``kubectl`` failure now lands on a
 user who did not ask for one, so a bare relay of kubectl's stderr is not enough:
-the message has to name the flag that gets the job done anyway. It also has to
-say what that flag costs, because the escape hatch is the exact route that
-produced #176 - the consequence *is* the point, and a generic "try
-``--no-from-pod``" would hand somebody the footgun without the warning.
+the message has to say what to do next. Until #205 item 6 that was a flag -
+``--no-from-pod`` emitted from the three hand-supplied values instead - and the
+message's second job was to warn that the flag was the exact route that produced
+#176.
+
+The flag is gone and the #176 sentence stays, because what it names is now the
+*reason* there is nothing to fall back to rather than the price of falling back.
+Dropping it would leave a reader who cannot reach the cluster thinking the read
+is a convenience, and their next move is to hand-write the five keys into the
+chart anyway - the same footgun, off the tool and unwarned.
 """
 
 
@@ -2854,8 +2863,8 @@ def container_entrypoint(container: Mapping[str, Any]) -> str:
             "the target declares neither `command` nor `args`, so the command it "
             "runs lives in the image's ENTRYPOINT and is not in the pod spec at "
             "all - nothing podbench can read from the cluster will find it. Pass "
-            "`--entrypoint CMD` (the rest is still read from the pod), or "
-            f"`--no-from-pod` and supply all three.\n\n{FROM_POD_ESCAPE}"
+            "`--entrypoint CMD`; the gid and the probe are still read from the "
+            f"pod.\n\n{FROM_POD_ESCAPE}"
         )
     return shlex.join(words)
 
@@ -3017,8 +3026,8 @@ def values_snippet(
                 "  # WARNING: no timings were supplied, so this probe will use the",
                 "  # Kubernetes defaults - initialDelaySeconds 0, periodSeconds 10.",
                 "  # If the target declared its own, copy them in here or it will be",
-                "  # probed sooner and more often than it was before. Pass the whole",
-                "  # probe (--liveness-probe) instead of --liveness to carry them.",
+                "  # probed sooner and more often than it was before. A whole probe",
+                "  # carries its own timings; an exec command alone has none to carry.",
             ]
     lines += [
         f"{security_key}:",
@@ -4290,30 +4299,30 @@ def _read_values_from_pod(
     entrypoint: str | None,
     gid: str,
     probe: Mapping[str, Any] | None,
-    liveness: str | None,
     warn_mounts: bool = True,
-) -> tuple[str | None, str, Mapping[str, Any] | None]:
-    """Fill the three hand-supplied arguments from the target, or say why not.
+) -> tuple[str, str, Mapping[str, Any] | None]:
+    """Fill the three emitted values from the target, or say why not.
 
-    This is the whole of ``--from-pod``: a thin cluster-reading wrapper that
-    fills :func:`values_snippet`'s existing arguments. The emitter keeps its
+    This is the whole of the cluster read: a thin wrapper that fills
+    :func:`values_snippet`'s existing arguments. The emitter keeps its
     signature and stays testable with no cluster, which is not negotiable - it
     is what lets every shape of the output be asserted in a unit test.
 
-    A flag the user passed always wins over the pod. That is what makes
-    ``--entrypoint`` a usable answer to an image-ENTRYPOINT target without
-    giving up the gid and the probe as well.
+    A flag the user passed always wins over the pod. Since #205 item 6 took the
+    offline route away that is the *only* thing the three flags still do, and it
+    is what makes ``--entrypoint`` a usable answer to an image-ENTRYPOINT target
+    without giving up the gid and the probe as well.
 
-    Every failure here names ``--no-from-pod`` and what it costs
-    (:data:`FROM_POD_ESCAPE`). Making the cluster read the default means each
+    Every failure here says why the read is not optional
+    (:data:`FROM_POD_ESCAPE`). Making the cluster read the only way means each
     of these lands on somebody who did not ask for a cluster, and the one thing
-    they must not be left to work out for themselves is that the way round it
-    is the way #176 happened.
+    they must not be left to work out for themselves is that hand-writing the
+    values instead is the way #176 happened.
     """
     if pod is None:
         _values_failure(
-            "`hotfix values` reads the target by default, so it needs to know "
-            "which pod: pass `--from-pod POD`.\n"
+            "`hotfix values` reads the target, so it needs to know which pod: "
+            "pass `--from-pod POD`.\n"
             "\n" + FROM_POD_ESCAPE
         )
     kube = kubectl_for(namespace, context=context, binary=binary, runner=runner)
@@ -4373,7 +4382,7 @@ def _read_values_from_pod(
             ),
             file=sys.stderr,
         )
-    if probe is None and liveness is None:
+    if probe is None:
         declared = as_dict(spec.get("livenessProbe")) or None
         # A target with no livenessProbe is not an error, and must never be
         # reported as one: the canonical fastcs target declares none.
@@ -4423,20 +4432,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--entrypoint",
                 metavar="CMD",
                 help=(
-                    "the command the container runs today, which the supervisor wraps"
-                ),
-            ),
-        ] = None,
-        liveness: Annotated[
-            str | None,
-            typer.Option(
-                "--liveness",
-                metavar="CMD",
-                help=(
-                    "the target's existing exec livenessProbe command, for "
-                    "--no-from-pod; emitted wrapped to honour the hold. Carries "
-                    "no timings, so prefer --liveness-probe - or --from-pod, "
-                    "which carries them without being asked"
+                    "the command the container runs today, which the supervisor "
+                    "wraps (default: read from the target)"
                 ),
             ),
         ] = None,
@@ -4446,13 +4443,11 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--liveness-probe",
                 metavar="JSON",
                 help=(
-                    "the target's whole livenessProbe as json, for "
-                    "--no-from-pod. --from-pod reads it off the target itself, "
-                    "which is what this flag existed to make you do by hand: "
-                    "`kubectl get pod POD -o jsonpath='{.spec.containers[0]"
-                    ".livenessProbe}'`. Its exec command is wrapped and its "
-                    "timings are carried over; a chart renders a supplied probe "
-                    "wholesale, so a timing left out becomes the k8s default"
+                    "the target's whole livenessProbe as json, overriding the "
+                    "one read off the target. Its exec command is wrapped and "
+                    "its timings are carried over; a chart renders a supplied "
+                    "probe wholesale, so a timing left out becomes the k8s "
+                    "default"
                 ),
             ),
         ] = None,
@@ -4478,18 +4473,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--from-pod",
                 metavar="POD",
                 help="read the entrypoint, livenessProbe and gid off this pod, "
-                "so the emitted values need no hand-editing (the default; "
-                "--no-from-pod turns it off)",
+                "so the emitted values need no hand-editing",
             ),
         ] = None,
-        no_from_pod: Annotated[
-            bool,
-            typer.Option(
-                "--no-from-pod",
-                help="do not read any pod: emit from the flags alone, for CI, an "
-                "offline machine, or a pod that does not exist yet",
-            ),
-        ] = False,
         values: Annotated[
             str | None,
             typer.Option(
@@ -4554,35 +4540,27 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                     file=sys.stderr,
                 )
                 raise typer.Exit(2)
-        if not no_from_pod:
-            entrypoint, gid, parsed_probe = _read_values_from_pod(
-                from_pod,
-                container=container,
-                namespace=namespace,
-                context=context,
-                binary=kubectl,
-                runner=runner,
-                entrypoint=entrypoint,
-                gid=gid,
-                probe=parsed_probe,
-                liveness=liveness,
-                warn_mounts=values is None,
-            )
-        if entrypoint is None:
-            print(
-                "podbench: hotfix values needs --entrypoint CMD when the "
-                "target is not read. Pass --from-pod POD to read it, or "
-                "--entrypoint CMD to state it.",
-                file=sys.stderr,
-            )
-            raise typer.Exit(2)
+        # Unconditional since #205 item 6: `--no-from-pod` emitted from the
+        # flags alone, and every field it left to be typed is one #176 says
+        # costs a restart ladder to get wrong.
+        entrypoint, gid, parsed_probe = _read_values_from_pod(
+            from_pod,
+            container=container,
+            namespace=namespace,
+            context=context,
+            binary=kubectl,
+            runner=runner,
+            entrypoint=entrypoint,
+            gid=gid,
+            probe=parsed_probe,
+            warn_mounts=values is None,
+        )
         snippet = values_snippet(
             app_name,
             entrypoint,
             size=size,
             gid=gid,
             venv=claim_venv,
-            liveness_exec=shlex.split(liveness) if liveness else None,
             liveness_probe=parsed_probe,
             central_claim=central_claim,
         )

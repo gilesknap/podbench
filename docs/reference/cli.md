@@ -1170,28 +1170,18 @@ Notes:
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *  --app                     NAME       application name [required]                              │
 │    --entrypoint              CMD        the command the container runs today, which the          │
-│                                         supervisor wraps                                         │
-│    --liveness                CMD        the target's existing exec livenessProbe command, for    │
-│                                         --no-from-pod; emitted wrapped to honour the hold.       │
-│                                         Carries no timings, so prefer --liveness-probe - or      │
-│                                         --from-pod, which carries them without being asked       │
-│    --liveness-probe          JSON       the target's whole livenessProbe as json, for            │
-│                                         --no-from-pod. --from-pod reads it off the target        │
-│                                         itself, which is what this flag existed to make you do   │
-│                                         by hand: `kubectl get pod POD -o                         │
-│                                         jsonpath='{.spec.containers[0].livenessProbe}'`. Its     │
-│                                         exec command is wrapped and its timings are carried      │
-│                                         over; a chart renders a supplied probe wholesale, so a   │
-│                                         timing left out becomes the k8s default                  │
+│                                         supervisor wraps (default: read from the target)         │
+│    --liveness-probe          JSON       the target's whole livenessProbe as json, overriding the │
+│                                         one read off the target. Its exec command is wrapped and │
+│                                         its timings are carried over; a chart renders a supplied │
+│                                         probe wholesale, so a timing left out becomes the k8s    │
+│                                         default                                                  │
 │    --size                    SIZE       claim size [default: 2Gi]                                │
 │    --gid                     GID        the application container's gid (default: read from the  │
 │                                         target)                                                  │
 │                                         [default: <the application's runAsGroup>]                │
 │    --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, │
-│                                         so the emitted values need no hand-editing (the default; │
-│                                         --no-from-pod turns it off)                              │
-│    --no-from-pod                        do not read any pod: emit from the flags alone, for CI,  │
-│                                         an offline machine, or a pod that does not exist yet     │
+│                                         so the emitted values need no hand-editing               │
 │    --values                  PATH       the target service's own values file: emit it back whole │
 │                                         with podbench's keys merged in, rather than a fragment   │
 │                                         to merge by hand                                         │
@@ -1231,13 +1221,15 @@ project at `/podbench/app` under `volumeMounts`, the supervisor as
 declares an exec one — its `livenessProbe` wrapped to honour the hold.
 
 `--from-pod` reads the entrypoint, the whole `livenessProbe` and the gid off
-that pod, and reading is the **default**: naming no pod and not passing
-`--no-from-pod` is a refusal that asks for one. Supplying those three by hand is
-how issue #176 happened — a chart renders a supplied `livenessProbe` wholesale,
-so a timing left out becomes the Kubernetes default, and a compiled IOC went
-from `initialDelaySeconds: 120` and `periodSeconds: 30` to 0s and 10s: probed
-from the moment it started, before it had reached its hardware. Reading the pod
-removes the whole class, and the timings arrive without anyone typing them. It
+that pod, and reading is **all there is**: naming no pod is a refusal that asks
+for one, and there is no offline emission to fall back to
+([#205](https://github.com/gilesknap/podbench/issues/205) item 6). Supplying
+those three by hand is how issue #176 happened — a chart renders a supplied
+`livenessProbe` wholesale, so a timing left out becomes the Kubernetes default,
+and a compiled IOC went from `initialDelaySeconds: 120` and `periodSeconds: 30`
+to 0s and 10s: probed from the moment it started, before it had reached its
+hardware. Reading the pod removes the whole class, and the timings arrive
+without anyone typing them. It
 reaches the cluster the way every other verb does — `-n`/`--namespace`,
 `--context` and `--kubectl`, with the namespace coming from the kubeconfig
 context when `-n` is not given — and `--container NAME` picks the application
@@ -1245,19 +1237,21 @@ container where the pod has more than one, defaulting to the first.
 
 Notes on `hotfix values`:
 
-* `--no-from-pod` is the way to emit without a cluster — CI, an offline machine,
-  or a pod that does not exist yet — and it is the only way `--entrypoint`,
-  `--gid`, `--liveness` and `--liveness-probe` have to carry the whole snippet
-  between them. `--liveness-probe` takes the JSON the pod would have given you,
-  `kubectl get pod POD -o jsonpath='{.spec.containers[0].livenessProbe}'`, which
-  is exactly the paste `--from-pod` exists to spare you; `--liveness` takes the
-  exec command alone and carries **no timings**, which is the shape of #176.
-* **A flag you pass beats the pod.** That is what makes `--entrypoint` a usable
-  answer to a target whose command lives in the image's `ENTRYPOINT` — a
-  container declaring neither `command` nor `args` has it nowhere in the pod
-  spec, so nothing read from the cluster will find it — without giving up the
-  gid and the probe as well. The refusal says so, rather than sending you to
-  `--no-from-pod` for all three.
+* **There is no offline emission.** `--no-from-pod` emitted from `--entrypoint`,
+  `--gid`, `--liveness` and `--liveness-probe` alone; it went with `--liveness`
+  in #205 item 6, and neither is deprecated or hidden — a flag whose help had to
+  talk you out of using it had already failed. "A pod that does not exist yet"
+  is close to vacuous for a mode applied to something running and broken, and
+  the offline emission was strictly the lower-fidelity one: hand-supplied fields
+  lose the probe's timings, the gid and the real entrypoint. `--liveness-probe`
+  survives because it carries a whole probe with its timings; `--liveness`
+  carried an exec command and **no timings**, which is the shape of #176.
+* **A flag you pass beats the pod**, and that is now the only thing the three
+  override flags do. It is what makes `--entrypoint` a usable answer to a target
+  whose command lives in the image's `ENTRYPOINT` — a container declaring
+  neither `command` nor `args` has it nowhere in the pod spec, so nothing read
+  from the cluster will find it — without giving up the gid and the probe as
+  well. The refusal names that one flag rather than the read it cannot avoid.
 * **A target with no `livenessProbe` is not an error.** 7 of 18 containers on a
   real beamline declare one and the canonical fastcs target is not among them,
   so no probe block is emitted and nothing is said about it.
@@ -1325,17 +1319,22 @@ Notes on `hotfix values`:
   the chart renders them. Prefer it; the warning is what is left for a target
   whose values file you do not have.
 * `fsGroup` stays the literal placeholder `<the application's runAsGroup>` only
-  where nothing could say what it should be: under `--no-from-pod` with no
-  `--gid`, or against a pod that states `runAsUser` and no `runAsGroup`, which a
-  hardened workload routinely does. It is deliberately not a number — a snippet
+  where nothing could say what it should be: a pod that states `runAsUser` and
+  no `runAsGroup`, which a hardened workload routinely does, and no `--gid` to
+  say otherwise. It is deliberately not a number — a snippet
   pasted unread then fails at `helm install` rather than deploying an fsGroup the
   application does not run as. It must never become 0: a claim that is present
   and unwritable starts and *then* fails, in the dark.
-* **Every failure reading the pod names `--no-from-pod` and what taking it
-  costs**, quoting #176, because making a cluster read the default lands each of
-  these on somebody who did not ask for one. kubectl tells a missing kubeconfig,
-  an absent pod and a forbidden `get pods` apart only in the text of its own
-  message, so podbench relays that verbatim rather than guessing at a category.
+* **Every failure reading the pod says why the read is not optional**, quoting
+  #176, and names what will get you going: `--from-pod POD`, `-n` and
+  `--context` to make the read work, or one override where the read reached the
+  pod and the pod could not answer. Making a cluster read the only way lands
+  each of these on somebody who did not ask for one, and #176 is the reason
+  there is nothing to fall back to — without it the reader's next move is to
+  hand-write the five keys into the chart anyway. kubectl tells a missing
+  kubeconfig, an absent pod and a forbidden `get pods` apart only in the text of
+  its own message, so podbench relays that verbatim rather than guessing at a
+  category.
 
 ---
 

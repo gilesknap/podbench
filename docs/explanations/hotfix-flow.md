@@ -91,14 +91,14 @@ podbench hotfix values --app NAME --from-pod POD [-n NS] [--container NAME]
 │ READ THE TARGET       get pod POD -o json — one call, and the    │
 │                       only one `hotfix values` makes             │
 │                                                                  │
-│   Reading is the default, and #176 is why: the entrypoint, the   │
+│   Reading is the only way, and #176 is why: the entrypoint, the  │
 │   probe and the gid used to be supplied by hand. A chart renders │
 │   a supplied livenessProbe wholesale, so a timing left out       │
 │   silently became the Kubernetes default and a compiled IOC went │
 │   from 120s/30s to 0s/10s — probed from the moment it started,   │
 │   before it had reached its hardware.                            │
 └─────────────────────────────────┬────────────────────────────────┘
-                                  ├─ no --from-pod, no --no-from-pod ──▶ exit 2
+                                  ├─ no --from-pod ────────────────────▶ exit 2
                                   ├─ kubectl could not read it ────────▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -170,13 +170,21 @@ its own keys in and emits the file whole:
                         stdout can be redirected straight over the input.
 ```
 
-`--no-from-pod` is the escape, for CI, an offline machine, or a pod that does not
-exist yet; it emits from `--entrypoint`, `--gid`, `--liveness` and
-`--liveness-probe` alone. It is also the exact route that produced #176, so every
-failure reading the pod names it *and* what taking it costs. kubectl tells a
-missing kubeconfig, an absent pod and a forbidden `get pods` apart only in the
-text of its own message, so podbench relays that verbatim rather than guessing at
-a category and getting it wrong.
+There is no escape from the read. `--no-from-pod` emitted from `--entrypoint`,
+`--gid`, `--liveness` and `--liveness-probe` alone; both it and `--liveness` were
+removed in #205 item 6, with no alias and no deprecation, because it was the
+exact route that produced #176 and its offline emission was strictly the
+lower-fidelity one. What is left of stating a value by hand is stating **one** of
+them on top of the read, where the pod cannot answer for it: `--entrypoint` for a
+target whose command lives in the image's `ENTRYPOINT`, `--gid`, and
+`--liveness-probe`, which unlike `--liveness` carries a whole probe's timings.
+
+So every failure reading the pod says why the read is not optional — quoting
+#176, because that is now the reason there is nothing to fall back to rather than
+the price of falling back — and names what will get the reader going. kubectl
+tells a missing kubeconfig, an absent pod and a forbidden `get pods` apart only
+in the text of its own message, so podbench relays that verbatim rather than
+guessing at a category and getting it wrong.
 
 `values_snippet` itself takes no cluster **and no file**: `--from-pod` and
 `--values` are both thin reading wrappers, and `merged_values` — which does the
@@ -752,8 +760,8 @@ it (issue #190).
   values:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
    2  kubectl -n NS get pod POD -o json                # nothing else, and
-                                                       # nothing at all under
-                                                       # --no-from-pod
+                                                       # never skipped: the read
+                                                       # is not optional
 
   check:
    1  the same target walk as init, rows 1-4 above, and nothing re-read after

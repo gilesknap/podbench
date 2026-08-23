@@ -1738,7 +1738,9 @@ def test_a_whole_probe_carries_its_timings_through() -> None:
 
 
 def test_a_bare_liveness_command_warns_that_it_carries_no_timings() -> None:
-    """--liveness cannot carry timings, so it must not look like it did."""
+    """An exec command alone carries no timings, so it must not look as if it
+    did - the emitted probe is rendered wholesale and the omissions become
+    Kubernetes defaults."""
     snippet = hotfix.values_snippet(
         "api", ENTRY, liveness_exec=["/bin/bash", "/epics/ioc/liveness.sh"]
     )
@@ -2179,7 +2181,7 @@ def test_every_cluster_failure_names_the_escape_and_its_cost(
     assert code == 2
     err = capsys.readouterr().err
     assert expected in err, err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
     assert "#176" in err
 
 
@@ -2211,7 +2213,7 @@ def test_a_target_that_is_not_a_pod_is_refused_cleanly(
     assert code == 2
     err = capsys.readouterr().err
     assert "works on pods" in err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
     assert runner.calls == []
 
 
@@ -2245,7 +2247,7 @@ def test_a_container_that_is_not_in_the_pod_names_the_escape_too(
     assert code == 2
     err = capsys.readouterr().err
     assert "'nope' not in pod" in err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
 
 
 def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
@@ -2253,8 +2255,9 @@ def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
 ) -> None:
     """A container declaring neither command nor args keeps its entrypoint in
     the image, which is not in the pod spec at all - nothing podbench reads from
-    the cluster will find it. The answer is --entrypoint, not --no-from-pod, and
-    the message has to offer the cheaper one first."""
+    the cluster will find it. --entrypoint is the whole answer - it states the
+    one field the pod could not, and the gid and the probe still come off the
+    pod - so the message has to name it rather than the read it cannot avoid."""
     runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(target_pod())})
 
     code = hotfix.main(
@@ -2275,7 +2278,7 @@ def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
     err = capsys.readouterr().err
     assert "ENTRYPOINT" in err
     assert "--entrypoint" in err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
 
 
 def test_a_flag_the_user_passed_beats_the_pod(
@@ -2311,7 +2314,7 @@ def test_a_flag_the_user_passed_beats_the_pod(
     assert "initialDelaySeconds: 120" in out
 
 
-def test_reading_the_pod_is_the_default_and_says_so_when_none_is_named(
+def test_naming_no_pod_says_which_flag_names_one(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runner = FakeRunner()
@@ -2323,30 +2326,25 @@ def test_reading_the_pod_is_the_default_and_says_so_when_none_is_named(
     assert code == 2
     err = capsys.readouterr().err
     assert "--from-pod POD" in err
-    assert "--no-from-pod" in err
+    assert "#176" in err
     assert runner.calls == [], "nothing should have been asked of the cluster"
 
 
-def test_no_from_pod_asks_the_cluster_nothing_at_all() -> None:
-    """The escape has to work on a machine with no cluster to reach, which means
-    it must not so much as construct a kubectl call."""
-    runner = FakeRunner()
+def test_the_offline_route_is_gone_rather_than_hidden(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#205 item 6, and no alias: a flag whose help had to talk you out of it.
 
-    code = hotfix.main(
-        [
-            "hotfix",
-            "values",
-            "--no-from-pod",
-            "--app",
-            "api",
-            "--entrypoint",
-            ENTRY,
-        ],
-        runner=runner,
-    )
-
-    assert code == 0
-    assert runner.calls == []
+    A hidden flag would still emit, so the assertion is on stdout being empty
+    rather than on the exit code - an accepted `--no-from-pod` that printed a
+    snippet is exactly the state this removal exists to make impossible.
+    """
+    for argv in (
+        ["hotfix", "values", "--no-from-pod", "--app", "api", "--entrypoint", ENTRY],
+        ["hotfix", "values", "--app", "api", "--liveness", "/bin/true"],
+    ):
+        assert hotfix.main(argv, runner=FakeRunner()) == 2
+        assert capsys.readouterr().out == ""
 
 
 # -- --values: the whole file, not fragments to merge (#192) ---------------
@@ -2579,15 +2577,29 @@ def test_merged_values_reads_no_file_and_no_cluster() -> None:
     assert not referenced & {"open", "read_text", "Path", "write_text"}
 
 
-def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
+def values_runner() -> FakeRunner:
+    """A cluster carrying one target pod, for the CLI-level `values` tests.
+
+    These ran offline behind `--no-from-pod` until #205 item 6 removed it. The
+    read is not optional any more, so they read a fixture pod through the
+    injected runner instead - which is what keeps the unit suite cluster-free.
+    """
+    return FakeRunner({"get pod api-7f9-abc -o json": json.dumps(target_pod())})
+
+
+TARGET_ARGV = ["-n", "demo", "--from-pod", "api-7f9-abc"]
+"""Where the fixture pod is, appended to every CLI-level `values` argv."""
+
+
+def test_values_flag_emits_the_file_and_reads_only_the_pod(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """End to end through the CLI, and `--no-from-pod` so the run is offline."""
+    """End to end through the CLI, over a fixture pod and its own values file."""
     child = tmp_path / "values.yaml"
     child.write_text(CHILD)
     parent = tmp_path / "shared.yaml"
     parent.write_text(PARENT)
-    runner = FakeRunner()
+    runner = values_runner()
 
     code = hotfix.main(
         # fmt: off
@@ -2596,7 +2608,6 @@ def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
             "values",
             "--app",
             "api",
-            "--no-from-pod",
             "--entrypoint",
             ENTRY,
             "--gid",
@@ -2605,13 +2616,18 @@ def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
             str(child),
             "--parent-values",
             str(parent),
+            *TARGET_ARGV,
         ],
         # fmt: on
         runner=runner,
     )
 
     assert code == 0
-    assert runner.calls == []
+    # One read and no more: `--values` answers the volumes question from the
+    # file, so the pod is asked for the entrypoint, the gid and the probe only.
+    assert [runner.key(call) for call in runner.calls] == [
+        "get pod api-7f9-abc -o json"
+    ]
     captured = capsys.readouterr()
     document = yaml.safe_load(captured.out)
     assert document["ioc-instance"]["image"] == "ghcr.io/example/fastcs:2025.10.1"
@@ -2635,14 +2651,14 @@ def test_the_merge_flags_mean_nothing_without_the_file_they_merge_into(
             "values",
             "--app",
             "api",
-            "--no-from-pod",
             "--entrypoint",
             ENTRY,
             "--parent-values",
             str(tmp_path / "shared.yaml"),
+            *TARGET_ARGV,
         ],
         # fmt: on
-        runner=FakeRunner(),
+        runner=values_runner(),
     )
     assert code == 2
     assert "without it" in capsys.readouterr().err
@@ -2658,14 +2674,14 @@ def test_a_values_file_that_is_not_there_is_refused_by_name(
             "values",
             "--app",
             "api",
-            "--no-from-pod",
             "--entrypoint",
             ENTRY,
             "--values",
             str(tmp_path / "nope.yaml"),
+            *TARGET_ARGV,
         ],
         # fmt: on
-        runner=FakeRunner(),
+        runner=values_runner(),
     )
     assert code == 2
     assert "nope.yaml" in capsys.readouterr().err
@@ -2696,15 +2712,8 @@ def test_values_snippet_has_no_cluster_dependency() -> None:
 
 def test_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
-        [
-            "hotfix",
-            "values",
-            "--no-from-pod",
-            "--app",
-            "api",
-            "--entrypoint",
-            ENTRY,
-        ]
+        ["hotfix", "values", "--app", "api", "--entrypoint", ENTRY, *TARGET_ARGV],
+        runner=values_runner(),
     )
     assert code == 0
     out = capsys.readouterr().out
@@ -2713,49 +2722,58 @@ def test_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> None:
+    """And the flag beats the pod, which states 37000."""
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
             "values",
-            "--no-from-pod",
             "--app",
             "api",
             "--entrypoint",
             ENTRY,
             "--gid",
             "65532",
+            *TARGET_ARGV,
         ],
         # fmt: on
+        runner=values_runner(),
     )
     assert code == 0
     assert "fsGroup: 65532" in capsys.readouterr().out
 
 
-def test_values_wraps_a_named_liveness_probe(
+def test_values_wraps_a_probe_stated_on_top_of_the_pod(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The probe is only emitted when the target has one to wrap."""
+    """--liveness-probe is what is left of stating a probe by hand.
+
+    `--liveness CMD` retired with the offline route: it could carry an exec
+    command and no timings, which is the shape of #176. This one carries the
+    whole probe, and the fixture pod declares none for it to override.
+    """
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
             "values",
-            "--no-from-pod",
             "--app",
             "api",
             "--entrypoint",
             ENTRY,
-            "--liveness",
-            "/bin/bash /epics/ioc/liveness.sh",
+            "--liveness-probe",
+            json.dumps(MO_IOC_PROBE),
+            *TARGET_ARGV,
         ],
         # fmt: on
+        runner=values_runner(),
     )
     assert code == 0
     out = capsys.readouterr().out
     assert "livenessProbe:" in out
     assert model.HOTFIX_HOLD_PATH in out
     assert "/epics/ioc/liveness.sh" in out
+    assert "initialDelaySeconds: 120" in out
 
 
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -2774,12 +2792,12 @@ def test_the_root_help_carries_no_option_belonging_to_one_verb(
     """
     assert hotfix.main(["hotfix"]) == 2
     root = capsys.readouterr().out
-    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness"):
+    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness-probe"):
         assert flag not in root
 
     assert hotfix.main(["hotfix", "values", "--help"]) == 0
     verb = capsys.readouterr().out
-    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness"):
+    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness-probe"):
         assert flag in verb
 
 
@@ -2792,7 +2810,7 @@ def test_the_flag_the_verb_replaced_is_gone_rather_than_hidden(
     catching — the assertion is on stdout being empty, not on the exit code.
     """
     code = hotfix.main(
-        ["hotfix", "--print-values", "--app", "api", "--no-from-pod", ENTRY]
+        ["hotfix", "--print-values", "--app", "api", "--entrypoint", ENTRY]
     )
 
     assert code == 2
