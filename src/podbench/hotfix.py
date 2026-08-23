@@ -664,11 +664,9 @@ def seed_source(
 
 
 TARGET_ROOT_UNREADABLE = (
-    "{root} cannot be listed, so the seed cannot run. That path is the "
-    "application container's own filesystem seen through PID 1, and reaching it "
-    "needs the ptrace rung - a seat that landed without CAP_SYS_PTRACE, or in a "
-    "namespace whose policy denies it, cannot see the target's root at all. "
-    "`podbench doctor` names the mechanism."
+    "{root} cannot be listed, so the seed cannot run: reading the target's own "
+    "filesystem through PID 1 needs the ptrace rung, and this seat does not "
+    "have it. `podbench doctor` names what denied it."
 )
 """Said when the seat genuinely cannot see the target's root.
 
@@ -678,23 +676,21 @@ whole of #178. This one is about the rung; the other is about the image. Until
 epics-containers image - which has no ``/app`` - was reported as a ptrace denial
 and the user was sent to ``doctor``, which correctly reported the rung healthy.
 A contradiction, and no next step.
+
+What a missing rung *is* - a seat that landed without ``CAP_SYS_PTRACE``, or
+into a namespace whose policy denies it - is said once in
+``docs/how-to/hotfix-a-running-pod.md``, where somebody reading about the mode
+will meet it, and measured by ``doctor``, which is where the reader is sent.
+Naming it here as well spent three lines restating the report the next sentence
+tells them to run.
 """
 
 TARGET_HAS_NO_PROJECT = (
     "the target's image has no project at {image_project}, so there is nothing "
-    "to seed the claim from. Its filesystem reads fine ({root} lists) - this is "
-    "a layout difference, not a permission one.\n"
-    "\n"
-    "`{image_project}` is python-copier-template's convention and not a law: an "
-    "epics-containers image keeps its venv at /venv with a separate /python, "
-    "and a compiled IOC has no Python project at all. Point podbench at the "
-    "layout this image actually has with `--image-project PATH` and "
-    "`--image-interpreter PATH`, or check you are targeting the container you "
-    "meant with `--container NAME`.\n"
-    "\n"
-    "This is not something to work around by copying the seat's own /app: the "
-    "seat is a different image and its venv is podbench's, not the "
-    "application's."
+    "to seed the claim from. Its filesystem reads fine ({root} lists), so this "
+    "is a layout difference: name the paths this image really uses with "
+    "`--image-project PATH` and `--image-interpreter PATH`, or the container "
+    "you meant with `--container NAME`."
 )
 """Said when the root is fine and the project simply is not there.
 
@@ -709,6 +705,15 @@ message that mentions a mechanism at all - even to rule it out - is one a reader
 will go and chase. The path it prints is the one **inside the image**, not the
 ``/proc/1/root/...`` form podbench reads it through, because ``--image-project``
 takes the former and an error should print what you would type.
+
+Which layouts exist and why ``/app`` beside ``/python`` is only
+python-copier-template's convention - an epics-containers image keeps its venv
+at ``/venv``, a compiled IOC has no Python project at all - is in
+``docs/how-to/hotfix-a-running-pod.md``, along with the one workaround that has
+to be refused: copying the seat's own ``/app``, which is a different image whose
+venv is podbench's rather than the application's. Two of the three paragraphs
+this used to print were that material, read by somebody who at that moment needs
+a flag rather than a taxonomy.
 """
 
 
@@ -3105,10 +3110,9 @@ not pass --gid" and the sentinel is the only signal there is."""
 
 FROM_POD_ESCAPE = (
     "`hotfix values` reads the target itself and there is no offline emission to "
-    "fall back to: a chart renders a supplied `livenessProbe` wholesale, so a "
-    "timing left out by hand becomes the Kubernetes default and the target is "
-    "probed sooner and more often than it was before. That is #176, and it is "
-    "why the read is not optional.\n"
+    "fall back to: supplying these values by hand is what produced #176, where "
+    "a probe timing left out silently became a Kubernetes default and the "
+    "target was restarted for it.\n"
     "\n"
     "So make the read work - `--from-pod POD` names the pod, `-n NS` and "
     "`--context NAME` say where to look for it - or, where the read reaches the "
@@ -3129,6 +3133,13 @@ The flag is gone and the #176 sentence stays, because what it names is now the
 Dropping it would leave a reader who cannot reach the cluster thinking the read
 is a convenience, and their next move is to hand-write the five keys into the
 chart anyway - the same footgun, off the tool and unwarned.
+
+What stays is the *consequence*; the mechanism behind it - a chart renders a
+supplied ``livenessProbe`` wholesale, so an omitted timing becomes a Kubernetes
+default in the restart-sooner direction, measured as 120s/30s going to 0s/10s on
+a compiled IOC - is in ``docs/how-to/hotfix-a-running-pod.md``, said once, where
+somebody reading about the mode will meet it. A terminal is where you find out
+*that* it applies to the command in front of you.
 """
 
 
