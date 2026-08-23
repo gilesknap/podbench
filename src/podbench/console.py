@@ -591,7 +591,7 @@ def _styled_row(
     return styled
 
 
-def emit(text: str | Iterable[Text], *, stderr: bool = False) -> None:
+def emit(text: str | Iterable[str | Text], *, stderr: bool = False) -> None:
     """Print an already-wrapped report, colouring the leaders in it.
 
     Line by line, because that is the unit a style applies to and because
@@ -599,9 +599,12 @@ def emit(text: str | Iterable[Text], *, stderr: bool = False) -> None:
     done by the caller against :func:`wrap_width`, with hanging indents rich
     knows nothing about.
 
-    An iterable of :class:`~rich.text.Text` is printed as it arrives, with none
-    of the line rules applied — that is what :func:`table` returns, and a line
-    that already knows what its spans mean must not have them guessed at again.
+    A :class:`~rich.text.Text` is printed as it arrives, with none of the line
+    rules applied — that is what :func:`table` returns, and a line that already
+    knows what its spans mean must not have them guessed at again. A ``str`` in
+    the same iterable still goes through them, which is what lets one block mix
+    a caller's own prose with somebody else's relayed output: the prose earns
+    its ``WARNING`` and its labels, and the relay is left exactly as it arrived.
     """
     out = console(stderr=stderr)
     lines = text.split("\n") if isinstance(text, str) else text
