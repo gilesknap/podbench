@@ -1053,6 +1053,7 @@ seat, where the claim is already in this process's own mount namespace.
 │ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
+│ retire       what is left of retiring this hotfix, and the one step podbench can take            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1062,8 +1063,9 @@ seat, where the claim is already in this process's own mount namespace.
 | `check TARGET` | every prerequisite `init` has, measured in one read-only pass, with a verdict and an exit code |
 | `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
 | `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
-| `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
+| `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — its drift, and what is wrong with it |
 | `consolidate --branch B TARGET` | push the checkout as a branch and print the retirement checklist |
+| `retire TARGET` | which steps of that checklist have landed, measured against the cluster, and `--delete-claim` to take the last one |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
 across `init`, `apply` and `consolidate`: `--container`, `--seat`, `--local`,
@@ -1147,7 +1149,29 @@ Notes:
   venv is shared but its interpreter is not. `--no-install` skips it.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.
 * `status` exits **1** when any pod needs attention, so "no unretired hotfixes" is
-  a testable shutdown assertion.
+  a testable shutdown assertion. `-A`/`--all-namespaces` is that assertion for the
+  whole cluster, with the same exit code — the facility-wide form used to be a shell
+  loop the operator had to write and keep correct. Every pod is still read through a
+  client bound to its own namespace.
+* `retire` is the retirement checklist as a measurement rather than as prose. Four
+  rows — `branch`, `image`, `wiring`, `claim` — because those are the four a cluster
+  can be asked about, and `[x]` goes on **only** a step that was measured done: an
+  unmeasured one is `[ ]` with a detail saying why, and it moves the exit code in
+  neither direction. It is read-only and lands no seat unless `--delete-claim` is
+  given, and that flag declines while **anything in the namespace** still mounts the
+  claim — the second pod of a rollout holds it just as hard — because a claim deleted
+  out from under a running pod stays `Terminating` and then fails to bind on the next
+  reschedule. A pod listing that could not be read declines too. Deleting it prints both things podbench cannot verify about the
+  deletion: nothing mounted the claim, so what was on it went unread, and a chart that
+  still declares the claim will have the next sync recreate it. Exit **1** while any
+  measured step is outstanding.
+* **Turning the claim off is not retiring the hotfix**, and this is the state `retire`
+  exists to name. `podbench-hotfix-claim.enabled: false` disables the subchart — the
+  PVC — while the `volumes`, `volumeMounts`, `args` and `podSecurityContext` that wire
+  the pod are the *application's* own values. Measured on p47-beamline on 2026-08-23:
+  with the boolean off, every pod in the namespace deleted, and the workloads
+  recreated from git, the target came back still mounting the claim and still running
+  the supervisor loop.
 * `check` exits **1** when anything it measured would block an `init`, and it is
   read-only: it writes nothing and lands no seat, because an ephemeral container
   cannot be taken back off a pod and a verb run to ask a question must not spend
@@ -1971,6 +1995,6 @@ session inherits the image's value regardless, where `podbench dbg
 | Code | Meaning |
 |---|---|
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
-| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; `hotfix check` found something blocking an `init`; or `doctor` found something blocking an attach |
+| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; `hotfix check` found something blocking an `init`; `hotfix retire` found a step of a retirement still outstanding; or `doctor` found something blocking an attach |
 | `2` | a launcher error, a `hotfix` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
 | `0` / `10` / `15` / `20` | `capreport` only: the capability verdict |

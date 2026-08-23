@@ -1390,7 +1390,11 @@ def test_consolidate_pushes_and_records_the_branch() -> None:
     # outlives the boolean either way (#190).
     assert f"{hotfix.SUBCHART_VALUES_KEY}.enabled=false" in checklist
     assert "hotfixProject.enabled=false" in checklist
-    assert "delete the claim" in checklist
+    # The two steps nobody does, still stated as two - the values are the
+    # application's own and the boolean is the claim chart's - and now with the
+    # verb that measures which of them have landed.
+    assert "back out of the application's own values" in checklist
+    assert "podbench hotfix retire" in checklist
 
 
 def test_consolidate_dry_run_pushes_nothing() -> None:
@@ -1595,6 +1599,335 @@ def test_status_reports_a_pod_whose_provenance_is_gone() -> None:
     rows = hotfix.status_rows(kube(runner))
     assert rows[0].health is hotfix.HotfixHealth.UNREADABLE
     assert "provenance" in hotfix.format_status(rows)
+
+
+# -- retirement ------------------------------------------------------------
+
+
+CLAIM = "api-podbench-project"
+
+
+def wired_pod(
+    *,
+    name: str = "api-7f9-abc",
+    namespace: str | None = None,
+    digest: str = NEW_DIGEST,
+    wired: bool = True,
+    claim: str | None = CLAIM,
+) -> dict[str, Any]:
+    """A pod as retirement meets it: wired for hotfix mode, or no longer.
+
+    All three halves of the wiring, because that is what retirement takes back
+    out one at a time - the volume, the mount and the supervisor's args - and a
+    fixture carrying only the mount would let a report that reads one of them
+    pass for a report that reads all three.
+    """
+    metadata: dict[str, Any] = {"name": name}
+    if namespace is not None:
+        metadata["namespace"] = namespace
+    container: dict[str, Any] = {"name": "app", "image": "ghcr.io/acme/api:1.4.0"}
+    spec: dict[str, Any] = {"containers": [container], "volumes": []}
+    if wired:
+        container["volumeMounts"] = [
+            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+        ]
+        container["args"] = [hotfix.hold_loop_args("python -m app")]
+        volume: dict[str, Any] = {"name": model.HOTFIX_CLAIM_VOLUME}
+        if claim is not None:
+            volume["persistentVolumeClaim"] = {"claimName": claim}
+        spec["volumes"] = [volume]
+    return {
+        "metadata": metadata,
+        "spec": spec,
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [
+                {"name": "app", "image": "ghcr.io/acme/api:1.4.0", "imageID": digest}
+            ],
+        },
+    }
+
+
+def consolidated() -> hotfix.HotfixManifest:
+    return a_manifest(ahead=3, consolidated_branch="hotfix/beamtime-14")
+
+
+def retire_runner(
+    *,
+    wired: bool = True,
+    pvc: bool | None = True,
+    manifest: hotfix.HotfixManifest | None = None,
+) -> FakeRunner:
+    """A namespace holding one target, and a claim that is there, gone or unreadable."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(wired_pod(wired=wired)),
+            # Who holds the claim is a question about the namespace, not about
+            # the target: the second pod of a rollout holds it just as hard.
+            "get pods -o json": json.dumps({"items": [wired_pod(wired=wired)]}),
+            "exec -c app": state_exec(manifest),
+            "get pvc -l": json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": CLAIM,
+                                "labels": {hotfix.HOTFIX_TARGET_LABEL: "app"},
+                            }
+                        }
+                    ]
+                    if pvc
+                    else []
+                }
+            ),
+            f"get pvc {CLAIM} -o name": f"persistentvolumeclaim/{CLAIM}\n",
+        }
+    )
+    if pvc is False:
+        runner.failures[f"get pvc {CLAIM} -o name"] = (
+            f'Error from server (NotFound): persistentvolumeclaims "{CLAIM}" not found'
+        )
+    if pvc is None:
+        runner.failures["get pvc"] = (
+            "Error from server (Forbidden): persistentvolumeclaims is forbidden: "
+            'User "ada" cannot list resource "persistentvolumeclaims"'
+        )
+    return runner
+
+
+def rows_by_step(
+    checks: Sequence[hotfix.RetirementCheck],
+) -> dict[hotfix.RetirementStep, hotfix.RetirementCheck]:
+    return {check.step: check for check in checks}
+
+
+def test_a_pod_wired_to_a_claim_its_chart_no_longer_declares_is_reported() -> None:
+    """The live specimen (p47-beamline, 2026-08-23).
+
+    `p47-services` carried `podbench-hotfix-claim.enabled: false`, every pod in
+    the namespace was deleted, and the target came back still mounting the claim
+    and still running the supervisor: the boolean disables the subchart, while
+    the wiring lives in the application's own values. Nothing said so, and this
+    is the report that has to.
+    """
+    checks = hotfix.retirement(
+        wired_pod(),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    assert rows[hotfix.RetirementStep.WIRING].remaining
+    assert rows[hotfix.RetirementStep.CLAIM].remaining
+    wiring = rows[hotfix.RetirementStep.WIRING].detail
+    # Every half named, since retirement is somebody editing a values file.
+    assert model.HOTFIX_CLAIM_VOLUME in wiring
+    assert model.HOTFIX_APP_PATH in wiring
+    assert "args" in wiring
+    # And the reason the boolean did not do it.
+    assert "application's own pod template" in wiring
+    report = hotfix.format_retirement(checks)
+    assert "2 of 4 steps of retirement remain (exit 1)" in report
+    assert "REMAINING: wiring, claim" in report
+
+
+def test_retirement_never_ticks_a_step_it_could_not_measure() -> None:
+    """#205 item 4's falsification: a retirement that lies is worse than the
+    checklist. Once nothing mounts the claim its manifest cannot be read, so the
+    two steps that come off it are unmeasured — and unmeasured is `[ ]`."""
+    checks = hotfix.retirement(
+        wired_pod(wired=False),
+        None,
+        claim=hotfix.ClaimState(CLAIM, True),
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    for step in (hotfix.RetirementStep.BRANCH, hotfix.RetirementStep.IMAGE):
+        assert rows[step].done is None
+        assert rows[step].flag == "[ ]"
+        # Unmeasured moves neither the tick nor the exit code.
+        assert not rows[step].remaining
+    report = hotfix.format_retirement(checks)
+    assert "NOT MEASURED: branch, image" in report
+    assert "1 of 4 steps of retirement remain" in report
+
+
+def test_a_pod_still_wired_to_a_claim_that_is_gone_is_the_loud_case() -> None:
+    """The state that is worse than either end of the checklist: the pod runs
+    only because it was scheduled while the claim existed, and the next
+    reschedule will not bind."""
+    checks = hotfix.retirement(
+        wired_pod(),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, False),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    assert rows[hotfix.RetirementStep.CLAIM].done is True
+    wiring = rows[hotfix.RetirementStep.WIRING]
+    assert wiring.remaining
+    assert "next reschedule will not bind" in wiring.detail
+
+
+def test_a_finished_retirement_says_so_and_exits_zero() -> None:
+    checks = hotfix.retirement(
+        wired_pod(wired=False), None, claim=hotfix.ClaimState(CLAIM, False)
+    )
+    assert not any(check.remaining for check in checks)
+    report = hotfix.format_retirement(checks)
+    assert "VERDICT: retirement is complete (exit 0)" in report
+    # Flattened, because the details wrap: the two rows the gone claim makes
+    # moot carry the short form, and the mechanism is said once on the row that
+    # measured it.
+    flowed = " ".join(report.split())
+    assert flowed.count("not asked: the claim is gone") == 2
+
+
+def test_retire_refuses_to_delete_a_claim_the_pod_still_mounts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The safety of the flag. A claim deleted out from under a running pod
+    stays Terminating while that pod holds it, and surfaces a reschedule later
+    as a pod that cannot bind."""
+    runner = retire_runner(manifest=consolidated())
+    code = hotfix.main(
+        ["hotfix", "retire", "pod/api-7f9-abc", "-n", "demo", "--delete-claim"],
+        runner=runner,
+    )
+    assert code == 1
+    assert not runner.matching("delete")
+    out = " ".join(capsys.readouterr().out.split())
+    assert "still mounted by api-7f9-abc, so it was not deleted" in out
+
+
+def test_retire_deletes_the_claim_once_nothing_mounts_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """And says both things it cannot verify about the deletion it just made:
+    what was on the claim, and whether the chart will put it back."""
+    runner = retire_runner(wired=False)
+    code = hotfix.main(
+        ["hotfix", "retire", "pod/api-7f9-abc", "-n", "demo", "--delete-claim"],
+        runner=runner,
+    )
+    assert code == 0
+    assert runner.matching(f"delete pvc {CLAIM}")
+    out = " ".join(capsys.readouterr().out.split())
+    assert "what was on it is unverified" in out
+    assert "the next sync recreates it" in out
+    # Read-only otherwise, and it lands no seat: an ephemeral container cannot
+    # be taken back off a pod, and this verb is a question.
+    assert not runner.matching("patch")
+    assert not any("ephemeralcontainers" in " ".join(argv) for argv in runner.calls)
+
+
+def test_retire_will_not_delete_a_claim_it_could_not_ask_who_holds() -> None:
+    """The deletion's only precondition is a negative one, and a failed read
+    turns a negative into a false yes for anything that reads "found none" and
+    "could not look" as one answer."""
+    runner = retire_runner(wired=False)
+    runner.failures["get pods -o json"] = "Error from server (Forbidden): pods"
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc", delete_claim=True)
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert claim.remaining
+    assert "unmeasured" in claim.detail
+    assert not runner.matching("delete")
+
+
+def test_retire_finds_the_claim_by_label_once_the_pod_stops_naming_it() -> None:
+    """The pod stops naming the claim at exactly the step before the one that
+    deletes it, so the label both claim charts set is the only way back."""
+    runner = retire_runner(wired=False)
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc")
+    assert runner.matching(f"get pvc -l {hotfix.HOTFIX_TARGET_LABEL}")
+    assert rows_by_step(checks)[hotfix.RetirementStep.CLAIM].remaining
+
+
+def test_a_claim_that_could_not_be_read_is_not_a_claim_that_is_gone() -> None:
+    """kubectl tells a 403 from a 404 in its text alone, and ticking `claim` on
+    a refusal would tick the one step of retirement nobody can undo."""
+    runner = retire_runner(wired=False, pvc=None)
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc", delete_claim=True)
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert claim.done is None
+    assert "forbidden" in claim.detail.lower()
+    assert not runner.matching("delete")
+
+
+def test_status_says_which_retirement_steps_remain() -> None:
+    """`superseded` was correct and indefinite, which is a state nobody can act
+    on. The row now names the steps."""
+    manifest = consolidated()
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [wired_pod(digest=NEW_DIGEST)]}),
+            "exec -c app": state_exec(manifest),
+        }
+    )
+    rows = hotfix.status_rows(kube(runner), probe=False)
+    assert rows[0].health is hotfix.HotfixHealth.SUPERSEDED
+    report = " ".join(hotfix.format_status(rows).split())
+    assert "retirement: 1 of 4 steps remain (wiring)" in report
+    # Never inferred from the mount: a pod goes on running after its claim is
+    # deleted, which is the one state most worth finding.
+    assert "claim not measured here" in report
+    assert "podbench hotfix retire pod/api-7f9-abc -n demo" in report
+
+
+def test_a_hotfix_that_is_not_on_its_way_out_gets_no_retirement_line() -> None:
+    """Every live hotfix is "still wired to its claim". Saying so on every row
+    is saying nothing on the row where it is the finding."""
+    manifest = a_manifest(ahead=1)
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [wired_pod(digest=BASE_DIGEST)]}),
+            "exec -c app": state_exec(manifest),
+        }
+    )
+    rows = hotfix.status_rows(kube(runner))
+    assert rows[0].retirement == ()
+    assert "retirement:" not in hotfix.format_status(rows)
+
+
+def test_status_across_namespaces_reads_each_pod_in_its_own() -> None:
+    """One `get pods` for the cluster, then an exec per candidate — each
+    carrying that pod's namespace. One `-n` wrong reads a claim out of the wrong
+    pod, or none."""
+    manifest = consolidated()
+    runner = FakeRunner(
+        {
+            "get pods --all-namespaces -o json": json.dumps(
+                {
+                    "items": [
+                        wired_pod(name="api-7f9-abc", namespace="beam"),
+                        wired_pod(name="ioc-0", namespace="other"),
+                    ]
+                }
+            ),
+            "exec -c app": state_exec(manifest),
+        }
+    )
+    rows = hotfix.status_rows(kube(runner), probe=False, all_namespaces=True)
+    assert [str(row.pod) for row in rows] == ["beam/api-7f9-abc", "other/ioc-0"]
+    execs = [" ".join(argv) for argv in runner.calls if "exec" in argv]
+    assert any("-n beam" in call and "api-7f9-abc" in call for call in execs)
+    assert any("-n other" in call and "ioc-0" in call for call in execs)
+
+
+def test_the_cluster_wide_listing_reassures_about_the_cluster() -> None:
+    """ "no hotfixed pods in this namespace" from a cluster-wide run is the
+    answer somebody wanted for the facility, given for one namespace."""
+    runner = FakeRunner(
+        {"get pods --all-namespaces -o json": json.dumps({"items": []})}
+    )
+    code = hotfix.main(["hotfix", "status", "-A", "-n", "demo"], runner=runner)
+    assert code == 0
+    assert (
+        hotfix.format_status([], all_namespaces=True)
+        == "no hotfixed pods in any namespace"
+    )
 
 
 # -- helm values -----------------------------------------------------------

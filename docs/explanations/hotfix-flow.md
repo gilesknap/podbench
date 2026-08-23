@@ -16,9 +16,10 @@ kubelet's CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relaunc
 It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.
 
-Six verbs: `values`, `check`, `init`, `apply`, `status`, `consolidate`. `values` reads
-the target pod and emits the chart snippet the whole thing depends on; `check` says
-whether the deployed result is one `init` can work on.
+Seven verbs: `values`, `check`, `init`, `apply`, `status`, `consolidate`, `retire`.
+`values` reads the target pod and emits the chart snippet the whole thing depends on;
+`check` says whether the deployed result is one `init` can work on; `retire` says how
+far the fix has got back out again.
 
 ## The layout it requires
 
@@ -619,10 +620,13 @@ run habitually and exits non-zero when anything needs attention — usable as a
 shutdown-checklist assertion.
 
 ```text
-podbench hotfix status [-n NS] [--no-probe]
+podbench hotfix status [-n NS] [-A] [--no-probe]
     │
     ▼
    get pods -o json                    ← ONE call for the whole namespace
+                                         (`get pods --all-namespaces` under -A,
+                                          and then every exec below is issued
+                                          in that pod's own namespace)
     │
     ▼
    for each pod with a container mounting /podbench/app
@@ -688,6 +692,17 @@ podbench hotfix status [-n NS] [--no-probe]
    exit 0 only if every row is `active` AND unheld
 ```
 
+`-A`/`--all-namespaces` is the same listing over the cluster, with the same exit code.
+That is the difference between the shutdown-checklist assertion this command's exit
+code has always sold and a shell loop over namespaces the operator has to write and
+keep correct ([#205](https://github.com/gilesknap/podbench/issues/205) item 5). Each
+pod is still read through a client bound to *its own* namespace: one `-n` wrong on an
+exec reads a claim out of a different pod, or out of none.
+
+A row whose hotfix has been consolidated also carries a **retirement** line naming
+which steps are left — see `hotfix retire` below. `superseded` on its own was correct
+and indefinite, which is a state nobody can act on.
+
 The hold is a column and not a clause in the health sentence because they are
 different questions and either can be true alone: a perfectly healthy hotfix can sit in
 a pod nobody released, and a pod that was **never hotfixed at all** can be left held by
@@ -716,8 +731,10 @@ podbench hotfix consolidate TARGET --branch fix/thing [--dry-run]
      1. gh pr create --head <branch> …
      2. merge; let CI build and publish the image
      3. roll the workload onto it and confirm it is healthy
-     4. remove the five values from the application's chart
+     4. take the five values back out of the application's own chart
      5. turn the claim's boolean off and delete the claim
+   … and name `podbench hotfix retire`, which measures which of
+     those have landed
 ```
 
 The PR is not opened here: that needs a forge client podbench does not depend on, and
@@ -734,6 +751,79 @@ repoint mid-beamtime — and it means the deletion is a separate, deliberate act
 Measured: a claim carrying Helm's annotation *alone* is pruned about three
 minutes after it leaves the desired state, and a `Delete`-reclaim PV goes with
 it (issue #190).
+
+## `hotfix retire` — the checklist becomes a measurement
+
+```text
+podbench hotfix retire TARGET [-n NS] [--container NAME] [--delete-claim]
+```
+
+Steps 4 and 5 above are the ones nobody does, and nothing tracked them
+([#205](https://github.com/gilesknap/podbench/issues/205) item 4). `retire` asks the
+cluster where a retirement has actually got to, and performs the one step podbench can:
+
+```text
+  [x]     branch         consolidated onto hotfix/beamtime-14, so the claim is
+                         no longer the only copy of this fix
+  [x]     image          the deployed image is sha256:bbbb…, and the hotfix was
+                         made against sha256:aaaa…. Whether the rebuild included
+                         the fix is *not* measured — podbench compares digests,
+                         not contents.
+  [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the podbench-app
+                         volume, a volumeMount at /podbench/app and the
+                         supervisor loop in args. Those are fields in the
+                         application's own pod template, not in the claim's
+                         chart, so turning the claim off does not remove them …
+  [ ]     claim          bl47p-ea-fastcs-01-podbench-project still exists …
+------------------------------------------------------------------------
+VERDICT: 2 of 4 steps of retirement remain (exit 1)
+REMAINING: wiring, claim
+```
+
+**That report is the live specimen.** On 2026-08-23 `p47-services` was on a branch
+whose top commit turned hotfix mode *off* — `podbench-hotfix-claim.enabled: false` —
+every pod in the namespace was deleted, and `bl47p-ea-fastcs-01-0` came back still
+mounting the claim and still running the supervisor loop. The boolean disables the
+**subchart**, which is the PVC; `volumes`, `volumeMounts`, `args` and
+`podSecurityContext` live in the target's own `ioc-instance` values and were untouched.
+Somebody had done step 5 and not step 4, and the state that leaves — a pod wired to a
+claim its chart no longer declares — is worse than either end of the checklist, because
+it fails only when that PVC is finally pruned and only at the next reschedule.
+
+Four rows and not six, because these are the four a cluster can be *asked* about:
+opening the PR and merging it leave no trace podbench can read, while rolling the
+image, unwiring the pod and deleting the claim each do.
+
+The rules the report keeps, each with the failure it exists to stop:
+
+* **`[x]` only for a step that was measured done.** An unmeasured step is `[ ]` with a
+  detail saying why, and it moves the exit code in neither direction. A retirement that
+  lies is worse than the checklist it replaces, which is #205 item 4's own
+  falsification.
+* **The manifest can only be read while something mounts the claim**, so `branch` and
+  `image` go unmeasured the moment the pod is unwired — which is exactly when the
+  deletion becomes safe. The verb says so rather than carrying the last answer forward.
+* **A claim that could not be read is not a claim that is gone.** kubectl tells a 403
+  from a 404 in its text alone, and ticking `claim` on a refusal would tick the one step
+  nobody can undo.
+* **`--delete-claim` declines while anything still mounts the claim**, and the question
+  is asked of the *namespace* rather than of the target: the second pod of a rollout
+  holds the claim just as hard. A claim deleted out from under a running pod stays
+  `Terminating` while that pod holds its reference and then fails to bind on the next
+  reschedule — the specimen's failure, reached deliberately. A pod listing that could
+  not be read declines too: the precondition is a negative one, and "found no mounters"
+  and "could not look" must not be one answer.
+* **Both caveats about the deletion are printed by the path that made it**: nothing
+  mounted the claim, so its manifest could not be read first and what was on it is
+  unverified; and if the chart still declares the claim, the next sync recreates it.
+
+Everything above the claim is somebody else's system — a PR, a merge, a rebuild, a
+values change — so this verb's honest job is to say which of them have landed. It is
+read-only without `--delete-claim`, and it lands no seat: the claim's manifest is read
+through the *application* container, the way `status` reads it.
+
+Exit **1** while any measured step is outstanding, **0** once the pod is unwired and the
+claim is gone.
 
 ## Every cluster call, in order
 
@@ -767,6 +857,22 @@ it (issue #190).
                                                        # never skipped: the read
                                                        # is not optional
 
+  retire:
+   1  the same target walk as init, rows 1-4 above
+   2  kubectl -n NS exec -c APP POD -- sh -c 'cat manifest; …'
+                                                     # only while a container
+                                                     # mounts the claim
+   3  kubectl -n NS get pvc NAME -o name             ┐ the pod names the claim
+   4  kubectl -n NS get pvc -l podbench.dev/hotfix-target -o json
+                                                     ┘ or, once unwired, the
+                                                       label is the only way
+                                                       back to it
+   5  kubectl -n NS get pods -o json                 # only with --delete-claim:
+                                                     # who holds the claim is a
+                                                     # question about the
+                                                     # namespace, not the target
+   6  kubectl -n NS delete pvc NAME                  # only once nothing does
+
   check:
    1  the same target walk as init, rows 1-4 above, and nothing re-read after
                                                      # it: the walk's own pod
@@ -786,12 +892,15 @@ it (issue #190).
 ```
 
 Nothing patches a workload and nothing deletes a pod. `rbac.hotfix` — on top of
-`rbac.observe` — is now **`get` on `deployments`, `statefulsets` and `replicasets`, and
-nothing else**. It used to add `patch` on workloads and `patch`/`delete` on pods,
+`rbac.observe` — is **`get` on `deployments`, `statefulsets` and `replicasets`, plus
+`get`/`list`/`delete` on `persistentvolumeclaims` for `retire`, and nothing else**.
+That delete is the single write in the grant, and it is the act the whole checklist
+ends in: a claim carries `Prune=false,Delete=false` precisely so that no sync will ever
+do it for anybody. It used to add `patch` on workloads and `patch`/`delete` on pods,
 because the annotation write *was* the rollout and that verb therefore deployed code —
 the most privileged thing podbench asked for anywhere. Moving the provenance onto the
 claim and the relaunch inside the container removed the need for all of it, so in
-cluster terms Hotfix mode is now barely more privileged than watching.
+cluster terms Hotfix mode is now watching, plus the one deletion that ends it.
 
 ## Two things the claim does not fix
 

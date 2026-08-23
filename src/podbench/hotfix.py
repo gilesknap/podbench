@@ -82,6 +82,7 @@ from .launcher import (
     LauncherError,
     application_mount,
     attach,
+    declared_volumes,
     kubectl_for,
     resolve_pod_name,
     running_seat,
@@ -109,9 +110,13 @@ __all__ = [
     "METADATA_FILES",
     "SEAT_HOME_SIZE",
     "CheckStatus",
+    "ClaimState",
+    "HOTFIX_TARGET_LABEL",
     "InterpreterProbe",
     "LocalStore",
     "PreflightCheck",
+    "RetirementCheck",
+    "RetirementStep",
     "ManifestVersionError",
     "MultiReplicaError",
     "HotfixCommit",
@@ -152,6 +157,17 @@ __all__ = [
     "IMAGE_HAS_NO_INTERPRETER",
     "NON_EXEC_PROBE_BLOCKS_THE_HOLD",
     "preflight",
+    "retire",
+    "retirement",
+    "retirement_summary",
+    "format_retirement",
+    "claim_state",
+    "hotfix_wiring",
+    "pod_claim_name",
+    "WIRING_IS_THE_APPLICATIONS_OWN",
+    "CLAIM_OUTLIVES_THE_FLIP",
+    "CLAIM_GONE_BUT_STILL_WIRED",
+    "CLAIM_STILL_MOUNTED",
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
@@ -1669,6 +1685,19 @@ class HotfixRow:
     """The pod's hold, if it has one. ``None`` is *not held*, and is orthogonal
     to :attr:`health` - see :class:`Hold`."""
 
+    retirement: tuple[RetirementCheck, ...] = ()
+    """Where a consolidated hotfix is in its retirement, empty for one that has
+    not started.
+
+    Carried on the row rather than derived in :func:`format_status`, because it
+    is measured from the *pod document* - which the formatter does not have, and
+    must not be handed a second copy of on the way to a listing.
+
+    Deliberately not part of :attr:`ok`. A consolidated fix whose image has not
+    moved yet is a live hotfix doing its job, and a shutdown assertion that went
+    red the moment ``consolidate`` ran would be one nobody could leave in CI.
+    """
+
     @property
     def ok(self) -> bool:
         """Whether this row needs no attention, hold included.
@@ -1688,7 +1717,11 @@ class HotfixRow:
 
 
 def status_rows(
-    kube: Kubectl, *, probe: bool = True, python: str = DEFAULT_PYTHON
+    kube: Kubectl,
+    *,
+    probe: bool = True,
+    python: str = DEFAULT_PYTHON,
+    all_namespaces: bool = False,
 ) -> list[HotfixRow]:
     """Every pod carrying a hotfix claim, with its drift, its risks and its hold.
 
@@ -1708,8 +1741,20 @@ def status_rows(
     hotfix behind it is not a curiosity - it is a pod whose liveness probe is
     short-circuited and whose supervisor is spinning without backoff, and the
     only thing that will notice is this command.
+
+    ``all_namespaces`` is the same listing over the cluster, with the same exit
+    contract on top of it (#205 item 5). ``main``'s docstring has always sold
+    the exit code as a shutdown-checklist assertion, and a namespace-scoped
+    command makes the facility-wide form a shell loop the operator has to write
+    and keep correct. Each pod is still read through a client bound to *its own*
+    namespace: one ``-n`` wrong on an exec is a claim read out of the wrong pod.
     """
-    result = kube.run("get", "pods", "-o", "json")
+    scope = ("get", "pods", "-o", "json")
+    if all_namespaces:
+        # `--all-namespaces` wins over the `-n` in `base_argv`, which is
+        # kubectl's own rule and not a coincidence worth working around.
+        scope = ("get", "pods", "--all-namespaces", "-o", "json")
+    result = kube.run(*scope)
     rows: list[HotfixRow] = []
     for item in _as_list(_load_json(result.stdout).get("items")):
         pod_json = as_dict(item)
@@ -1720,9 +1765,11 @@ def status_rows(
         container = claim_container(pod_json)
         if container is None:
             continue
-        pod = PodRef(kube.namespace, name)
+        namespace = _as_str(metadata.get("namespace")) or kube.namespace
+        client = kube.for_namespace(namespace)
+        pod = PodRef(namespace, name)
         notes: list[str] = []
-        manifest, hold, unreadable = read_pod_state(kube, name, container)
+        manifest, hold, unreadable = read_pod_state(client, name, container)
         if manifest is None and hold is None and not unreadable:
             continue
         image, digest = _image_of(pod_json, container)
@@ -1734,7 +1781,7 @@ def status_rows(
             and digest
             and manifest.base_image_digest != digest
         ):
-            measured = probe_interpreter(kube, name, container, python=python)
+            measured = probe_interpreter(client, name, container, python=python)
         health, detail = assess(
             manifest, current_digest=digest, probe=measured, unreadable=unreadable
         )
@@ -1752,9 +1799,37 @@ def status_rows(
                 current_image=image,
                 notes=tuple(notes),
                 hold=hold,
+                retirement=_retirement_of(pod_json, manifest, digest),
             )
         )
     return rows
+
+
+def _retirement_of(
+    pod_json: Mapping[str, Any], manifest: HotfixManifest | None, digest: str
+) -> tuple[RetirementCheck, ...]:
+    """The retirement steps for a row, measured only once one is under way.
+
+    Only for a consolidated hotfix, because until then there is nothing to
+    retire: every live hotfix is "still wired to its claim", and a listing that
+    said so on every row would be saying nothing on the one row where it is the
+    finding (#205 item 4).
+
+    The claim is left **unmeasured** rather than inferred from the mount - see
+    :data:`STATUS_DOES_NOT_READ_CLAIMS`.
+    """
+    if manifest is None or manifest.consolidated_branch is None:
+        return ()
+    return tuple(
+        retirement(
+            pod_json,
+            manifest,
+            claim=ClaimState(
+                name=pod_claim_name(pod_json), detail=STATUS_DOES_NOT_READ_CLAIMS
+            ),
+            current_digest=digest,
+        )
+    )
 
 
 _FLAG = 10
@@ -1767,16 +1842,22 @@ _ROW_INDENT = " " * 4
 """Where a row's prose sits under it."""
 
 
-def format_status(rows: Sequence[HotfixRow]) -> str:
+def format_status(rows: Sequence[HotfixRow], *, all_namespaces: bool = False) -> str:
     """The status report. Empty is a real and reassuring answer, so say it.
 
     Only the prose is wrapped. The row line itself is a set of columns held
     apart by double spaces, and wrapping collapses whitespace — so a row put
     through it would come back as a sentence, with the commit and the health
     no longer under the headings the eye is running down.
+
+    ``all_namespaces`` changes one thing, and it is the empty answer: "no
+    hotfixed pods in this namespace" from a cluster-wide run is the reassurance
+    somebody wanted for the whole facility, given for one namespace.
     """
     if not rows:
-        return "no hotfixed pods in this namespace"
+        return "no hotfixed pods in " + (
+            "any namespace" if all_namespaces else "this namespace"
+        )
     lines: list[str] = []
     for row in rows:
         manifest = row.manifest
@@ -1817,6 +1898,26 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
                     f"{_ROW_INDENT}  … and {ahead - len(manifest.commits)} more "
                     "(the manifest keeps the most recent)"
                 )
+        if row.retirement:
+            # One line, and only for a hotfix on its way out: `superseded` used
+            # to be the whole of what this said, correctly and indefinitely,
+            # which is a state nobody can act on (#205 item 4).
+            lead = f"{_ROW_INDENT}retirement: "
+            lines.extend(
+                paragraph(
+                    retirement_summary(
+                        row.retirement,
+                        # The namespace goes in even when it is the current
+                        # one: under `--all-namespaces` the rows come from
+                        # several, and an offer that is pasteable on some rows
+                        # of one listing and not others is worse than a
+                        # redundant flag.
+                        reference=f"pod/{row.pod.name} -n {row.pod.namespace}",
+                    ),
+                    first=lead,
+                    indent=" " * len(lead),
+                )
+            )
         for note in row.notes:
             lines.extend(
                 paragraph(
@@ -2602,6 +2703,15 @@ def consolidate(
 def _retirement_checklist(
     branch: str, manifest: HotfixManifest, target: HotfixTarget
 ) -> str:
+    """The steps after this one, and the verb that now tracks them.
+
+    Steps 4 and 5 are the two nobody does, and they are stated as two because
+    the first is in the *application's* values and the second in the claim's
+    chart: turning the claim off leaves the pod wired, which is how a claim
+    goes on shadowing a fixed image (measured on p47-beamline, 2026-08-23 -
+    :data:`WIRING_IS_THE_APPLICATIONS_OWN`). Neither is prose any more:
+    ``hotfix retire`` measures where the reader has got to.
+    """
     workload = target.workload or f"pod/{target.pod.name}"
     return "\n".join(
         [
@@ -2611,15 +2721,14 @@ def _retirement_checklist(
             f"{manifest.commit[:7]}'",
             "  2. merge, and let CI build and publish the image",
             f"  3. roll {workload} onto the new image and confirm it is healthy",
-            "  4. remove the volume/volumeMount from the application's values",
-            f"  5. turn the claim off: {SUBCHART_VALUES_KEY}.enabled=false, or "
-            "hotfixProject.enabled=false on the central route",
-            "  6. delete the claim. It is annotated Prune=false, so turning it "
-            "off leaves the object standing - which is the point, and makes "
-            "this a deliberate act rather than a side effect of a sync",
+            "  4. take the volume, volumeMount, args and podSecurityContext",
+            "     back out of the application's own values, and redeploy",
+            f"  5. turn the claim off ({SUBCHART_VALUES_KEY}.enabled=false, or",
+            "     hotfixProject.enabled=false on the central route) and delete",
+            "     it — it is annotated Prune=false, so the flip alone leaves it",
             "",
-            "until step 6 the claim keeps shadowing the image's project, and "
-            "`hotfix status` will report this pod as superseded.",
+            f"`podbench hotfix retire pod/{target.pod.name}` says which of those",
+            "have landed, and deletes the claim once nothing mounts it.",
         ]
     )
 
@@ -4095,6 +4204,672 @@ def format_preflight(checks: Sequence[PreflightCheck]) -> str:
     return "\n".join(lines)
 
 
+# -- retirement -------------------------------------------------------------
+
+
+HOTFIX_TARGET_LABEL = "podbench.dev/hotfix-target"
+"""The label both claim charts put the application's name in.
+
+``Charts/podbench-hotfix-claim/templates/pvc.yaml`` sets it from the release
+name and ``Charts/podbench/templates/pvc-hotfix-project.yaml`` from the claim
+entry, so it is the one thing a claim carries that says what it is *for*. It is
+how :func:`retire` finds the claim once the pod has been unwired: a pod that no
+longer declares the volume no longer names the claim either, and deriving
+``<app>-podbench-project`` from a container name would be a guess about somebody
+else's values file.
+"""
+
+
+class RetirementStep(Enum):
+    """What retiring a hotfix consists of, in the order the steps happen.
+
+    Four rather than :func:`_retirement_checklist`'s six, because these are the
+    four a cluster can be *asked* about. Opening the PR and merging it leave no
+    trace podbench can read; rolling the image, unwiring the pod and deleting
+    the claim each do.
+    """
+
+    BRANCH = "branch"
+    """The fix is on a branch, so the claim is no longer its only copy."""
+
+    IMAGE = "image"
+    """The deployed image has moved on from the one the hotfix was made against."""
+
+    WIRING = "wiring"
+    """The pod no longer carries the volume, the mount and the supervisor."""
+
+    CLAIM = "claim"
+    """The claim itself is gone."""
+
+
+@dataclass(frozen=True)
+class RetirementCheck:
+    """One step of retirement, and what was measured for it."""
+
+    step: RetirementStep
+    done: bool | None
+    """``True`` measured done, ``False`` measured outstanding, ``None``
+    unmeasured — which is never "done" (#205 item 4's falsification: a
+    retirement that lies is worse than the checklist it replaces)."""
+
+    detail: str
+
+    @property
+    def flag(self) -> str:
+        """``[x]`` only for a step that was measured done.
+
+        ``attach``'s two tokens rather than a third spelling for unmeasured:
+        :mod:`podbench.console` colours the ones it has been taught and leaves
+        an invented one plain, and the distinction this report must not blur is
+        *ticked or not* — an unmeasured step is not ticked, and its detail says
+        why.
+
+        >>> RetirementCheck(RetirementStep.CLAIM, None, "").flag
+        '[ ]'
+        >>> RetirementCheck(RetirementStep.CLAIM, True, "").flag
+        '[x]'
+        """
+        return "[x]" if self.done else "[ ]"
+
+    @property
+    def remaining(self) -> bool:
+        """Whether this step was measured and is not done.
+
+        The exit code is this and not ``not done``: an unmeasured step is not
+        an assertion in either direction, and a ``retire`` that exited 1 for
+        something it never looked at would be unusable in the shutdown
+        checklist ``status`` already serves.
+
+        >>> RetirementCheck(RetirementStep.CLAIM, None, "").remaining
+        False
+        >>> RetirementCheck(RetirementStep.CLAIM, False, "").remaining
+        True
+        """
+        return self.done is False
+
+
+WIRING_IS_THE_APPLICATIONS_OWN = (
+    "{pod} still carries {what}. Those are fields in the application's own pod "
+    "template, not in the claim's chart, so turning the claim off does not "
+    "remove them: take them back out of the values `podbench hotfix values` "
+    "emitted, and redeploy."
+)
+"""Said when the pod is still wired for hotfix mode.
+
+Measured, and it is the state this verb exists for (p47-beamline, 2026-08-23):
+`p47-services` carried ``podbench-hotfix-claim.enabled: false``, every pod in
+the namespace was deleted, and ``bl47p-ea-fastcs-01-0`` came back still mounting
+the claim and still running the supervisor loop. The boolean disables the
+*subchart* — the PVC — while ``volumes``, ``volumeMounts``, ``args`` and
+``podSecurityContext`` live in the target's own ``ioc-instance`` values and are
+untouched. Somebody who believes they turned hotfix mode off has done step 5 and
+not step 4, and nothing until now said so.
+"""
+
+CLAIM_OUTLIVES_THE_FLIP = (
+    "{claim} still exists. It is annotated Prune=false,Delete=false so that a "
+    "hotfix survives somebody reverting a repoint mid-beamtime, which means "
+    "turning the claim off leaves the object standing: deleting it is a "
+    "separate, deliberate act (`podbench hotfix retire {reference} "
+    "--delete-claim`)."
+)
+"""Said when the claim is still there.
+
+The annotation is not decoration and the sentence must keep saying so: a claim
+carrying Helm's ``keep`` alone was pruned about three minutes after it left the
+desired state, and its ``Delete``-reclaim PV went with it (#190,
+`.claude/evidence/phase1-prune-on-sync.md`). The pair is what makes retirement
+an act rather than a side effect of a sync — and therefore a step somebody has
+to take.
+"""
+
+CLAIM_STILL_MOUNTED = (
+    "still mounted by {pods}, so it was not deleted. A claim deleted out from "
+    "under a running pod stays Terminating while that pod holds it and then "
+    "fails to bind on the next reschedule, so the wiring comes out of the "
+    "application's values first."
+)
+
+CLAIM_MOUNTERS_UNREADABLE = (
+    "not deleted: this namespace's pods could not be listed, so whether "
+    "anything still mounts the claim is unmeasured - and that is the one thing "
+    "that makes deleting it safe."
+)
+"""Why ``--delete-claim`` declines when it could not ask who holds the claim.
+
+Unmeasured, and therefore no. The deletion is irreversible and its only
+precondition is a *negative* one, which is the shape that a failed read turns
+into a false yes if the caller treats "found no mounters" and "could not look"
+as the same answer.
+"""
+"""Why ``--delete-claim`` declines on a pod that is still wired.
+
+The refusal is reported on the claim's own row rather than raised, because the
+report is the point of the verb: the reader needs to see which step they are
+actually on, not an error about the one they asked for.
+"""
+
+CLAIM_GONE_BUT_STILL_WIRED = (
+    "{pod} mounts {claim} and no such claim exists. The pod is running only "
+    "because it was scheduled while the claim was still there; the next "
+    "reschedule will not bind. Take the wiring out of the application's values, "
+    "or put the claim back."
+)
+"""The half-retired state that is worse than either end of the checklist.
+
+Named as its own condition because it is silent until a reschedule, and because
+it is what "delete the claim" does when it is done *before* the values change
+rather than after. Reported on the ``wiring`` row: the claim being gone is not
+the fault, the pod still asking for it is.
+"""
+
+CLAIM_CONTENTS_UNVERIFIED = (
+    "deleted. Nothing mounted it, so its manifest could not be read first and "
+    "what was on it is unverified. If the chart still declares the claim - "
+    "`{key}.enabled: false` is what stops that - the next sync recreates it."
+)
+"""Said on the path that deletes, about the deletion it just made.
+
+Both halves are caveats about a mutation, which is why they are here rather
+than in the help: once the pod is unwired nothing can read the claim, so
+provenance is unmeasurable exactly when the deletion becomes safe; and a claim
+deleted while its chart still renders it comes straight back, which would
+otherwise read as podbench's delete having failed.
+"""
+
+STATUS_DOES_NOT_READ_CLAIMS = (
+    "not measured: `hotfix status` reads pods, and asking every namespace for "
+    "its claims as well is a call per row. `podbench hotfix retire` reads it."
+)
+"""Why ``status``'s retirement summary leaves the claim unmeasured.
+
+Not "the claim is there". The pod in front of it names a claim, but a pod goes
+on running perfectly well after its claim is deleted - see
+:data:`CLAIM_GONE_BUT_STILL_WIRED` - so a listing that inferred the claim from
+the mount would report the one state that most needs finding as normal.
+"""
+
+
+def pod_claim_name(pod_json: Mapping[str, Any]) -> str | None:
+    """The claim the pod's hotfix volume names, or ``None`` if it declares none.
+
+    Read from the volume rather than derived from the application's name: the
+    name is a value somebody can override (``claimName`` in the subchart), so
+    the pod's own spec is the only place it is a measurement.
+
+    >>> pod_claim_name({"spec": {"volumes": [{"name": "podbench-app",
+    ...     "persistentVolumeClaim": {"claimName": "api-podbench-project"}}]}})
+    'api-podbench-project'
+    >>> pod_claim_name({"spec": {"volumes": []}}) is None
+    True
+    """
+    spec = as_dict(pod_json.get("spec"))
+    for entry in _as_list(spec.get("volumes")):
+        volume = as_dict(entry)
+        if _as_str(volume.get("name")) != HOTFIX_CLAIM_VOLUME:
+            continue
+        return _as_str(as_dict(volume.get("persistentVolumeClaim")).get("claimName"))
+    return None
+
+
+def hotfix_wiring(pod_json: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which halves of the hotfix wiring this pod still carries, named.
+
+    All three, and not :func:`podbench.launcher.is_hotfixed`'s single verdict:
+    retirement is somebody editing a values file, and a report that said "still
+    wired" without saying *which keys* leaves them to diff the pod against the
+    snippet by eye.
+
+    >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-app"}],
+    ...     "containers": [{"name": "app"}]}})
+    ('the podbench-app volume',)
+    """
+    spec = as_dict(pod_json.get("spec"))
+    carried: list[str] = []
+    if HOTFIX_CLAIM_VOLUME in declared_volumes(pod_json):
+        carried.append(f"the {HOTFIX_CLAIM_VOLUME} volume")
+    if claim_container(pod_json) is not None:
+        carried.append(f"a volumeMount at {HOTFIX_APP_PATH}")
+    if any(
+        runs_hotfix_supervisor(as_dict(entry))
+        for entry in _as_list(spec.get("containers"))
+    ):
+        carried.append("the supervisor loop in args")
+    return tuple(carried)
+
+
+@dataclass(frozen=True)
+class ClaimState:
+    """What was found out about the claim itself, ahead of the report.
+
+    A value and not three arguments because the two callers know different
+    amounts: ``retire`` reads the object, ``status`` deliberately does not
+    (:data:`STATUS_DOES_NOT_READ_CLAIMS`), and a deletion this run performed is
+    a third answer again. Keeping them one shape is what stops the row that
+    says "gone" from ever being authored by a caller that did not look.
+    """
+
+    name: str | None = None
+    """The claim's name, where anything names it."""
+
+    present: bool | None = None
+    """``None`` is unmeasured, never absent — an RBAC refusal and a 404 differ
+    only in kubectl's text."""
+
+    detail: str = ""
+    """Said instead of the default for this state: why it is unmeasured, or why
+    a ``--delete-claim`` that was asked for did not happen."""
+
+    deleted: bool = False
+    """Whether *this run* deleted it, which is the only path that may say so."""
+
+
+CLAIM_UNMEASURED = ClaimState()
+"""The claim as a caller that has not looked at one describes it.
+
+A module-level singleton because a frozen default has to be one, and named
+rather than spelled inline so that "nobody asked about the claim" reads as a
+deliberate state rather than as an omission.
+"""
+
+
+def retirement(
+    pod_json: Mapping[str, Any],
+    manifest: HotfixManifest | None,
+    *,
+    claim: ClaimState = CLAIM_UNMEASURED,
+    current_digest: str = "",
+    reference: str = "",
+) -> list[RetirementCheck]:
+    """Where this pod is in its retirement, measured rather than remembered.
+
+    Pure, for :func:`values_snippet`'s reason: every shape of this report has to
+    be exercisable against fixture pod JSON, and the shape that matters most -
+    a pod wired to a claim whose chart no longer declares it - is one no test
+    cluster is going to be left in by accident.
+
+    Nothing here infers one step from another. The branch and the image are
+    read from the manifest, and the manifest can only be read while something
+    mounts the claim, so both go *unmeasured* the moment the pod is unwired -
+    which is the point at which the earlier steps stop being answerable and
+    must stop being answered.
+    """
+    carried = hotfix_wiring(pod_json)
+    pod = _as_str(as_dict(pod_json.get("metadata")).get("name")) or "this pod"
+    if not carried and claim.present is False:
+        # Said once, on the two rows it makes moot, in `_seed_checks`' words and
+        # for its reason: the mechanism belongs to the fact - stated on the
+        # `claim` row below - and not to each of its consequences.
+        moot = "not asked: the claim is gone, and its manifest with it"
+        return [
+            RetirementCheck(RetirementStep.BRANCH, None, moot),
+            RetirementCheck(RetirementStep.IMAGE, None, moot),
+            _wiring_check(carried, pod=pod, claim=claim),
+            _claim_check_row(claim, reference=reference),
+        ]
+    return [
+        _branch_check(manifest, wired=bool(carried), reference=reference),
+        _image_check(manifest, current_digest=current_digest),
+        _wiring_check(carried, pod=pod, claim=claim),
+        _claim_check_row(claim, reference=reference),
+    ]
+
+
+def _branch_check(
+    manifest: HotfixManifest | None, *, wired: bool, reference: str
+) -> RetirementCheck:
+    step = RetirementStep.BRANCH
+    if manifest is None:
+        return RetirementCheck(
+            step,
+            None,
+            "not measured: nothing mounts the claim, so its manifest cannot be read"
+            if not wired
+            # "was read", not "is there": the read is an exec, and a refused one
+            # must not come back as a claim that carries no fix.
+            else "no manifest was read from the claim, so nothing here records "
+            "a hotfix to consolidate",
+        )
+    if manifest.consolidated_branch is not None:
+        return RetirementCheck(
+            step,
+            True,
+            f"consolidated onto {manifest.consolidated_branch}, so the claim is "
+            "no longer the only copy of this fix",
+        )
+    return RetirementCheck(
+        step,
+        False,
+        f"{manifest.ahead} commit(s) on this claim are on no branch: "
+        f"`podbench hotfix consolidate {reference} --branch NAME` first, or "
+        "retiring the claim discards them.",
+    )
+
+
+def _image_check(
+    manifest: HotfixManifest | None, *, current_digest: str
+) -> RetirementCheck:
+    step = RetirementStep.IMAGE
+    if manifest is None:
+        return RetirementCheck(
+            step,
+            None,
+            "not measured: nothing here records which image this hotfix was "
+            "made against",
+        )
+    if not manifest.base_image_digest or not current_digest:
+        return RetirementCheck(
+            step,
+            None,
+            "not measured: one of the two digests could not be read, and a "
+            "comparison against a digest nobody read is not one",
+        )
+    was = manifest.base_image_digest.split("@")[-1][:19]
+    now = current_digest.split("@")[-1][:19]
+    if manifest.base_image_digest == current_digest:
+        return RetirementCheck(
+            step,
+            False,
+            f"the deployed image is still {was}, the one this hotfix was made "
+            "against: the fix is not in a released image yet.",
+        )
+    return RetirementCheck(
+        step,
+        True,
+        f"the deployed image is {now}, and the hotfix was made against {was}. "
+        "Whether the rebuild included the fix is *not* measured - podbench "
+        "compares digests, not contents.",
+    )
+
+
+def _wiring_check(
+    carried: Sequence[str], *, pod: str, claim: ClaimState
+) -> RetirementCheck:
+    step = RetirementStep.WIRING
+    if not carried:
+        return RetirementCheck(
+            step,
+            True,
+            f"{pod} carries none of the hotfix wiring: no {HOTFIX_CLAIM_VOLUME} "
+            f"volume, no mount at {HOTFIX_APP_PATH}, no supervisor loop.",
+        )
+    if claim.present is False and claim.name is not None and not claim.deleted:
+        return RetirementCheck(
+            step,
+            False,
+            CLAIM_GONE_BUT_STILL_WIRED.format(pod=pod, claim=claim.name),
+        )
+    return RetirementCheck(
+        step,
+        False,
+        WIRING_IS_THE_APPLICATIONS_OWN.format(pod=pod, what=and_list(list(carried))),
+    )
+
+
+def _claim_check_row(claim: ClaimState, *, reference: str) -> RetirementCheck:
+    """The ``claim`` row. ``_row`` because ``_claim_check`` is the pre-flight's,
+    which asks a different question - whether the claim is *mounted* - of the
+    same object."""
+    step = RetirementStep.CLAIM
+    named = claim.name or "the claim"
+    if claim.deleted:
+        return RetirementCheck(
+            step,
+            True,
+            f"{named}: " + CLAIM_CONTENTS_UNVERIFIED.format(key=SUBCHART_VALUES_KEY),
+        )
+    if claim.present is None:
+        return RetirementCheck(step, None, claim.detail or "not measured")
+    if not claim.present:
+        return RetirementCheck(
+            step, True, claim.detail or f"there is no {named} in this namespace"
+        )
+    if claim.detail:
+        # A `--delete-claim` that declined is the only thing that sets this, and
+        # it is the answer to what the reader just asked. The offer below is
+        # what they already took, so repeating it under a refusal of it would
+        # be the report arguing with itself.
+        return RetirementCheck(step, False, f"{named}: {claim.detail}")
+    return RetirementCheck(
+        step, False, CLAIM_OUTLIVES_THE_FLIP.format(claim=named, reference=reference)
+    )
+
+
+def retirement_summary(
+    checks: Sequence[RetirementCheck], *, reference: str = ""
+) -> str:
+    """One line naming what is left, for a listing that has no room for four.
+
+    ``reference`` is how to name this target on a command line - flags
+    included, since ``status`` lists pods from namespaces other than the one
+    its own flags selected - and an empty one leaves the offer off entirely.
+
+    Shared with :func:`format_retirement` rather than phrased again, because
+    ``status`` saying a different number from ``retire`` about the same pod is
+    the failure #205 item 4 describes wearing a new hat.
+    """
+    remaining = [check.step.value for check in checks if check.remaining]
+    unmeasured = [check.step.value for check in checks if check.done is None]
+    if not remaining and _retired(checks):
+        return "complete: nothing is wired and the claim is gone"
+    parts: list[str] = []
+    if remaining:
+        parts.append(
+            f"{len(remaining)} of {len(checks)} steps remain ({and_list(remaining)})"
+        )
+    if unmeasured:
+        parts.append(f"{and_list(unmeasured)} not measured here")
+    said = "; ".join(parts)
+    if not reference:
+        return said
+    return f"{said} — `podbench hotfix retire {reference}` measures the rest"
+
+
+def _retired(checks: Sequence[RetirementCheck]) -> bool:
+    """Whether the two steps that actually end a retirement are both ticked.
+
+    >>> _retired([RetirementCheck(RetirementStep.WIRING, True, "")])
+    False
+    """
+    ticked = {check.step for check in checks if check.done is True}
+    return {RetirementStep.WIRING, RetirementStep.CLAIM} <= ticked
+
+
+def format_retirement(checks: Sequence[RetirementCheck]) -> str:
+    """The retirement report: one line per step, then the verdict.
+
+    ``check``'s shape, down to the column, because it is read the same way and
+    by the same person on the same day. The verdict counts only what was
+    *measured* outstanding, and a step nobody could measure is named rather
+    than absorbed into either answer.
+    """
+    lines: list[str] = []
+    for check in checks:
+        lead = f"  {check.flag}".ljust(_FLAG) + f"{check.step.value:<{_CHECK_NAMES}} "
+        lines.extend(paragraph(check.detail, first=lead, indent=" " * len(lead)))
+    lines.append(rule(char="-"))
+    remaining = [check.step.value for check in checks if check.remaining]
+    unmeasured = [check.step.value for check in checks if check.done is None]
+    if remaining:
+        lines.append(
+            f"VERDICT: {len(remaining)} of {len(checks)} steps of retirement "
+            "remain (exit 1)"
+        )
+        lines.extend(paragraph(", ".join(remaining), first="REMAINING: "))
+    elif _retired(checks):
+        # The two steps that end it, and only those: the branch and the image
+        # are moot once the claim is gone, so waiting for four ticks would be
+        # waiting for two nobody can ever take.
+        lines.append("VERDICT: retirement is complete (exit 0)")
+    else:
+        lines.append("VERDICT: nothing measured here is outstanding (exit 0)")
+    if unmeasured:
+        lines.extend(paragraph(", ".join(unmeasured), first="NOT MEASURED: "))
+    return "\n".join(lines)
+
+
+def claim_state(
+    kube: Kubectl, target: HotfixTarget, pod_json: Mapping[str, Any]
+) -> ClaimState:
+    """Find the claim and ask whether it is still there.
+
+    Two routes, because the pod stops naming the claim at exactly the step
+    before the one that deletes it. While it is wired the pod's own volume is
+    the measurement; once it is not, the only thing left pointing at the claim
+    is :data:`HOTFIX_TARGET_LABEL`, which both claim charts set.
+
+    Every failure to read is :attr:`ClaimState.present` ``None`` and never
+    ``False``: kubectl distinguishes a 404 from a 403 in its text alone, and a
+    report that read a refusal as "the claim is gone" would tick the one step
+    of retirement that cannot be undone.
+    """
+    named = pod_claim_name(pod_json)
+    if named is not None:
+        result = kube.run("get", "pvc", named, "-o", "name", check=False)
+        if result.returncode == 0:
+            return ClaimState(named, True)
+        if _is_not_found(result):
+            return ClaimState(named, False)
+        return ClaimState(named, None, _unreadable(result, f"pvc/{named}"))
+    result = kube.run(
+        "get", "pvc", "-l", HOTFIX_TARGET_LABEL, "-o", "json", check=False
+    )
+    if result.returncode != 0:
+        return ClaimState(None, None, _unreadable(result, "the namespace's claims"))
+    wanted = {
+        name
+        for name in (target.container, target.workload_name, target.pod.name)
+        if name
+    }
+    found = sorted(
+        name
+        for item in _as_list(_load_json(result.stdout).get("items"))
+        if (metadata := as_dict(as_dict(item).get("metadata")))
+        and (name := _as_str(metadata.get("name"))) is not None
+        and _as_str(as_dict(metadata.get("labels")).get(HOTFIX_TARGET_LABEL)) in wanted
+    )
+    if len(found) == 1:
+        return ClaimState(found[0], True)
+    if not found:
+        return ClaimState(
+            None,
+            False,
+            f"no claim in {kube.namespace} carries {HOTFIX_TARGET_LABEL} for "
+            f"{and_list(sorted(wanted))}, and this pod declares none",
+        )
+    return ClaimState(
+        None,
+        None,
+        f"not measured: {and_list(found)} all carry {HOTFIX_TARGET_LABEL} for "
+        "this target, and this pod names none of them",
+    )
+
+
+def _is_not_found(result: CommandResult) -> bool:
+    """Whether kubectl said the object is absent, as opposed to unreadable.
+
+    >>> _is_not_found(CommandResult((), 1, "", 'pvc "api" not found'))
+    True
+    >>> _is_not_found(CommandResult((), 1, "", "Error: Forbidden"))
+    False
+    """
+    return "not found" in result.stderr.lower()
+
+
+def _unreadable(result: CommandResult, what: str) -> str:
+    said = (result.stderr.strip() or result.stdout.strip()).splitlines()
+    return f"not measured: {what} could not be read" + (
+        f" - {said[-1].strip()}" if said else ""
+    )
+
+
+def retire(
+    kube: Kubectl,
+    reference: str,
+    *,
+    container: str | None = None,
+    delete_claim: bool = False,
+) -> list[RetirementCheck]:
+    """Measure every step of retirement, and perform the one podbench can.
+
+    The one is deleting the claim, and only with ``delete_claim`` and only once
+    nothing mounts it. Everything above it in the checklist is a PR, a merge, a
+    rebuild and a values change - all of them somebody else's system - so this
+    verb's honest job is to say which of them have landed. Reading the claim's
+    manifest costs no seat: it is exec'd out of the application container, the
+    way ``status`` reads it.
+    """
+    target, pod_json = _resolve_target(kube, reference, container=container)
+    mounting = claim_container(pod_json)
+    manifest = (
+        read_pod_state(kube, target.pod.name, mounting)[0]
+        if mounting is not None
+        else None
+    )
+    claim = claim_state(kube, target, pod_json)
+    if delete_claim:
+        claim = _delete_claim(kube, claim)
+    return retirement(
+        pod_json,
+        manifest,
+        claim=claim,
+        current_digest=target.image_digest,
+        reference=reference,
+    )
+
+
+def _delete_claim(kube: Kubectl, claim: ClaimState) -> ClaimState:
+    """Delete the claim, or say why this run did not.
+
+    The question asked first is about the **namespace** and not about the
+    target: what makes the deletion safe is that nothing mounts the claim, and
+    a target-local check would miss the second pod of a rollout still holding
+    it. The delete would then block on that pod's reference and be reported as
+    done, which is exactly the step-it-could-not-verify this verb must not take.
+    """
+    if claim.name is None or claim.present is not True:
+        # Nothing measured to delete. Whatever `claim_state` found already says
+        # what it found, and inventing a second sentence for it here is how the
+        # unmeasured case comes to read as a refusal.
+        return claim
+    holders = _pods_mounting(kube, claim.name)
+    if holders is None:
+        return replace(claim, detail=CLAIM_MOUNTERS_UNREADABLE)
+    if holders:
+        return replace(claim, detail=CLAIM_STILL_MOUNTED.format(pods=and_list(holders)))
+    kube.run("delete", "pvc", claim.name)
+    return replace(claim, present=False, deleted=True, detail="")
+
+
+def _pods_mounting(kube: Kubectl, claim: str) -> list[str] | None:
+    """Which pods in the namespace mount *claim*, or ``None`` if unreadable.
+
+    Every volume, not only :data:`~podbench.model.HOTFIX_CLAIM_VOLUME`: what
+    matters here is who holds the object, and a pod mounting it under a name of
+    its own holds it just as hard.
+    """
+    result = kube.run("get", "pods", "-o", "json", check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        items = _as_list(_load_json(result.stdout).get("items"))
+    except json.JSONDecodeError:
+        return None
+    return sorted(
+        name
+        for item in items
+        if (pod := as_dict(item))
+        and (name := _as_str(as_dict(pod.get("metadata")).get("name"))) is not None
+        and any(
+            _as_str(
+                as_dict(as_dict(volume).get("persistentVolumeClaim")).get("claimName")
+            )
+            == claim
+            for volume in _as_list(as_dict(pod.get("spec")).get("volumes"))
+        )
+    )
+
+
 # -- CLI -------------------------------------------------------------------
 
 
@@ -4753,13 +5528,24 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             str,
             typer.Option("--python", metavar="BIN", help="interpreter to measure"),
         ] = DEFAULT_PYTHON,
+        all_namespaces: Annotated[
+            bool,
+            typer.Option(
+                "-A",
+                "--all-namespaces",
+                help="every namespace in the cluster, with the same exit code — "
+                "the facility-wide shutdown assertion, as one command",
+            ),
+        ] = False,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
-        rows = status_rows(kube, probe=not no_probe, python=python)
-        emit(format_status(rows))
+        rows = status_rows(
+            kube, probe=not no_probe, python=python, all_namespaces=all_namespaces
+        )
+        emit(format_status(rows, all_namespaces=all_namespaces))
         raise typer.Exit(0 if all(row.ok for row in rows) else 1)
 
     @app.command(
@@ -4807,6 +5593,41 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         )
         raise typer.Exit(_report(actions))
 
+    # `retire_command`, for `init_command`'s reason: `retire` is the
+    # module-level function this calls, and a same-named closure would shadow
+    # it into a recursion.
+    @app.command(
+        name="retire",
+        help="what is left of retiring this hotfix, and the one step podbench can take",
+    )
+    def retire_command(
+        target: _Target,
+        delete_claim: Annotated[
+            bool,
+            typer.Option(
+                "--delete-claim",
+                help="delete the claim, once nothing mounts it. Irreversible: "
+                "an unmounted claim cannot be read first, so what is on it goes "
+                "unverified",
+            ),
+        ] = False,
+        container: _Container = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        """Read-only without ``--delete-claim``, and it lands no seat.
+
+        The claim's manifest is read through the *application* container, the
+        way ``status`` reads it, so asking where a retirement has got to costs
+        no ephemeral container — the same rule ``check`` follows, and for the
+        same reason: one cannot be taken back off a pod.
+        """
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        checks = retire(kube, target, container=container, delete_claim=delete_claim)
+        emit(format_retirement(checks))
+        raise typer.Exit(1 if any(check.remaining for check in checks) else 0)
+
     return app
 
 
@@ -4815,7 +5636,15 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
 
     ``status`` exits non-zero when any pod needs attention, so that it is usable
     as a shutdown-checklist assertion — "no pod is still carrying an unretired
-    hotfix" is a thing a facility wants to be able to test, not read.
+    hotfix" is a thing a facility wants to be able to test, not read. With
+    ``--all-namespaces`` that assertion covers the cluster, which is what makes
+    it a command rather than a shell loop somebody has to keep correct.
+
+    ``retire`` exits **1** while any step of a retirement it measured is
+    outstanding, and **0** when the pod is unwired and the claim is gone. A step
+    it could not measure moves neither: an unmeasured step is not an assertion
+    in either direction, and ticking one would be the lie that verb exists to
+    stop.
 
     ``check`` exits **1** the same way, and for the same reason: it is the
     assertion "nothing on this target stands between here and ``hotfix init``".

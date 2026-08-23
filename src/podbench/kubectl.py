@@ -582,6 +582,36 @@ class Kubectl:
             argv.append(f"--request-timeout={request_timeout:g}s")
         return argv
 
+    def for_namespace(self, namespace: str) -> Kubectl:
+        """The same client, bound to another namespace.
+
+        For the one listing that spans them: ``podbench hotfix status
+        --all-namespaces`` finds its pods in one cluster-wide ``get pods`` and
+        then has to ``exec`` into each, and an exec carrying the *caller's*
+        namespace reads a different pod - or none. Everything else about the
+        client is carried over deliberately, kubeconfig, context, binary and
+        the injected runner included: a second client built from defaults would
+        be a second set of credentials pointed at a second cluster.
+
+        Returns ``self`` where the namespace is already this one, so the
+        namespace-scoped caller's argv is unchanged.
+
+        >>> here = Kubectl("demo")
+        >>> here.for_namespace("demo") is here
+        True
+        >>> here.for_namespace("other").namespace
+        'other'
+        """
+        if namespace == self.namespace:
+            return self
+        return Kubectl(
+            namespace,
+            context=self.context,
+            kubeconfig=self.kubeconfig,
+            binary=self.binary,
+            runner=self._runner,
+        )
+
     def run(
         self,
         *args: str,
