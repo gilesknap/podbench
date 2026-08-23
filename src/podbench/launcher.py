@@ -181,6 +181,8 @@ __all__ = [
     "SEAT_STATUS_ARGV",
     "UNKNOWN_SEAT_VERSION",
     "OTHER_OWNER_WARNING",
+    "RECONNECT_KEY_ABSENT_WARNING",
+    "RECONNECT_KEY_UNMEASURED_WARNING",
     "UNKNOWN_OWNER",
     "VERSION_ARGV",
     "VERSION_SKEW_WARNING",
@@ -233,6 +235,7 @@ __all__ = [
     "probe_seats",
     "probe_ssh_identity",
     "read_public_key",
+    "reconnect_key_note",
     "resolve_among",
     "resolve_mounts",
     "resolve_pod",
@@ -242,6 +245,7 @@ __all__ = [
     "superseded_seats",
     "ssh_unavailable_note",
     "running_seat",
+    "seat_authorises",
     "seat_identity_mounts",
     "seat_layout",
     "seat_version_fact",
@@ -2369,6 +2373,10 @@ def attach(
     existing = sidecar if sidecar is not None and sidecar.running else None
     if existing is None:
         existing = running_seat(pod_json, ids=wanted_ids, owner=owner)
+    # Held apart from `existing`, which the ceiling check below clears: the ssh
+    # key is measured after the seat's credentials are read, and by then the
+    # only thing that matters is whether a reconnect happened.
+    reused_seat: SeatInfo | None = None
     declined: str | None = None
     if existing is None and wanted_ids is not None and correct_ids:
         # Said only on the path a human asked for: the correction below runs
@@ -2442,16 +2450,9 @@ def attach(
         # the one `attach` usually hands back.
         if existing.kind is SeatKind.DEV:
             warnings.append(DEV_SIDECAR_REUSED_NOTE.format(seat=existing.name))
-        if public_key is not None:
-            warnings.append(
-                "reconnected to an existing container: its authorized_keys was "
-                "written when it started, so a new ssh key needs "
-                + (
-                    "`podbench dev --identity`, which recreates the pod"
-                    if existing.kind is SeatKind.DEV
-                    else "--new"
-                )
-            )
+        # The key is measured below, once the seat's own uid has been read:
+        # `seat_layout` needs it to know which authorized_keys file to cat.
+        reused_seat = existing
         if mounts:
             warnings.append(
                 "reconnected to an existing container: an ephemeral container's "
@@ -2513,6 +2514,15 @@ def attach(
         rung_measured=measured is not None,
     )
     session = replace(session, steps=_relabel_reconnect(session))
+
+    # Here and not in the reconnect branch above: the file's path depends on the
+    # seat's uid, which the read two lines up is the only measurement of.
+    if reused_seat is not None and public_key is not None:
+        key_note = reconnect_key_note(
+            kubectl, session, public_key, dev=reused_seat.kind is SeatKind.DEV
+        )
+        if key_note is not None:
+            warnings.append(key_note)
 
     # Before the OOM warning, because it is about which *code* is running and
     # every other line in the report is only true of the version that is.
@@ -4047,6 +4057,96 @@ def seat_layout(session: Session) -> SshdLayout:
         _UNPINNED_UID if session.uid is None else session.uid,
         home=session.home or NON_ROOT_HOME,
     )
+
+
+_KEY_BLOB = re.compile(r"AAAA[A-Za-z0-9+/]{16,}={0,3}")
+"""The base64 body of an ssh public key, wherever it sits on the line.
+
+Every ssh key blob opens ``AAAA`` — the four-byte length prefix of its own
+algorithm name — so this finds the key in a line an `authorized_keys` file may
+have wrapped in ``command=`` options or ended with somebody else's comment.
+Matching the whole line instead would report a key as absent because the seat
+stored it with a different comment, which is the guess this replaced.
+"""
+
+RECONNECT_KEY_ABSENT_WARNING = (
+    "this seat does not authorise the key being offered, so ssh will be "
+    "refused: an ephemeral container's authorized_keys is written when it "
+    "starts and cannot be added to from here. {remedy}"
+)
+"""Said on a reconnect whose ``authorized_keys`` was read and lacks this key.
+
+Measured, not assumed, which is the whole of #204: the line used to be printed
+on **every** reconnect that carried a key, including the overwhelmingly common
+one where the seat was landed with the same identity and ssh works. A caution
+that fires when nothing is wrong is the one a reader learns to skip, and this
+report had four of them.
+"""
+
+RECONNECT_KEY_UNMEASURED_WARNING = (
+    "this seat's authorized_keys could not be read, so whether it authorises "
+    "the key being offered is unmeasured. If ssh is refused, {remedy}"
+)
+"""Said where the ``cat`` failed rather than answered.
+
+Unmeasured is stated, never passed off as fine by silence - the rule the
+``memory`` row is held to. It is still one line and it still ends on the same
+action, because the reader's next move is the same one either way.
+"""
+
+_KEY_REMEDY_DEV = "`podbench dev --identity` recreates the pod with it."
+_KEY_REMEDY_SEAT = "`--new` lands a seat that takes it."
+"""What installs a key an ephemeral container cannot be given.
+
+Two spellings because a dev pod's sidecar is not an ephemeral container: it is
+recreated with the pod, so the flag that changes its key is ``dev``'s.
+"""
+
+
+def seat_authorises(kubectl: Kubectl, session: Session, public_key: str) -> bool | None:
+    """Whether the seat's ``authorized_keys`` already carries ``public_key``.
+
+    ``None`` where the file could not be read — an exec the namespace refused, a
+    seat that died, or a layout whose path is not where this launcher thinks it
+    is. Reported as unmeasured rather than folded into either answer: silence
+    would claim ssh works, and warning would be the guess #204 removed.
+
+    One ``kubectl exec`` per reconnect that carries a key, and only then. The
+    path comes from :func:`seat_layout`, so it is read *after* the seat's own
+    credentials are — the root and non-root layouts keep the file in different
+    places and the uid is what chooses.
+    """
+    layout = seat_layout(session)
+    result = kubectl.exec_(
+        session.seat.pod.name,
+        ("cat", layout.authorized_keys_path),
+        container=session.seat.container,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    wanted = _KEY_BLOB.search(public_key)
+    if wanted is None:
+        return None
+    return any(
+        match.group(0) == wanted.group(0) for match in _KEY_BLOB.finditer(result.stdout)
+    )
+
+
+def reconnect_key_note(
+    kubectl: Kubectl, session: Session, public_key: str, *, dev: bool
+) -> str | None:
+    """What to say about a reconnect's ssh key, or ``None`` when it is there."""
+    remedy = _KEY_REMEDY_DEV if dev else _KEY_REMEDY_SEAT
+    authorised = seat_authorises(kubectl, session, public_key)
+    if authorised:
+        return None
+    template = (
+        RECONNECT_KEY_UNMEASURED_WARNING
+        if authorised is None
+        else RECONNECT_KEY_ABSENT_WARNING
+    )
+    return template.format(remedy=remedy)
 
 
 def read_host_public_key(kubectl: Kubectl, seat: ContainerRef) -> str | None:

@@ -337,6 +337,7 @@ class FakeCluster:
         patch_error: str | None = None,
         ssh_probe_rc: int = 0,
         ssh_probe_err: str = "",
+        authorized_keys: str | None = CLIENT_KEY,
         limit_ranges: Sequence[dict[str, Any]] = (),
         seat_version: str | None = __version__,
         top: str | None = None,
@@ -385,6 +386,11 @@ class FakeCluster:
         # this to make the two disagree, which is the whole of issue #94 and
         # cannot be expressed by a securityContext.
         self.seat_status = seat_status
+        # What `cat <layout.authorized_keys_path>` answers on a reconnect.
+        # Defaulted to the key every test attaches with, because a seat landed
+        # with this identity authorising it is the common case #204 exists to
+        # stop warning about; `None` is a file that could not be read at all.
+        self.authorized_keys = authorized_keys
         self.limit_ranges = [dict(entry) for entry in limit_ranges]
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
@@ -748,6 +754,10 @@ class FakeCluster:
             # 3 is the read script's own "no such file"; anything else means it
             # found one and could not read it, which `--open` refuses to guess.
             return _ok(text) if text is not None else _fail("", returncode=3)
+        if command[:1] == ["cat"] and command[-1].endswith("authorized_keys"):
+            if self.authorized_keys is None:
+                return _fail("cat: no such file", returncode=1)
+            return _ok(self.authorized_keys + "\n")
         if command[:2] == ["podbench", "--version"]:
             if self.seat_version is None:
                 # click's usage message, which is what an image predating the
@@ -6918,20 +6928,67 @@ def test_reconnecting_to_a_sidecar_points_re_keying_at_the_dev_verb() -> None:
     """`--new` re-keys an ephemeral seat by landing another one. A sidecar's
     authorized_keys is written when the pod is authored, so the same advice
     there sends the reader to land a seat that does not fix it."""
-    cluster = FakeCluster(dev_pod())
+    cluster = FakeCluster(dev_pod(), authorized_keys="")
 
     session = attach(
         kubectl_for("demo", runner=cluster),
         "demo-podbench",
         image="ghcr.io/gilesknap/podbench:test",
-        public_key="ssh-ed25519 AAAA test",
+        public_key=CLIENT_KEY,
         probe=False,
     )
 
     keying = [w for w in session.warnings if "authorized_keys" in w]
     assert keying
     assert all("podbench dev --identity" in warning for warning in keying)
-    assert not any("needs --new" in warning for warning in keying)
+    assert not any("--new" in warning for warning in keying)
+
+
+def test_a_reconnect_whose_key_is_already_there_says_nothing_about_it() -> None:
+    """#204: the line was printed on every reconnect carrying a key, including
+    the overwhelmingly common one where the seat was landed with this identity
+    and ssh works. Measured now, and silent where the measurement is fine."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "target",
+        public_key=CLIENT_KEY,
+        probe=False,
+    )
+
+    assert session.reused
+    assert not any("authorize" in warning for warning in session.warnings)
+
+
+def test_a_reconnect_whose_key_file_cannot_be_read_says_unmeasured() -> None:
+    """Never "fine" by silence and never a guess to fill the gap: a `cat` that
+    failed is reported as unmeasured, ending on the same action either way."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        authorized_keys=None,
+    )
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "target",
+        public_key=CLIENT_KEY,
+        probe=False,
+    )
+
+    unmeasured = [w for w in session.warnings if "unmeasured" in w]
+    assert len(unmeasured) == 1
+    assert "`--new` lands a seat that takes it." in unmeasured[0]
 
 
 def test_landing_a_seat_names_the_other_two_modes_once(
