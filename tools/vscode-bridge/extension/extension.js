@@ -186,8 +186,21 @@ const ops = {
   async debug(req) {
     const folders = vscode.workspace.workspaceFolders || [];
     const folder = folders.length ? folders[0] : undefined;
+    // `since` is the event watermark taken *before* the session starts, so a
+    // caller can ask `events <since>` and get exactly this session's traffic.
+    // It is returned because `started` is not an outcome: startDebugging
+    // resolves true for a session that dies immediately afterwards - measured
+    // against a launch config naming a file that does not exist, which returned
+    // true and then produced dap.terminated, dap.adapterError and a stderr
+    // traceback. Whether debugging actually works is answered by the events,
+    // never by this boolean.
+    const since = seq;
     const started = await vscode.debug.startDebugging(folder, req.config || req.name);
-    return { started: started, session: sessionInfo(vscode.debug.activeDebugSession) };
+    return {
+      started: started,
+      since: since,
+      session: sessionInfo(vscode.debug.activeDebugSession),
+    };
   },
 
   // Raw DAP passthrough, so a stopped session can be inspected without this
@@ -344,15 +357,51 @@ function activate(ctx) {
         changed: e.changed.map(bpInfo),
       }),
     ),
-    // A stopped event is what "the breakpoint bound and hit" actually looks
-    // like; the debug API exposes it only through a tracker.
+    // The tracker is the only way to see any of this. A stopped event is what
+    // "the breakpoint bound and hit" actually looks like, and - the reason the
+    // failure cases below are captured - **VS Code's error dialogs cannot be
+    // read through the API at all**. `showErrorMessage` is write-only and there
+    // is no onDidShowNotification. But a debug session that fails to start
+    // almost always fails on the wire first: the adapter returns an error
+    // response, or says why in an `output` event, and the dialog is rendering
+    // exactly that. So capture the cause rather than the symptom.
     vscode.debug.registerDebugAdapterTrackerFactory('*', {
       createDebugAdapterTracker(session) {
+        const who = { session: session.name, type: session.type };
         return {
           onDidSendMessage(m) {
             if (m.type === 'event' && (m.event === 'stopped' || m.event === 'terminated')) {
-              record('dap.' + m.event, { session: session.name, body: safe(m.body) });
+              record('dap.' + m.event, { ...who, body: safe(m.body) });
             }
+            // A failed response is what the "ERR" dialog is usually made of.
+            // `message` is the one-line summary; body.error.format carries the
+            // adapter's own templated text, which is the specific half.
+            if (m.type === 'response' && m.success === false) {
+              record('dap.error', {
+                ...who,
+                command: m.command,
+                message: m.message || null,
+                error: m.body && m.body.error ? safe(m.body.error) : null,
+              });
+            }
+            // The debug console. Capped, because a chatty adapter would
+            // otherwise push everything else out of the ring.
+            if (m.type === 'event' && m.event === 'output' && m.body) {
+              const text = String(m.body.output || '');
+              record('dap.output', {
+                ...who,
+                category: m.body.category || 'console',
+                output: text.length > 2000 ? text.slice(0, 2000) + '…' : text,
+              });
+            }
+          },
+          // The adapter itself failing to start or dying, which produces a
+          // dialog and no DAP traffic at all.
+          onError(err) {
+            record('dap.adapterError', { ...who, error: String(err && err.message ? err.message : err) });
+          },
+          onExit(code, signal) {
+            record('dap.adapterExit', { ...who, code: code === undefined ? null : code, signal: signal || null });
           },
         };
       },

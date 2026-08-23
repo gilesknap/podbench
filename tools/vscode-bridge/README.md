@@ -106,6 +106,39 @@ the seat). Workbench commands are unaffected.
 `require` in scope and awaits it, which is the escape hatch for anything the
 named verbs do not cover.
 
+## Detecting a debug failure
+
+**VS Code's error dialogs cannot be read.** `showErrorMessage` is write-only and
+there is no `onDidShowNotification`, so a modal or a toast is invisible to this
+tool — and to any other extension.
+
+What *is* visible is the traffic the dialog is rendering. The adapter tracker
+records failed DAP responses (`dap.error`, carrying `message` and the adapter's
+own `body.error.format`), the debug console (`dap.output`, including `stderr`),
+the adapter failing to start or dying (`dap.adapterError`, `dap.adapterExit`),
+and `dap.terminated`. In practice this is *more* than the dialog shows. Measured
+against a launch config naming a file that does not exist, the events carried the
+whole traceback down to
+`FileNotFoundError: [Errno 2] No such file or directory: '.../does-not-exist.py'`.
+
+**`started: true` is not success.** `vscode.debug.startDebugging` resolved `true`
+for that same doomed session; the failure arrived over the next two seconds as
+`dap.terminated`, `dap.adapterError` and stderr output. Anything asserting that
+debugging works must read the events, never the boolean. `debug` returns a
+`since` watermark for exactly this — pass it to `events` to get that session's
+traffic and nothing earlier:
+
+```sh
+tools/vscode-bridge/vsc.py debug "podbench: launch app.py (debugpy)"   # -> {"started": true, "since": 7, ...}
+sleep 3
+tools/vscode-bridge/vsc.py events 7
+```
+
+The one case this misses is an extension that calls `showErrorMessage` without
+any DAP exchange at all. For that, VS Code's own logs are on disk under the
+bridge profile — `~/.local/state/podbench-vscode-bridge/user-data/logs/` — and
+the extension-host log there is readable directly.
+
 ## Why the extension is `extensionKind: ["ui"]`
 
 In a Remote-SSH window the *workspace* extension host runs inside the seat,
