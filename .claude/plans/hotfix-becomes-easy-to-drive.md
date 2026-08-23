@@ -566,11 +566,19 @@ OOM trap and the breakpoint-versus-probe timer are both live candidates, and
 #160's `UV_PYTHON_INSTALL_DIR` half is in the same area. Name the cause; do not
 report "works now" after an unexplained retry.
 
-The run must also prove the two things the local bridge test could not: that
-`startDebugging` from the laptop-side extension host resolves an adapter living
-in the **seat**, and that a bare path resolves to a `vscode-remote://` URI rather
-than quietly opening a same-named file on the laptop. That second one is the
-`gdb-across-namespaces` failure mode wearing a different hat, and it is silent.
+**Both of the bridge's unproven assumptions were settled on 2026-08-23** against
+`bl47p-ea-simdet-01-0`, so this phase does not need to re-establish them: a bare
+path resolves into the seat (reading the seat's own `launch.json`, not a
+same-named laptop file), and `startDebugging` from the laptop-side extension host
+does resolve an adapter living in the seat (a `cppdbg` session started and
+stayed up). See `tools/vscode-bridge/README.md`.
+
+That run also found, and fixed, a silent shim defect worth knowing about because
+it will happen again: `code` with no `--user-data-dir` hands off to an
+already-running VS Code over its IPC socket, which was started without
+`--extensionDevelopmentPath`, so the window opens with no bridge in it while
+podbench reports `[ok]`. If `vsc.py ls` finds nothing after a successful
+`podbench vscode`, that is the cause.
 
 **Falsified if** the four numbers do not hold: `restartCount` unchanged, the
 recorded child pid moved, the edit live in the running process, every seat alive.

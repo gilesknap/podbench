@@ -42,6 +42,37 @@ tools/vscode-bridge/vsc.py stack         # frames and locals where it stopped
 The shim's directory must contain neither `/remote-cli/` nor `/.vscode-server/`,
 or `resolve_editor` refuses it as VS Code's *remote* CLI (`editor.py:437`).
 
+**The shim starts its own VS Code instance, and has to.** `code` with no
+`--user-data-dir` hands the request to an already-running VS Code over its IPC
+socket in `$XDG_RUNTIME_DIR`, and *that* process was started without
+`--extensionDevelopmentPath` — so the window opens, Remote-SSH connects, and the
+bridge is simply not in it. Nothing reports this: `podbench vscode` prints
+`[ok] asked VS Code to open ... over Remote-SSH` because the CLI exited 0, and
+`vsc.py ls` finds no window. Measured 2026-08-23, against a VS Code that had been
+open since earlier in the day. `--extensions-dir` is deliberately left alone, so
+the new instance keeps the real `~/.vscode/extensions` — Remote-SSH lives there
+and `podbench vscode` cannot work without it.
+
+## Proven against a real seat
+
+2026-08-23, `podbench vscode bl47p-ea-simdet-01-0` on the p47 test beamline,
+which is what the three design bets above were resting on:
+
+* the window came up as `remote=ssh-remote` on
+  `vscode-remote://ssh-remote%2B<alias>/tmp/podbench-home`, driven from the
+  laptop-side extension host;
+* `vsc.py text .vscode/launch.json` — a bare relative path — returned **the
+  seat's** file, podbench's generated `cppdbg` config with its `/proc/31/root`
+  paths, rather than a same-named file on the laptop;
+* `vsc.py debug "podbench: attach to ioc ..."` started a `cppdbg` session that
+  stayed alive, so `startDebugging` from the UI extension host does resolve an
+  adapter living in the **seat**.
+
+One caveat found doing it: `vsc.py commands` lists the **local** extension host's
+registry, so a remote extension's own contributed commands do not appear there
+(`--filter cpptools` came back empty while cpptools was demonstrably running in
+the seat). Workbench commands are unaffected.
+
 `vsc.py eval '<js>'` runs arbitrary JavaScript with `vscode`, `ctx` and
 `require` in scope and awaits it, which is the escape hatch for anything the
 named verbs do not cover.

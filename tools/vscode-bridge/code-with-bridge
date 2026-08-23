@@ -30,4 +30,21 @@ while [ -L "$self" ]; do
 done
 here=$(cd "$(dirname "$self")" && pwd)
 
-exec /usr/bin/code --extensionDevelopmentPath="$here/extension" "$@"
+# --user-data-dir is not optional, and the reason is silent. `code` with no
+# user-data-dir hands the request to an already-running VS Code over its IPC
+# socket in $XDG_RUNTIME_DIR, and that process was started without
+# --extensionDevelopmentPath - so the window opens, Remote-SSH connects, and the
+# bridge is simply not in it. Nothing reports this: podbench says "[ok] asked VS
+# Code to open ... over Remote-SSH" because the CLI exited 0.
+#
+# A distinct user-data-dir forces its own instance, which is the only way the
+# flag survives. --extensions-dir is deliberately *not* set: the new instance
+# must keep the real ~/.vscode/extensions, because Remote-SSH lives there and
+# `podbench vscode` cannot work without it.
+data=${PODBENCH_BRIDGE_DATA:-$HOME/.local/state/podbench-vscode-bridge/user-data}
+mkdir -p "$data"
+
+exec /usr/bin/code \
+    --user-data-dir="$data" \
+    --extensionDevelopmentPath="$here/extension" \
+    "$@"
