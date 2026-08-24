@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -82,6 +83,7 @@ from podbench.launcher import (
     running_seat,
     runs_hotfix_supervisor,
     same_build,
+    seat_directories,
     seat_layout,
     seats,
     shares_workload_volume,
@@ -7520,11 +7522,11 @@ def test_print_config_stays_pasteable_under_the_flag(
     assert cluster.seat_known_hosts is None
 
 
-def test_the_seat_is_asked_about_the_folder_an_editor_would_open(
+def test_the_seat_is_asked_about_every_directory_it_mounts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The checkout is in the pod, not on the laptop, and on a hotfixed pod it
-    is on the claim rather than in the home."""
+    """The checkout is in the pod, not on the laptop, and a seat that mounts
+    nothing has only its home to be asked about."""
     laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
     cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
 
@@ -7532,3 +7534,50 @@ def test_the_seat_is_asked_about_the_folder_an_editor_would_open(
     main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
 
     assert cluster.forge_dirs == [seat_layout(session).home]
+
+
+def test_the_claim_is_scanned_even_where_nothing_set_hotfixed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`ssh-config` is the path the p47 defect shipped on (2026-08-24).
+
+    `attach` sets `session.hotfixed` and this verb did not, so the scan went
+    through `editor_folder`, saw `/home/podbench` alone, and stated as fact
+    that the seat had no ssh remote - on a pod whose claim at `/podbench/app`
+    has an `origin` on github.com. The mounts are read off the seat's own spec
+    now, which does not depend on the flag at all.
+    """
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(hotfixed_pod(mounted=True), git_remotes=ORIGIN)
+
+    code = main(
+        [
+            "ssh-config",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--forward-agent",
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    assert HOTFIX_APP_PATH in cluster.forge_dirs
+    assert cluster.seat_known_hosts == GITHUB_KEY + "\n"
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(FORGE_NO_REMOTE.split()) not in flowed
+
+
+def test_the_scan_does_not_depend_on_the_flag_the_attach_path_sets() -> None:
+    """The same directories either way, which is what makes the verb that does
+    not set `hotfixed` behave like the one that does."""
+    session, seat_spec = seat_of(hotfixed_pod(mounted=True))
+
+    unset = replace(session, hotfixed=False)
+
+    assert HOTFIX_APP_PATH in seat_directories(unset, seat_spec)
+    assert seat_directories(unset, seat_spec) == seat_directories(session, seat_spec)

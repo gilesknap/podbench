@@ -1186,6 +1186,46 @@ def seat_claim_path(
     return _mount_path(mount) if mount is not None else ""
 
 
+def seat_directories(
+    session: Session, seat_spec: Mapping[str, Any] | None
+) -> list[str]:
+    """Every directory in the seat where a checkout could be, home included.
+
+    Read off the seat's own ``volumeMounts`` and **not** through
+    :func:`seat_claim_path`, which is the defect this replaced: that function
+    opens on ``session.hotfixed``, a flag ``attach`` sets and ``ssh-config``
+    does not, so on p47 (2026-08-24) the forge scan saw ``/home/podbench``
+    alone and reported "no ssh git remote found in the seat" on a pod whose
+    claim at ``/podbench/app`` has an ``origin`` on github.com. A false
+    statement of fact, on exactly the pod the flag exists for.
+
+    The scan does not need to know which mount is the claim, only where to
+    look, and asking the spec is both cheaper and honest on a pod podbench
+    knows nothing else about: a checkout mounted from a PVC the application
+    declared is as much a git repository as a hotfix claim. ``git -C <dir>
+    remote -v`` on a directory that is not a repository prints nothing and
+    costs one ``execve``, so a mount that holds no checkout is free.
+
+    >>> from podbench.model import ContainerRef, PodRef, Rung
+    >>> seat = ContainerRef(PodRef("demo", "api"), "podbench-1")
+    >>> session = Session(
+    ...     seat=seat, workload="app", rung=Rung.FULL, reused=False, uid=0
+    ... )
+    >>> spec = {"volumeMounts": [{"mountPath": "/podbench/app"}, {"mountPath": "/"}]}
+    >>> seat_directories(session, spec)
+    ['/podbench/app', '/root']
+
+    ``/`` drops out because :func:`_mount_path` strips the trailing slash off
+    every path and leaves nothing: a whole-rootfs mount is not a checkout, and
+    a git walk from there is the walk with no bottom the editor's excludes are
+    about.
+    """
+    mounts = _as_list(as_dict(seat_spec).get("volumeMounts"))
+    paths = (_mount_path(as_dict(entry)) for entry in mounts)
+    home = seat_layout(session).home
+    return list(dict.fromkeys([*(path for path in paths if path), home]))
+
+
 def provision_destination(
     session: Session, seat_spec: Mapping[str, Any] | None
 ) -> str | None:
@@ -5095,16 +5135,16 @@ def emit_ssh_config(
     )
     forge: list[str] = []
     if forward_agent:
-        # The folder the editor would open plus the seat's home, de-duplicated:
-        # on a hotfixed pod the checkout is on the claim and the home holds
-        # nothing, and on every other pod they are the same path.
+        # Every mount the seat carries plus its home, and not the one folder an
+        # editor would open: `editor_folder` is gated on `session.hotfixed`,
+        # which `ssh-config` does not set, so on p47 the scan missed the claim
+        # it was looking at and said there was no remote (2026-08-24).
         seat_spec = ephemeral_container(pod_json, session.seat.container)
-        folder, _ = editor_folder(session, seat_spec)
         forge = forge_seed_notes(
             kubectl,
             session,
             login=login,
-            directories=list(dict.fromkeys([folder, seat_layout(session).home])),
+            directories=seat_directories(session, seat_spec),
         )
     return SshSeat(
         "\n".join(
@@ -7174,6 +7214,11 @@ def _build_app(
             identity_mounted=seat.identity_mounted,
             owner=seat.owner,
             credentials=credentials,
+            # Read here as well as in `attach`, because a `Session` that says a
+            # hotfixed pod is not one is a lie every reader of `seat_claim_path`
+            # inherits - and one of them, the forge scan, shipped on it. The pod
+            # json is already in hand, so the honest value costs nothing.
+            hotfixed=is_hotfixed(pod_json),
             # Asked again rather than assumed: this command exists to regenerate
             # a stanza from another machine, where nothing of the original
             # attach is in hand.

@@ -681,10 +681,12 @@ its own leaves git exactly as broken:
   picks it up because Remote-SSH connects through the stanza;
 * it copies the **forge's** entries out of your own `~/.ssh/known_hosts` into the
   seat's. Which forge is not guessed: podbench runs `git remote -v` in the seat,
-  over the folder an editor would open and the seat's home, and seeds only the
-  ssh hosts those remotes name. On p47 `podbench-home` is an `emptyDir`, so a
-  host accepted interactively dies with the pod; this is why it is done
-  programmatically rather than left to you.
+  over **every directory the seat mounts** and its home, and seeds only the ssh
+  hosts those remotes name. Mounts rather than one chosen folder, because a
+  checkout can be on a hotfix claim, on a PVC the application declared, or in
+  the home, and `git -C` on a directory that is not a repository prints nothing.
+  On p47 `podbench-home` is an `emptyDir`, so a host accepted interactively dies
+  with the pod; this is why it is done programmatically rather than left to you.
 
 The flag is on `attach`, `vscode`, `ssh-config` and `dev`.
 

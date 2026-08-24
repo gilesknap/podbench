@@ -510,7 +510,9 @@ Notes:
   leaves `git fetch` exactly as broken. Nothing is invented: a host you have
   never verified is reported as such, entries are rewritten to name one host
   each, and `@revoked`/`@cert-authority` lines are never copied. An https clone
-  of a public repository needs none of it.
+  of a public repository needs none of it. The scan is over every directory the
+  seat mounts plus its home, so a checkout on a hotfix claim is found on the
+  verbs that never looked at the hotfix layout.
   * It is a flag and not a default because the exposure is real:
     `authorized_keys` gates ssh and does **not** gate `kubectl exec`, so anyone
     with `pods/exec` in the namespace can authenticate as you, to any host that
