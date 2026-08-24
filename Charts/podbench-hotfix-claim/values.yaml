@@ -24,9 +24,15 @@ enabled: false
 # name.
 claimName: ""
 
-# 2Gi is a python-copier-template checkout plus a venv with room to grow. The
-# claim holds a project and its interpreter, not data.
-size: 2Gi
+# 2Gi was a python-copier-template checkout plus a venv with room to grow, and
+# was too tight for anything larger. The claim holds a project, its interpreter
+# and its build cache - not data - and storage is the cheap resource beside a
+# hotfix that ran out of room part-way through installing itself.
+#
+# Keep this in step with `CLAIM_DEFAULT_SIZE` in the launcher: the two are
+# independent spellings of one default, and `tests/test_hotfix_claim_chart.py`
+# renders this chart to hold them together.
+size: 10Gi
 
 # Empty means the cluster's default class, which is the right answer almost
 # everywhere. Name one only where the default cannot satisfy ReadWriteOnce.

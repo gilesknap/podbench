@@ -40,6 +40,6 @@ spec:
   {{- end }}
   resources:
     requests:
-      storage: {{ .size | default "2Gi" | quote }}
+      storage: {{ .size | default "10Gi" | quote }}
 {{- end }}
 {{- end }}

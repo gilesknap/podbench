@@ -300,6 +300,24 @@ at 1.1-1.3 GB. An emptyDir with no limit draws silently on the node's ephemeral
 storage, and blowing the pod's budget evicts the *pod*, application included.
 """
 
+CLAIM_DEFAULT_SIZE = "10Gi"
+"""Default size of hotfix mode's claim, and the only place python spells it.
+
+2Gi was sized for "a python-copier-template checkout plus a venv". Real targets
+are not all that small, storage is the cheap resource beside a hotfix that ran
+out of room mid-``uv sync``, and the claim is on its way to holding a uv cache
+and the seat's home as well as the checkout.
+
+Not :data:`SEAT_HOME_SIZE`, which was the same 2Gi and stays there for the
+opposite reason: that one bounds the *node's* ephemeral storage, and an overrun
+there evicts the pod, application included.
+
+Neither chart can import this, so both spell it again and
+``tests/test_hotfix_claim_chart.py`` renders them and pins each to this value —
+a default that drifts between the launcher and the chart is a claim sized by
+whichever of the two the site happened to use.
+"""
+
 POD_WORK_TIMEOUT = 900.0
 """How long a single ``exec`` into the pod may take before it is killed.
 
@@ -3776,7 +3794,7 @@ def values_snippet(
     app: str,
     entrypoint: str,
     *,
-    size: str = "2Gi",
+    size: str = CLAIM_DEFAULT_SIZE,
     gid: str = DEFAULT_GID_PLACEHOLDER,
     home_size: str = SEAT_HOME_SIZE,
     venv: str = CLAIM_VENV_DIR,
@@ -6212,7 +6230,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         size: Annotated[
             str,
             typer.Option("--size", metavar="SIZE", help="claim size"),
-        ] = "2Gi",
+        ] = CLAIM_DEFAULT_SIZE,
         # Left as a placeholder when unset, so that a snippet pasted without
         # reading it fails at `helm install` rather than deploying an fsGroup
         # the application does not run as — which fails later, in the dark, as a
