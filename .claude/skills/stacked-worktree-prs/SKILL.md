@@ -136,6 +136,38 @@ back before saying it is merged.
 `UNKNOWN`/`UNKNOWN` for `mergeStateStatus` means GitHub is still computing — that is not
 permission to proceed either.
 
+## Merging a prefix does not shrink the PR that contained it
+
+Splitting settled work out of a long branch — branch at the last good commit, PR
+it, merge it — leaves the original PR **still showing every one of those
+commits**. The base ref already says `main`, so the retarget above does not
+apply; what is stale is `baseRefOid`, pinned to the sha `main` had when the PR
+was opened. GitHub does not advance it because `main` moved.
+
+Measured 2026-08-23: after #211 merged nine commits into `main` as ancestors of
+`98f672c`, `git log main..hotfix/easy-to-drive` was the two remaining commits
+while `gh pr diff 208 --name-only` still listed 29 files including all nine
+commits' files, and `baseRefOid` still read `9f8abdb`.
+
+Read the oid, not the ref name:
+
+```
+gh pr view <n> --json baseRefName,baseRefOid,headRefOid
+git log --oneline main..<branch>        # ground truth
+```
+
+A **push to the head branch** makes GitHub re-evaluate, which is usually free
+because work is ongoing. Merging `main` into the branch also does it and does not
+rewrite history. Rebasing the branch onto the new `main` works too and is the
+wrong tool when anybody else has it checked out.
+
+Two things that make this safe to leave alone: the merge must use `--merge`, not
+`--squash` — a squash makes a new sha with no shared history, so the base can
+never advance and the split achieves nothing — and the split branch is a **ref at
+an existing commit** (`git branch <name> <sha>`), never a cherry-pick, whenever
+the settled work is a contiguous prefix. Cherry-picking rewrites shas and
+guarantees the base cannot advance.
+
 ## A push to an open PR's branch is not a commit added to that PR
 
 The user may merge a PR while you are still working on the branch it points at. A later
