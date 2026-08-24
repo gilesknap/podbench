@@ -6,9 +6,10 @@ verb is named for the editor and behaves like a debugger**, and the workflow mos
 people actually want — edit the code, restart the process, look again — pays the
 entire debugger bill before it starts.
 
-Decided in conversation with Giles, 2026-08-24. Where a decision is his, it says
-so; where something is still open, it says that instead, and there are three of
-those. They are marked **OPEN** and none of them blocks the shape.
+Decided in conversation with Giles, 2026-08-24, over two sittings. The three
+questions the first sitting left **OPEN** were all settled in the second, and the
+plan records how rather than only what. Nothing here is now waiting on a
+decision.
 
 Read `ssh-over-exec`, `ephemeral-containers`, `terminal-reports` and
 `vscode-in-a-seat` before touching the code any slice names. The evidence for the
@@ -38,13 +39,10 @@ The gate and the pre-existing non-primary behaviour compose into something worse
 than either alone. **This plan deletes the interaction rather than patching it**,
 because slice 1 stops emitting anything at window-open.
 
-Two related defects found the same day, both still unfiled:
-
-- `podbench pids` breaks its own table when a cmdline contains newlines — pid 1
-  is the supervisor loop, and the row is truncated on width without flattening
-  whitespace first.
-- The wrong-subset behaviour above deserves its own issue even though this plan
-  removes it, because it is live in 0.9.1 today.
+Filed as **#228**, because it is live in 0.9.1 and this plan is not written yet.
+A related defect found the same day is **#229**: `podbench pids` breaks its own
+table when a cmdline contains newlines — pid 1 *is* the supervisor loop, so every
+hotfixed pod shows it.
 
 ---
 
@@ -215,7 +213,14 @@ verb, is what needs re-homing.
 
 ## 5 — `status` measures instead of recording
 
-**Decided (Giles):** keep `status`; make it truthful.
+**Decided (Giles):** keep `status`; make it truthful. Dropping the verb outright
+was considered and rejected — it does **two** jobs, and only one of them is the
+repo-state recording this plan objects to. The other is cluster state that
+nothing else can answer: *which pods in this namespace are hotfixed at all*
+(a colleague's hotfix is otherwise invisible to anyone who was not there), and
+*whether the image moved under the mount*, from `base_image_digest` against the
+live `imageID`. Giles: "not knowing what has happened upstream is not a huge
+hole" — so the remote row is best-effort and the rest is not.
 
 The rule that forces this: **"let users use normal git" and "a manifest that
 records what git did" are incompatible.** A hand-push makes a recorded field a
@@ -244,10 +249,42 @@ The manifest keeps only what git cannot know: `repo`, `base_commit` (and
 live container's `imageID` says the image moved under your mount — i.e. the claim
 may now be shadowing a fix that is already released.
 
+**Every row a day-to-day reader looks at is free.** Measured in a seat this
+afternoon with the network demonstrably broken — the `git fetch` in the same
+session died on host verification — these are reads of local objects and refs and
+need no credential, no agent and no egress:
+
+| row | needs | availability |
+|---|---|---|
+| dirty, and which files | nothing | always |
+| commits ahead of `base_commit` | nothing | always |
+| on a remote branch *as of the clone* | nothing | always |
+| **is that still true now** | network + auth | best-effort, **from the laptop** |
+
+**The freshness row is done on the laptop, not in the seat** (decided). `status`
+reaches the claim through `kubectl exec`, and **an exec session has no
+`SSH_AUTH_SOCK`** — agent forwarding exists only inside an *ssh* session — so even
+after slice 6 lands, a `status` run from the laptop could not use a forwarded
+agent. Routing it through ssh instead would need a seat that authorises *you*,
+which fails on precisely the pods `status` is most useful for (a colleague's
+hotfix), would need an ssh stanza that exists only for seats you attached to, and
+would depend on pod egress to the forge that a beamline NetworkPolicy may not
+permit. The laptop already holds both halves — credentials *and* connectivity —
+so it reads the claim's shas out over exec and runs `git ls-remote` locally.
+
+That is the same shape as the `consolidate` insight: **do the network half where
+the credentials already are.**
+
+Two constraints on that row: it is time-bounded, because a status verb that hangs
+on a network call is worse than one that says less; and a failed query reports
+**unmeasured**, never "not pushed". Also `ls-remote` returns ref *tips*, not
+ancestry — so it can say "your commit is the tip of a remote branch" and cannot
+cheaply say "it has been merged". The wording must not imply the second.
+
 ```
 claim   3 commits ahead of 603392d
 dirty   2 files uncommitted, and they are what is running
-remote  <OPEN - see Q3>
+remote  HEAD is the tip of origin/hotfix-ramp (checked just now)
 image   unchanged since the hotfix was made
 ```
 
@@ -257,7 +294,7 @@ and the one the memory-headroom row already follows.
 
 ---
 
-## 6 — Real git in the seat: agent forwarding **OPEN**
+## 6 — Real git in the seat: agent forwarding
 
 The seat cannot reach a forge. Making it able to is what would let "just do git
 yourself" be true rather than aspirational, and it is **two changes, not one**.
@@ -312,9 +349,38 @@ Note the ssh remote came from what `init` was told, so an https clone would fetc
 a public repo with no key at all. **That may make this slice unnecessary for some
 users and not others**, which is itself worth settling.
 
+**Forward only the git keys** (decided). An agent forwards *an agent*, not
+individual keys, so the granularity comes from pointing at a different agent:
+
+```
+ssh-agent -a /run/user/1000/git-agent.sock
+SSH_AUTH_SOCK=/run/user/1000/git-agent.sock ssh-add ~/.ssh/id_git
+```
+
+podbench launches `code`, so it controls that child's environment: the flag takes
+an optional socket path and sets `SSH_AUTH_SOCK` for that invocation, and only
+those keys ever reach the pod. No OpenSSH version floor, and it composes with
+`ssh-add -c`. Giles' reasoning: most people who follow the usual advice already
+keep a separate key for git, so this is practical rather than theoretical — and
+it collapses the "unbounded in reach" objection above to one repository host.
+
+**Host trust: seed the seat's `known_hosts` from the user's own** (decided —
+this was Q2). The trust decision has already been made on their laptop; copying
+the relevant entries in neither goes stale like baked-in forge keys nor weakens
+verification like accept-on-first-use, which `ssh-over-exec` explicitly refuses
+to teach. Done **only when the forwarding flag is on** — a seat that cannot
+authenticate has no use for host keys.
+
+**Context worth recording** (Giles): the established route into these pods is
+`kubectl exec` anyway, so everyone with exec is already inside. podbench's ssh
+layer is *adding* a boundary here, not removing one — which is the right frame
+for judging what this flag costs.
+
 ---
 
-## 6b — the alternative that needs no credential in the seat **OPEN**
+## 6b — declined: pushing from the laptop instead
+
+
 
 Raised by Giles, 2026-08-24, and it may be a better answer than slice 6 entirely.
 
@@ -341,30 +407,40 @@ removes Q1 and Q2 outright — no forwarded agent, so no lending of a git identi
 to anyone holding `pods/exec`; no host-trust problem, because the seat never
 talks to a forge. And it makes Q3 answerable, because the *laptop* can fetch.
 
-**What it does not give you** is git-in-the-seat for the human: a `git push` typed
-into the window's own terminal still fails. So the two are not strictly
-alternatives — slice 6 serves the person working in the seat, this serves the
-tooling. Deciding whether the first is wanted at all is the real question, and it
-is upstream of both.
+**Declined (Giles, 2026-08-24), and the reason is slice 4.** This existed to give
+podbench's *tooling* a way to push. With `consolidate` gone, nothing in podbench
+pushes at all, so it has no caller. The only remaining pusher is the human in the
+window, and a laptop-side mechanism does nothing for them — a `git push` typed
+into the seat's terminal still fails without slice 6.
+
+Recorded rather than deleted because the underlying insight is reused: slice 5's
+freshness row does exactly this, doing the network half on the laptop where the
+credentials already are. If podbench ever needs to push again, this is the shape.
 
 ---
 
-## The three open questions
+## The three questions, and how they were settled
 
-**Q1 — is `ForwardAgent` a flag or a default?** Recommendation: an opt-in flag
-whose one-line warning names the git-identity exposure specifically.
+All three were left open by the first sitting and answered in the second.
 
-**Q2 — where does host trust come from?** Bake the common forges' keys into the
-image (they rotate, so this goes stale); seed from the user's own
-`~/.ssh/known_hosts` at attach (podbench reading the user's files, which it does
-not do today); or leave it and accept once per pod. Recommendation: seed from the
-user's own, **and only when the forwarding flag is on** — the trust decision is
-already made on their laptop, and it neither goes stale nor weakens verification.
+**Q1 — is `ForwardAgent` a flag or a default? → an opt-in flag**, and what decided
+it was Giles' observation about what *else* could be put in a seat. A forwarded
+agent writes nothing to disk and sets `SSH_AUTH_SOCK` only in the ssh session's
+own environment, so a colleague's exec session cannot stumble into it: deliberate
+use is easy, accidental use essentially does not happen. A cached `gh` token or
+`.git-credentials` on a shared path is the opposite on every count — persistent,
+copyable, silently reused, and still working next week. It is a flag rather than a
+default because the exposure is real; it is agent forwarding rather than any other
+credential because it is the only one that leaves nothing behind.
 
-**Q3 — what does `status` say on the remote axis?** Report the tracking refs and
-state when it was last true and why it cannot refresh; or have `init` clone over
-https so it can; or drop the axis. Recommendation: the first, unless slice 6
-lands, in which case a real fetch is available and the question dissolves.
+**Q2 — where does host trust come from? → seeded from the user's own
+`known_hosts`**, and only when the flag is on. See slice 6.
+
+**Q3 — what does `status` say on the remote axis? → dissolved.** Once `status`
+stops recording and starts measuring, there is no stale field to be honest about:
+the local rows are free and always available, and the freshness row is a
+best-effort `ls-remote` from the laptop that says **unmeasured** when it cannot
+run. Giles: not knowing what has happened upstream is not a huge hole.
 
 ---
 
@@ -424,5 +500,10 @@ cannot do. Until then, per-user seats are the workaround, not the design.
 - **#223 and #224.** Both are decisions this plan touches without settling:
   slice 1 removes #224's mechanism at window-open, and #223's
   `.podbench-hotfix.json` question is untouched.
+- **#228 is fixed by slice 1 as a side effect**, not as its own change — nothing
+  is authored at window-open, so there are no non-primary entries to be wrong.
+  The issue stays open until the slice lands, because it is live in 0.9.1.
+- **#229, the `pids` table.** A one-line whitespace fix, unrelated to this plan's
+  spine, and not worth folding into a PR about the shape of the verbs.
 - **Retiring `hotfix init`.** It clones, seeds the claim from the running
   container and builds the venv. None of that is ordinary git and it stays.
