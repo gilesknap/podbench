@@ -348,6 +348,16 @@ Three things about what it prints:
   and a restart is not an ask for a debugger. See [VS Code over
   Remote-SSH](vscode-remote-ssh.md) for the debug step itself.
 
+**A `git fetch` or `git push` in the seat needs `--forward-agent`.** The seat
+holds no credential of its own, and the first thing an ssh remote fails on there
+is `Host key verification failed` rather than authentication. Landing the seat
+with `podbench attach --forward-agent` — or adding it to an existing one with
+`podbench ssh-config --forward-agent` — lends it your agent for the session and
+seeds its `known_hosts` from your own for the forge the claim's remote names.
+Read what that costs first: it is {ref}`one section <git-in-the-seat>` of the
+VS Code how-to, and the short version is that `authorized_keys` gates ssh and does not gate `kubectl
+exec`.
+
 ## 5. Watch it: `hotfix status`
 
 ```

@@ -328,6 +328,25 @@ automatically and prints why.
   skip host verification has taught them something they will apply elsewhere.
   Delivering a stable host key from a Secret is supported and is the better
   posture where it is available.
+* **A seat holds no credential of its own — unless you pass `--forward-agent`.**
+  The flag is off by default and worth understanding before it is on, because
+  `authorized_keys` gates ssh and does **not** gate `kubectl exec`: while the
+  session is up, anyone with `pods/exec` in the namespace can reach the
+  forwarded socket and authenticate as you to *any host that trusts the key* —
+  an agent forwards keys, not a destination. Read the rolebinding first; a
+  facility's RBAC group routinely includes service accounts and CI identities
+  alongside people. It is nonetheless the least-bad credential to place in a
+  seat, and that is the argument for offering it: nothing is written to disk,
+  `SSH_AUTH_SOCK` exists only in the *ssh session's* environment so an exec
+  shell cannot stumble into it, and the private key never enters the pod, so
+  the exposure ends with the session — none of which is true of a cached `gh`
+  token or a `.git-credentials` file on a shared path. `ssh-add -c`,
+  destination-constrained keys and a git-only agent (`--agent-socket`) narrow
+  it further; all three are in
+  [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md). The same flag seeds the
+  seat's `known_hosts` from your own — entries you have already verified,
+  rewritten to name one host each, never a `@revoked` or `@cert-authority` line,
+  and never an accept-on-first-use.
 * **The image needs egress on first connect** for the VS Code server download —
   four host groups, listed in
   [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md). Air-gapped operation is

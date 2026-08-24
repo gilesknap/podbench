@@ -528,6 +528,7 @@ lines are load-bearing in ways that fail *silently*:
 | no `-t`, ever | from a script kubectl silently degrades to non-tty and appears to work; with a **real** TTY forced onto the ProxyCommand the ssh client hangs indefinitely |
 | `ControlPath /tmp/podbench-cm/%C-<digest>` | `sun_path` is 108 bytes. A control socket next to a kubeconfig or in a workspace directory hits `ControlPath too long`. The multiplexed connection is also a ~6× speedup: 0.345 s cold, 0.058 s over the master. The digest is the seat's, and it is what keeps the multiplexing honest: `%C` hashes the *resolved* `HostName`, which every seat in a pod shares, so on its own it would let a second alias ride the first seat's connection — **skipping the host-key check**, since a multiplexed session never repeats it |
 | `ServerAliveInterval`/`CountMax` | a *stalled* transport — what an apiserver or konnectivity hiccup looks like — hangs ssh **forever** without them, and fails in 19 s with them. A hard kill or pod deletion is detected instantly either way |
+| `ForwardAgent yes` | present only under `--forward-agent`, and absent otherwise because OpenSSH's own client default is `no`. It lends your agent to everyone who can `kubectl exec` into the namespace for the life of the session — see {ref}`Git in the seat <git-in-the-seat>` before adding it by hand |
 | `HostKeyAlias` + `UserKnownHostsFile` | podbench manages its own `known_hosts`, keyed on the pod UID **and the seat**, rather than teaching you `StrictHostKeyChecking no`. Every seat mints its own host key, so one alias over two of them would arrive as a host-key mismatch; a re-created pod is a *new host*, not a MITM warning |
 
 Transport budget, for reference: ~10–11 MB RSS per live session, 26 MB/s
@@ -650,6 +651,115 @@ arguments. It kills the server after exactly five minutes idle.
   in-pod verb is there as `podbench <verb>` — `podbench pids`, `podbench dbg`,
   `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
   `podbench run`, `podbench stop`.
+
+(git-in-the-seat)=
+## Git in the seat: agent forwarding
+
+A seat holds no credentials, so `git fetch` in one fails — and the first thing it
+fails on is **not** authentication. Measured in a live seat on p47, 2026-08-24:
+
+```console
+$ cd /podbench/app && git fetch origin
+Host key verification failed.
+```
+
+`podbench attach --forward-agent` fixes both halves at once, because either on
+its own leaves git exactly as broken:
+
+* it puts `ForwardAgent yes` in the generated stanza, so ssh in the seat can use
+  the keys your local agent holds. Nothing else was needed for this: OpenSSH's
+  client default is `ForwardAgent no` and sshd's is `AllowAgentForwarding yes`,
+  so the seat was always willing and the stanza simply never asked. VS Code
+  picks it up because Remote-SSH connects through the stanza;
+* it copies the **forge's** entries out of your own `~/.ssh/known_hosts` into the
+  seat's. Which forge is not guessed: podbench runs `git remote -v` in the seat,
+  over the folder an editor would open and the seat's home, and seeds only the
+  ssh hosts those remotes name. On p47 `podbench-home` is an `emptyDir`, so a
+  host accepted interactively dies with the pod; this is why it is done
+  programmatically rather than left to you.
+
+The flag is on `attach`, `vscode`, `ssh-config` and `dev`.
+
+Three things it will not do, all deliberate:
+
+* **it never invents trust.** No entry of yours for that host means no entry in
+  the seat, and it says so. podbench does not teach `StrictHostKeyChecking no`
+  and does not bake a forge's key into the image, for the same reason it does
+  neither for the seat's own host key: one is a habit you will apply elsewhere,
+  and the other goes stale silently;
+* **it copies entries, not your file.** Each copied line is rewritten to name
+  the one host it matched, so a `*.example.com` pattern of yours does not become
+  a wildcard the seat holds, and the comment goes the way it already does for
+  the seat's own entry;
+* **`@revoked` and `@cert-authority` lines are skipped.** A marker dropped in the
+  copy inverts its meaning — a revoked key rewritten as a plain entry would be
+  installed as trusted — so a CA-based setup reports as *no entry found* rather
+  than as trust invented for it.
+
+An **https** clone of a public repository needs none of this. If your remote is
+`https://github.com/…` the flag has nothing to do, and podbench says so instead
+of pretending it seeded something.
+
+### What it costs, exactly
+
+`authorized_keys` gates ssh. It does **not** gate `kubectl exec`, and podbench's
+own report advertises that path. So while the session is up, anyone with
+`pods/exec` in the namespace can reach the forwarded socket and authenticate as
+you — and an agent forwards *keys*, not a destination, so that means **any host
+that trusts the key**: jump boxes, other beamline machines, other organisations.
+Bounded in time to the session, unbounded in reach within it.
+
+**Read the rolebinding before you decide.** A facility's RBAC group routinely
+contains service accounts and CI identities alongside humans, so "who can exec
+here" is often a larger set than "my colleagues".
+
+It is still the least-bad credential to put in a seat, which is why the flag
+exists at all: nothing is written to disk, and `SSH_AUTH_SOCK` is set only in the
+*ssh session's* environment, so a colleague's `kubectl exec` shell does not have
+it and cannot stumble into it. The private key never enters the pod, so the
+exposure ends when the session does. A cached `gh` token or a `.git-credentials`
+file on a shared path is the opposite on every count — persistent, copyable,
+silently reused, and still working next week.
+
+Worth keeping in frame: the established route into these pods is `kubectl exec`
+anyway. podbench's ssh layer is *adding* a boundary here, not removing one.
+
+### Forward only the git key
+
+An agent forwards **an agent**, not individual keys, so the granularity comes
+from pointing at a different one. Keep a git-only agent:
+
+```console
+$ ssh-agent -a /run/user/1000/git-agent.sock
+$ SSH_AUTH_SOCK=/run/user/1000/git-agent.sock ssh-add ~/.ssh/id_git
+```
+
+and hand it to the editor podbench launches:
+
+```console
+$ podbench vscode --agent-socket /run/user/1000/git-agent.sock
+```
+
+`--agent-socket` implies `--forward-agent`, and podbench refuses a path that is
+not a listening socket rather than starting a run that would fail in the seat
+minutes later. It sets `SSH_AUTH_SOCK` for every child of that run — `code`, the
+preflight, and the ssh calls that write the machine settings — so only the keys
+in that agent ever reach the pod, and the "unbounded in reach" objection above
+collapses to one repository host. There is no OpenSSH version floor.
+
+**One caveat, and it is a real one.** `code --remote` hands the argv to a VS Code
+that may already be running, and that instance spawns ssh with the environment
+*it* was started with. If a window is already open, close it first or export
+`SSH_AUTH_SOCK` in the shell you start VS Code from; `podbench attach
+--forward-agent` plus your own `ssh` has no such problem.
+
+Two more mitigations, both entirely yours to apply:
+
+* **`ssh-add -c`** makes the agent prompt locally on every use, so a key cannot
+  be used silently by anybody, including you;
+* **destination-constrained keys** (`ssh-add -h`, OpenSSH 8.9 and later) bind a
+  key to named destinations, which closes the "any host that trusts the key"
+  half directly rather than by keeping agents apart.
 
 ## What the seat configures for you
 
