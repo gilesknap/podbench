@@ -53,6 +53,7 @@ module skip, which is what the ``-rs`` line in its log is for.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -107,6 +108,10 @@ CAP_REFUSAL = "CAP_SYS_PTRACE is not in this seat's effective set"
 ``tests/test_vscode.py``, so it is a fixed string rather than a paraphrase."""
 
 PROVISION_REFUSAL = "cannot be driven from here"
+# vscode.WITHHELD_NOTE, spelled out rather than imported: these tests read what
+# a seat printed, and the seat is a different build of podbench from the one
+# running them.
+INJECTION_WITHHELD = "so no debugpy configuration is written"
 """The second capability-derived claim, in ``vscode.py``'s ``--provision``.
 
 Matched on the clause both wordings share rather than on either whole sentence:
@@ -476,25 +481,60 @@ def test_provision_is_not_refused_for_a_capability_the_probe_did_not_need(
     )
 
 
-def test_debug_config_emits_a_configuration_for_a_seat_that_can_attach(
+def test_debug_config_emits_a_configuration_or_withholds_one_and_says_so(
     provisioned: subprocess.CompletedProcess[str], capreport: str, app_pid: int
 ) -> None:
-    """A seat that can attach gets a launch.json, not an empty stdout.
+    """A seat that can attach gets a launch.json, or an explicit refusal to write one.
 
     Separate from the refusal above because they fail independently: the
-    capability gate is one of four prerequisites the debugpy flavour is
-    withdrawn on, and a run that emitted nothing for one of the other three
-    would be a different defect with the same symptom.
+    capability gate is one of the prerequisites the debugpy flavour is withdrawn
+    on, and a run that emitted nothing for one of the others would be a
+    different defect with the same symptom.
+
+    **The injection is allowed to fail here.** Issue #225 records that gdb's
+    ``DoAttach`` refuses intermittently on this fixture, upstream of anything
+    podbench decides and while ``capreport`` on the same seat and pid measures
+    the attach as available. What is *not* allowed is authoring a configuration
+    naming a port no server ever answered, which is issue #218: since that fix a
+    run whose handshake failed withdraws the flavour, keeps whatever
+    ``launch.json`` already held, and exits non-zero.
+
+    So there are exactly two acceptable outcomes, and asserting only the happy
+    one turns an upstream flake into a red job while asserting only the sad one
+    would let a real withdrawal pass unnoticed. Both are pinned.
     """
     _require_live_attach(capreport, app_pid)
+    output = provisioned.stdout + provisioned.stderr
+
+    if INJECTION_WITHHELD in output:
+        # The one thing #218 forbids: the port that failed must not reach the
+        # emitted document. Read it back out of the seat's own sentence rather
+        # than assuming stdout is empty - another candidate may legitimately
+        # have emitted a configuration of its own in the same run.
+        refused = re.search(r"no debug session could be started on \S+?:(\d+)", output)
+        assert refused, (
+            "debug-config said it withheld a configuration but did not name the "
+            f"port it withheld it for, so #218's contract cannot be checked.\n"
+            f"said:\n{output.strip()}"
+        )
+        port = refused.group(1)
+        assert port not in provisioned.stdout, (
+            f"debug-config withheld its configuration for port {port} and then "
+            "emitted that port anyway - a launch.json naming a port nothing "
+            f"answered is exactly #218.\nemitted:\n{provisioned.stdout.strip()}"
+        )
+        return
+
     assert provisioned.returncode == 0, (
         f"debug-config exited {provisioned.returncode} for a target that "
-        f"capreport says is live-attachable.\nmeasured:\n{_measured(capreport)}\n"
-        f"printed:\n{(provisioned.stdout + provisioned.stderr).strip()}"
+        f"capreport says is live-attachable, and did not say it was withholding "
+        f"a configuration.\nmeasured:\n{_measured(capreport)}\n"
+        f"printed:\n{output.strip()}"
     )
     assert provisioned.stdout.strip(), (
         "debug-config --print-config emitted no configuration at all for pid "
-        f"{app_pid}, whose live attach was measured OK from this seat.\n"
+        f"{app_pid}, whose live attach was measured OK from this seat, and gave "
+        f"no reason for withholding one.\n"
         f"measured:\n{_measured(capreport)}\n"
         f"said instead:\n{provisioned.stderr.strip()}"
     )
