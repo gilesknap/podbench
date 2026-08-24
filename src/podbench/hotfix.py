@@ -53,12 +53,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shlex
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
@@ -76,6 +76,7 @@ from .kubectl import (
     CommandResult,
     Kubectl,
     KubectlError,
+    KubectlTimeoutError,
     Runner,
     run_subprocess,
 )
@@ -110,7 +111,6 @@ from .spec import target_uid_gid
 __all__ = [
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
-    "MAX_RECORDED_COMMITS",
     "METADATA_FILES",
     "SEAT_HOME_SIZE",
     "CheckStatus",
@@ -123,21 +123,20 @@ __all__ = [
     "RetirementStep",
     "ManifestVersionError",
     "MultiReplicaError",
-    "HotfixCommit",
     "HotfixError",
     "HotfixHealth",
     "HotfixManifest",
     "Hold",
     "HotfixRow",
+    "ClaimGit",
+    "RemoteTips",
+    "read_claim_git",
+    "remote_tips",
     "HotfixStore",
     "HotfixTarget",
     "PodStore",
-    "apply_hotfix",
     "assess",
-    "changed_paths",
     "checkout_path",
-    "consolidate",
-    "drift_commits",
     "format_preflight",
     "format_status",
     "identity_configmap",
@@ -204,7 +203,6 @@ __all__ = [
     "DEFAULT_GID_PLACEHOLDER",
     "metadata_changed",
     "normalise_interpreter",
-    "parse_log",
     "parse_pyvenv_cfg",
     "probe_interpreter",
     "replica_count",
@@ -226,7 +224,7 @@ and the volume root are the same directory. There is nowhere else on the volume
 to put it.
 """
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 """Schema version written by this podbench.
 
 Read leniently and written strictly: a manifest with a lower version (or none at
@@ -235,29 +233,38 @@ podbench will meet volumes written by this one and by whatever came before it. A
 *higher* version is refused outright — guessing at fields we have never seen is
 how a fix silently loses its provenance.
 
-Version 2 adds :attr:`HotfixManifest.claim_venv` and
-:attr:`HotfixManifest.base_commit_assumed`. Both default safely, so the bump is
-not needed to *load* a v1 manifest. It is needed to keep ``apply`` from
-laundering one: a v1 manifest cannot say whether its base was measured, and
-rewriting it at the current version with the field's default would turn "this
-schema could not record it" into "it was measured" — the one direction that
-field must never move in. :attr:`~HotfixManifest.stale_schema` is what carries
-that, and it is also what makes ``status`` say the provenance may be absent.
+Version 2 added :attr:`HotfixManifest.claim_venv` and
+:attr:`HotfixManifest.base_commit_assumed`, neither of which a v1 manifest can
+supply.
+
+Version 3 **removes** the git records — ``commit``, ``ahead``, ``commits``,
+``author``, ``timestamp`` and ``consolidatedBranch``. They were written by
+``apply`` and ``consolidate``, and #232 deleted both verbs: with ordinary git in
+the seat, any of those fields can be made a lie by one hand commit or one hand
+push, and a recorded lie is worse than a measurement nobody took. ``status``
+measures them instead (:func:`read_claim_git`, :func:`remote_tips`). The keys a
+v2 manifest still carries are simply not read — see :meth:`from_mapping` — and
+because v3 *removes* rather than adds, a v2 manifest is complete for everything
+this podbench does with one. That is why :data:`PROVENANCE_COMPLETE_FROM` is 2
+and not :data:`MANIFEST_VERSION`.
 
 The cost, which is real and is the reason the rule exists rather than a bump
-being free: a podbench that predates this one refuses a v2 manifest outright.
+being free: a podbench that predates this one refuses a v3 manifest outright.
 For ``status`` that is one row, not the listing — :func:`read_pod_state`
 catches :class:`ManifestVersionError` along with every other unreadable
 manifest and reports the pod as such, so the exit-code contract still holds per
 row.
 """
 
-MAX_RECORDED_COMMITS = 20
-"""How many commits the manifest carries verbatim.
+PROVENANCE_COMPLETE_FROM = 2
+"""The oldest schema version that records everything this podbench relies on.
 
-Annotations share a 256 KB budget with everything else on the object, and a long
-beamtime can accumulate a lot of hotfixes. The count of commits ahead is recorded
-separately so the drift figure stays exact even when the list is truncated.
+Not :data:`MANIFEST_VERSION`, deliberately. :attr:`HotfixManifest.stale_schema`
+drives a note on every ``status`` row, and its job is to say *some provenance
+may be absent* — true of a v1 manifest, which cannot say whether its base commit
+was measured, and false of a v2 one, which says everything v3 keeps. Keying the
+note on the version bump instead would put a caution on every hotfix in the
+field the day #232 shipped, warning about fields v3 does not read.
 """
 
 METADATA_FILES: tuple[str, ...] = (
@@ -302,9 +309,6 @@ the work rather than a wedge. Fifteen minutes is still a bound — issue #118's
 point is that *no* number is the one wrong answer — and a clone that has not
 finished by then has failed at something the user needs told about.
 """
-
-LOG_SEPARATOR = "\x1f"
-_LOG_FORMAT = f"--pretty=format:%H{LOG_SEPARATOR}%s"
 
 CLAIM_VENV_DIR = ".venv"
 """The venv's directory name on the claim, relative to the checkout.
@@ -437,25 +441,17 @@ def _laid_out(text: str) -> list[Text]:
 
 
 @dataclass(frozen=True)
-class HotfixCommit:
-    """One commit on the PVC checkout that the released image does not have."""
-
-    sha: str
-    subject: str
-
-    @property
-    def short(self) -> str:
-        """The abbreviated sha, for tables.
-
-        >>> HotfixCommit("0123456789abcdef", "fix the thing").short
-        '0123456'
-        """
-        return self.sha[:7]
-
-
-@dataclass(frozen=True)
 class HotfixManifest:
     """What a hotfix was made against, recorded on the volume that carries it.
+
+    **Only what git cannot answer.** Since #232 the fix's own history is not in
+    here: no commit, no count, no author, no timestamp, no branch. The claim is
+    a clone with a real ``origin``, so ``git`` in it answers every one of those
+    more truthfully than a record can — a hand commit or a hand push in the seat
+    invalidates a recorded field the moment it happens, and telling people to
+    use ordinary git is an invitation to do exactly that. What is left is the
+    provenance a checkout does not know: where it came from, which image and
+    which commit it was seeded against, and how it is laid out.
 
     Every field is defaulted so that a manifest written by an older schema
     version loads rather than raising: the missing fields become empty, and
@@ -475,7 +471,6 @@ class HotfixManifest:
     """The venv's interpreter version, read from ``pyvenv.cfg`` on the volume."""
 
     container: str = ""
-    commit: str = ""
     base_commit: str = ""
     """The commit the released image was built from; drift is measured from it."""
 
@@ -496,17 +491,13 @@ class HotfixManifest:
     :attr:`venv`, which is the mountPath.
 
     Recorded because it is a cross-command contract nothing used to check
-    (#209): ``init`` took the flag, the manifest did not carry it, and ``apply``
-    had no such flag at all — so a rebuild triggered by a packaging change went
-    to ``.venv`` while the supervisor's runtime switch looked somewhere else,
-    and the pod quietly went on running the image's code.
+    (#209): ``init`` took the flag and the manifest did not carry it, so a
+    rebuild triggered by a packaging change went to ``.venv`` while the
+    supervisor's runtime switch looked somewhere else, and the pod quietly went
+    on running the image's code. ``restart --reinstall`` reads it here for the
+    same reason.
     """
 
-    author: str = ""
-    timestamp: str = ""
-    ahead: int = 0
-    commits: tuple[HotfixCommit, ...] = ()
-    consolidated_branch: str | None = None
     schema_version: int = MANIFEST_VERSION
 
     def to_mapping(self) -> dict[str, Any]:
@@ -522,18 +513,9 @@ class HotfixManifest:
             "baseImageDigest": self.base_image_digest,
             "interpreter": self.interpreter,
             "container": self.container,
-            "commit": self.commit,
             "baseCommit": self.base_commit,
             "baseCommitAssumed": self.base_commit_assumed,
             "claimVenv": self.claim_venv,
-            "author": self.author,
-            "timestamp": self.timestamp,
-            "ahead": self.ahead,
-            "commits": [
-                {"sha": commit.sha, "subject": commit.subject}
-                for commit in self.commits
-            ],
-            "consolidatedBranch": self.consolidated_branch,
         }
 
     def to_json(self) -> str:
@@ -542,12 +524,18 @@ class HotfixManifest:
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> HotfixManifest:
-        """Load a manifest, tolerating anything this schema once lacked.
+        """Load a manifest, tolerating anything this schema once lacked — and
+        anything it has since stopped keeping.
 
-        >>> HotfixManifest.from_mapping({"commit": "abc"}).schema_version
+        A v2 manifest's git records (``commit``, ``ahead``, ``commits``,
+        ``author``, ``timestamp``, ``consolidatedBranch``) are read past rather
+        than rejected: they are on every claim in the field, and the pod
+        carrying one is a working hotfix, not a stale schema.
+
+        >>> HotfixManifest.from_mapping({"baseCommit": "abc"}).schema_version
         0
-        >>> HotfixManifest.from_mapping({"version": 1, "ahead": 2}).ahead
-        2
+        >>> HotfixManifest.from_mapping({"version": 2, "ahead": 2}).base_commit
+        ''
         >>> HotfixManifest.from_mapping({"version": 1}).claim_venv
         '.venv'
         """
@@ -559,13 +547,6 @@ class HotfixManifest:
                 "than overwriting it — the fields it does not know about are "
                 "somebody's provenance."
             )
-        commits = tuple(
-            HotfixCommit(
-                sha=_as_str(as_dict(entry).get("sha")) or "",
-                subject=_as_str(as_dict(entry).get("subject")) or "",
-            )
-            for entry in _as_list(payload.get("commits"))
-        )
         return cls(
             venv=_as_str(payload.get("venv")) or "",
             checkout=_as_str(payload.get("checkout")) or "",
@@ -574,15 +555,9 @@ class HotfixManifest:
             base_image_digest=_as_str(payload.get("baseImageDigest")) or "",
             interpreter=_as_str(payload.get("interpreter")) or "",
             container=_as_str(payload.get("container")) or "",
-            commit=_as_str(payload.get("commit")) or "",
             base_commit=_as_str(payload.get("baseCommit")) or "",
             base_commit_assumed=payload.get("baseCommitAssumed") is True,
             claim_venv=_as_str(payload.get("claimVenv")) or CLAIM_VENV_DIR,
-            author=_as_str(payload.get("author")) or "",
-            timestamp=_as_str(payload.get("timestamp")) or "",
-            ahead=_as_int(payload.get("ahead")) or len(commits),
-            commits=commits,
-            consolidated_branch=_as_str(payload.get("consolidatedBranch")),
             schema_version=version,
         )
 
@@ -596,8 +571,18 @@ class HotfixManifest:
 
     @property
     def stale_schema(self) -> bool:
-        """Whether this came off the volume in an older schema version."""
-        return self.schema_version < MANIFEST_VERSION
+        """Whether this came off the volume missing provenance nobody can recover.
+
+        Against :data:`PROVENANCE_COMPLETE_FROM`, not :data:`MANIFEST_VERSION`:
+        v3 only *removed* fields, so a v2 manifest says everything this podbench
+        reads and a note about it would be a caution with nothing behind it.
+
+        >>> HotfixManifest(schema_version=2).stale_schema
+        False
+        >>> HotfixManifest(schema_version=1).stale_schema
+        True
+        """
+        return self.schema_version < PROVENANCE_COMPLETE_FROM
 
 
 def manifest_path(venv: str) -> str:
@@ -998,51 +983,6 @@ def probe_interpreter(
 # -- git on the claim ------------------------------------------------------
 
 
-def parse_log(text: str) -> tuple[HotfixCommit, ...]:
-    """Read ``git log`` in this module's own format.
-
-    ``%x1f`` rather than a printable separator, because a commit subject may
-    contain any printable character and a hotfix commit's subject is written by
-    somebody in a hurry at 3am.
-
-    >>> parse_log("abc\\x1ffix the thing\\ndef\\x1fand another")
-    (HotfixCommit(sha='abc', subject='fix the thing'), HotfixCommit(sha='def', subject='and another'))
-    """  # noqa: E501
-    commits: list[HotfixCommit] = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        sha, separator, subject = line.partition(LOG_SEPARATOR)
-        if not separator:
-            continue
-        commits.append(HotfixCommit(sha=sha.strip(), subject=subject.strip()))
-    return tuple(commits)
-
-
-def drift_commits(
-    store: HotfixStore, checkout: str, base_commit: str
-) -> tuple[HotfixCommit, ...]:
-    """Commits on the claim's checkout that the released image does not have.
-
-    Newest first, which is the order ``git log`` gives and the order a reader
-    wants: the last thing somebody did to the running code is the first line.
-    """
-    if not base_commit:
-        return ()
-    result = store.run(
-        git_argv(checkout, "log", _LOG_FORMAT, f"{base_commit}..HEAD"),
-        check=False,
-    )
-    if result.returncode != 0:
-        raise HotfixError(
-            f"cannot measure drift from {base_commit[:12]}: "
-            f"{result.stderr.strip() or result.stdout.strip()}. The manifest's "
-            "base commit is not in this checkout — was the claim seeded from a "
-            "different repository?"
-        )
-    return parse_log(result.stdout)
-
-
 def metadata_changed(paths: Sequence[str]) -> bool:
     """Whether a commit touched anything an editable install baked in.
 
@@ -1053,54 +993,6 @@ def metadata_changed(paths: Sequence[str]) -> bool:
     """
     names = {Path(path).name for path in paths}
     return any(name in names for name in METADATA_FILES)
-
-
-def changed_paths(
-    store: HotfixStore, checkout: str, previous: str, head: str
-) -> tuple[str, ...]:
-    """The paths the checkout's history moved between two commits.
-
-    This is what decides whether the editable install has to be run again, and
-    it is keyed on the *commits* rather than on whether ``apply`` found a dirty
-    working tree. Committing by hand in the seat — which is the natural thing to
-    do when the fix took three attempts — and then running ``apply`` leaves a
-    clean tree behind a moved HEAD. Guarding the packaging check on dirtiness
-    skipped it in exactly that case, and the workload then rolled with a
-    ``.dist-info`` older than the commit: a hotfix adding an entry point looked
-    applied and was not.
-
-    The whole range is examined and not just ``HEAD``, because several hand
-    commits can accumulate between two applies and the metadata change may be in
-    any of them. When there is no range to walk — a manifest old enough to carry
-    no commit, or a history that no longer contains the one it carries — the
-    fallback is ``HEAD``'s own paths, which over-installs rather than
-    under-installs; a redundant editable install costs seconds, a skipped one
-    costs a silently-unapplied hotfix.
-    """
-    if previous == head:
-        return ()
-    if previous:
-        result = store.run(
-            git_argv(checkout, "diff", "--name-only", f"{previous}..{head}"),
-            check=False,
-        )
-        if result.returncode == 0:
-            return _paths(result.stdout)
-    return _paths(
-        store.run(
-            git_argv(checkout, "show", "--name-only", "--pretty=format:", head),
-            check=False,
-        ).stdout
-    )
-
-
-def _paths(text: str) -> tuple[str, ...]:
-    """One path per line — ``--name-only`` output, minus git's blank lines.
-
-    Split on lines rather than on whitespace: a path containing a space is one
-    path, and ``git show --pretty=format:`` leads with an empty line.
-    """
-    return tuple(line.strip() for line in text.splitlines() if line.strip())
 
 
 def install_argv(
@@ -1649,10 +1541,6 @@ class HotfixHealth(Enum):
     INTERPRETER_MISMATCH = "interpreter"
     """The image's interpreter no longer matches the venv on the claim."""
 
-    SUPERSEDED = "superseded"
-    """Consolidated, and the image has since changed: the claim is probably
-    stale and is now the only thing keeping the old code alive."""
-
     IMAGE_CHANGED = "image-changed"
     """The image was upgraded under a live hotfix mount, so the pod is running
     the claim's venv and not the new image's."""
@@ -1674,9 +1562,8 @@ class HotfixHealth(Enum):
     def summary(self) -> str:
         """One line for the status table."""
         return {
-            HotfixHealth.ACTIVE: "hotfixed, base image unchanged",
+            HotfixHealth.ACTIVE: "hotfixed, and nothing here needs attention",
             HotfixHealth.INTERPRETER_MISMATCH: "venv interpreter no longer matches",
-            HotfixHealth.SUPERSEDED: "consolidated; claim is probably stale",
             HotfixHealth.IMAGE_CHANGED: "image upgraded under the hotfix mount",
             HotfixHealth.UNREADABLE: "manifest on the claim is unreadable",
             HotfixHealth.NOT_HOTFIXED: "held, but nothing hotfixed here",
@@ -1686,6 +1573,27 @@ class HotfixHealth(Enum):
     def ok(self) -> bool:
         """Whether this needs somebody's attention today."""
         return self is HotfixHealth.ACTIVE
+
+
+def _image_moved(manifest: HotfixManifest, current_digest: str) -> bool:
+    """Whether the deployed image is not the one the hotfix was made against.
+
+    Both digests or nothing: a comparison against a digest nobody could read is
+    not a measurement, and answering ``False`` for it would be the "reported as
+    fine because it could not be checked" this module refuses everywhere else.
+    The rows that need the distinction say *unmeasured* by asking the same two
+    values themselves.
+
+    >>> _image_moved(HotfixManifest(base_image_digest="a@sha256:1"), "a@sha256:2")
+    True
+    >>> _image_moved(HotfixManifest(base_image_digest=""), "a@sha256:2")
+    False
+    """
+    return bool(
+        manifest.base_image_digest
+        and current_digest
+        and manifest.base_image_digest != current_digest
+    )
 
 
 def assess(
@@ -1698,9 +1606,14 @@ def assess(
     """Judge one hotfixed pod. Pure, because this is the whole feature.
 
     The order is deliberate: a broken interpreter beats everything, because the
-    pod is not running what anyone thinks it is; a consolidated hotfix on a
-    changed image beats a merely-changed image, because that one has a known
-    remedy (retire the claim).
+    pod is not running what anyone thinks it is.
+
+    Nothing about the claim's *history* is judged here. Whether it is dirty, how
+    far ahead of its base it is and whether anything upstream has it are all
+    measured live by ``status`` and reported as rows; none of them is a fault,
+    and the exit code this feeds is "does a hotfix here need somebody today?".
+    A dirty claim mid-beamtime is the ordinary inner loop (``hotfix restart``),
+    not an alarm.
     """
     if manifest is None:
         if unreadable:
@@ -1726,31 +1639,18 @@ def assess(
         warning = interpreter_warning(manifest.interpreter, probe.version)
         if warning is not None:
             return HotfixHealth.INTERPRETER_MISMATCH, warning
-    changed = bool(
-        manifest.base_image_digest
-        and current_digest
-        and manifest.base_image_digest != current_digest
-    )
-    if changed and manifest.consolidated_branch is not None:
-        return (
-            HotfixHealth.SUPERSEDED,
-            f"the hotfix was consolidated onto {manifest.consolidated_branch} and "
-            "the image has changed since. If the rebuild included it, the claim "
-            "is now shadowing the released fix with an older copy of it: retire "
-            "the claim and turn hotfixProject off.",
-        )
-    if changed:
+    if _image_moved(manifest, current_digest):
+        # The two digests are the `image` row's, and are not repeated here: this
+        # is the consequence, which is the half of it a reader has to act on.
         return (
             HotfixHealth.IMAGE_CHANGED,
-            f"deployed image is {current_digest.split('@')[-1][:19]}, the hotfix "
-            f"was made against {manifest.base_image_digest.split('@')[-1][:19]}. "
-            "The claim's venv shadows the new image's, so the upgrade has not "
+            "the claim's venv shadows the new image's, so the upgrade has not "
             "reached the running code.",
         )
-    # No detail. The row's own columns already carry `+N commit(s)` and
-    # `active - hotfixed, base image unchanged`, and a healthy row saying the
-    # same number twice was the last of the three repetitions this phase set out
-    # to remove. Every other branch here returns the sentence the columns cannot.
+    # No detail. The verdict is in the row's own column and the measured rows
+    # under it carry the numbers; a healthy row repeating either was the last of
+    # the three repetitions #205 set out to remove. Every other branch here
+    # returns the sentence those rows cannot.
     return HotfixHealth.ACTIVE, ""
 
 
@@ -1878,6 +1778,255 @@ Deliberately not something a manifest or a deadline could contain.
 """
 
 
+NO_GIT_IN_THE_CLAIM = (
+    "unmeasured: no git in container {container}, so this claim's commits, its "
+    "uncommitted files and its remote could not be read. The seat has one — "
+    "`podbench attach` and ask there — but a colleague's pod may have no seat."
+)
+"""Said when the *application* container has no git, which is the common case.
+
+``status`` reads the claim through the application container and not through a
+seat, deliberately: the listing's whole value is that it sees a hotfix nobody
+told you about, and that pod is exactly the one you have not attached to. So
+the git rows are best-effort, and a distroless application image loses them.
+Measured on ``bl47p-ea-fastcs-01-0`` (2026-08-24), where the container *does*
+carry ``/usr/bin/git`` — a property of that image and not of application images
+in general, which is why this constant exists rather than an assumption.
+"""
+
+NO_CHECKOUT_TO_READ = (
+    "unmeasured: {checkout} is not a directory in container {container}, so "
+    "there is no checkout to read"
+)
+
+_GIT_PROBE_EXITS = {90: NO_GIT_IN_THE_CLAIM, 91: NO_CHECKOUT_TO_READ}
+"""Exit codes the probe script uses to say *why* it measured nothing.
+
+Numbers of its own rather than git's: every git failure exits 1 or 128, and the
+two conditions worth naming apart — no git at all, no checkout — are both things
+the script can test for before it runs one.
+"""
+
+_GIT_SECTIONS = 4
+"""How many separator-delimited sections the probe prints.
+
+Checked on the way back in. The probe is a *second* exec into the same container
+as :func:`read_pod_state`, so anything that answers the wrong one of the two —
+a fixture, a shell wrapper, a sidecar injecting a banner — produces plausible
+nonsense: the manifest's JSON would read as a list of uncommitted paths. A
+section count is the cheapest thing that catches it.
+"""
+
+
+@dataclass(frozen=True)
+class ClaimGit:
+    """What ordinary git in the claim says about the fix that is running.
+
+    Measured on every ``status`` run, never recorded. The manifest used to carry
+    the commit, the count and the branch; #232 removed them, because the seat
+    now has a working git and anything the user does with it makes a recorded
+    field a lie without touching podbench.
+
+    ``reachable`` is the honest zero: a claim whose container has no git is
+    *unmeasured*, and must not read as clean, unpushed or up to date.
+    """
+
+    reachable: bool
+    detail: str = ""
+    """Why nothing was measured, empty when it was."""
+
+    head: str = ""
+    dirty: tuple[str, ...] = ()
+    """Porcelain lines, verbatim — the two status columns included, because
+    :func:`_dirty_paths` needs them and stripping them eats the first character
+    of a path whose index column is a space."""
+
+    ahead: int | None = None
+    """Commits between the manifest's base and ``HEAD``, or ``None`` unmeasured.
+
+    ``None`` where the base is a commit this checkout does not contain, which is
+    the seeded-from-another-repository case ``drift_commits`` used to raise on.
+    """
+
+    on_remote: tuple[str, ...] = ()
+    """Remote-tracking branches containing ``HEAD`` *as of the last fetch* — the
+    clone's own knowledge, free and possibly stale. :func:`remote_tips` is the
+    half that costs a network call."""
+
+
+def read_claim_git(
+    kube: Kubectl, pod: str, container: str, *, checkout: str, base_commit: str
+) -> ClaimGit:
+    """Ask git in the claim what is committed, what is not, and where HEAD is.
+
+    One exec, four questions, all of them local reads of objects and refs: no
+    network, no credential, no agent. Measured in a seat on the live p47 pod
+    with the network demonstrably broken — ``git fetch`` in the same session
+    died on host verification — and every one of these answered.
+
+    A second exec per pod rather than folding this into :func:`read_pod_state`,
+    because the count is measured *from the manifest's base commit* and the
+    manifest arrives in that exec's output. Extracting a sha from JSON in the
+    target's shell would be the kind of cleverness that returns a wrong number
+    rather than no number.
+    """
+    git = " ".join(shlex.quote(word) for word in git_argv(checkout))
+    echo = f'echo "{STATE_SEPARATOR}"'
+    count = (
+        f"{git} rev-list --count {shlex.quote(base_commit)}..HEAD 2>/dev/null"
+        if base_commit
+        else "true"
+    )
+    script = "; ".join(
+        [
+            "command -v git >/dev/null 2>&1 || exit 90",
+            f"test -d {shlex.quote(checkout)} || exit 91",
+            f"{git} status --porcelain 2>/dev/null",
+            echo,
+            f"{git} rev-parse HEAD 2>/dev/null",
+            echo,
+            count,
+            echo,
+            f"{git} branch -r --contains HEAD 2>/dev/null",
+            "exit 0",
+        ]
+    )
+    result = kube.exec_(pod, ["sh", "-c", script], container=container, check=False)
+    if result.returncode in _GIT_PROBE_EXITS:
+        return ClaimGit(
+            reachable=False,
+            detail=_GIT_PROBE_EXITS[result.returncode].format(
+                container=container, checkout=checkout
+            ),
+        )
+    parts = result.stdout.split(STATE_SEPARATOR)
+    if result.returncode != 0 or len(parts) != _GIT_SECTIONS:
+        said = _last_line(result.stderr) or _last_line(result.stdout)
+        return ClaimGit(
+            reachable=False,
+            detail="unmeasured: the git read in container "
+            f"{container} did not answer" + (f": {_relay(said)}" if said else ""),
+        )
+    dirty = tuple(line for line in parts[0].splitlines() if line.strip())
+    counted = parts[2].strip()
+    return ClaimGit(
+        reachable=True,
+        head=parts[1].strip(),
+        dirty=dirty,
+        ahead=int(counted) if counted.isdigit() else None,
+        on_remote=tuple(
+            # `origin/HEAD -> origin/main` is a symbolic ref, not a branch that
+            # contains anything; git prints it in this listing all the same.
+            line.strip()
+            for line in parts[3].splitlines()
+            if line.strip() and "->" not in line
+        ),
+    )
+
+
+REMOTE_QUERY_TIMEOUT = 5.0
+"""How long ``git ls-remote`` may take before the freshness row is unmeasured.
+
+A bound and not a retry, for the reason the plan gives: a status verb that hangs
+on a network call is worse than one that says less. Five seconds is enough for a
+forge that is going to answer and short enough that a listing of several pods
+stays a thing somebody runs habitually — and the query is made once per distinct
+repository, not once per pod.
+"""
+
+_LS_REMOTE_ENV = ("GIT_TERMINAL_PROMPT=0",)
+"""What the query must not do: sit on a prompt until the bound kills it."""
+
+_BATCH_SSH = "GIT_SSH_COMMAND=ssh -o BatchMode=yes"
+"""The same for ssh, which asks for a passphrase or a host key on a terminal.
+
+Added only when the user has no ``GIT_SSH_COMMAND`` of their own. Overriding one
+that is there would take away the very thing that makes their remote reachable,
+and this row is best-effort: unmeasured because podbench broke the command is
+worse than unmeasured because the network did.
+"""
+
+
+@dataclass(frozen=True)
+class RemoteTips:
+    """Which branch tips a repository has right now, asked from the laptop.
+
+    **From the laptop, not from the seat.** ``status`` reaches the claim through
+    ``kubectl exec``, and an exec session has no ``SSH_AUTH_SOCK`` — agent
+    forwarding exists only inside an *ssh* session — so the pod could not use a
+    forwarded agent even once one is offered. Measured on the live p47 pod: a
+    ``git fetch`` in its seat answers ``Host key verification failed``. The
+    laptop holds both halves, credentials and connectivity, so the shas are read
+    out over exec and the network half happens here.
+
+    These are ref **tips**, so the only question they answer is "is this commit
+    the tip of a branch?". Ancestry — whether it has been merged — is not
+    measured and must not be implied.
+    """
+
+    refs: tuple[tuple[str, str], ...] = ()
+    detail: str = ""
+    """Why the repository was not asked, or would not answer. Empty when it did.
+    """
+
+    @property
+    def measured(self) -> bool:
+        """Whether this is an answer at all.
+
+        >>> RemoteTips(detail="did not answer").measured
+        False
+        """
+        return not self.detail
+
+    def naming(self, sha: str) -> tuple[str, ...]:
+        """The branches whose tip is *sha*, shortest name first.
+
+        >>> RemoteTips((("abc", "refs/heads/fix"),)).naming("abc")
+        ('fix',)
+        """
+        found = [ref for tip, ref in self.refs if sha and tip == sha]
+        return tuple(
+            sorted((ref.removeprefix("refs/heads/") for ref in found), key=len)
+        )
+
+
+def remote_tips(
+    repo: str,
+    *,
+    runner: Runner = run_subprocess,
+    timeout: float = REMOTE_QUERY_TIMEOUT,
+    environ: Mapping[str, str] | None = None,
+) -> RemoteTips:
+    """``git ls-remote --heads`` against *repo*, bounded and never fatal.
+
+    Every failure is :attr:`RemoteTips.detail` and none is a raise. A forge that
+    is down, a repository that needs a credential this laptop does not have, a
+    ``git`` that is not installed: each of those makes the row *unmeasured*, and
+    none of them is evidence that the fix was never pushed.
+    """
+    if not repo:
+        return RemoteTips(detail="the manifest records no repository to ask")
+    env = os.environ if environ is None else environ
+    ssh = () if env.get("GIT_SSH_COMMAND") else (_BATCH_SSH,)
+    argv = ["env", *_LS_REMOTE_ENV, *ssh, "git", "ls-remote", "--heads", repo]
+    try:
+        result = runner(argv, timeout=timeout)
+    except KubectlTimeoutError:
+        return RemoteTips(detail=f"{repo} did not answer within {timeout:g}s")
+    except OSError as error:
+        return RemoteTips(detail=f"git could not be run here: {error}")
+    if result.returncode != 0:
+        return RemoteTips(
+            detail=_relay(_last_line(result.stderr)) or "git ls-remote failed"
+        )
+    refs: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.strip():
+            refs.append((sha.strip(), ref.strip()))
+    return RemoteTips(refs=tuple(refs))
+
+
 @dataclass(frozen=True)
 class HotfixRow:
     """One hotfixed pod, as ``status`` reports it."""
@@ -1887,22 +2036,35 @@ class HotfixRow:
     health: HotfixHealth
     detail: str
     current_image: str = ""
+    current_digest: str = ""
+    """The live container's ``imageID``, kept beside the manifest's so the
+    ``image`` row can be laid out from the row alone."""
+
     notes: tuple[str, ...] = ()
     hold: Hold | None = None
     """The pod's hold, if it has one. ``None`` is *not held*, and is orthogonal
     to :attr:`health` - see :class:`Hold`."""
 
+    git: ClaimGit | None = None
+    """What git in the claim said, or ``None`` where it was not asked — no
+    manifest, so no checkout and no base to count from."""
+
+    remote: RemoteTips | None = None
+    """What the forge said about that repository, or ``None`` where the network
+    half was turned off (``--no-remote``)."""
+
     retirement: tuple[RetirementCheck, ...] = ()
-    """Where a consolidated hotfix is in its retirement, empty for one that has
-    not started.
+    """Where a hotfix whose image has moved is in its retirement, empty for one
+    where it has not.
 
     Carried on the row rather than derived in :func:`format_status`, because it
     is measured from the *pod document* - which the formatter does not have, and
     must not be handed a second copy of on the way to a listing.
 
-    Deliberately not part of :attr:`ok`. A consolidated fix whose image has not
-    moved yet is a live hotfix doing its job, and a shutdown assertion that went
-    red the moment ``consolidate`` ran would be one nobody could leave in CI.
+    Deliberately not part of :attr:`ok`, which is the same reasoning that kept
+    it off before #232 deleted the field it used to key on: a live hotfix on a
+    pod nobody has rebuilt yet is doing its job, and a shutdown assertion that
+    went red the day the image moved would be one nobody could leave in CI.
     """
 
     @property
@@ -1913,6 +2075,12 @@ class HotfixRow:
         one however healthy its fix: its liveness probe is short-circuited and
         its supervisor has no backoff, so "nothing here needs somebody today"
         must not come back true while one is still held.
+
+        Nothing measured by :attr:`git` or :attr:`remote` moves it, in either
+        direction. A dirty claim is the ordinary inner loop; an unpushed one is
+        the ordinary state of a fix made an hour ago; and a row that could not
+        be measured is not an assertion at all, so it must not read as a
+        failure.
 
         >>> row = HotfixRow(PodRef("d", "p"), None, HotfixHealth.ACTIVE, "")
         >>> row.ok
@@ -1929,8 +2097,9 @@ def status_rows(
     probe: bool = True,
     python: str = DEFAULT_PYTHON,
     all_namespaces: bool = False,
+    remote: bool = True,
 ) -> list[HotfixRow]:
-    """Every pod carrying a hotfix claim, with its drift, its risks and its hold.
+    """Every pod carrying a hotfix claim, measured: its git, its risks, its hold.
 
     Keyed on the **claim**, not on an annotation. Provenance used to ride on the
     pod template, where Argo self-heal strips it: a hotfixed pod under a GitOps
@@ -1938,11 +2107,27 @@ def status_rows(
     this command exists to prevent. What cannot be stripped is the volume, so
     that is what the listing looks for.
 
-    The cost is an exec per *candidate* pod rather than one ``get pods`` for the
-    namespace. It is affordable because the claim is the filter: only pods that
-    actually mount one are exec'd, and a namespace has a handful at most. The
-    interpreter is still only probed when the image has moved, which is the one
-    case where it can have broken.
+    **Measured, not recorded** (#232). The manifest carries only what git cannot
+    know; everything about the fix itself — is it committed, how far ahead of
+    its base, is it on a branch anywhere — is read out of the claim's own
+    checkout on each run, because the seat has ordinary git in it now and a
+    recorded answer is one hand commit away from being false. Where the claim's
+    container has no git, those rows are **unmeasured**: never clean, never
+    unpushed.
+
+    The cost is two execs per *candidate* pod rather than one ``get pods`` for
+    the namespace. It is affordable because the claim is the filter: only pods
+    that actually mount one are exec'd, and a namespace has a handful at most.
+    The interpreter is still only probed when the image has moved, which is the
+    one case where it can have broken.
+
+    ``remote`` adds the one question that needs the network: whether any branch
+    on the repository is *at* this commit right now. It runs here, on the
+    laptop, where the credentials already are (see :class:`RemoteTips`), once
+    per distinct repository however many pods share it, and under a bound —
+    a failure is a row that says unmeasured, not a verb that hangs. It goes
+    through ``kube.runner`` rather than :func:`~podbench.kubectl.run_subprocess`
+    so that the one seam every test already injects covers it too.
 
     A held pod is listed **whether or not it was ever hotfixed**. A hold with no
     hotfix behind it is not a curiosity - it is a pod whose liveness probe is
@@ -1967,6 +2152,7 @@ def status_rows(
     else:
         result = kube.run("get", "pods", "-o", "json")
     rows: list[HotfixRow] = []
+    asked: dict[str, RemoteTips] = {}
     for item in _as_list(_load_json(result.stdout).get("items")):
         pod_json = as_dict(item)
         metadata = as_dict(pod_json.get("metadata"))
@@ -2001,6 +2187,27 @@ def status_rows(
                 f"manifest is schema version {manifest.schema_version}; it was "
                 "written by an older podbench and some provenance may be absent"
             )
+        claim_git: ClaimGit | None = None
+        tips: RemoteTips | None = None
+        if manifest is not None:
+            claim_git = read_claim_git(
+                client,
+                name,
+                container,
+                checkout=manifest.checkout or checkout_path(manifest.venv),
+                base_commit=manifest.base_commit,
+            )
+            if remote:
+                # Once per repository, not once per pod: a beamline runs several
+                # IOCs out of one, and the answer is the same set of tips for
+                # all of them. Not `setdefault`, which would make the call every
+                # time and discard all but the first - the bug this cache exists
+                # to avoid, wearing the cache's clothes.
+                if manifest.repo not in asked:
+                    asked[manifest.repo] = remote_tips(
+                        manifest.repo, runner=kube.runner
+                    )
+                tips = asked[manifest.repo]
         rows.append(
             HotfixRow(
                 pod=pod,
@@ -2008,8 +2215,11 @@ def status_rows(
                 health=health,
                 detail=detail,
                 current_image=image,
+                current_digest=digest,
                 notes=tuple(notes),
                 hold=hold,
+                git=claim_git,
+                remote=tips,
                 retirement=_retirement_of(pod_json, manifest, digest),
             )
         )
@@ -2021,15 +2231,19 @@ def _retirement_of(
 ) -> tuple[RetirementCheck, ...]:
     """The retirement steps for a row, measured only once one is under way.
 
-    Only for a consolidated hotfix, because until then there is nothing to
-    retire: every live hotfix is "still wired to its claim", and a listing that
-    said so on every row would be saying nothing on the one row where it is the
-    finding (#205 item 4).
+    The gate is the **image having moved**, which is measured, and it replaces
+    the recorded ``consolidated_branch`` that #232 deleted. It says the same
+    thing for the same reason: until the deployed image is not the one the fix
+    was made against, there is nothing to retire — every live hotfix is "still
+    wired to its claim", and a listing that said so on every row would be saying
+    nothing on the one row where it is the finding (#205 item 4). It is also the
+    better gate of the two, because it turns on the cluster rather than on
+    somebody having run a verb.
 
     The claim is left **unmeasured** rather than inferred from the mount - see
     :data:`STATUS_DOES_NOT_READ_CLAIMS`.
     """
-    if manifest is None or manifest.consolidated_branch is None:
+    if manifest is None or not _image_moved(manifest, digest):
         return ()
     return tuple(
         retirement(
@@ -2053,13 +2267,132 @@ _ROW_INDENT = " " * 4
 """Where a row's prose sits under it."""
 
 
+_ROW_LABEL = 8
+"""The width of a sub-row's label column, ``remote`` plus the two spaces that
+make it a label to :mod:`podbench.console` rather than the first word of a
+sentence. A label padded to exactly its own length leaves one space, the rule
+does not fire, and half the report comes out styled and half plain."""
+
+
+def _sub_row(label: str, value: str) -> list[str]:
+    """One ``label  value`` line, with only the value wrapped.
+
+    The lead goes in ``first=`` rather than into the text, because
+    :func:`~podbench.console.wrap` splits on whitespace and would collapse the
+    two spaces the column is held apart by.
+    """
+    lead = f"{_ROW_INDENT}{label:<{_ROW_LABEL}}"
+    return paragraph(value, first=lead, indent=" " * len(lead))
+
+
+def _claim_row(manifest: HotfixManifest, git: ClaimGit) -> str:
+    """How far the running fix is from the image it was made against."""
+    base = manifest.base_commit[:7]
+    if not base:
+        return "unmeasured: the manifest records no base commit to count from"
+    if git.ahead is None:
+        return (
+            f"unmeasured: {base} is not a commit in this checkout, so nothing "
+            "can be counted from it — was the claim seeded from a different "
+            "repository?"
+        )
+    plural = "" if git.ahead == 1 else "s"
+    assumed = (
+        " — an assumed base, so the count is a guess"
+        if manifest.base_commit_assumed
+        else ""
+    )
+    at = f"{git.head[:7]} is " if git.head else ""
+    return f"{at}{git.ahead} commit{plural} ahead of {base}{assumed}"
+
+
+def _dirty_row(git: ClaimGit) -> str:
+    """What is running that no repository anywhere records.
+
+    Said when the tree is clean too. Silence there reads as the check not having
+    run, which is the one reading that lets an uncommitted fix go unnoticed —
+    the same reasoning as :func:`_claim_state`, which says it after a restart.
+    """
+    found = _dirty_paths(git.dirty)
+    if not found:
+        return "nothing uncommitted; what is running is what is committed"
+    named = list(found[:MAX_NAMED_DIRTY])
+    if len(found) > MAX_NAMED_DIRTY:
+        named.append(f"{len(found) - MAX_NAMED_DIRTY} more")
+    plural = "" if len(found) == 1 else "s"
+    return (
+        f"{len(found)} file{plural} uncommitted, and they are what is running "
+        f"({and_list(named)})"
+    )
+
+
+def _remote_row(git: ClaimGit, tips: RemoteTips | None) -> str:
+    """Whether anything outside this claim has the commit that is running.
+
+    Two sources, and they answer different questions. ``git branch -r
+    --contains`` is free and is the *clone's* knowledge, true as of its last
+    fetch; :func:`remote_tips` is a live question to the forge and can only
+    speak about ref **tips**. Neither is ancestry, so neither says "merged".
+    """
+    head = git.head[:7] or "HEAD"
+    if tips is not None and tips.measured:
+        named = tips.naming(git.head)
+        if named:
+            return f"{head} is the tip of {and_list(list(named))}, checked just now"
+        return (
+            f"no branch on the remote is at {head}, checked just now. That is "
+            "tips only — podbench does not measure whether it has been merged"
+        )
+    if git.on_remote:
+        stale = "; whether that is still true is unmeasured"
+        if tips is not None:
+            stale = f"; {tips.detail}, so whether that is still true is unmeasured"
+        return (
+            f"{head} is on {and_list(list(git.on_remote))} as of the last fetch{stale}"
+        )
+    if tips is None:
+        return (
+            f"{head} is on no remote branch this claim has fetched, and the "
+            "remote was not asked (--no-remote)"
+        )
+    if not tips.measured:
+        return (
+            f"{head} is on no remote branch this claim has fetched; "
+            f"{tips.detail}, so whether it has been pushed since is unmeasured"
+        )
+    return f"{head} is on no remote branch this claim has fetched"
+
+
+def _image_row(manifest: HotfixManifest, current_digest: str) -> str:
+    """The row that needs no git at all, and is the one worth the most.
+
+    An image that moved under a live mount means the claim's venv is shadowing
+    whatever was released — possibly this very fix, in which case the claim is
+    now the only thing keeping an older copy of it alive.
+    """
+    was = manifest.base_image_digest.split("@")[-1][:19]
+    now = current_digest.split("@")[-1][:19]
+    if not manifest.base_image_digest or not current_digest:
+        missing = "the manifest's" if not manifest.base_image_digest else "the pod's"
+        return f"unmeasured: {missing} image digest could not be read"
+    if manifest.base_image_digest == current_digest:
+        return f"unchanged since the hotfix was made ({was})"
+    return f"moved since the hotfix was made: now {now}, was {was}"
+
+
 def format_status(rows: Sequence[HotfixRow], *, all_namespaces: bool = False) -> str:
     """The status report. Empty is a real and reassuring answer, so say it.
 
     Only the prose is wrapped. The row line itself is a set of columns held
     apart by double spaces, and wrapping collapses whitespace — so a row put
-    through it would come back as a sentence, with the commit and the health
-    no longer under the headings the eye is running down.
+    through it would come back as a sentence, with the health no longer under
+    the heading the eye is running down.
+
+    Under each pod are the four questions #232 turned from records into
+    measurements: ``claim``, ``dirty``, ``remote`` and ``image``. Where the
+    claim's container had no git the first three collapse into a single ``git``
+    row saying so once, rather than three rows repeating one fact — and a fact
+    that is not "clean".
 
     ``all_namespaces`` changes one thing, and it is the empty answer: "no
     hotfixed pods in this namespace" from a cluster-wide run is the reassurance
@@ -2072,62 +2405,33 @@ def format_status(rows: Sequence[HotfixRow], *, all_namespaces: bool = False) ->
     lines: list[str] = []
     for row in rows:
         manifest = row.manifest
-        ahead = manifest.ahead if manifest is not None else 0
-        commit = manifest.commit[:7] if manifest is not None else "unknown"
         flag = "[ok]" if row.ok else "[!]"
         # A column, not a clause in the health sentence: a held pod and an
         # unhealthy fix are different questions and either can be true alone.
         held = f"  {row.hold.summary()}" if row.hold is not None else ""
-        # The count is a difference against the base, so a base nobody measured
-        # makes it a guess — and it is qualified here, in the column the eye
-        # actually lands on, rather than only on the `base` line below.
-        drift = f"+{ahead} commit(s)" + (
-            " from an assumed base"
-            if manifest is not None and manifest.base_commit_assumed
-            else ""
-        )
         lines.append(
-            f"  {flag}".ljust(_FLAG) + f"{row.pod}  {drift}  {commit}  "
-            f"{row.health.value} — {row.health.summary}{held}"
+            f"  {flag}".ljust(_FLAG)
+            + f"{row.pod}  {row.health.value} — {row.health.summary}{held}"
         )
         if row.detail:
             lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
         if manifest is not None:
-            # The sha is dropped where it is the one already in the row's own
-            # column: at `+0` the claim is *at* its base, so repeating it says
-            # nothing the column did not. What is left is the provenance, which
-            # is the half of this line that appears nowhere else.
-            #
-            # Guarded on the sha being there at all: with neither recorded the
-            # two are equal by vacuity, and "on its base commit" would assert an
-            # identity nobody measured in the one place the old `base ?` said
-            # so.
-            base = (
-                "on its base commit"
-                if manifest.base_commit and manifest.commit == manifest.base_commit
-                else f"base {manifest.base_commit[:7] or '?'}"
-            )
-            lines.append(
-                f"{_ROW_INDENT}{base} · "
-                f"{manifest.author or 'unknown author'} · "
-                f"{manifest.timestamp or 'no timestamp'}"
-            )
-            for entry in manifest.commits:
-                # The sha goes in `first` rather than into the wrapped text, so
-                # the two spaces holding the column stay two spaces.
-                lead = f"{_ROW_INDENT}  {entry.short}  "
+            git = row.git
+            if git is None or not git.reachable:
+                # Said once. Three rows carrying the same "no git here" is the
+                # repetition that makes a listing unreadable, and the sentence
+                # names all three things it costs.
                 lines.extend(
-                    paragraph(entry.subject, first=lead, indent=" " * len(lead))
+                    _sub_row("git", git.detail if git is not None else "unmeasured")
                 )
-            if ahead > len(manifest.commits):
-                lines.append(
-                    f"{_ROW_INDENT}  … and {ahead - len(manifest.commits)} more "
-                    "(the manifest keeps the most recent)"
-                )
+            else:
+                lines.extend(_sub_row("claim", _claim_row(manifest, git)))
+                lines.extend(_sub_row("dirty", _dirty_row(git)))
+                lines.extend(_sub_row("remote", _remote_row(git, row.remote)))
+            lines.extend(_sub_row("image", _image_row(manifest, row.current_digest)))
         if row.retirement:
-            # One line, and only for a hotfix on its way out: `superseded` used
-            # to be the whole of what this said, correctly and indefinitely,
-            # which is a state nobody can act on (#205 item 4).
+            # One line, and only for a hotfix whose image has moved: the state
+            # before that is one nobody can act on (#205 item 4).
             lead = f"{_ROW_INDENT}retirement: "
             lines.extend(
                 paragraph(
@@ -2265,29 +2569,6 @@ def _seeded_interpreter(
     return normalise_interpreter(
         settings.get("version") or settings.get("version_info") or ""
     )
-
-
-def _identity(store: HotfixStore, checkout: str, author: str | None) -> tuple[str, str]:
-    """The name and email a hotfix commit is made under.
-
-    Read from the checkout's git config when the caller does not say, so the
-    provenance is whoever the seat is configured as rather than a constant. The
-    fallback is deliberately obviously-not-a-person.
-    """
-    if author is not None:
-        name, _, email = author.partition("<")
-        return name.strip() or "podbench", email.strip().rstrip(">") or "podbench@local"
-    configured = store.run(
-        git_argv(checkout, "config", "--get", "user.email"), check=False
-    )
-    email = configured.stdout.strip()
-    named = store.run(git_argv(checkout, "config", "--get", "user.name"), check=False)
-    name = named.stdout.strip()
-    return name or "podbench", email or "podbench@local"
-
-
-def _now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 NO_SOURCE_REPO = (
@@ -2551,7 +2832,6 @@ def init(
     image_labels: Mapping[str, str] | None = None,
     ref: str | None = None,
     base_commit: str | None = None,
-    author: str | None = None,
     install: bool = True,
     container_root: str = "/proc/1/root",
     image_project: str = IMAGE_PROJECT_PATH,
@@ -2669,7 +2949,6 @@ def init(
             _install(kube, target, seeded_python(store), checkout, venv=claim_venv)
         )
 
-    name, email = _identity(store, checkout, author)
     manifest = HotfixManifest(
         venv=venv,
         checkout=checkout,
@@ -2678,14 +2957,9 @@ def init(
         base_image_digest=target.image_digest,
         interpreter=interpreter,
         container=target.container,
-        commit=resolved,
         base_commit=resolved,
         base_commit_assumed=assumed,
         claim_venv=claim_venv,
-        author=f"{name} <{email}>",
-        timestamp=_now(),
-        ahead=0,
-        commits=(),
     )
     write_manifest(store, manifest)
     actions.append(f"wrote {manifest_path(venv)}")
@@ -2730,109 +3004,6 @@ def _install(
             "the venv on the claim and re-run with --no-install."
         )
     return f"rebuilt the venv at {checkout}/{venv}"
-
-
-def apply_hotfix(
-    kube: Kubectl,
-    store: HotfixStore,
-    target: HotfixTarget,
-    *,
-    venv: str,
-    message: str,
-    author: str | None = None,
-    bounce: bool = True,
-) -> tuple[HotfixManifest, list[str]]:
-    """Commit what is in the checkout, reinstall if needed, and roll the pod.
-
-    The commit is not optional and not a convenience: a hotfix that is only a
-    working-tree edit has no sha, and without a sha the manifest cannot say what
-    is running and ``consolidate`` has nothing to push.
-    """
-    actions: list[str] = []
-    manifest = read_manifest(store, venv)
-    if manifest is None:
-        raise HotfixError(
-            "no hotfix manifest on the claim: run `hotfix init` first so the "
-            "commit this hotfix diverges from is recorded"
-        )
-    checkout = manifest.checkout or checkout_path(manifest.venv)
-
-    dirty = store.run(git_argv(checkout, "status", "--porcelain")).stdout.strip()
-    if not dirty:
-        actions.append("working tree clean; nothing new to commit")
-    else:
-        store.run(git_argv(checkout, "add", "-A"))
-        name, email = _identity(store, checkout, author)
-        store.run(
-            git_argv(
-                checkout,
-                "-c",
-                f"user.name={name}",
-                "-c",
-                f"user.email={email}",
-                "commit",
-                "-m",
-                message,
-            )
-        )
-        actions.append(f"committed as {name} <{email}>")
-
-    head = store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
-    commits = drift_commits(store, checkout, manifest.base_commit)
-
-    # From what the manifest last recorded to HEAD, not from what this apply
-    # happened to commit: a hand commit made in the seat moves HEAD with the
-    # tree clean, and the question "is the .dist-info still valid?" is about the
-    # commits either way.
-    changed = changed_paths(store, checkout, manifest.commit, head)
-    if metadata_changed(changed):
-        # The venv the *manifest* records, never the default (#209). `apply`
-        # has no --claim-venv of its own and never should have: a rebuild that
-        # landed in `.venv` while the supervisor's runtime switch looked in the
-        # directory `init` was told about is the silent revert this whole mode
-        # exists to prevent, and it is not something to ask twice about.
-        actions.append(
-            _install(
-                kube,
-                target,
-                seeded_python(store),
-                checkout,
-                venv=manifest.claim_venv or CLAIM_VENV_DIR,
-            )
-        )
-    elif changed:
-        actions.append("no packaging metadata changed; editable install still valid")
-
-    updated_author = manifest.author
-    if dirty:
-        name, email = _identity(store, checkout, author)
-        updated_author = f"{name} <{email}>"
-    manifest = replace(
-        manifest,
-        commit=head,
-        author=updated_author,
-        timestamp=_now(),
-        ahead=len(commits),
-        commits=commits[:MAX_RECORDED_COMMITS],
-        base_image=target.image or manifest.base_image,
-        base_image_digest=target.image_digest or manifest.base_image_digest,
-        # Rewriting a v1 manifest as v2 would otherwise turn "this schema could
-        # not record whether the base was measured" into "it was measured",
-        # which is the one direction this field must never move in.
-        base_commit_assumed=manifest.base_commit_assumed or manifest.stale_schema,
-        schema_version=MANIFEST_VERSION,
-    )
-    write_manifest(store, manifest)
-    actions.append(
-        f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}"
-        f"{' (an assumed base)' if manifest.base_commit_assumed else ''}"
-    )
-
-    if bounce:
-        actions.append(_relaunch(kube, target))
-    else:
-        actions.append("not relaunched; the running process still has the old code")
-    return manifest, actions
 
 
 HOLD_SECONDS = 120.0
@@ -3059,7 +3230,24 @@ other half of what this verb exists to say.
 """
 
 
-def _claim_state(store: HotfixStore, checkout: str) -> str:
+def _dirty_paths(porcelain: Sequence[str]) -> tuple[str, ...]:
+    """The paths in ``git status --porcelain`` output, columns removed.
+
+    Everything after the two status columns and their separating space. A rename
+    arrives as ``old -> new``, which is left whole: both halves are the answer to
+    "which file did I change?".
+
+    Fed the *raw* lines, never a stripped block: porcelain's first column is the
+    index status, a space for the ordinary edited-but-not-staged case, so
+    stripping eats the first character of the path - silently and plausibly.
+
+    >>> _dirty_paths([" M src/api/beam.py", "?? notes.txt"])
+    ('src/api/beam.py', 'notes.txt')
+    """
+    return tuple(line[3:].strip() for line in porcelain if line[3:].strip())
+
+
+def _claim_state(store: HotfixStore, checkout: str, porcelain: Sequence[str]) -> str:
     """Whether the code now running is committed, said on every restart.
 
     ``hotfix status`` exists so a hotfixed pod cannot go unnoticed, and an
@@ -3068,23 +3256,19 @@ def _claim_state(store: HotfixStore, checkout: str) -> str:
     This is the line that makes relaunch-without-commit sound rather than a hole
     in the model, so it is printed when the tree is clean too - silence there
     would read as the check not having run.
+
+    *porcelain* is read by the caller and passed in, so that this line and
+    :data:`STALE_INSTALL_NOTE` are two readings of **one** ``git status`` rather
+    than two runs that can disagree about the same second.
     """
-    reported = store.run(git_argv(checkout, "status", "--porcelain"), check=False)
-    # Split off the raw stdout and never off a stripped copy. Porcelain's first
-    # column is the *index* status, which is a space for the ordinary
-    # edited-but-not-staged case, so `.strip()` on the block eats it - and with
-    # it the first character of the first path, silently and plausibly.
-    dirty = [line for line in reported.stdout.splitlines() if line.strip()]
+    dirty = [line for line in porcelain if line.strip()]
     if not dirty:
         head = store.run(
             git_argv(checkout, "rev-parse", "HEAD"), check=False
         ).stdout.strip()
         loaded = f"the new process loaded {head[:7]}" if head else "nothing to commit"
         return f"the claim is clean and running: {loaded}"
-    # Everything after the two status columns and their separating space. A
-    # rename arrives as `old -> new`, which is left whole: both halves are the
-    # answer to "which file did I change?".
-    paths = [line[3:].strip() for line in dirty if line[3:].strip()]
+    paths = list(_dirty_paths(dirty))
     named = paths[:MAX_NAMED_DIRTY]
     if len(paths) > MAX_NAMED_DIRTY:
         named.append(f"{len(paths) - MAX_NAMED_DIRTY} more")
@@ -3139,26 +3323,51 @@ def _last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
+STALE_INSTALL_NOTE = (
+    "{what} is uncommitted and the venv was not rebuilt, so the editable install "
+    "in {venv} still describes the old packaging - a new entry point or a renamed "
+    "package will not be there. Re-run with `--reinstall` when you want it."
+)
+"""Said when a packaging file is among the dirty paths and nothing rebuilt.
+
+An editable install is a path redirection: new *code* is picked up for free,
+which is what makes the restart loop cheap, but a changed ``[project]`` table is
+baked into the ``.dist-info`` at install time. ``apply`` used to notice this by
+diffing the commits it had just made; with the commit gone there is nothing to
+diff, so this reads the same porcelain :func:`_claim_state` already has and says
+what it saw. It cannot see a packaging change that is *committed* - which is why
+the remedy is a flag the user can reach for rather than a promise this verb
+keeps.
+"""
+
+
 def restart_app(
     kube: Kubectl,
     store: HotfixStore,
     target: HotfixTarget,
     *,
     venv: str,
+    reinstall: bool = False,
 ) -> list[str]:
     """Relaunch the application on what is on the claim, committing nothing.
 
     The inner loop, as distinct from a hotfix: you restart twenty times and
-    commit once, when it works. ``apply`` requires ``-m`` and is right to - a
-    hotfix with no sha is a change no manifest can record and no branch can carry
-    - but requiring it per iteration is what pushed the loop out of podbench
-    altogether. Committing is ordinary git in the seat now, so this verb does
-    none of it: no ``add``, no ``commit``, no manifest write.
+    commit once, when it works. Committing is ordinary git in the seat, so this
+    verb does none of it: no ``add``, no ``commit``, no manifest write.
 
-    What it owes in exchange is :func:`_claim_state`. The manifest is *not*
-    updated here precisely because nothing was committed: the sha it records is
-    still the sha of the last commit, and the divergence this verb creates lives
-    in the working tree, where only a live read can see it.
+    What it owes in exchange is :func:`_claim_state`. The manifest records no
+    sha at all since #232, and this is where the reason is easiest to see: the
+    divergence this verb creates lives in the *working tree*, where only a live
+    read can find it and no record could have anticipated it.
+
+    ``reinstall`` is where ``apply``'s one non-git, non-relaunch step went. It
+    rebuilt the venv when a commit touched ``pyproject.toml`` or the lockfile,
+    and that capability had to survive the verb: an editable install bakes the
+    packaging in at install time, so a hotfix that adds an entry point looks
+    applied and is not. It is a flag rather than an inference because the input
+    ``apply`` inferred from - the range of commits since the last one - is
+    exactly what this mode no longer has. :data:`STALE_INSTALL_NOTE` covers the
+    case the porcelain *can* see.
 
     :func:`require_supervisor` first and explicitly, before anything is killed.
     ``_relaunch``'s script refuses the same case, but by then the report has
@@ -3172,116 +3381,36 @@ def restart_app(
             "is a checkout for the relaunched application to load"
         )
     checkout = manifest.checkout or checkout_path(manifest.venv)
+    claim_venv = manifest.claim_venv or CLAIM_VENV_DIR
     require_supervisor(kube, target)
+    actions: list[str] = []
+    if reinstall:
+        # Before the kill, not after it: the rebuild is the slow half and a
+        # relaunch onto a half-built venv is the state this mode exists to
+        # avoid. The venv the *manifest* records, never the default (#209).
+        actions.append(
+            _install(kube, target, seeded_python(store), checkout, venv=claim_venv)
+        )
     before = _recorded_child(kube, target)
     _relaunch(kube, target)
-    return [
+    # One read, two readings. `git status` after the relaunch and not before it,
+    # because what this report is about is the process that is now running.
+    porcelain = store.run(
+        git_argv(checkout, "status", "--porcelain"), check=False
+    ).stdout.splitlines()
+    packaging = [path for path in _dirty_paths(porcelain) if metadata_changed([path])]
+    actions += [
         _pid_transition(before, _recorded_child(kube, target)),
-        _claim_state(store, checkout),
-        *_refresh_debug_config(store, checkout),
+        _claim_state(store, checkout, porcelain),
     ]
-
-
-def consolidate(
-    kube: Kubectl,
-    store: HotfixStore,
-    target: HotfixTarget,
-    *,
-    venv: str,
-    branch: str,
-    remote: str = "origin",
-    push: bool = True,
-) -> tuple[HotfixManifest, list[str]]:
-    """Push the claim's checkout as a branch, ready for a real rebuild.
-
-    The PR itself is not opened here: that needs a forge client podbench does
-    not depend on, and a printed ``gh pr create`` is one paste. What matters is
-    that the branch exists and that the manifest — and therefore ``status`` —
-    records that this hotfix is on its way into an image, because that is what
-    turns a stale claim from a mystery into a named condition.
-    """
-    actions: list[str] = []
-    manifest = read_manifest(store, venv)
-    if manifest is None:
-        raise HotfixError("no hotfix manifest on the claim; nothing to consolidate")
-    checkout = manifest.checkout or checkout_path(manifest.venv)
-    commits = drift_commits(store, checkout, manifest.base_commit)
-    if not commits:
-        raise HotfixError(
-            f"the checkout is not ahead of {manifest.base_commit[:7]}: there is "
-            "no hotfix to consolidate. If the fix is already in the image, retire "
-            "the claim instead — see `hotfix status`."
+    if packaging and not reinstall:
+        actions.append(
+            STALE_INSTALL_NOTE.format(
+                what=and_list(packaging), venv=f"{checkout}/{claim_venv}"
+            )
         )
-    if push:
-        store.run(git_argv(checkout, "push", remote, f"HEAD:refs/heads/{branch}"))
-        actions.append(f"pushed {len(commits)} commit(s) to {remote}/{branch}")
-    else:
-        actions.append(f"would push {len(commits)} commit(s) to {remote}/{branch}")
-
-    manifest = replace(
-        manifest,
-        consolidated_branch=branch,
-        timestamp=_now(),
-        ahead=len(commits),
-        commits=commits[:MAX_RECORDED_COMMITS],
-        schema_version=MANIFEST_VERSION,
-    )
-    write_manifest(store, manifest)
-    actions.append(_retirement_checklist(branch, manifest, target))
-    return manifest, actions
-
-
-def _retirement_checklist(
-    branch: str, manifest: HotfixManifest, target: HotfixTarget
-) -> str:
-    """The steps after this one, and the verb that now tracks them.
-
-    Steps 4 and 5 are the two nobody does, and they are stated as two because
-    the first is in the *application's* values and the second in the claim's
-    chart: turning the claim off leaves the pod wired, which is how a claim
-    goes on shadowing a fixed image (measured on p47-beamline, 2026-08-23 -
-    :data:`WIRING_IS_THE_APPLICATIONS_OWN`). Neither is prose any more:
-    ``hotfix retire`` measures where the reader has got to.
-    """
-    workload = target.workload or f"pod/{target.pod.name}"
-    # Steps 1 to 3 are authored finished, and step 1 for the reason the
-    # `terminal-reports` skill gives: it is a command somebody selects and
-    # pastes, and a wrap through it costs the report the one line that was for
-    # doing rather than reading. 4 and 5 are prose, so they go through
-    # `paragraph` and take their width from the terminal.
-    lines = [
-        "",
-        "next, in order — the claim is now the only copy of this fix:",
-        f"  1. gh pr create --head {branch} --title 'consolidate hotfix "
-        f"{manifest.commit[:7]}'",
-        "  2. merge, and let CI build and publish the image",
-        f"  3. roll {workload} onto the new image and confirm it is healthy",
-    ]
-    lines.extend(
-        paragraph(
-            "take the volume, volumeMount, args and podSecurityContext back out "
-            "of the application's own values, and redeploy",
-            first="  4. ",
-            indent="     ",
-        )
-    )
-    lines.extend(
-        paragraph(
-            f"turn the claim off (`{SUBCHART_VALUES_KEY}.enabled=false`, or "
-            "`hotfixProject.enabled=false` on the central route) and delete it "
-            "— it is annotated Prune=false, so the flip alone leaves it",
-            first="  5. ",
-            indent="     ",
-        )
-    )
-    lines.append("")
-    lines.extend(
-        paragraph(
-            f"`podbench hotfix retire pod/{target.pod.name}` says which of those "
-            "have landed, and deletes the claim once nothing mounts it."
-        )
-    )
-    return "\n".join(lines)
+    actions += _refresh_debug_config(store, checkout)
+    return actions
 
 
 # -- helm values -----------------------------------------------------------
@@ -4349,14 +4478,14 @@ exists to save, so the second path is asked in the same breath as the first.
 NON_EXEC_PROBE_BLOCKS_THE_HOLD = (
     "a {kind} livenessProbe cannot be short-circuited by the hold - only an exec "
     "probe can - so the kubelet will restart the pod out from under the seat at "
-    "failureThreshold x periodSeconds. Deal with that before `hotfix apply` "
+    "failureThreshold x periodSeconds. Deal with that before `hotfix restart` "
     "holds this pod."
 )
 """Said when the target's probe is real, readable, and of no use to hold mode.
 
 A ``WARN`` and not a ``FAIL`` because ``init`` accepts such a target: what this
-breaks is ``apply``'s hold, later, and the exit code is reserved for what stops
-the next command.
+breaks is the hold a *later* relaunch takes, and the exit code is reserved for
+what stops the next command.
 
 Separate from :data:`NON_EXEC_PROBE_WARNING`, which says the same finding to
 somebody reading an emitted snippet and carries a second half about the block
@@ -4845,14 +4974,17 @@ else's values file.
 class RetirementStep(Enum):
     """What retiring a hotfix consists of, in the order the steps happen.
 
-    Four rather than :func:`_retirement_checklist`'s five, because these are
-    the four a cluster can be *asked* about. Opening the PR and merging it
-    leave no trace podbench can read; rolling the image, unwiring the pod and
-    deleting the claim each do.
-    """
+    Three, because these are the three a cluster can be *asked* about. Getting
+    the fix onto a branch, opening the PR and merging it leave no trace podbench
+    can read; rolling the image, unwiring the pod and deleting the claim each do.
 
-    BRANCH = "branch"
-    """The fix is on a branch, so the claim is no longer its only copy."""
+    There was a fourth, ``branch``, and #232 dropped it with the field it read:
+    ``consolidated_branch`` was written by ``consolidate`` and could be made a
+    lie by one hand push, which is the whole objection this verb exists to
+    avoid. ``hotfix status`` asks the forge instead, live and best-effort;
+    retirement now turns only on things measured from the cluster in front of
+    you.
+    """
 
     IMAGE = "image"
     """The deployed image has moved on from the one the hotfix was made against."""
@@ -5213,82 +5345,31 @@ def retirement(
     a pod wired to a claim whose chart no longer declares it - is one no test
     cluster is going to be left in by accident.
 
-    Nothing here infers one step from another. The branch and the image are
-    read from the manifest, and the manifest can only be read while something
-    mounts the claim, so both go *unmeasured* the moment the pod is unwired -
-    which is the point at which the earlier steps stop being answerable and
-    must stop being answered.
+    Nothing here infers one step from another. The image is read from the
+    manifest, and the manifest can only be read while something mounts the
+    claim, so it goes *unmeasured* the moment the pod is unwired - which is the
+    point at which the earlier step stops being answerable and must stop being
+    answered.
     """
     carried = hotfix_wiring(pod_json)
     fs_group = pod_fs_group(pod_json)
     home = SEAT_HOME_VOLUME in declared_volumes(pod_json)
     pod = _as_str(as_dict(pod_json.get("metadata")).get("name")) or "this pod"
     if not carried and claim.present is False:
-        # Said once, on the two rows it makes moot, in `_seed_checks`' words and
-        # for its reason: the mechanism belongs to the fact - stated on the
-        # `claim` row below - and not to each of its consequences.
+        # Said once, on the row it makes moot, in `_seed_checks`' words and for
+        # its reason: the mechanism belongs to the fact - stated on the `claim`
+        # row below - and not to each of its consequences.
         moot = "not asked: the claim is gone, and its manifest with it"
         return [
-            RetirementCheck(RetirementStep.BRANCH, None, moot),
             RetirementCheck(RetirementStep.IMAGE, None, moot),
             _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group, home=home),
             _claim_check_row(claim, reference=reference),
         ]
     return [
-        _branch_check(manifest, wired=bool(carried), reference=reference),
         _image_check(manifest, current_digest=current_digest),
         _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group, home=home),
         _claim_check_row(claim, reference=reference),
     ]
-
-
-def _branch_check(
-    manifest: HotfixManifest | None, *, wired: bool, reference: str
-) -> RetirementCheck:
-    step = RetirementStep.BRANCH
-    if manifest is None:
-        return RetirementCheck(
-            step,
-            None,
-            "not measured: nothing mounts the claim, so its manifest cannot be read"
-            if not wired
-            # "was read", not "is there": the read is an exec, and a refused one
-            # must not come back as a claim that carries no fix.
-            else "no manifest was read from the claim, so nothing here records "
-            "a hotfix to consolidate",
-        )
-    if manifest.consolidated_branch is not None:
-        return RetirementCheck(
-            step,
-            True,
-            f"consolidated onto {manifest.consolidated_branch}, so the claim is "
-            "no longer the only copy of this fix",
-        )
-    if manifest.ahead == 0:
-        # Measured on the live target (evidence §7.2): with no commits this row
-        # counted a step with nothing in it and offered `consolidate`, which
-        # refuses that exact claim - "there is no hotfix to consolidate ...
-        # retire the claim instead". Two verbs pointing at each other about one
-        # claim, in a report whose whole value is that its count is right.
-        #
-        # Hedged to what was measured, and only that: `ahead` is a *recorded*
-        # field, written by `init` and `apply`, while `consolidate` recounts
-        # from `git log` in the checkout. Somebody who committed in the seat by
-        # hand without running `apply` has commits this row cannot see, and
-        # `--delete-claim` is the destructive direction to be wrong in.
-        return RetirementCheck(
-            step,
-            True,
-            "this claim records no commits of its own, so nothing it records "
-            "would be discarded by retiring it.",
-        )
-    return RetirementCheck(
-        step,
-        False,
-        f"{manifest.ahead} commit(s) on this claim are on no branch: "
-        f"`podbench hotfix consolidate {reference} --branch NAME` first, or "
-        "retiring the claim discards them.",
-    )
 
 
 def _image_check(
@@ -5763,10 +5844,6 @@ _Local = Annotated[
         "terminal, where the claim is already mounted at --venv",
     ),
 ]
-_Author = Annotated[
-    str | None,
-    typer.Option("--author", metavar="AUTHOR", help='"Name <email>" for the commit'),
-]
 _Namespace = Annotated[
     str | None,
     typer.Option(
@@ -6021,8 +6098,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     @app.callback(invoke_without_command=True)
     def root(ctx: typer.Context) -> None:
         """Durable in-place fixes: the project on a claim beside the
-        application, every change a commit, and a status command that will not
-        let a hotfixed pod go unnoticed.
+        application, ordinary git in the seat, and a status command that will
+        not let a hotfixed pod go unnoticed.
         """
         require_subcommand(ctx)
 
@@ -6263,7 +6340,6 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         container: _Container = None,
         seat: _Seat = None,
         local: _Local = False,
-        author: _Author = None,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
@@ -6296,7 +6372,6 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             image_labels=labels,
             ref=ref,
             base_commit=base_commit,
-            author=author,
             install=not no_install,
             image_project=image_project,
             image_interpreter=image_interpreter,
@@ -6304,69 +6379,39 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         )
         raise typer.Exit(_report(actions))
 
-    @app.command(help="commit the change on the claim and relaunch the running child")
-    def apply(
+    @app.command(help="relaunch the application on the claim, committing nothing")
+    def restart(
         target: _Target,
-        message: Annotated[
-            str,
-            typer.Option("-m", "--message", metavar="TEXT", help="commit message"),
-        ],
         venv: _Venv = None,
-        no_bounce: Annotated[
+        reinstall: Annotated[
             bool,
             typer.Option(
-                "--no-bounce",
-                help="leave the running process alone; the hotfix takes effect "
-                "on the next restart",
+                "--reinstall",
+                help="rebuild the venv on the claim first, which a change to "
+                "pyproject.toml or the lockfile needs",
             ),
         ] = False,
         container: _Container = None,
         seat: _Seat = None,
         local: _Local = False,
-        author: _Author = None,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
+        # No `-m`: this verb writes no commit, and a message option that went
+        # nowhere would be read as one that did. Committing is `git commit` in
+        # the seat.
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
         mount, note = resolve_venv(resolved, venv)
         if note is not None:
             _warn(note)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
-        _, actions = apply_hotfix(
-            kube,
-            store,
-            resolved,
-            venv=mount,
-            message=message,
-            author=author,
-            bounce=not no_bounce,
+        raise typer.Exit(
+            _report(restart_app(kube, store, resolved, venv=mount, reinstall=reinstall))
         )
-        raise typer.Exit(_report(actions))
 
-    @app.command(help="relaunch the application on the claim, committing nothing")
-    def restart(
-        target: _Target,
-        venv: _Venv = None,
-        container: _Container = None,
-        seat: _Seat = None,
-        local: _Local = False,
-        namespace: _Namespace = None,
-        context: _Context = None,
-        kubectl: _KubectlBinary = "kubectl",
-    ) -> None:
-        # No `-m`, no `--author`: this verb writes no commit, and a message
-        # option that went nowhere would be read as one that did.
-        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
-        resolved = resolve_target(kube, target, container=container)
-        mount, note = resolve_venv(resolved, venv)
-        if note is not None:
-            _warn(note)
-        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
-        raise typer.Exit(_report(restart_app(kube, store, resolved, venv=mount)))
-
-    @app.command(help="every hotfixed pod in the namespace, and its drift")
+    @app.command(help="every hotfixed pod in the namespace, measured")
     def status(
         no_probe: Annotated[
             bool,
@@ -6388,61 +6433,28 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "the facility-wide shutdown assertion, as one command",
             ),
         ] = False,
+        no_remote: Annotated[
+            bool,
+            typer.Option(
+                "--no-remote",
+                help="do not ask the repository whether it has these commits; "
+                "the `remote` row then reports what the claim last fetched",
+            ),
+        ] = False,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         rows = status_rows(
-            kube, probe=not no_probe, python=python, all_namespaces=all_namespaces
+            kube,
+            probe=not no_probe,
+            python=python,
+            all_namespaces=all_namespaces,
+            remote=not no_remote,
         )
         emit(format_status(rows, all_namespaces=all_namespaces))
         raise typer.Exit(0 if all(row.ok for row in rows) else 1)
-
-    @app.command(
-        name="consolidate",
-        help="push the claim's checkout as a branch for the rebuild",
-    )
-    def consolidate_command(
-        target: _Target,
-        branch: Annotated[
-            str, typer.Option("--branch", metavar="NAME", help="branch to push")
-        ],
-        venv: _Venv = None,
-        remote: Annotated[
-            str, typer.Option("--remote", metavar="NAME", help="git remote to push to")
-        ] = "origin",
-        dry_run: Annotated[
-            bool,
-            typer.Option(
-                "--dry-run", help="say what would be pushed without pushing it"
-            ),
-        ] = False,
-        container: _Container = None,
-        seat: _Seat = None,
-        local: _Local = False,
-        author: _Author = None,
-        namespace: _Namespace = None,
-        context: _Context = None,
-        kubectl: _KubectlBinary = "kubectl",
-    ) -> None:
-        del author  # accepted for symmetry; this verb writes no commit
-        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
-        resolved = resolve_target(kube, target, container=container)
-        mount, note = resolve_venv(resolved, venv)
-        if note is not None:
-            _warn(note)
-        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
-        _, actions = consolidate(
-            kube,
-            store,
-            resolved,
-            venv=mount,
-            branch=branch,
-            remote=remote,
-            push=not dry_run,
-        )
-        raise typer.Exit(_report(actions))
 
     # `retire_command`, for `init_command`'s reason: `retire` is the
     # module-level function this calls, and a same-named closure would shadow

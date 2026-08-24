@@ -1766,7 +1766,7 @@ def test_the_report_says_iterate_is_available_on_a_hotfixed_pod() -> None:
     assert session.hotfixed
     (iterate,) = [f for f in features(session) if f.name.startswith("iterate")]
     assert iterate.available
-    assert "hotfix apply" in iterate.note
+    assert "hotfix restart" in iterate.note
     # The sentence that was wrong here is gone, not merely outvoted.
     assert "sacrificial" not in iterate.note
     assert "sacrificial" not in iterate.reason

@@ -675,6 +675,19 @@ class Kubectl:
 
     # -- plumbing ---------------------------------------------------------
 
+    @property
+    def runner(self) -> Runner:
+        """The subprocess seam this client was built with.
+
+        Exposed for the one caller that has to run something *other than*
+        kubectl on the same machine and must not fork it in a test:
+        ``hotfix status`` asks a git remote from the laptop, because an exec
+        session in the pod has no credentials for it. Reusing this seam is what
+        keeps that call injected everywhere the cluster calls already are — a
+        second default would be a unit suite that quietly reaches a forge.
+        """
+        return self._runner
+
     def base_argv(
         self, *, request_timeout: float | None = None, cluster_wide: bool = False
     ) -> list[str]:

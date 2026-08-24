@@ -3917,7 +3917,7 @@ def _iterate_feature(hotfixed: bool = False) -> Feature:
         return Feature(
             "iterate (edit, relaunch, verify through the Service)",
             True,
-            note="`podbench hotfix apply` relaunches the application's own "
+            note="`podbench hotfix restart` relaunches the application's own "
             "child in place: this pod carries the supervisor, so the loop runs "
             "on the live workload without a second pod and without restarting "
             "the container.",

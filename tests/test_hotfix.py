@@ -241,10 +241,7 @@ def a_manifest(**overrides: Any) -> hotfix.HotfixManifest:
         "base_image_digest": BASE_DIGEST,
         "interpreter": "3.12.7",
         "container": "app",
-        "commit": BASE_SHA,
         "base_commit": BASE_SHA,
-        "author": "Ada <ada@example.invalid>",
-        "timestamp": "2026-08-15T09:00:00+00:00",
     }
     defaults.update(overrides)
     return hotfix.HotfixManifest(**defaults)
@@ -268,11 +265,7 @@ def flowed(text: str) -> str:
 
 
 def test_manifest_round_trips_through_json() -> None:
-    manifest = a_manifest(
-        ahead=2,
-        commits=(hotfix.HotfixCommit(HEAD_SHA, "fix the thing"),),
-        consolidated_branch="patch/beamtime-14",
-    )
+    manifest = a_manifest(base_commit_assumed=True, claim_venv="env")
     assert hotfix.HotfixManifest.from_json(manifest.to_json()) == manifest
 
 
@@ -292,10 +285,48 @@ def test_a_v1_manifest_loads_with_the_new_fields_defaulted() -> None:
     assert loaded.stale_schema
 
 
+def test_a_v2_manifest_from_the_field_still_reads(tmp_path: Path) -> None:
+    """The live p47 claim, verbatim (evidence §3, 2026-08-24).
+
+    Every claim in the field carries one of these. #232 removed the git records
+    from the schema, so the reader has to walk past six keys it no longer has a
+    field for - and the pod carrying them is a working hotfix, not a stale
+    schema: `stale_schema` must stay false, or every row in the namespace grows
+    a note about provenance that is not in fact missing.
+    """
+    payload = {
+        "ahead": 1,
+        "author": "podbench <podbench@local>",
+        "baseCommit": BASE_SHA,
+        "baseCommitAssumed": True,
+        "baseImage": "ghcr.io/dls/fastcs-example-debug:2025.10.1",
+        "baseImageDigest": BASE_DIGEST,
+        "checkout": "/podbench/app",
+        "claimVenv": ".venv",
+        "commit": HEAD_SHA,
+        "commits": [{"sha": HEAD_SHA, "subject": "add a marker attribute"}],
+        "consolidatedBranch": None,
+        "container": "bl47p-ea-fastcs-01",
+        "interpreter": "3.11.13",
+        "repo": "git@github.com:DiamondLightSource/fastcs-example.git",
+        "timestamp": "2026-08-24T06:14:53+00:00",
+        "venv": "/podbench/app",
+        "version": 2,
+    }
+
+    loaded = hotfix.HotfixManifest.from_json(json.dumps(payload))
+
+    assert loaded.base_commit == BASE_SHA
+    assert loaded.base_commit_assumed
+    assert loaded.interpreter == "3.11.13"
+    assert loaded.claim_venv == ".venv"
+    assert not loaded.stale_schema, "v3 only removed fields; v2 lacks nothing"
+
+
 def test_manifest_round_trips_on_disk(tmp_path: Path) -> None:
     """The claim, standing in as a directory: write it, read it back."""
     store = hotfix.LocalStore()
-    manifest = a_manifest(venv=str(tmp_path), ahead=1)
+    manifest = a_manifest(venv=str(tmp_path))
     hotfix.write_manifest(store, manifest)
     assert (tmp_path / hotfix.MANIFEST_FILENAME).is_file()
     assert hotfix.read_manifest(store, str(tmp_path)) == manifest
@@ -321,19 +352,31 @@ def test_manifest_from_an_older_schema_version_loads_with_defaults() -> None:
     manifest = hotfix.HotfixManifest.from_json(json.dumps(older))
     assert manifest.schema_version == 0
     assert manifest.stale_schema
-    assert manifest.commit == HEAD_SHA
+    assert manifest.base_commit == BASE_SHA
     # Absent from the old schema, and not invented:
     assert manifest.base_image_digest == ""
     assert manifest.interpreter == ""
-    # ``ahead`` post-dates the commit list, so it is derived rather than zeroed.
-    assert manifest.ahead == 1
 
 
 def test_rewriting_an_older_manifest_stamps_the_current_version() -> None:
-    older = hotfix.HotfixManifest.from_json(json.dumps({"commit": HEAD_SHA}))
+    older = hotfix.HotfixManifest.from_json(json.dumps({"baseCommit": BASE_SHA}))
     assert hotfix.HotfixManifest.from_json(older.to_json()).schema_version == (
         hotfix.MANIFEST_VERSION
     )
+
+
+def test_the_written_manifest_records_no_git(tmp_path: Path) -> None:
+    """#232's falsification, as a schema assertion.
+
+    "Let users use normal git" and "a manifest that records what git did" are
+    incompatible: one hand commit in the seat makes every one of these keys a
+    lie, and nothing would notice.
+    """
+    written = json.loads(a_manifest().to_json())
+
+    for key in ("commit", "ahead", "commits", "author", "timestamp"):
+        assert key not in written, key
+    assert "consolidatedBranch" not in written
 
 
 def test_manifest_from_a_newer_schema_version_is_refused() -> None:
@@ -379,81 +422,8 @@ def test_metadata_changed_only_for_packaging_files() -> None:
     assert hotfix.metadata_changed(["src/api/beam.py", "pyproject.toml"])
 
 
-def test_changed_paths_covers_the_whole_range_since_the_last_apply() -> None:
-    """Several hand commits can accumulate between two applies, so the metadata
-    question is asked of the range and not of HEAD alone."""
-    store = FakeStore(
-        outputs={
-            f"{GIT} diff --name-only {BASE_SHA}..{HEAD_SHA}": (
-                "setup.cfg\nsrc/api/beam file.py\n"
-            )
-        }
-    )
-    assert hotfix.changed_paths(store, CHECKOUT, BASE_SHA, HEAD_SHA) == (
-        "setup.cfg",
-        # One path, not two: --name-only is line-separated and paths may contain
-        # spaces.
-        "src/api/beam file.py",
-    )
-
-
-def test_changed_paths_is_empty_when_head_has_not_moved() -> None:
-    store = FakeStore()
-    assert hotfix.changed_paths(store, CHECKOUT, HEAD_SHA, HEAD_SHA) == ()
-    assert not store.calls
-
-
-def test_changed_paths_falls_back_to_head_without_a_recorded_commit() -> None:
-    """A manifest old enough to have no ``commit`` gives no range to walk."""
-    store = FakeStore(outputs={f"{GIT} show": "\npyproject.toml\n"})
-    assert hotfix.changed_paths(store, CHECKOUT, "", HEAD_SHA) == ("pyproject.toml",)
-
-
-def test_changed_paths_falls_back_when_the_recorded_commit_is_gone() -> None:
-    """A rewritten history over-installs rather than under-installing: a
-    redundant editable install costs seconds, a skipped one costs the hotfix."""
-    store = FakeStore(outputs={f"{GIT} show": "pyproject.toml\n"})
-    store.failures[f"{GIT} diff"] = "bad revision"
-    assert hotfix.changed_paths(store, CHECKOUT, BASE_SHA, HEAD_SHA) == (
-        "pyproject.toml",
-    )
-
-
 def test_pyvenv_cfg_gives_the_interpreter() -> None:
     assert hotfix.parse_pyvenv_cfg(PYVENV_CFG)["version"] == "3.12.7"
-
-
-# -- drift -----------------------------------------------------------------
-
-
-def test_parse_log_keeps_subjects_containing_anything_printable() -> None:
-    text = f"{HEAD_SHA}\x1ffix: beam | trip, take 2\n{BASE_SHA}\x1fwip\n"
-    commits = hotfix.parse_log(text)
-    assert commits[0] == hotfix.HotfixCommit(HEAD_SHA, "fix: beam | trip, take 2")
-    assert commits[1].subject == "wip"
-
-
-def test_drift_counts_commits_the_image_does_not_have() -> None:
-    store = FakeStore(
-        outputs={
-            f"{GIT} log": (f"{HEAD_SHA}\x1fsecond fix\n{BASE_SHA[:-1]}3\x1ffirst fix\n")
-        }
-    )
-    commits = hotfix.drift_commits(store, CHECKOUT, BASE_SHA)
-    assert len(commits) == 2
-    assert commits[0].subject == "second fix"
-    assert f"{BASE_SHA}..HEAD" in " ".join(store.calls[0])
-
-
-def test_drift_with_no_base_commit_is_no_drift() -> None:
-    assert hotfix.drift_commits(FakeStore(), CHECKOUT, "") == ()
-
-
-def test_drift_names_the_repository_mismatch() -> None:
-    store = FakeStore()
-    store.failures[f"{GIT} log"] = "unknown revision"
-    with pytest.raises(hotfix.HotfixError, match="different repository"):
-        hotfix.drift_commits(store, CHECKOUT, BASE_SHA)
 
 
 # -- interpreters ----------------------------------------------------------
@@ -494,10 +464,9 @@ def test_probe_reports_an_interpreter_that_will_not_run() -> None:
 
 
 def test_assess_active_when_the_image_has_not_moved() -> None:
-    """And it adds no detail: `format_status`'s own columns carry the count and
-    the verdict, and a healthy row said the same number twice until it did
-    not - see `test_a_healthy_row_says_its_commit_count_and_its_sha_once`."""
-    health, detail = hotfix.assess(a_manifest(ahead=2), current_digest=BASE_DIGEST)
+    """And it adds no detail: the row's own columns carry the verdict, and the
+    measured rows under it carry everything about the claim's history."""
+    health, detail = hotfix.assess(a_manifest(), current_digest=BASE_DIGEST)
     assert health is hotfix.HotfixHealth.ACTIVE
     assert detail == ""
 
@@ -506,19 +475,12 @@ def test_assess_flags_an_image_upgrade_under_the_mount() -> None:
     health, detail = hotfix.assess(a_manifest(), current_digest=NEW_DIGEST)
     assert health is hotfix.HotfixHealth.IMAGE_CHANGED
     assert "shadows" in detail
-
-
-def test_assess_flags_a_stale_claim_after_consolidation() -> None:
-    """The risk the brief calls out by name: the fix is in the image, and the
-    claim is still shadowing it with an older copy."""
-    manifest = a_manifest(consolidated_branch="patch/beamtime-14")
-    health, detail = hotfix.assess(manifest, current_digest=NEW_DIGEST)
-    assert health is hotfix.HotfixHealth.SUPERSEDED
-    assert "retire" in detail
+    # The two digests belong to the `image` row and are not said twice.
+    assert "sha256" not in detail
 
 
 def test_assess_puts_a_broken_interpreter_above_everything() -> None:
-    manifest = a_manifest(consolidated_branch="patch/beamtime-14")
+    manifest = a_manifest()
     probe = hotfix.InterpreterProbe(ok=False, version=None, detail="not found")
     health, detail = hotfix.assess(manifest, current_digest=NEW_DIGEST, probe=probe)
     assert health is hotfix.HotfixHealth.INTERPRETER_MISMATCH
@@ -958,8 +920,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert store.ran(
         f"git clone --branch v1.4.0 https://example.invalid/acme/api.git {CHECKOUT}"
     )
-    assert manifest.base_commit == BASE_SHA == manifest.commit
-    assert manifest.ahead == 0
+    assert manifest.base_commit == BASE_SHA
     assert manifest.interpreter == "3.12.7"
     assert manifest.base_image_digest == BASE_DIGEST
     assert store.read_text(hotfix.manifest_path(VENV)) is not None
@@ -1161,246 +1122,16 @@ def test_init_explains_a_failed_install() -> None:
         )
 
 
-# -- apply -----------------------------------------------------------------
+# -- restart ---------------------------------------------------------------
 
 
-def applied_store(dirty: bool = True, changed: str = "src/api/beam.py") -> FakeStore:
+def hotfixed_store(dirty: bool = True) -> FakeStore:
+    """A seeded claim carrying a manifest, and a git that answers about it."""
     store = seeded_store()
     store.files[hotfix.manifest_path(VENV)] = a_manifest().to_json()
     store.outputs[f"{GIT} status --porcelain"] = " M src/api/beam.py\n" if dirty else ""
-    # The reinstall question is asked of the manifest's recorded commit..HEAD,
-    # so that is the range the fake git answers for.
-    store.outputs[f"{GIT} diff --name-only {BASE_SHA}..{HEAD_SHA}"] = f"{changed}\n"
     return store
 
-
-def test_apply_commits_measures_drift_and_relaunches() -> None:
-    runner = FakeRunner()
-    store = applied_store()
-    manifest, actions = hotfix.apply_hotfix(
-        kube(runner),
-        store,
-        deployment_target(),
-        venv=VENV,
-        message="stop the beam tripping",
-        author="Ada <ada@example.invalid>",
-    )
-
-    assert store.ran(f"{GIT} add -A")
-    assert any("commit" in " ".join(call) for call in store.calls)
-    assert manifest.commit == HEAD_SHA
-    assert manifest.ahead == 1
-    assert manifest.commits[0].subject == "make the beam behave"
-    assert manifest.author == "Ada <ada@example.invalid>"
-
-    # The pod template is never touched: provenance lives on the claim, where
-    # Argo self-heal cannot strip it, and the relaunch happens inside the
-    # container rather than by rolling the workload.
-    assert not runner.matching("patch deployment api")
-    assert not runner.matching("delete pod")
-    assert (
-        hotfix.HotfixManifest.from_json(store.files[hotfix.manifest_path(VENV)]).ahead
-        == 1
-    )
-    assert any("without a restart" in action for action in actions)
-
-
-def test_apply_skips_the_reinstall_when_only_code_changed() -> None:
-    runner = FakeRunner()
-    hotfix.apply_hotfix(
-        kube(runner),
-        applied_store(),
-        deployment_target(),
-        venv=VENV,
-        message="fix",
-    )
-    assert not runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-
-
-def test_apply_reinstalls_when_packaging_metadata_changed() -> None:
-    runner = FakeRunner()
-    _, actions = hotfix.apply_hotfix(
-        kube(runner),
-        applied_store(changed="pyproject.toml"),
-        deployment_target(),
-        venv=VENV,
-        message="new entry point",
-    )
-    assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-    assert any("rebuilt the venv" in action for action in actions)
-
-
-def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
-    """A clean working tree is not evidence that nothing changed.
-
-    Committing in the seat before running ``apply`` leaves the tree clean with
-    HEAD already moved. Guarding the packaging check on dirtiness skipped it
-    here, and the workload rolled with a ``.dist-info`` older than the commit —
-    so a hotfix that adds an entry point looked applied and was not.
-    """
-    runner = FakeRunner()
-    store = applied_store(dirty=False, changed="pyproject.toml")
-    _, actions = hotfix.apply_hotfix(
-        kube(runner),
-        store,
-        deployment_target(),
-        venv=VENV,
-        message="new entry point",
-    )
-    assert not store.ran(f"{GIT} add")
-    assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-    assert any("rebuilt the venv" in action for action in actions)
-
-
-def test_apply_rebuilds_into_the_venv_the_manifest_records() -> None:
-    """#209's other half. `apply` has no --claim-venv and never should have, so
-    before the manifest carried the name the reinstall defaulted to `.venv`
-    while the supervisor's runtime switch looked in the directory `init` was
-    told about - a packaging-change rebuild landing where nothing would ever run
-    it, and no error anywhere."""
-    runner = FakeRunner()
-    store = applied_store(changed="pyproject.toml")
-    store.files[hotfix.manifest_path(VENV)] = a_manifest(claim_venv="env").to_json()
-
-    hotfix.apply_hotfix(
-        kube(runner),
-        store,
-        deployment_target(),
-        venv=VENV,
-        message="new entry point",
-    )
-
-    rebuilt = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-    assert rebuilt
-    assert f"UV_PROJECT_ENVIRONMENT={CHECKOUT}/env" in " ".join(rebuilt[0])
-
-
-def test_apply_rebuilds_into_uvs_own_default_without_saying_so() -> None:
-    """The other side of the same switch: `install_argv` sets the variable only
-    when the name is not uv's own, so a default claim must not carry it."""
-    runner = FakeRunner()
-
-    hotfix.apply_hotfix(
-        kube(runner),
-        applied_store(changed="pyproject.toml"),
-        deployment_target(),
-        venv=VENV,
-        message="new entry point",
-    )
-
-    rebuilt = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-    assert "UV_PROJECT_ENVIRONMENT" not in " ".join(rebuilt[0])
-
-
-def test_apply_never_upgrades_an_unknown_base_into_a_measured_one() -> None:
-    """`apply` rewrites the manifest at the current schema version. A v1
-    manifest cannot say whether its base was measured, and rewriting it as v2
-    with the field's default would turn "unknown" into "measured" - the one
-    direction this field must never move in."""
-    payload = json.loads(a_manifest().to_json())
-    payload["version"] = 1
-    del payload["baseCommitAssumed"]
-    store = applied_store()
-    store.files[hotfix.manifest_path(VENV)] = json.dumps(payload)
-
-    manifest, _ = hotfix.apply_hotfix(
-        kube(FakeRunner()), store, deployment_target(), venv=VENV, message="fix"
-    )
-
-    assert manifest.schema_version == hotfix.MANIFEST_VERSION
-    assert manifest.base_commit_assumed
-
-
-def test_apply_after_a_code_only_hand_commit_does_not_reinstall() -> None:
-    """The other direction: the commit is the key, so a code-only one is cheap."""
-    runner = FakeRunner()
-    _, actions = hotfix.apply_hotfix(
-        kube(runner),
-        applied_store(dirty=False, changed="src/api/beam.py"),
-        deployment_target(),
-        venv=VENV,
-        message="already committed by hand",
-    )
-    assert not runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-    assert any("still valid" in action for action in actions)
-
-
-def test_apply_on_a_clean_tree_commits_nothing() -> None:
-    store = applied_store(dirty=False)
-    _, actions = hotfix.apply_hotfix(
-        kube(FakeRunner()),
-        store,
-        deployment_target(),
-        venv=VENV,
-        message="nothing to see",
-    )
-    assert not store.ran(f"{GIT} add")
-    assert any("nothing new to commit" in action for action in actions)
-
-
-def test_apply_without_a_manifest_sends_you_to_init() -> None:
-    with pytest.raises(hotfix.HotfixError, match="hotfix init"):
-        hotfix.apply_hotfix(
-            kube(FakeRunner()),
-            seeded_store(),
-            deployment_target(),
-            venv=VENV,
-            message="fix",
-        )
-
-
-def test_apply_relaunches_in_place_and_deletes_nothing() -> None:
-    """A pod with no controller used to be refused. Now it needs no controller.
-
-    The relaunch happens inside the container, so ownership stops mattering -
-    which is what lets Hotfix mode work on a bare pod and, more to the point,
-    stops it SIGKILLing the seat that shares the container's namespaces.
-    """
-    runner = FakeRunner()
-    target = hotfix.HotfixTarget(
-        pod=hotfix.PodRef("demo", "solo"),
-        container="app",
-        image="ghcr.io/acme/api:1.4.0",
-        image_digest=BASE_DIGEST,
-    )
-    _, actions = hotfix.apply_hotfix(
-        kube(runner), applied_store(), target, venv=VENV, message="fix"
-    )
-    assert not runner.matching("delete pod")
-    assert any("without a restart" in action for action in actions)
-    # hold, tree-kill, release - as one exec, so a dying seat cannot leave the
-    # pod held with its probe short-circuited.
-    assert runner.matching("exec -c app solo -- bash -c")
-
-
-def test_the_relaunch_refuses_a_container_without_the_supervisor() -> None:
-    """Nothing to relaunch means the kill would restart the container instead."""
-    runner = FakeRunner()
-    runner.failures["exec -c app"] = "no such file"
-    with pytest.raises(hotfix.HotfixError, match="not running the podbench supervisor"):
-        hotfix.init(
-            kube(runner),
-            seeded_store(),
-            deployment_target(),
-            venv=VENV,
-            repo="https://example.invalid/acme/api.git",
-        )
-
-
-def test_apply_can_leave_the_process_alone() -> None:
-    runner = FakeRunner()
-    _, actions = hotfix.apply_hotfix(
-        kube(runner),
-        applied_store(),
-        deployment_target(),
-        venv=VENV,
-        message="fix",
-        bounce=False,
-    )
-    assert any("still has the old code" in action for action in actions)
-
-
-# -- restart ---------------------------------------------------------------
 
 CHILD_PID_READ = f"exec -c app api-7f9-abc -- cat {model.HOTFIX_CHILD_PID_PATH}"
 RELAUNCH = "exec -c app api-7f9-abc -- bash -c"
@@ -1421,9 +1152,15 @@ def restarting_runner(before: str = "7", after: str = "2446") -> FakeRunner:
     return runner
 
 
-def restarted(store: FakeStore, runner: FakeRunner | None = None) -> list[str]:
+def restarted(
+    store: FakeStore, runner: FakeRunner | None = None, *, reinstall: bool = False
+) -> list[str]:
     return hotfix.restart_app(
-        kube(runner or restarting_runner()), store, deployment_target(), venv=VENV
+        kube(runner or restarting_runner()),
+        store,
+        deployment_target(),
+        venv=VENV,
+        reinstall=reinstall,
     )
 
 
@@ -1433,7 +1170,7 @@ def test_restart_relaunches_and_writes_no_commit() -> None:
     index, not the manifest - because there is no sha for a manifest to record.
     """
     runner = restarting_runner()
-    store = applied_store()
+    store = hotfixed_store()
 
     restarted(store, runner)
 
@@ -1450,7 +1187,7 @@ def test_restart_names_the_pid_it_stopped_and_the_one_it_started() -> None:
     holds. On the measured target that was three levels above the process a
     breakpoint goes in, so a line calling it the application would send a reader
     looking for the wrong pid in `podbench pids`."""
-    actions = restarted(applied_store())
+    actions = restarted(hotfixed_store())
 
     assert actions[0] == (
         "stopped the supervisor child pid 7 and its tree, started pid 2446"
@@ -1461,7 +1198,7 @@ def test_restart_says_when_the_supervisor_recorded_no_new_child() -> None:
     """The relaunch script waits for the pid file to change and then gives up
     quietly. A report that printed the same pid twice as a transition would say
     a restart happened when it may not have."""
-    actions = restarted(applied_store(), restarting_runner(after="7"))
+    actions = restarted(hotfixed_store(), restarting_runner(after="7"))
 
     assert "may not have taken" in actions[0]
 
@@ -1471,7 +1208,7 @@ def test_restart_says_the_claim_is_dirty_and_names_the_files() -> None:
     porcelain leading space in place, because that column is the index status
     and a `.strip()` of the whole block eats the first path's first character.
     """
-    store = applied_store()
+    store = hotfixed_store()
     store.outputs[f"{GIT} status --porcelain"] = " M src/api/beam.py\n?? notes.txt\n"
 
     actions = restarted(store)
@@ -1483,7 +1220,7 @@ def test_restart_says_the_claim_is_dirty_and_names_the_files() -> None:
 
 
 def test_restart_counts_the_uncommitted_files_it_does_not_name() -> None:
-    store = applied_store()
+    store = hotfixed_store()
     store.outputs[f"{GIT} status --porcelain"] = "".join(
         f" M src/api/f{number}.py\n" for number in range(8)
     )
@@ -1498,7 +1235,7 @@ def test_restart_counts_the_uncommitted_files_it_does_not_name() -> None:
 def test_restart_says_something_true_when_the_claim_is_clean() -> None:
     """Silence would read as the check not having run, which is the one reading
     that makes a hotfixed pod go unnoticed."""
-    actions = restarted(applied_store(dirty=False))
+    actions = restarted(hotfixed_store(dirty=False))
 
     assert "the claim is clean and running" in actions[1]
     assert HEAD_SHA[:7] in actions[1]
@@ -1508,7 +1245,7 @@ def test_restart_refreshes_a_debug_configuration_that_already_exists() -> None:
     """Every configuration podbench authors is pid-keyed and the restart just
     changed the pid, so an untouched launch.json is one whose F5 dials a closed
     port."""
-    store = applied_store()
+    store = hotfixed_store()
     store.files[LAUNCH_JSON] = "{}"
 
     actions = restarted(store)
@@ -1532,7 +1269,7 @@ def test_restart_provisions_nothing_when_no_debugger_was_asked_for() -> None:
     """`--provision` ptraces the workload and installs into it. A restart is not
     an ask for that; the existing launch.json is the only evidence that the user
     ever made one."""
-    store = applied_store()
+    store = hotfixed_store()
 
     actions = restarted(store)
 
@@ -1543,7 +1280,7 @@ def test_restart_provisions_nothing_when_no_debugger_was_asked_for() -> None:
 def test_a_failed_debug_refresh_is_a_line_and_not_a_failed_restart() -> None:
     """The restart already happened by the time this runs, so raising would
     report it as an error - and the reader would restart again."""
-    store = applied_store()
+    store = hotfixed_store()
     store.files[LAUNCH_JSON] = "{}"
     store.failures["podbench debug-config"] = "no candidate could be provisioned"
 
@@ -1562,9 +1299,67 @@ def test_restart_refuses_a_container_without_the_supervisor() -> None:
     runner.failures["exec -c app"] = "no such file"
 
     with pytest.raises(hotfix.HotfixError, match="not running the podbench supervisor"):
-        restarted(applied_store(), runner)
+        restarted(hotfixed_store(), runner)
 
     assert not runner.matching(RELAUNCH)
+
+
+def test_restart_rebuilds_the_venv_only_when_asked() -> None:
+    """Where `apply`'s one non-git step went.
+
+    `apply` rebuilt the venv when a commit touched packaging metadata; the
+    commit is gone, so the input that inference ran on is gone with it. The
+    capability is not: an editable install bakes the packaging in, so a hotfix
+    adding an entry point looks applied and is not.
+    """
+    runner = restarting_runner()
+    restarted(hotfixed_store(), runner)
+    assert not runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+
+    asked = restarting_runner()
+    actions = restarted(hotfixed_store(), asked, reinstall=True)
+
+    assert asked.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+    # Before the relaunch: a pod brought up on a half-built venv is the state
+    # this mode exists to avoid.
+    argv = [" ".join(call) for call in asked.calls]
+    rebuilt = next(i for i, call in enumerate(argv) if "UV_CACHE_DIR" in call)
+    relaunched = next(i for i, call in enumerate(argv) if "bash -c" in call)
+    assert rebuilt < relaunched
+    assert actions[0].startswith("rebuilt the venv")
+
+
+def test_restart_rebuilds_into_the_venv_the_manifest_records() -> None:
+    """#209, unchanged by #232: the flag `init` was given, not uv's default."""
+    store = hotfixed_store()
+    store.files[hotfix.manifest_path(VENV)] = a_manifest(claim_venv="env").to_json()
+    runner = restarting_runner()
+
+    restarted(store, runner, reinstall=True)
+
+    (rebuild,) = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+    assert f"UV_PROJECT_ENVIRONMENT={CHECKOUT}/env" in " ".join(rebuild)
+
+
+def test_a_dirty_pyproject_says_the_install_is_stale_rather_than_rebuilding() -> None:
+    """The half the porcelain can see, said as a line rather than a rebuild.
+
+    A `uv sync` on every restart would cost the inner loop the thing that makes
+    it an inner loop, and the reader is the one who knows whether the packaging
+    change matters yet.
+    """
+    store = hotfixed_store()
+    store.outputs[f"{GIT} status --porcelain"] = " M pyproject.toml\n M app.py\n"
+
+    actions = restarted(store)
+
+    stale = next(action for action in actions if "--reinstall" in action)
+    assert "pyproject.toml" in stale
+    assert "app.py" not in stale
+    # And not when the rebuild has just happened.
+    assert not any(
+        "--reinstall" in action for action in restarted(store, reinstall=True)
+    )
 
 
 def test_restart_refuses_a_claim_that_was_never_initialised() -> None:
@@ -1572,68 +1367,13 @@ def test_restart_refuses_a_claim_that_was_never_initialised() -> None:
         restarted(seeded_store())
 
 
-# -- consolidate -----------------------------------------------------------
-
-
-def test_consolidate_pushes_and_records_the_branch() -> None:
-    runner = FakeRunner()
-    store = applied_store()
-    manifest, actions = hotfix.consolidate(
-        kube(runner),
-        store,
-        deployment_target(),
-        venv=VENV,
-        branch="patch/beamtime-14",
-    )
-    assert store.ran(f"{GIT} push origin HEAD:refs/heads/patch/beamtime-14")
-    assert manifest.consolidated_branch == "patch/beamtime-14"
-    reread = hotfix.HotfixManifest.from_json(store.files[hotfix.manifest_path(VENV)])
-    assert reread.consolidated_branch == "patch/beamtime-14"
-    checklist = "\n".join(actions)
-    assert "gh pr create" in checklist
-    # Both routes named, because a site is on one or the other and the claim
-    # outlives the boolean either way (#190).
-    assert f"{hotfix.SUBCHART_VALUES_KEY}.enabled=false" in checklist
-    assert "hotfixProject.enabled=false" in checklist
-    # Flattened, because steps 4 and 5 are prose and take their width from the
-    # terminal: a phrase asserted on unflattened passes only at the width the
-    # suite happens to run at.
-    flowed = " ".join(checklist.split())
-    # The two steps nobody does, still stated as two - the values are the
-    # application's own and the boolean is the claim chart's - and now with the
-    # verb that measures which of them have landed.
-    assert "back out of the application's own values" in flowed
-    assert "podbench hotfix retire" in flowed
-
-
-def test_consolidate_dry_run_pushes_nothing() -> None:
-    store = applied_store()
-    _, actions = hotfix.consolidate(
-        kube(FakeRunner()),
-        store,
-        deployment_target(),
-        venv=VENV,
-        branch="patch/beamtime-14",
-        push=False,
-    )
-    assert not store.ran(f"{GIT} push")
-    assert any("would push" in action for action in actions)
-
-
-def test_consolidate_refuses_when_there_is_no_drift() -> None:
-    store = applied_store()
-    store.outputs[f"{GIT} log"] = ""
-    with pytest.raises(hotfix.HotfixError, match="no hotfix to consolidate"):
-        hotfix.consolidate(
-            kube(FakeRunner()),
-            store,
-            deployment_target(),
-            venv=VENV,
-            branch="patch/beamtime-14",
-        )
-
-
 # -- status ----------------------------------------------------------------
+
+STATE_READ = "exec -c app api-7f9-abc -- sh -c cat"
+GIT_READ = "exec -c app api-7f9-abc -- sh -c command -v git"
+# `FakeRunner.key` drops argv[0], so a local `env ... git ls-remote` is keyed on
+# the first variable rather than on the verb.
+LS_REMOTE = "GIT_TERMINAL_PROMPT=0"
 
 
 def hotfixed_pod(
@@ -1657,89 +1397,188 @@ def state_exec(
     return f"{body}\n{sep}\n{hold}\n{sep}\n{now}\n"
 
 
-def test_status_says_when_the_drift_is_counted_from_an_assumed_base() -> None:
+def git_exec(
+    *, dirty: str = "", head: str = HEAD_SHA, ahead: str = "1", remote: str = ""
+) -> str:
+    """What `read_claim_git`'s exec prints back: four sections, in order."""
+    sep = hotfix.STATE_SEPARATOR
+    return f"{dirty}\n{sep}\n{head}\n{sep}\n{ahead}\n{sep}\n{remote}\n"
+
+
+def a_claim_git(**overrides: Any) -> hotfix.ClaimGit:
+    settings: dict[str, Any] = {"reachable": True, "head": HEAD_SHA, "ahead": 1}
+    settings.update(overrides)
+    return hotfix.ClaimGit(**settings)
+
+
+def a_row(**overrides: Any) -> hotfix.HotfixRow:
+    settings: dict[str, Any] = {
+        "pod": hotfix.PodRef("demo", "api-7f9-abc"),
+        "manifest": a_manifest(),
+        "health": hotfix.HotfixHealth.ACTIVE,
+        "detail": "",
+        "current_digest": BASE_DIGEST,
+        "git": a_claim_git(),
+    }
+    settings.update(overrides)
+    return hotfix.HotfixRow(**settings)
+
+
+def status_runner(
+    manifest: hotfix.HotfixManifest | None = None,
+    *,
+    digest: str = BASE_DIGEST,
+    git: str | None = None,
+    remote: str = "",
+) -> FakeRunner:
+    """A cluster with one hotfixed pod, and a laptop git that answers offline."""
+    body = a_manifest() if manifest is None else manifest
+    return FakeRunner(
+        {
+            "get pods -o json": json.dumps(
+                {"items": [hotfixed_pod(body, digest=digest)]}
+            ),
+            STATE_READ: state_exec(body),
+            GIT_READ: git if git is not None else git_exec(),
+            LS_REMOTE: remote,
+        }
+    )
+
+
+# -- what the rows say ------------------------------------------------------
+
+
+def test_the_claim_row_counts_from_the_base_and_names_the_head() -> None:
+    report = hotfix.format_status([a_row(git=a_claim_git(ahead=3))])
+
+    assert f"{HEAD_SHA[:7]} is 3 commits ahead of {BASE_SHA[:7]}" in flowed(report)
+    # Layout rule 9e: an authored label, two spaces, a value.
+    assert any(line.startswith("    claim   ") for line in report.splitlines())
+
+
+def test_a_count_from_an_assumed_base_says_so_where_the_eye_lands() -> None:
     """A count is a difference against the base, so an unmeasured base makes it
-    a guess - and it is qualified in the column the eye lands on rather than
-    printed as though it were measured."""
-    row = hotfix.HotfixRow(
-        pod=hotfix.PodRef("demo", "api-7f9-abc"),
-        manifest=a_manifest(ahead=2, base_commit_assumed=True),
-        health=hotfix.HotfixHealth.ACTIVE,
-        detail="",
+    a guess - and it is qualified on the row that carries the number."""
+    row = a_row(manifest=a_manifest(base_commit_assumed=True))
+
+    assert "an assumed base, so the count is a guess" in flowed(
+        hotfix.format_status([row])
+    )
+    assert "assumed" not in hotfix.format_status([a_row()])
+
+
+def test_a_base_this_checkout_does_not_have_is_unmeasured_not_zero() -> None:
+    """`git rev-list` cannot count from a commit it does not have, and a claim
+    seeded from another repository is exactly that case. Nought would read as
+    "no drift", which is the reading that lets a fix go unnoticed."""
+    report = flowed(hotfix.format_status([a_row(git=a_claim_git(ahead=None))]))
+
+    assert "unmeasured" in report
+    assert "0 commits" not in report
+
+
+def test_the_dirty_row_names_the_files_and_says_they_are_running() -> None:
+    git = a_claim_git(dirty=(" M src/api/beam.py", "?? notes.txt"))
+
+    report = flowed(hotfix.format_status([a_row(git=git)]))
+
+    assert "2 files uncommitted, and they are what is running" in report
+    assert "src/api/beam.py and notes.txt" in report
+
+
+def test_the_dirty_row_speaks_when_the_claim_is_clean() -> None:
+    """Silence would read as the check not having run."""
+    assert "nothing uncommitted" in flowed(hotfix.format_status([a_row()]))
+
+
+def test_the_image_row_is_the_one_that_needs_no_git() -> None:
+    unchanged = flowed(hotfix.format_status([a_row()]))
+    assert "unchanged since the hotfix was made" in unchanged
+
+    moved = flowed(
+        hotfix.format_status(
+            [
+                a_row(
+                    current_digest=NEW_DIGEST,
+                    health=hotfix.HotfixHealth.IMAGE_CHANGED,
+                    detail="the claim's venv shadows the new image's",
+                )
+            ]
+        )
+    )
+    assert "moved since the hotfix was made" in moved
+    assert "sha256:bbbb" in moved
+
+
+def test_an_image_digest_that_could_not_be_read_is_unmeasured() -> None:
+    report = flowed(hotfix.format_status([a_row(current_digest="")]))
+    assert "the pod's image digest could not be read" in report
+    assert "unchanged since the hotfix" not in report
+
+
+def test_a_claim_with_no_git_reachable_says_so_once_and_is_not_clean() -> None:
+    """The measured case (evidence §4): `status` reads the claim through the
+    *application* container, which on a distroless image has no git at all. The
+    three rows collapse into one, and none of them says "clean"."""
+    detail = hotfix.NO_GIT_IN_THE_CLAIM.format(container="app")
+
+    report = hotfix.format_status([a_row(git=hotfix.ClaimGit(False, detail))])
+
+    assert "unmeasured" in flowed(report)
+    assert "files uncommitted" not in report
+    assert "clean" not in report
+    assert report.count("unmeasured") == 1, "said once, not once per row"
+    # The image row survives it: it needs no git.
+    assert "unchanged since the hotfix was made" in flowed(report)
+
+
+def test_the_remote_row_names_the_branch_whose_tip_this_is() -> None:
+    tips = hotfix.RemoteTips(((HEAD_SHA, "refs/heads/hotfix-ramp"),))
+
+    report = flowed(hotfix.format_status([a_row(remote=tips)]))
+
+    assert f"{HEAD_SHA[:7]} is the tip of hotfix-ramp, checked just now" in report
+    # A tip is not an ancestor, and the row must not imply the second.
+    assert "merged" not in report
+
+
+def test_a_commit_no_remote_branch_is_at_is_not_reported_as_merged() -> None:
+    report = flowed(hotfix.format_status([a_row(remote=hotfix.RemoteTips())]))
+
+    assert "no branch on the remote is at" in report
+    assert "podbench does not measure whether it has been merged" in report
+
+
+def test_a_remote_that_would_not_answer_is_unmeasured_never_unpushed() -> None:
+    """#232's falsification, on the one row that needs the network: a forge that
+    is down is not evidence that nobody pushed."""
+    unreachable = hotfix.RemoteTips(detail="the forge did not answer within 5s")
+
+    report = flowed(hotfix.format_status([a_row(remote=unreachable)]))
+
+    assert "unmeasured" in report
+    assert "the forge did not answer within 5s" in report
+    assert "not pushed" not in report
+
+
+def test_the_clones_own_knowledge_stands_in_when_the_remote_is_unmeasured() -> None:
+    row = a_row(
+        git=a_claim_git(on_remote=("origin/hotfix-ramp",)),
+        remote=hotfix.RemoteTips(detail="no credentials here"),
     )
 
-    assert "+2 commit(s) from an assumed base" in hotfix.format_status([row])
-    measured = replace(row, manifest=a_manifest(ahead=2))
-    assert "assumed" not in hotfix.format_status([measured])
+    report = flowed(hotfix.format_status([row]))
+
+    assert "is on origin/hotfix-ramp as of the last fetch" in report
+    assert "whether that is still true is unmeasured" in report
 
 
-def test_a_healthy_row_says_its_commit_count_and_its_sha_once() -> None:
-    """The plan's own "measured before starting" row, finally closed.
-
-    A healthy row read `+0 commit(s)  3d55455  active - hotfixed, base image
-    unchanged`, then `0 commit(s) ahead of the image` under it, then `base
-    3d55455`: one number twice and one sha twice, on the row a shutdown
-    checklist scans most often. The columns already carry both, and at `+0` the
-    claim is *at* its base - so the line below keeps only the provenance, which
-    appears nowhere else.
-    """
-    manifest = a_manifest(ahead=0)
-    row = hotfix.HotfixRow(
-        pod=hotfix.PodRef("demo", "api-7f9-abc"),
-        manifest=manifest,
-        health=hotfix.HotfixHealth.ACTIVE,
-        detail=hotfix.assess(manifest, current_digest=BASE_DIGEST)[1],
-    )
-
-    report = hotfix.format_status([row])
-
-    assert report.count("+0 commit(s)") == 1
-    assert "ahead of the image" not in report
-    assert report.count(BASE_SHA[:7]) == 1
-    # The provenance survives - it is the only thing this line ever added.
-    assert "Ada <ada@example.invalid>" in report
-    assert "2026-08-15T09:00:00+00:00" in report
-    # Layout rule 9e: the row is still an authored set of columns.
-    first = report.splitlines()[0]
-    assert first.startswith("  [ok]")
-    assert "  +0 commit(s)  " in first
+def test_no_remote_says_the_question_was_not_asked() -> None:
+    report = flowed(hotfix.format_status([a_row(remote=None)]))
+    assert "the remote was not asked (--no-remote)" in report
 
 
-def test_a_row_that_is_ahead_still_names_the_base_it_is_ahead_of() -> None:
-    """The other side: two different shas are two facts, and both stay."""
-    manifest = a_manifest(ahead=2, commit=HEAD_SHA)
-    row = hotfix.HotfixRow(
-        pod=hotfix.PodRef("demo", "api-7f9-abc"),
-        manifest=manifest,
-        health=hotfix.HotfixHealth.ACTIVE,
-        detail="",
-    )
-
-    report = hotfix.format_status([row])
-
-    assert f"base {BASE_SHA[:7]}" in report
-    assert HEAD_SHA[:7] in report
-
-
-def test_a_manifest_recording_no_sha_at_all_still_says_unknown() -> None:
-    """The equality is vacuous when neither sha is there.
-
-    Dropping the repeated sha keys on `commit == base_commit`, and a manifest
-    carrying neither satisfies that by accident - which turned `base ?`, the one
-    place the line admitted it could not say, into "on its base commit", an
-    identity nobody measured.
-    """
-    row = hotfix.HotfixRow(
-        pod=hotfix.PodRef("demo", "api-7f9-abc"),
-        manifest=a_manifest(commit="", base_commit=""),
-        health=hotfix.HotfixHealth.ACTIVE,
-        detail="",
-    )
-
-    report = hotfix.format_status([row])
-
-    assert "base ?" in report
-    assert "on its base commit" not in report
+# -- what status measures ---------------------------------------------------
 
 
 def test_status_ignores_pods_without_a_hotfix() -> None:
@@ -1748,41 +1587,156 @@ def test_status_ignores_pods_without_a_hotfix() -> None:
     assert hotfix.format_status([]) == "no hotfixed pods in this namespace"
 
 
-def test_status_reports_drift_for_a_healthy_hotfix() -> None:
-    manifest = a_manifest(
-        ahead=2, commits=(hotfix.HotfixCommit(HEAD_SHA, "stop the beam tripping"),)
+def test_status_measures_the_claim_rather_than_reading_a_record() -> None:
+    runner = status_runner(
+        git=git_exec(dirty=" M src/api/beam.py", ahead="2", remote="  origin/main"),
+        remote=f"{HEAD_SHA}\trefs/heads/main\n",
     )
-    runner = FakeRunner(
+
+    (row,) = hotfix.status_rows(kube(runner))
+
+    assert row.health is hotfix.HotfixHealth.ACTIVE
+    assert row.git == hotfix.ClaimGit(
+        reachable=True,
+        head=HEAD_SHA,
+        dirty=(" M src/api/beam.py",),
+        ahead=2,
+        on_remote=("origin/main",),
+    )
+    assert row.remote is not None and row.remote.naming(HEAD_SHA) == ("main",)
+    # The count is measured from the manifest's base commit, in the claim.
+    (probe,) = runner.matching(GIT_READ)
+    assert f"rev-list --count {BASE_SHA}..HEAD" in " ".join(probe)
+    # Through the *application* container, and with the ownership check off:
+    # the claim is a copy, so git refuses it as dubious ownership otherwise.
+    assert f"safe.directory={CHECKOUT}" in " ".join(probe)
+
+
+def test_status_asks_the_remote_from_the_laptop_once_per_repository() -> None:
+    """An exec session has no SSH_AUTH_SOCK, so the pod could not ask even with
+    an agent forwarded to a seat - and a beamline runs several IOCs out of one
+    repository, which is one question, not four."""
+    runner = status_runner()
+    runner.responses["get pods -o json"] = json.dumps(
         {
-            "get pods -o json": json.dumps({"items": [hotfixed_pod(manifest)]}),
-            "exec -c app": state_exec(manifest),
+            "items": [
+                hotfixed_pod(a_manifest(), name="api-7f9-abc"),
+                hotfixed_pod(a_manifest(), name="api-7f9-def"),
+            ]
         }
     )
+    runner.responses["exec -c app api-7f9-def -- sh -c cat"] = state_exec(a_manifest())
+    runner.responses["exec -c app api-7f9-def -- sh -c command"] = git_exec()
+
     rows = hotfix.status_rows(kube(runner))
-    assert len(rows) == 1
-    assert rows[0].health is hotfix.HotfixHealth.ACTIVE
-    report = hotfix.format_status(rows)
-    assert "+2 commit(s)" in report
-    assert "stop the beam tripping" in report
-    assert "and 1 more" in report
-    # One exec, for the state read - and only against a pod that carries a
-    # claim. The interpreter probe is not run, because nothing moved.
-    assert not runner.matching("exec -c app api-7f9-abc -- python")
+
+    assert len(rows) == 2
+    asked = [call for call in runner.calls if "ls-remote" in call]
+    assert len(asked) == 1
+    assert "git" in asked[0] and "--heads" in asked[0]
+    # Not kubectl: this one runs here, where the credentials are.
+    assert asked[0][0] == "env"
+
+
+def test_status_does_not_ask_the_remote_when_told_not_to() -> None:
+    runner = status_runner()
+
+    (row,) = hotfix.status_rows(kube(runner), remote=False)
+
+    assert row.remote is None
+    assert not [call for call in runner.calls if "ls-remote" in call]
+
+
+def test_a_container_with_no_git_reports_unmeasured() -> None:
+    """Exit 90 is the script's own: every git failure is 1 or 128, and "no git
+    here" has to be told apart from "git said no"."""
+    runner = status_runner()
+    runner.failures[GIT_READ] = ""
+
+    (row,) = hotfix.status_rows(kube(runner))
+
+    assert row.git is not None and not row.git.reachable
+    assert "unmeasured" in row.git.detail
+    assert row.ok, "unmeasured is not a failure"
+
+
+def test_a_git_read_that_answers_the_wrong_question_is_unmeasured() -> None:
+    """The probe is a second exec into the same container as the state read, so
+    anything that answers the wrong one produces plausible nonsense - the
+    manifest's JSON read as a list of uncommitted paths."""
+    runner = status_runner(git=state_exec(a_manifest()))
+
+    (row,) = hotfix.status_rows(kube(runner))
+
+    assert row.git is not None and not row.git.reachable
+
+
+def test_a_timed_out_ls_remote_is_unmeasured_and_not_a_failed_verb() -> None:
+    from podbench.kubectl import KubectlTimeoutError
+
+    def wedged(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        if "ls-remote" in argv:
+            raise KubectlTimeoutError(argv, hotfix.REMOTE_QUERY_TIMEOUT)
+        return FakeRunner.__call__(runner, argv, **kwargs)
+
+    runner = status_runner()
+    rows = hotfix.status_rows(Kubectl("demo", runner=wedged))
+
+    (row,) = rows
+    assert row.remote is not None and not row.remote.measured
+    assert "did not answer within 5s" in row.remote.detail
+    assert row.ok
+
+
+def test_a_repository_that_refuses_the_laptop_is_unmeasured() -> None:
+    runner = status_runner()
+    runner.failures[LS_REMOTE] = "Permission denied (publickey)."
+
+    (row,) = hotfix.status_rows(kube(runner))
+
+    assert row.remote is not None and not row.remote.measured
+    assert "publickey" in row.remote.detail
+
+
+def test_the_remote_is_not_asked_without_a_repository_to_ask() -> None:
+    runner = status_runner(a_manifest(repo=""))
+
+    (row,) = hotfix.status_rows(kube(runner))
+
+    assert row.remote is not None and not row.remote.measured
+    assert not [call for call in runner.calls if "ls-remote" in call]
+
+
+def test_ls_remote_cannot_sit_on_a_prompt() -> None:
+    """The bound is the belt; not prompting is the braces. An ssh remote asks
+    for a host key or a passphrase on a terminal, and a status verb that stops
+    to ask a question is the failure this row was not worth."""
+    calls: list[Sequence[str]] = []
+
+    def record(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        calls.append(argv)
+        return CommandResult(tuple(argv), 0, "", "")
+
+    hotfix.remote_tips("git@example.invalid:acme/api.git", runner=record, environ={})
+
+    assert "GIT_TERMINAL_PROMPT=0" in calls[0]
+    assert "GIT_SSH_COMMAND=ssh -o BatchMode=yes" in calls[0]
+    # And a command the user set themselves is left alone: taking it away is
+    # taking away the thing that makes their remote reachable.
+    hotfix.remote_tips(
+        "git@example.invalid:acme/api.git",
+        runner=record,
+        environ={"GIT_SSH_COMMAND": "ssh -F /home/ada/.ssh/work"},
+    )
+    assert not [word for word in calls[1] if word.startswith("GIT_SSH_COMMAND")]
 
 
 def test_status_probes_the_interpreter_only_when_the_image_moved() -> None:
-    manifest = a_manifest(ahead=1)
-    runner = FakeRunner(
-        {
-            "get pods -o json": json.dumps(
-                {"items": [hotfixed_pod(manifest, digest=NEW_DIGEST)]}
-            ),
-            # Two different execs now: the state read, and the probe on top.
-            "exec -c app api-7f9-abc -- sh -c": state_exec(manifest),
-            "exec -c app api-7f9-abc -- python": "Python 3.13.1\n",
-        }
-    )
+    runner = status_runner(digest=NEW_DIGEST)
+    runner.responses["exec -c app api-7f9-abc -- python"] = "Python 3.13.1\n"
+
     rows = hotfix.status_rows(kube(runner))
+
     assert runner.matching("exec -c app api-7f9-abc -- python")
     assert rows[0].health is hotfix.HotfixHealth.INTERPRETER_MISMATCH
     assert "will not import" in rows[0].detail
@@ -1790,16 +1744,10 @@ def test_status_probes_the_interpreter_only_when_the_image_moved() -> None:
 
 
 def test_status_does_not_probe_the_interpreter_when_told_not_to() -> None:
-    manifest = a_manifest(ahead=1)
-    runner = FakeRunner(
-        {
-            "get pods -o json": json.dumps(
-                {"items": [hotfixed_pod(manifest, digest=NEW_DIGEST)]}
-            ),
-            "exec -c app": state_exec(manifest),
-        }
-    )
+    runner = status_runner(digest=NEW_DIGEST)
+
     rows = hotfix.status_rows(kube(runner), probe=False)
+
     # It still reads the claim - that is where the manifest is now - but it does
     # not run the interpreter probe on top.
     assert not runner.matching("exec -c app api-7f9-abc -- python")
@@ -1807,16 +1755,28 @@ def test_status_does_not_probe_the_interpreter_when_told_not_to() -> None:
 
 
 def test_status_notes_a_manifest_from_an_older_podbench() -> None:
-    older = json.dumps({"commit": HEAD_SHA, "baseCommit": BASE_SHA, "container": "app"})
+    older = json.dumps({"version": 1, "baseCommit": BASE_SHA, "container": "app"})
     sep = hotfix.STATE_SEPARATOR
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
-            "exec -c app": f"{older}\n{sep}\n\n{sep}\n1000\n",
+            STATE_READ: f"{older}\n{sep}\n\n{sep}\n1000\n",
+            GIT_READ: git_exec(),
         }
     )
     rows = hotfix.status_rows(kube(runner))
     assert "older podbench" in "\n".join(rows[0].notes)
+
+
+def test_a_manifest_written_before_232_carries_no_such_note() -> None:
+    """v3 removed fields rather than adding them, so a v2 manifest lacks
+    nothing this podbench reads. A note on every claim in the field the day the
+    schema bumped would be a caution with nothing behind it."""
+    runner = status_runner(replace(a_manifest(), schema_version=2))
+
+    (row,) = hotfix.status_rows(kube(runner))
+
+    assert row.notes == ()
 
 
 def test_status_reports_a_held_pod_that_was_never_hotfixed() -> None:
@@ -1830,7 +1790,7 @@ def test_status_reports_a_held_pod_that_was_never_hotfixed() -> None:
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
-            "exec -c app": f"\n{sep}\n1600\n{sep}\n1000\n",
+            STATE_READ: f"\n{sep}\n1600\n{sep}\n1000\n",
         }
     )
     rows = hotfix.status_rows(kube(runner))
@@ -1839,6 +1799,8 @@ def test_status_reports_a_held_pod_that_was_never_hotfixed() -> None:
     assert rows[0].hold == hotfix.Hold(deadline=1600, now=1000)
     assert not rows[0].ok
     assert "held 600s left" in hotfix.format_status(rows)
+    # Nothing to ask git about: there is no manifest, so no checkout and no base.
+    assert not runner.matching(GIT_READ)
 
 
 def test_a_hold_past_its_deadline_says_so() -> None:
@@ -1846,7 +1808,7 @@ def test_a_hold_past_its_deadline_says_so() -> None:
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
-            "exec -c app": f"\n{sep}\n900\n{sep}\n1000\n",
+            STATE_READ: f"\n{sep}\n900\n{sep}\n1000\n",
         }
     )
     rows = hotfix.status_rows(kube(runner))
@@ -1860,7 +1822,7 @@ def test_a_pod_with_a_claim_but_no_state_is_not_listed() -> None:
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
-            "exec -c app": f"\n{sep}\n\n{sep}\n1000\n",
+            STATE_READ: f"\n{sep}\n\n{sep}\n1000\n",
         }
     )
     assert hotfix.status_rows(kube(runner)) == []
@@ -1871,7 +1833,7 @@ def test_status_reports_a_pod_whose_provenance_is_gone() -> None:
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [pod_json(claim=True)]}),
-            "exec -c app": f"{{not json\n{sep}\n1600\n{sep}\n1000\n",
+            STATE_READ: f"{{not json\n{sep}\n1600\n{sep}\n1000\n",
         }
     )
     rows = hotfix.status_rows(kube(runner))
@@ -1935,7 +1897,14 @@ def wired_pod(
 
 
 def consolidated() -> hotfix.HotfixManifest:
-    return a_manifest(ahead=3, consolidated_branch="hotfix/beamtime-14")
+    """A hotfix on its way out.
+
+    Which is now a claim whose *image has moved* - the measured gate that
+    replaced the recorded `consolidated_branch` in #232. The manifest itself no
+    longer says anything about where the fix has got to, so the fixture is the
+    ordinary one and it is `wired_pod`'s digest that does the work.
+    """
+    return a_manifest()
 
 
 def retire_runner(
@@ -2014,56 +1983,8 @@ def test_a_pod_wired_to_a_claim_its_chart_no_longer_declares_is_reported() -> No
     # And the reason the boolean did not do it.
     assert "application's own pod template" in wiring
     report = hotfix.format_retirement(checks)
-    assert "2 of 4 steps of retirement remain (exit 1)" in report
+    assert "2 of 3 steps of retirement remain (exit 1)" in report
     assert "REMAINING: wiring, claim" in report
-
-
-def test_a_claim_carrying_no_commits_has_its_branch_step_done() -> None:
-    """Evidence §7.2/§7.3, measured on the live target.
-
-    `retire` printed "0 commit(s) on this claim are on no branch: `podbench
-    hotfix consolidate …` first, or retiring the claim discards them" - about a
-    claim `consolidate` refuses in the same minute with "there is no hotfix to
-    consolidate ... retire the claim instead". Two verbs pointing at each other,
-    and a verdict of "4 of 4 steps remain" when three do. Nothing is discarded
-    by retiring a claim with nothing on it, so that step is done.
-    """
-    checks = hotfix.retirement(
-        wired_pod(digest=BASE_DIGEST),
-        a_manifest(ahead=0),
-        claim=hotfix.ClaimState(CLAIM, True),
-        current_digest=BASE_DIGEST,
-        reference="pod/api-7f9-abc",
-    )
-    rows = rows_by_step(checks)
-    branch = rows[hotfix.RetirementStep.BRANCH]
-    assert branch.done is True
-    assert not branch.remaining
-    # And no offer of the command that would refuse this very claim.
-    assert "podbench hotfix consolidate" not in branch.detail
-    # Hedged to what was measured: `ahead` is *recorded*, by `init` and
-    # `apply`, while `consolidate` recounts from `git log`. A seat somebody
-    # committed in by hand has commits this row cannot see, and `--delete-claim`
-    # is the destructive direction to be wrong in.
-    assert "nothing it records would be discarded" in branch.detail
-    report = hotfix.format_retirement(checks)
-    assert "3 of 4 steps of retirement remain (exit 1)" in report
-    assert "REMAINING: image, wiring, claim" in report
-
-
-def test_a_claim_that_is_ahead_still_has_to_be_consolidated() -> None:
-    """The other side of the same arm: commits on no branch are still a step,
-    and the offer is still the command that takes them off the claim."""
-    checks = hotfix.retirement(
-        wired_pod(),
-        a_manifest(ahead=2),
-        claim=hotfix.ClaimState(CLAIM, True),
-        current_digest=NEW_DIGEST,
-        reference="pod/api-7f9-abc",
-    )
-    branch = rows_by_step(checks)[hotfix.RetirementStep.BRANCH]
-    assert branch.remaining
-    assert "consolidate pod/api-7f9-abc" in branch.detail
 
 
 def test_the_wiring_row_names_every_value_that_has_to_come_out() -> None:
@@ -2118,7 +2039,7 @@ def test_the_wiring_row_leaves_an_fsgroup_out_when_the_pod_declares_none() -> No
 def test_retirement_never_ticks_a_step_it_could_not_measure() -> None:
     """#205 item 4's falsification: a retirement that lies is worse than the
     checklist. Once nothing mounts the claim its manifest cannot be read, so the
-    two steps that come off it are unmeasured — and unmeasured is `[ ]`."""
+    step that comes off it is unmeasured — and unmeasured is `[ ]`."""
     checks = hotfix.retirement(
         wired_pod(wired=False),
         None,
@@ -2126,14 +2047,14 @@ def test_retirement_never_ticks_a_step_it_could_not_measure() -> None:
         reference="pod/api-7f9-abc",
     )
     rows = rows_by_step(checks)
-    for step in (hotfix.RetirementStep.BRANCH, hotfix.RetirementStep.IMAGE):
-        assert rows[step].done is None
-        assert rows[step].flag == "[ ]"
-        # Unmeasured moves neither the tick nor the exit code.
-        assert not rows[step].remaining
+    image = rows[hotfix.RetirementStep.IMAGE]
+    assert image.done is None
+    assert image.flag == "[ ]"
+    # Unmeasured moves neither the tick nor the exit code.
+    assert not image.remaining
     report = hotfix.format_retirement(checks)
-    assert "NOT MEASURED: branch, image" in report
-    assert "1 of 4 steps of retirement remain" in report
+    assert "NOT MEASURED: image" in report
+    assert "1 of 3 steps of retirement remain" in report
 
 
 def test_a_pod_still_wired_to_a_claim_that_is_gone_is_the_loud_case() -> None:
@@ -2165,7 +2086,7 @@ def test_a_finished_retirement_says_so_and_exits_zero() -> None:
     # moot carry the short form, and the mechanism is said once on the row that
     # measured it.
     flowed = " ".join(report.split())
-    assert flowed.count("not asked: the claim is gone") == 2
+    assert flowed.count("not asked: the claim is gone") == 1
 
 
 def test_a_pod_that_kept_the_seats_home_volume_is_still_retired() -> None:
@@ -2192,7 +2113,7 @@ def test_a_pod_that_kept_the_seats_home_volume_is_still_retired() -> None:
     # Still named on the way out, and still on the two rows the gone claim
     # makes moot - the early return only fires because nothing is counted.
     assert "it is the seat's rather than the hotfix's" in flowed
-    assert flowed.count("not asked: the claim is gone") == 2
+    assert flowed.count("not asked: the claim is gone") == 1
 
 
 def test_the_done_wiring_row_names_the_values_it_cannot_attribute() -> None:
@@ -2380,19 +2301,23 @@ def test_the_delete_claim_offer_names_the_namespace_it_was_read_from() -> None:
 
 
 def test_status_says_which_retirement_steps_remain() -> None:
-    """`superseded` was correct and indefinite, which is a state nobody can act
-    on. The row now names the steps."""
-    manifest = consolidated()
+    """A row that names the steps rather than a state nobody can act on.
+
+    The gate is the image having moved, which is measured on the pod in front
+    of you - and unlike the recorded branch it replaced, no hand push can make
+    it wrong.
+    """
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [wired_pod(digest=NEW_DIGEST)]}),
-            "exec -c app": state_exec(manifest),
+            STATE_READ: state_exec(consolidated()),
+            GIT_READ: git_exec(),
         }
     )
-    rows = hotfix.status_rows(kube(runner), probe=False)
-    assert rows[0].health is hotfix.HotfixHealth.SUPERSEDED
+    rows = hotfix.status_rows(kube(runner), probe=False, remote=False)
+    assert rows[0].health is hotfix.HotfixHealth.IMAGE_CHANGED
     report = " ".join(hotfix.format_status(rows).split())
-    assert "retirement: 1 of 4 steps remain (wiring)" in report
+    assert "retirement: 1 of 3 steps remain (wiring)" in report
     # Never inferred from the mount: a pod goes on running after its claim is
     # deleted, which is the one state most worth finding.
     assert "claim not measured here" in report
@@ -2402,14 +2327,14 @@ def test_status_says_which_retirement_steps_remain() -> None:
 def test_a_hotfix_that_is_not_on_its_way_out_gets_no_retirement_line() -> None:
     """Every live hotfix is "still wired to its claim". Saying so on every row
     is saying nothing on the row where it is the finding."""
-    manifest = a_manifest(ahead=1)
     runner = FakeRunner(
         {
             "get pods -o json": json.dumps({"items": [wired_pod(digest=BASE_DIGEST)]}),
-            "exec -c app": state_exec(manifest),
+            STATE_READ: state_exec(a_manifest()),
+            GIT_READ: git_exec(),
         }
     )
-    rows = hotfix.status_rows(kube(runner))
+    rows = hotfix.status_rows(kube(runner), remote=False)
     assert rows[0].retirement == ()
     assert "retirement:" not in hotfix.format_status(rows)
 
@@ -3401,39 +3326,43 @@ def test_the_two_values_warnings_are_warnings(
     )
 
 
-def test_a_report_wraps_its_prose_and_leaves_an_authored_step_alone(
+def test_a_report_wraps_its_prose_and_leaves_a_relayed_line_alone(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The half of `_report`'s rule that says what *not* to touch.
+    """The half of `_laid_out`'s rule that says what *not* to touch.
 
-    The retirement checklist is appended to `consolidate`'s actions already laid
-    out, and its step 1 is a `gh pr create` somebody selects and pastes —
-    longer than the window, and `console.wrap` breaks on spaces. It survives
-    because it is indented; the other half of the rule, that flush-left prose
-    does get wrapped, is
-    `test_a_long_action_is_wrapped_rather_than_left_to_the_terminal`.
+    A relayed uv resolution is indented by `_relay`, and it is somebody else's
+    output: `console.wrap` collapses whitespace and breaks on spaces, so
+    reflowing it is how a pasted error stops matching what the person saw. The
+    specimen used to be `consolidate`'s retirement checklist; #232 deleted that
+    verb, and the rule's real remaining subject is the relay.
     """
     seat = "exec -c podbench-1 api-7f9-abc --"
+    resolution = (
+        "  x No solution found when resolving dependencies for split "
+        "(python3.11): because only beam<=1.2 is available and app depends "
+        "on beam>=2, we can conclude that the requirements are unsatisfiable."
+    )
     runner = FakeRunner(
         {
             "get deployment api -o json": json.dumps(workload_json()),
             "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
             f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
-            f"{seat} {GIT} log": f"{HEAD_SHA}\x1fstop the beam tripping\n",
+            f"{seat} bash -c ls -d": f"{SEEDED_PYTHON}\n",
         }
     )
+    runner.failures["exec -c app api-7f9-abc -- env UV_CACHE_DIR"] = resolution
 
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
-            "consolidate",
+            "restart",
             "deployment/api",
+            "--reinstall",
             "--venv",
             VENV,
-            "--branch",
-            "patch/beamtime-14",
             "-n",
             "demo",
         ],
@@ -3441,12 +3370,12 @@ def test_a_report_wraps_its_prose_and_leaves_an_authored_step_alone(
         runner=runner,
     )
 
-    assert code == 0
-    lines = capsys.readouterr().out.splitlines()
-    # Step 1 is the pasteable one, and it is longer than the window.
-    step = next(line for line in lines if "gh pr create" in line)
-    assert len(step) > console.wrap_width()
-    assert step.startswith("  1. gh pr create --head patch/beamtime-14 ")
+    assert code == 2
+    lines = capsys.readouterr().err.splitlines()
+    # uv's line is longer than the window and comes back exactly as it arrived.
+    relayed = next(line for line in lines if "No solution found" in line)
+    assert len(relayed) > console.wrap_width()
+    assert relayed == f"  {resolution.strip()}"
     # Everything podbench wrote flush left is inside the window.
     own = [line for line in lines if line and not line.startswith(" ")]
     assert own and all(len(line) <= console.wrap_width() for line in own)
@@ -3964,8 +3893,18 @@ def test_a_probe_with_no_timings_warns_in_the_emitted_file(
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert hotfix.main(["hotfix"]) == 2
     out = capsys.readouterr().out
-    assert "consolidate" in out
     assert "values" in out, "the emitter is a verb, so it belongs in the verb list"
+    assert "restart" in out
+
+
+def test_the_two_git_wrappers_are_gone_rather_than_hidden() -> None:
+    """#232. Both were `git` plus one manifest field, and the field was the
+    lie: ordinary git in the seat does the same work truthfully. A hidden verb
+    would still run, which is the failure worth catching."""
+    assert hotfix.main(["hotfix", "apply", "pod/api-7f9-abc"]) == 2
+    assert hotfix.main(["hotfix", "consolidate", "pod/api-7f9-abc"]) == 2
+    assert not hasattr(hotfix, "apply_hotfix")
+    assert not hasattr(hotfix, "consolidate")
 
 
 def test_the_root_help_carries_no_option_belonging_to_one_verb(
@@ -4095,10 +4034,8 @@ def test_a_venv_that_disagrees_with_the_pod_exits_2(
         # fmt: off
         [
             "hotfix",
-            "apply",
+            "restart",
             "pod/api-7f9-abc",
-            "-m",
-            "fix",
             "--venv",
             "/opt/venv",
             "-n",
@@ -4158,28 +4095,35 @@ def test_status_exits_non_zero_when_a_pod_needs_attention(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """So that "no unretired hotfixes" is testable at shutdown, not readable."""
-    manifest = a_manifest(ahead=1)
-    runner = FakeRunner(
-        {
-            "get pods -o json": json.dumps(
-                {"items": [hotfixed_pod(manifest, digest=NEW_DIGEST)]}
-            ),
-            "exec -c app": state_exec(manifest),
-        }
+    runner = status_runner(digest=NEW_DIGEST)
+    code = hotfix.main(
+        ["hotfix", "status", "-n", "demo", "--no-probe", "--no-remote"], runner=runner
     )
-    code = hotfix.main(["hotfix", "status", "-n", "demo", "--no-probe"], runner=runner)
     assert code == 1
     assert "image-changed" in capsys.readouterr().out
 
 
 def test_status_exits_zero_when_everything_is_accounted_for() -> None:
-    runner = FakeRunner(
-        {
-            "get pods -o json": json.dumps({"items": [hotfixed_pod(a_manifest())]}),
-            "exec -c app": state_exec(a_manifest()),
-        }
-    )
+    runner = status_runner()
     assert hotfix.main(["hotfix", "status", "-n", "demo"], runner=runner) == 0
+
+
+def test_a_dirty_unpushed_claim_is_reported_and_does_not_fail_the_gate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The exit code is "does a hotfix here need somebody today?", and neither
+    of those is a fault: a dirty claim is the ordinary inner loop, and a fix
+    made an hour ago is on no branch yet. Both are on the report; neither is on
+    the exit code, or the gate would be red all beamtime and nobody would run
+    it."""
+    runner = status_runner(git=git_exec(dirty=" M src/api/beam.py", ahead="3"))
+
+    code = hotfix.main(["hotfix", "status", "-n", "demo"], runner=runner)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert code == 0
+    assert "3 commits ahead" in out
+    assert "1 file uncommitted" in out
 
 
 def test_cli_reports_a_refusal_on_stderr(capsys: pytest.CaptureFixture[str]) -> None:
@@ -4187,24 +4131,14 @@ def test_cli_reports_a_refusal_on_stderr(capsys: pytest.CaptureFixture[str]) -> 
         {"get deployment api -o json": json.dumps(workload_json(replicas=3))}
     )
     code = hotfix.main(
-        [
-            "hotfix",
-            "apply",
-            "deployment/api",
-            "--venv",
-            VENV,
-            "-m",
-            "fix",
-            "-n",
-            "demo",
-        ],
+        ["hotfix", "restart", "deployment/api", "--venv", VENV, "-n", "demo"],
         runner=runner,
     )
     assert code == 2
     assert "3 replicas" in capsys.readouterr().err
 
 
-def test_cli_apply_runs_git_through_the_seat() -> None:
+def test_cli_restart_runs_git_through_the_seat() -> None:
     """Without --local the claim is reached by exec'ing into the podbench
     container, which is the only container guaranteed to have git."""
     seat = "exec -c podbench-1 api-7f9-abc --"
@@ -4215,31 +4149,15 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
             f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
             f"{seat} {GIT} rev-parse": HEAD_SHA,
-            f"{seat} {GIT} log": f"{HEAD_SHA}\x1ffix\n",
             f"{seat} {GIT} status": " M a.py\n",
         }
     )
     code = hotfix.main(
-        [
-            "hotfix",
-            "apply",
-            "deployment/api",
-            "--venv",
-            VENV,
-            "-m",
-            "fix",
-            "-n",
-            "demo",
-        ],
+        ["hotfix", "restart", "deployment/api", "--venv", VENV, "-n", "demo"],
         runner=runner,
     )
     assert code == 0
-    assert runner.matching(f"exec -c podbench-1 api-7f9-abc -- {GIT} add")
-    # The manifest is written back through the same seat, over stdin.
-    assert any(
-        "cat > /opt/venv/.podbench-hotfix.json" in " ".join(argv)
-        for argv in runner.calls
-    )
+    assert runner.matching(f"exec -c podbench-1 api-7f9-abc -- {GIT} status")
 
 
 def test_cli_restart_has_no_message_option_and_commits_nothing() -> None:
