@@ -70,6 +70,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .cli import new_app, require_subcommand, run
 from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph, rule
+from .editor import PROVISION_DEST_FLAG
 from .kubectl import (
     DEFAULT_CALL_TIMEOUT,
     CommandResult,
@@ -80,6 +81,7 @@ from .kubectl import (
 )
 from .launcher import (
     CONTAINER_BASE,
+    DEBUG_COMMAND,
     LauncherError,
     application_mount,
     attach,
@@ -102,6 +104,7 @@ from .model import (
 )
 from .oci import REVISION_LABEL, SOURCE_LABEL, parse_reference
 from .oci import image_labels as read_image_labels
+from .provision import claim_destination
 from .spec import target_uid_gid
 
 __all__ = [
@@ -182,6 +185,11 @@ __all__ = [
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
+    "restart_app",
+    "LAUNCH_JSON_PATH",
+    "DEBUG_REFRESH_ARGV",
+    "DEBUG_REFRESH_FAILED",
+    "MAX_NAMED_DIRTY",
     "manifest_path",
     "container_entrypoint",
     "pod_gid",
@@ -2945,6 +2953,233 @@ def _relaunch(
             "not the image's own entrypoint."
         )
     return f"relaunched the application in {target.container} without a restart"
+
+
+LAUNCH_JSON_PATH = ".vscode/launch.json"
+"""Where ``debug-config`` leaves a launch document, relative to the folder.
+
+The claim is the folder an editor opens on a hotfixed pod
+(``launcher.editor_folder``), so this is the one path on which "did the user ask
+for a debugger?" can be answered without asking them again.
+"""
+
+DEBUG_REFRESH_ARGV = (*DEBUG_COMMAND.split(), "--provision")
+"""How :func:`restart_app` re-provisions, spelled from the step podbench offers.
+
+Split from :data:`podbench.launcher.DEBUG_COMMAND` rather than written out, so
+the verb the launcher tells a reader to run and the verb a restart re-runs on
+their behalf cannot come to be two different commands.
+
+``--provision`` because the point of a restart is a *fresh* process: debugpy's
+files are already on the claim, but nothing is loaded into the new pid and
+nothing is listening. That is also why the one-shot problem does not arise -
+a server can be injected into a process that has never had one.
+
+**No pid**, deliberately. ``debug-config`` picks the primary candidate itself,
+which is the same rule the offered step uses (``launcher.debug_command``), and
+it is the only rule that survives a restart: any pid this side could name is one
+the relaunch has just invalidated.
+"""
+
+DEBUG_REFRESH_FAILED = (
+    "could not refresh {path}: {detail}. The application restarted either way, "
+    "so F5 is the only thing still pointing at the old process - re-run "
+    "`podbench debug-config --provision` in the seat when you want it back."
+)
+"""Said when the re-provision fails, and it is a line rather than a raise.
+
+The restart is the thing the user asked for and it has already happened by the
+time this runs; failing the verb over the debugger would report a successful
+relaunch as an error, which is the one reading that would make somebody restart
+again. What the line has to carry is *which* half did not happen, because a
+stale ``launch.json`` connects to a closed port and looks like a broken adapter.
+"""
+
+
+def _recorded_child(kube: Kubectl, target: HotfixTarget) -> int | None:
+    """The pid in :data:`~podbench.model.HOTFIX_CHILD_PID_PATH`, if it reads as one.
+
+    This is the **supervisor's own child**, not the process a user debugs.
+    Measured on ``bl47p-ea-fastcs-01-0`` (2026-08-24): the file held 7, which was
+    ``stdio-socket``, and the ``fastcs-example`` anybody would set a breakpoint
+    in was pid 13, three levels below it. A report that called 7 "the
+    application" would be naming the wrong process in the one place a reader
+    goes looking for a pid.
+    """
+    result = kube.exec_(
+        target.pod.name,
+        ["cat", HOTFIX_CHILD_PID_PATH],
+        container=target.container,
+        check=False,
+    )
+    recorded = result.stdout.strip()
+    return int(recorded) if recorded.isdigit() else None
+
+
+def _pid_transition(before: int | None, after: int | None) -> str:
+    """One line naming what stopped and what started, and neither more than is true.
+
+    The kill is a tree kill rooted at the recorded child, so what stopped is that
+    pid *and everything under it* - saying "stopped pid 7" alone would understate
+    it by three levels on the measured target. What started is whatever the
+    supervisor has recorded since, which is a different question from whether the
+    application is serving yet.
+
+    >>> _pid_transition(7, 2446)
+    'stopped the supervisor child pid 7 and its tree, started pid 2446'
+    >>> "may not have taken" in _pid_transition(7, 7)
+    True
+    """
+    if before is None:
+        return (
+            f"relaunched; {HOTFIX_CHILD_PID_PATH} did not read as a pid beforehand, "
+            "so there is no transition to report"
+        )
+    stopped = f"stopped the supervisor child pid {before} and its tree"
+    if after is None:
+        return (
+            f"{stopped}, but {HOTFIX_CHILD_PID_PATH} does not name a new one yet: "
+            "check the application's own startup"
+        )
+    if after == before:
+        return (
+            f"{stopped}, and {HOTFIX_CHILD_PID_PATH} still reads {before}: the "
+            "supervisor has not recorded a replacement, so the relaunch may not "
+            "have taken"
+        )
+    return f"{stopped}, started pid {after}"
+
+
+MAX_NAMED_DIRTY = 5
+"""How many uncommitted paths a restart names before it counts the rest.
+
+A count with no names does not tell a reader whether the edit they meant is the
+edit that is running; a hundred names buries the pid line above it, which is the
+other half of what this verb exists to say.
+"""
+
+
+def _claim_state(store: HotfixStore, checkout: str) -> str:
+    """Whether the code now running is committed, said on every restart.
+
+    ``hotfix status`` exists so a hotfixed pod cannot go unnoticed, and an
+    *uncommitted* change on a live process is more important to surface than a
+    committed one, not less: it is the state no repository anywhere records.
+    This is the line that makes relaunch-without-commit sound rather than a hole
+    in the model, so it is printed when the tree is clean too - silence there
+    would read as the check not having run.
+    """
+    reported = store.run(git_argv(checkout, "status", "--porcelain"), check=False)
+    # Split off the raw stdout and never off a stripped copy. Porcelain's first
+    # column is the *index* status, which is a space for the ordinary
+    # edited-but-not-staged case, so `.strip()` on the block eats it - and with
+    # it the first character of the first path, silently and plausibly.
+    dirty = [line for line in reported.stdout.splitlines() if line.strip()]
+    if not dirty:
+        head = store.run(
+            git_argv(checkout, "rev-parse", "HEAD"), check=False
+        ).stdout.strip()
+        loaded = f"the new process loaded {head[:7]}" if head else "nothing to commit"
+        return f"the claim is clean and running: {loaded}"
+    # Everything after the two status columns and their separating space. A
+    # rename arrives as `old -> new`, which is left whole: both halves are the
+    # answer to "which file did I change?".
+    paths = [line[3:].strip() for line in dirty if line[3:].strip()]
+    named = paths[:MAX_NAMED_DIRTY]
+    if len(paths) > MAX_NAMED_DIRTY:
+        named.append(f"{len(paths) - MAX_NAMED_DIRTY} more")
+    plural = "" if len(paths) == 1 else "s"
+    return (
+        f"the claim is dirty and running: {len(paths)} file{plural} uncommitted "
+        f"({and_list(named)})"
+    )
+
+
+def _refresh_debug_config(store: HotfixStore, checkout: str) -> list[str]:
+    """Re-provision, but only for a debugger the user already asked for.
+
+    Every configuration podbench can author is pid-keyed and the restart has just
+    changed the pid, so a ``launch.json`` left alone is one whose F5 connects to
+    a closed port. Refreshing it is cheap - debugpy's files are already installed
+    on the claim - and it is what keeps the edit-restart-look loop working.
+
+    The gate is the document's *existence*, and nothing weaker. ``--provision``
+    ptraces the workload and starts a server in it, and a restart is not an ask
+    for that: the justification for doing it without a fresh confirmation is
+    entirely that the user ran the debug step and has not retracted it. A pod
+    with no ``launch.json`` never made that ask, so nothing here runs at all.
+    """
+    path = f"{checkout}/{LAUNCH_JSON_PATH}"
+    if not store.exists(path):
+        return []
+    result = store.run(
+        [
+            *DEBUG_REFRESH_ARGV,
+            PROVISION_DEST_FLAG,
+            claim_destination(checkout),
+            "--output",
+            path,
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = _last_line(result.stderr) or _last_line(result.stdout) or "no output"
+        return [DEBUG_REFRESH_FAILED.format(path=path, detail=detail)]
+    return [f"refreshed {path} against the new process"]
+
+
+def _last_line(text: str) -> str:
+    """The last non-empty line of somebody else's output.
+
+    A whole relayed stderr in the middle of a three-line report is the report
+    nobody reads; ``debug-config``'s diagnosis is on its final line, and the rest
+    of it is still in the seat for anyone who wants it.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def restart_app(
+    kube: Kubectl,
+    store: HotfixStore,
+    target: HotfixTarget,
+    *,
+    venv: str,
+) -> list[str]:
+    """Relaunch the application on what is on the claim, committing nothing.
+
+    The inner loop, as distinct from a hotfix: you restart twenty times and
+    commit once, when it works. ``apply`` requires ``-m`` and is right to - a
+    hotfix with no sha is a change no manifest can record and no branch can carry
+    - but requiring it per iteration is what pushed the loop out of podbench
+    altogether. Committing is ordinary git in the seat now, so this verb does
+    none of it: no ``add``, no ``commit``, no manifest write.
+
+    What it owes in exchange is :func:`_claim_state`. The manifest is *not*
+    updated here precisely because nothing was committed: the sha it records is
+    still the sha of the last commit, and the divergence this verb creates lives
+    in the working tree, where only a live read can see it.
+
+    :func:`require_supervisor` first and explicitly, before anything is killed.
+    ``_relaunch``'s script refuses the same case, but by then the report has
+    already promised a restart; the refusal is worth having at the moment it is
+    still cheap.
+    """
+    manifest = read_manifest(store, venv)
+    if manifest is None:
+        raise HotfixError(
+            "no hotfix manifest on the claim: run `hotfix init` first, so there "
+            "is a checkout for the relaunched application to load"
+        )
+    checkout = manifest.checkout or checkout_path(manifest.venv)
+    require_supervisor(kube, target)
+    before = _recorded_child(kube, target)
+    _relaunch(kube, target)
+    return [
+        _pid_transition(before, _recorded_child(kube, target)),
+        _claim_state(store, checkout),
+        *_refresh_debug_config(store, checkout),
+    ]
 
 
 def consolidate(
@@ -6109,6 +6344,27 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             bounce=not no_bounce,
         )
         raise typer.Exit(_report(actions))
+
+    @app.command(help="relaunch the application on the claim, committing nothing")
+    def restart(
+        target: _Target,
+        venv: _Venv = None,
+        container: _Container = None,
+        seat: _Seat = None,
+        local: _Local = False,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        # No `-m`, no `--author`: this verb writes no commit, and a message
+        # option that went nowhere would be read as one that did.
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
+        store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
+        raise typer.Exit(_report(restart_app(kube, store, resolved, venv=mount)))
 
     @app.command(help="every hotfixed pod in the namespace, and its drift")
     def status(

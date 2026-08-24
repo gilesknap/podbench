@@ -115,6 +115,12 @@ class FakeRunner:
 
     def __init__(self, responses: dict[str, str] | None = None) -> None:
         self.responses = dict(responses or {})
+        # A read whose answer *changes* between two calls in one verb, which is
+        # the whole of what a pid transition is: the same `cat` of the same file
+        # before and after the relaunch has to say two different things, and a
+        # table keyed on the argv cannot. The last entry stands for every call
+        # after it.
+        self.sequences: dict[str, list[str]] = {}
         self.failures: dict[str, str] = {}
         self.calls: list[tuple[str, ...]] = []
         self.stdins: list[str | None] = []
@@ -148,6 +154,10 @@ class FakeRunner:
         for prefix, message in self.failures.items():
             if key.startswith(prefix):
                 return CommandResult(tuple(argv), 1, "", message)
+        for prefix, answers in self.sequences.items():
+            if key.startswith(prefix) and answers:
+                answer = answers.pop(0) if len(answers) > 1 else answers[0]
+                return CommandResult(tuple(argv), 0, answer, "")
         for prefix, payload in self.responses.items():
             if key.startswith(prefix):
                 return CommandResult(tuple(argv), 0, payload, "")
@@ -1388,6 +1398,178 @@ def test_apply_can_leave_the_process_alone() -> None:
         bounce=False,
     )
     assert any("still has the old code" in action for action in actions)
+
+
+# -- restart ---------------------------------------------------------------
+
+CHILD_PID_READ = f"exec -c app api-7f9-abc -- cat {model.HOTFIX_CHILD_PID_PATH}"
+RELAUNCH = "exec -c app api-7f9-abc -- bash -c"
+LAUNCH_JSON = f"{CHECKOUT}/{hotfix.LAUNCH_JSON_PATH}"
+
+
+def restarting_runner(before: str = "7", after: str = "2446") -> FakeRunner:
+    """A supervisor that recorded *before* and records *after* once relaunched.
+
+    The two numbers are the ones measured on ``bl47p-ea-fastcs-01-0``: the pid
+    file held 7, which was the supervisor's own child, and the process anybody
+    would debug was three levels below it. The fixture is named for the
+    supervisor for that reason - a test that called 7 "the application" would
+    pin the wrong claim.
+    """
+    runner = FakeRunner()
+    runner.sequences[CHILD_PID_READ] = [f"{before}\n", f"{after}\n"]
+    return runner
+
+
+def restarted(store: FakeStore, runner: FakeRunner | None = None) -> list[str]:
+    return hotfix.restart_app(
+        kube(runner or restarting_runner()), store, deployment_target(), venv=VENV
+    )
+
+
+def test_restart_relaunches_and_writes_no_commit() -> None:
+    """The whole point of the verb: an inner loop that does not force a commit
+    per iteration. Nothing on the claim is written - not the tree, not the
+    index, not the manifest - because there is no sha for a manifest to record.
+    """
+    runner = restarting_runner()
+    store = applied_store()
+
+    restarted(store, runner)
+
+    assert not store.ran(f"{GIT} add")
+    assert not any("commit" in " ".join(argv) for argv in store.calls)
+    assert hotfix.HotfixManifest.from_json(store.files[hotfix.manifest_path(VENV)]) == (
+        a_manifest()
+    )
+    assert runner.matching(RELAUNCH)
+
+
+def test_restart_names_the_pid_it_stopped_and_the_one_it_started() -> None:
+    """And names it as the *supervisor's* child, which is what the pid file
+    holds. On the measured target that was three levels above the process a
+    breakpoint goes in, so a line calling it the application would send a reader
+    looking for the wrong pid in `podbench pids`."""
+    actions = restarted(applied_store())
+
+    assert actions[0] == (
+        "stopped the supervisor child pid 7 and its tree, started pid 2446"
+    )
+
+
+def test_restart_says_when_the_supervisor_recorded_no_new_child() -> None:
+    """The relaunch script waits for the pid file to change and then gives up
+    quietly. A report that printed the same pid twice as a transition would say
+    a restart happened when it may not have."""
+    actions = restarted(applied_store(), restarting_runner(after="7"))
+
+    assert "may not have taken" in actions[0]
+
+
+def test_restart_says_the_claim_is_dirty_and_names_the_files() -> None:
+    """The constraint that makes restart-without-commit sound. Asserted with the
+    porcelain leading space in place, because that column is the index status
+    and a `.strip()` of the whole block eats the first path's first character.
+    """
+    store = applied_store()
+    store.outputs[f"{GIT} status --porcelain"] = " M src/api/beam.py\n?? notes.txt\n"
+
+    actions = restarted(store)
+
+    assert actions[1] == (
+        "the claim is dirty and running: 2 files uncommitted "
+        "(src/api/beam.py and notes.txt)"
+    )
+
+
+def test_restart_counts_the_uncommitted_files_it_does_not_name() -> None:
+    store = applied_store()
+    store.outputs[f"{GIT} status --porcelain"] = "".join(
+        f" M src/api/f{number}.py\n" for number in range(8)
+    )
+
+    actions = restarted(store)
+
+    assert "8 files uncommitted" in actions[1]
+    assert "and 3 more" in actions[1]
+    assert "f7.py" not in actions[1]
+
+
+def test_restart_says_something_true_when_the_claim_is_clean() -> None:
+    """Silence would read as the check not having run, which is the one reading
+    that makes a hotfixed pod go unnoticed."""
+    actions = restarted(applied_store(dirty=False))
+
+    assert "the claim is clean and running" in actions[1]
+    assert HEAD_SHA[:7] in actions[1]
+
+
+def test_restart_refreshes_a_debug_configuration_that_already_exists() -> None:
+    """Every configuration podbench authors is pid-keyed and the restart just
+    changed the pid, so an untouched launch.json is one whose F5 dials a closed
+    port."""
+    store = applied_store()
+    store.files[LAUNCH_JSON] = "{}"
+
+    actions = restarted(store)
+
+    ran = next(argv for argv in store.calls if "debug-config" in argv)
+    # No pid: `debug-config` picks the primary candidate, which is the only rule
+    # that survives a relaunch.
+    assert ran == (
+        "podbench",
+        "debug-config",
+        "--provision",
+        "--provision-dest",
+        f"{CHECKOUT}/.podbench-debugpy",
+        "--output",
+        LAUNCH_JSON,
+    )
+    assert any("refreshed" in action for action in actions)
+
+
+def test_restart_provisions_nothing_when_no_debugger_was_asked_for() -> None:
+    """`--provision` ptraces the workload and installs into it. A restart is not
+    an ask for that; the existing launch.json is the only evidence that the user
+    ever made one."""
+    store = applied_store()
+
+    actions = restarted(store)
+
+    assert not any("debug-config" in argv for argv in store.calls)
+    assert not any("debug" in action for action in actions)
+
+
+def test_a_failed_debug_refresh_is_a_line_and_not_a_failed_restart() -> None:
+    """The restart already happened by the time this runs, so raising would
+    report it as an error - and the reader would restart again."""
+    store = applied_store()
+    store.files[LAUNCH_JSON] = "{}"
+    store.failures["podbench debug-config"] = "no candidate could be provisioned"
+
+    actions = restarted(store)
+
+    assert actions[0].startswith("stopped the supervisor child pid")
+    assert any("could not refresh" in action for action in actions)
+    assert any("no candidate could be provisioned" in action for action in actions)
+
+
+def test_restart_refuses_a_container_without_the_supervisor() -> None:
+    """Checked before anything is killed: with no supervisor the tree-kill takes
+    the application down with nothing behind it, and the kubelet restarts the
+    container - taking the seat with it (#161)."""
+    runner = restarting_runner()
+    runner.failures["exec -c app"] = "no such file"
+
+    with pytest.raises(hotfix.HotfixError, match="not running the podbench supervisor"):
+        restarted(applied_store(), runner)
+
+    assert not runner.matching(RELAUNCH)
+
+
+def test_restart_refuses_a_claim_that_was_never_initialised() -> None:
+    with pytest.raises(hotfix.HotfixError, match="hotfix init"):
+        restarted(seeded_store())
 
 
 # -- consolidate -----------------------------------------------------------
@@ -4058,6 +4240,30 @@ def test_cli_apply_runs_git_through_the_seat() -> None:
         "cat > /opt/venv/.podbench-hotfix.json" in " ".join(argv)
         for argv in runner.calls
     )
+
+
+def test_cli_restart_has_no_message_option_and_commits_nothing() -> None:
+    """`-m` is `apply`'s and stays `apply`'s. An option this verb accepted and
+    then did nothing with would be read as a commit that happened."""
+    seat = "exec -c podbench-1 api-7f9-abc --"
+    runner = FakeRunner(
+        {
+            "get deployment api -o json": json.dumps(workload_json()),
+            "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
+            "get pod api-7f9-abc -o json": json.dumps(pod_json()),
+            f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
+            f"{seat} {GIT} rev-parse": HEAD_SHA,
+            f"{seat} {GIT} status": " M a.py\n",
+        }
+    )
+    runner.sequences[CHILD_PID_READ] = ["7\n", "2446\n"]
+    argv = ["hotfix", "restart", "deployment/api", "--venv", VENV, "-n", "demo"]
+
+    assert hotfix.main(argv, runner=runner) == 0
+    assert runner.matching(RELAUNCH)
+    assert not runner.matching(f"{seat} {GIT} add")
+    assert not runner.matching(f"{seat} {GIT} -c user.name")
+    assert hotfix.main([*argv, "-m", "fix"], runner=runner) != 0
 
 
 def test_seat_is_required_and_says_how_to_get_one() -> None:
