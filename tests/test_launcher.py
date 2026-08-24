@@ -35,10 +35,13 @@ from podbench.kubectl import (
     KubectlTimeoutError,
 )
 from podbench.launcher import (
+    AGENT_SOCKET_PROBE,
     DEV_SIDECAR_REUSED_NOTE,
     FORGE_NO_REMOTE,
     FORGE_NOT_TRUSTED,
     FORGE_REMOTES_ARGV,
+    FORWARD_AGENT_MASTER_OFFER,
+    FORWARD_AGENT_MASTER_WARNING,
     FORWARD_AGENT_WARNING,
     NO_TARGET_CONTAINER,
     OTHER_MODES_NOTE,
@@ -364,6 +367,7 @@ class FakeCluster:
         whoami: str | None = "kubernetes-admin",
         git_remotes: str = "",
         seat_known_hosts: str | None = None,
+        ssh_master: str | None = None,
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -444,6 +448,11 @@ class FakeCluster:
         # `--forward-agent` has to say so rather than claim a seed.
         self.git_remotes = git_remotes
         self.seat_known_hosts = seat_known_hosts
+        # The ControlMaster this laptop already has open for the seat, and the
+        # `SSH_AUTH_SOCK` a session on it would see. `None` is no master at
+        # all, which is where every attach starts; `""` is one opened before
+        # `--forward-agent` was passed, which is what silently swallows it.
+        self.ssh_master = ssh_master
 
     # -- Runner protocol ---------------------------------------------------
 
@@ -461,6 +470,24 @@ class FakeCluster:
             # test never starts an editor.
             return CommandResult(tuple(argv), 0, "", "")
         if argv[0] == "ssh":
+            if "-O" in argv:
+                # `ssh -O check`, which talks to the ControlPath and not to the
+                # network. 255 is what it exits with when no master is there,
+                # and that is the default: a unit test starts from a laptop
+                # that has never connected to this seat.
+                if self.ssh_master is None:
+                    return CommandResult(
+                        tuple(argv),
+                        255,
+                        "",
+                        "Control socket connect(…): No such file or directory\n",
+                    )
+                return CommandResult(tuple(argv), 0, "Master running (pid=1)\n", "")
+            if argv[-1] == AGENT_SOCKET_PROBE:
+                # What a session on that master gets. `""` is the master opened
+                # before `--forward-agent` was ever passed, which is the whole
+                # of the p47 defect.
+                return CommandResult(tuple(argv), 0, f"{self.ssh_master}\n", "")
             # `--open`'s preflight, for the same reason: it proves the alias
             # before anything is written, and a unit test opens no connection.
             if argv[-1].startswith(("mkdir -p ~/", "test -e ~/")):
@@ -7581,3 +7608,68 @@ def test_the_scan_does_not_depend_on_the_flag_the_attach_path_sets() -> None:
 
     assert HOTFIX_APP_PATH in seat_directories(unset, seat_spec)
     assert seat_directories(unset, seat_spec) == seat_directories(session, seat_spec)
+
+
+def test_a_master_opened_without_forwarding_is_not_left_to_swallow_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured on p47 (2026-08-24): with the flag on and the stanza correct,
+    the first attempt answered `SSH_AUTH_SOCK=unset` and `Permission denied
+    (publickey)`, because an earlier `podbench vscode` had left a master open
+    without forwarding and the new session multiplexed onto it. `ControlPersist`
+    is in every stanza podbench writes, so this is the *normal* path."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="")
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    out = capsys.readouterr().out
+    alias = "podbench-demo-target-1"
+    assert " ".join(FORWARD_AGENT_MASTER_WARNING.format(alias=alias).split()) in (
+        " ".join(out.split())
+    )
+    # Verbatim, because it is the half of the line that gets pasted: the two
+    # spaces are what mark it, and a wrap through it would break the command.
+    assert FORWARD_AGENT_MASTER_OFFER.format(alias=alias) in out
+
+
+def test_a_master_that_already_forwards_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second `--forward-agent` run finds its own master, and telling that
+    reader to close a working connection is a warning about nothing."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="/tmp/ssh-XX/agent.7"
+    )
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert "ssh -O exit" not in capsys.readouterr().out
+
+
+def test_no_master_means_nothing_is_said_and_nothing_is_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The good case, and the cheap one: `-O check` fails on the ControlPath
+    and no session is opened to ask a master that is not there."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert "ssh -O exit" not in capsys.readouterr().out
+    assert not [call for call in cluster.calls if call[-1] == AGENT_SOCKET_PROBE]
+
+
+def test_without_the_flag_the_master_is_not_asked_about_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A master with no agent is only a defect where an agent was asked for."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="")
+
+    main(attach_argv(tmp_path), runner=cluster)
+
+    assert "ssh -O exit" not in capsys.readouterr().out
+    assert not [call for call in cluster.calls if "-O" in call]

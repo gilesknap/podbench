@@ -710,6 +710,44 @@ An **https** clone of a public repository needs none of this. If your remote is
 `https://github.com/…` the flag has nothing to do, and podbench says so instead
 of pretending it seeded something.
 
+### Adding the flag to a seat you are already connected to
+
+**A connection that is already open swallows it.** Every stanza podbench writes
+carries `ControlMaster auto` and `ControlPersist`, so a second `ssh` — and
+Remote-SSH, which multiplexes the same way — rides the master that is already
+there and inherits the settings *it* was opened with. Not the stanza on disk.
+Measured on p47, 2026-08-24, with the flag on and the stanza correct:
+
+```console
+$ ssh <alias> 'echo $SSH_AUTH_SOCK; cd /podbench/app && git fetch --dry-run origin'
+SSH_AUTH_SOCK=unset
+git@github.com: Permission denied (publickey).
+$ ssh -O exit <alias>
+$ ssh <alias> 'echo $SSH_AUTH_SOCK; cd /podbench/app && git fetch --dry-run origin'
+SSH_AUTH_SOCK=/tmp/ssh-WN68Z62b2K/agent.2572
+From github.com:DiamondLightSource/fastcs-example …
+```
+
+An earlier `podbench vscode` had left the master open without forwarding. The
+symptom is `Permission denied (publickey)`, which reads as a key problem and is
+not one.
+
+podbench checks for this rather than leaving you to find it: under
+`--forward-agent` it asks `ssh -O check` about the `ControlPath` it wrote, and
+where a master is running it asks that master what `SSH_AUTH_SOCK` a session on
+it gets. A master opened by an earlier `--forward-agent` run already forwards
+and is left alone; one with no agent earns a warning and the command that fixes
+it:
+
+```
+close it first:  ssh -O exit podbench-<namespace>-<pod>-<seat>
+```
+
+It is not closed for you. The connection riding that socket is routinely a VS
+Code window, and tearing one down from a verb whose job is to write a config
+file would replace one surprise with another. Close it, then reconnect — the
+next connection reads the stanza.
+
 ### What it costs, exactly
 
 `authorized_keys` gates ssh. It does **not** gate `kubectl exec`, and podbench's

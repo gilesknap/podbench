@@ -513,6 +513,13 @@ Notes:
   of a public repository needs none of it. The scan is over every directory the
   seat mounts plus its home, so a checkout on a hotfix claim is found on the
   verbs that never looked at the hotfix layout.
+  * **An ssh master that is already open swallows the flag**, because
+    `ControlPersist` is in every stanza podbench writes and a new connection
+    inherits the settings the master was opened with. podbench asks `ssh -O
+    check` and, where a master is running, asks it what `SSH_AUTH_SOCK` a
+    session gets; one with no agent earns a warning and the `ssh -O exit`
+    that fixes it. It is not closed for you — a VS Code window is usually on
+    the other end.
   * It is a flag and not a default because the exposure is real:
     `authorized_keys` gates ssh and does **not** gate `kubectl exec`, so anyone
     with `pods/exec` in the namespace can authenticate as you, to any host that
@@ -918,7 +925,7 @@ the pod.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-`--forward-agent` means here exactly what it means on `attach`, and it is the way to add agent forwarding and the forge's host keys to a seat that is already running: the stanza is regenerated and the seat's `known_hosts` is seeded on the spot.
+`--forward-agent` means here exactly what it means on `attach`, and it is the way to add agent forwarding and the forge's host keys to a seat that is already running: the stanza is regenerated and the seat's `known_hosts` is seeded on the spot. This is also the verb most likely to meet an ssh master that is already open, which would inherit its own settings and not the new stanza's; podbench says so and names the `ssh -O exit` that clears it.
 
 Fails if there is no running podbench container in the pod.
 

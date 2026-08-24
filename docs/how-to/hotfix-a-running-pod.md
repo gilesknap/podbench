@@ -343,7 +343,10 @@ holds no credential of its own, and the first thing an ssh remote fails on there
 is `Host key verification failed` rather than authentication. Landing the seat
 with `podbench attach --forward-agent` — or adding it to an existing one with
 `podbench ssh-config --forward-agent` — lends it your agent for the session and
-seeds its `known_hosts` from your own for the forge the claim's remote names.
+seeds its `known_hosts` from your own for the forge the claim's remote names. If
+you were already connected, an ssh master left open by the earlier session
+inherits its own settings rather than the new stanza's; podbench checks for that
+and names the `ssh -O exit` that clears it.
 Read what that costs first: it is {ref}`one section <git-in-the-seat>` of the
 VS Code how-to, and the short version is that `authorized_keys` gates ssh and does not gate `kubectl
 exec`.

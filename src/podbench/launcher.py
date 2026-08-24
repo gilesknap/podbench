@@ -49,6 +49,7 @@ from .cli import new_app, require_subcommand, run
 from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph
 from .editor import (
     CONNECTION_HINT,
+    DEFAULT_SSH,
     OK,
     WARN,
     EditorError,
@@ -170,6 +171,8 @@ __all__ = [
     "EDITOR_RESIZE_NOTE",
     "EDITOR_STORAGE_WARNING",
     "EDITOR_UNMEASURED_WARNING",
+    "FORWARD_AGENT_MASTER_OFFER",
+    "FORWARD_AGENT_MASTER_WARNING",
     "FORWARD_AGENT_WARNING",
     "HOST_KEY_ARGV",
     "ID_CORRECTION_WARNING",
@@ -212,6 +215,7 @@ __all__ = [
     "emit_ssh_config",
     "features",
     "forge_seed_notes",
+    "master_without_agent",
     "forget_known_hosts",
     "forget_ssh_config",
     "format_age",
@@ -4737,6 +4741,45 @@ at all, and it belongs in :func:`podbench.sshcfg.client_config`'s docstring
 rather than on the terminal of somebody who has already chosen it.
 """
 
+FORWARD_AGENT_MASTER_WARNING = (
+    "an ssh session for {alias} is already open and has no agent on it, and a "
+    "new connection multiplexes onto that master rather than reading the "
+    "stanza just written - so `ForwardAgent yes` reaches nothing, and git in "
+    "the seat stops at `Permission denied (publickey)`."
+)
+"""Said when a live ControlMaster would silently swallow the flag.
+
+Measured on p47 (2026-08-24): with the flag on and the stanza correct, the
+first attempt answered ``SSH_AUTH_SOCK=unset`` and ``Permission denied
+(publickey)`` because an earlier ``podbench vscode`` had left a master open
+without forwarding; ``ssh -O exit`` and the identical command then worked.
+``ControlMaster auto`` with ``ControlPersist`` is in every stanza podbench
+writes, so this is the *normal* path for anyone adding the flag to a pod they
+have already attached to, and the symptom reads as a key problem.
+
+Podbench does not close the master itself. It owns the ``ControlPath`` and
+could, but the connection riding it is routinely a VS Code window - Remote-SSH
+multiplexes over the same socket - and tearing one down from a verb whose job
+is to *write a config file* is a second silent surprise in place of the first.
+The remedy is one line and one command, and the reader is the only one who
+knows whether an editor is on the other end.
+"""
+
+FORWARD_AGENT_MASTER_OFFER = "close it first:  ssh -O exit {alias}"
+"""The remedy, as an offer rather than in the warning above.
+
+``console.wrap`` collapses runs of whitespace, so a pasteable command inside a
+paragraph comes back unpasteable; the two-space form has to be its own line.
+"""
+
+AGENT_SOCKET_PROBE = 'echo "$SSH_AUTH_SOCK"'
+"""Ask a session whether it got an agent, in the session's own words.
+
+``printenv`` would be the tidier spelling and is the wrong one: it exits 1 for a
+variable that is unset, which is indistinguishable from the ssh call itself
+failing.
+"""
+
 FORGE_REMOTES_ARGV = (
     "sh",
     "-c",
@@ -4811,6 +4854,40 @@ def seat_forge_hosts(
         check=False,
     )
     return git_remote_hosts(result.stdout)
+
+
+def master_without_agent(
+    runner: Runner, *, alias: str, config: Path, ssh: str = DEFAULT_SSH
+) -> bool:
+    """Whether a master is already open for ``alias`` and carries no agent.
+
+    Two questions, because only the second one is the user's. ``ssh -O check``
+    is a local call on the ``ControlPath`` podbench itself wrote - no network,
+    no authentication - and a failure there is the good case: no master, so the
+    next connection reads the stanza and forwards. Where one *is* running, it
+    is asked what a session on it gets, because a master opened by an earlier
+    ``--forward-agent`` run forwards perfectly well and telling that reader to
+    close it would be a warning about nothing. The measurement is available and
+    costs ~0.06 s over an established master, which is the whole of the reason
+    this asks rather than assumes.
+
+    An ssh that cannot be reached at all is **not** reported as a stale master:
+    the answer is unknown, the connection is broken in a way the reader's next
+    command will say out loud, and inventing a remedy for it would send them to
+    ``ssh -O exit`` for a socket that is not the problem.
+    """
+    base = [ssh, "-F", str(config)]
+    try:
+        if runner(
+            [*base, "-O", "check", alias], timeout=DEFAULT_CALL_TIMEOUT
+        ).returncode:
+            return False
+        session = runner(
+            [*base, alias, AGENT_SOCKET_PROBE], timeout=DEFAULT_CALL_TIMEOUT
+        )
+    except KubectlError:
+        return False
+    return session.returncode == 0 and not session.stdout.strip()
 
 
 def user_known_hosts() -> str:
@@ -5134,6 +5211,19 @@ def emit_ssh_config(
         stanza, ssh_config_path(directory, session.pod, session.seat.container)
     )
     forge: list[str] = []
+    master: list[str] = []
+    if forward_agent and master_without_agent(kubectl.runner, alias=alias, config=path):
+        # Before the seeding, because it is about the stanza that was just
+        # written rather than about the seat, and because the reader who has to
+        # act on it should meet it beside the flag's own warning.
+        master = [
+            *paragraph(
+                FORWARD_AGENT_MASTER_WARNING.format(alias=alias),
+                first=f"{WARNING_LEAD}  ",
+                indent=" " * WARNING_HANG,
+            ),
+            FORWARD_AGENT_MASTER_OFFER.format(alias=alias),
+        ]
     if forward_agent:
         # Every mount the seat carries plus its home, and not the one folder an
         # editor would open: `editor_folder` is gated on `session.hotfixed`,
@@ -5158,6 +5248,7 @@ def emit_ssh_config(
                     if forward_agent
                     else []
                 ),
+                *master,
                 *notes,
                 *forge,
                 f"ssh config written to {path}",
