@@ -175,10 +175,15 @@ helm template bl47p-ea-fastcs-01 ./svc -n p47-beamline \
   -f parent-values.yaml -f svc/values.yaml --skip-schema-validation
 ```
 
-*(`--skip-schema-validation` was needed: `.helm-shared/values.schema.json` as
-committed rejects this service's own values — 50-odd `false schema` errors. That
-is a separate finding about the consumer repo, not about podbench, and it is
-**not** how Argo renders it, since Argo plainly does render this service.)*
+*(`--skip-schema-validation` was passed on the first run. **Corrected by the
+2026-08-24 audit: it is not needed, and the schema never applied.** Re-rendering
+from a `cp -rL` copy of the service directory — which is the chart root Argo
+uses — succeeds *without* the flag, 529 lines, exit 0. Helm validates only a
+`values.schema.json` sitting in the chart root, and there is none there:
+`.helm-shared/values.schema.json` is reached solely by the
+`## yaml-language-server: $schema=` comment at `values.yaml:1`, which is an
+editor hint. The 50-odd errors the first run saw came from its own scratch-copy
+construction, not from the chart. See §7.5.)*
 
 At HEAD the render produces **exactly three objects** — one ConfigMap, one
 StatefulSet and **one PVC**:
@@ -243,8 +248,11 @@ ever removed, this pod's replacement would not schedule. That last sentence is a
 Two things the plan's account states that this run could **not** confirm
 directly:
 
-* **"ArgoCD recreated them from git."** All fourteen pods in the namespace are
-  the same age (6h05m), so a namespace-wide delete did happen at ~17:31Z. But
+* **"ArgoCD recreated them from git."** All fourteen pods in the namespace were
+  created inside one 31-second window — six at 17:31:50Z, three at 17:31:54Z,
+  three at 17:31:55Z, one at 17:32:04Z and one at 17:32:21Z (audit re-read;
+  the first run rounded this to "the same age") — so a namespace-wide delete
+  did happen at ~17:31Z. But
   the object that recreated *this* pod is the StatefulSet controller, from
   controller-revision `bl47p-ea-fastcs-01-6b59595ddb`, and `argocd-controller`'s
   last write to the StatefulSet was 05:53:33Z. Reading the controller-revision's
@@ -475,21 +483,36 @@ under a verdict of *"nothing measured here blocks `podbench hotfix init`"* — a
 the named repository is not the application's source, as §6 proves twice over.
 
 The consequence is not cosmetic. On an **unseeded** claim — the state `check` is
-written for, "before starting one" — `hotfix init` with no `--repo` and no
-`--base-commit` would clone `ubuntu-devcontainer` and record `603392d2…`, a
-commit in a different repository, as the base the drift is measured against.
-`init` has `corroborate_source` for exactly this and would at least record an
-assumed base; `check`, which exists to say `init`'s answers earlier, says
-something *more* confident than `init` would. That is the wrong direction for a
-pre-flight.
+written for, "before starting one" — `hotfix init` with no `--repo` would
+**clone `ubuntu-devcontainer`**, so the checkout the hotfix is then edited in is
+a different project's repository entirely.
 
-Cheapest fix consistent with what is already there: run `check`'s label through
-`corroborate_source`, and where nothing independent corroborates it, report the
-row as `[warn]`/unmeasured carrying `LABELS_FROM_BASE_IMAGE` rather than `[ok]`.
-On this target there are two independent contradictions available for free — the
-claim's own manifest records base `3d55455`, and
+> **Corrected by the 2026-08-24 audit.** The first run's next clause — that
+> `init` would "record `603392d2…` as the base the drift is measured against" —
+> is **wrong**, and it contradicted its own following sentence. `init` sets
+> `origin = ""` on the clone path deliberately (`hotfix.py:2540-2542`, "a clone
+> made from the label agrees with the label by construction"), so
+> `corroborate_source` returns `corroborated=False`, and `base_commit_from`
+> (`hotfix.py:2405-2427`) gates the `REVISION_LABEL` on exactly that flag. What
+> `init` records is the clone's own `rev-parse HEAD`, marked
+> `base_commit_assumed=True` and printed as `ASSUMED`. The wrong-repository
+> clone is the real harm; the base commit is honestly labelled.
+
+`check`, which exists to say `init`'s answers earlier, still says something
+*more* confident than `init` would. That is the wrong direction for a pre-flight.
+
+A fix has to supply the independent naming that `check` does not have.
+`corroborate_source` alone will not do it: on an unseeded claim there is no
+checkout and so no `origin`, and `corroborate_source(None, labelled, "")`
+returns `(labelled, False, None)` — a `False` with **no** note, so
+`LABELS_FROM_BASE_IMAGE` cannot even be formatted. (The first run proposed that
+route as the "cheapest fix consistent with what is already there"; it is
+cheapest but it is not sufficient, and this was **not tested**.) On this target
+two independent contradictions were available for free — the claim's own
+manifest records base `3d55455`, and
 `org.opencontainers.image.title=ubuntu-devcontainer` does not match the image
-repository's own last path segment `fastcs-example-debug`.
+repository's own last path segment `fastcs-example-debug` — and the second of
+those needs nothing but the reference `check` was already given.
 
 ### 7.2 `hotfix retire`'s `branch` row counts a step that has nothing in it, and tells you to run a command that will refuse
 
@@ -533,6 +556,18 @@ emptyDir and `fsGroup: 37887` in the pod template. The row's closing clause —
 at the whole snippet, so this is an incomplete enumeration rather than a false
 one. It is still the row a person reads as a checklist.
 
+**Added by the 2026-08-24 audit: the closing clause is worse than incomplete, it
+is hazardous.** Measured this session: `hotfix values --from-pod` emits
+`volumes: [podbench-app, podbench-home]` and `volumeMounts: [podbench-app]`,
+while the deployed `services/bl47p-ea-fastcs-01/values.yaml` carries
+`beamline-data` in both keys (`values.yaml:44-47`, `62-64`) — repeated there on
+purpose, because a helm list *replaces* across the parent/child merge
+(rule 5, and the file's own comment says so). Somebody who takes "the values
+`hotfix values` emitted" back out by deleting those two keys wholesale unmounts
+the beamline directory. `EXISTING_MOUNTS_WARNING` says exactly this on the way
+**in**, and fired again this session; `retire` has no equivalent caution on the
+way **out**.
+
 ### 7.4 Contract tension: `status` exits 0 on a pod `retire` says is 4 steps from retired
 
 Same pod, same minute: `hotfix status` → **0**, `hotfix retire` → **1**.
@@ -550,16 +585,27 @@ not a measurement. If `status` is the shutdown gate, this specimen is precisely
 the thing a shutdown gate should catch — a pod wired to a claim git no longer
 declares, carrying no fix at all.
 
-### 7.5 (consumer repo, not podbench) `.helm-shared/values.schema.json` rejects its own service's values
+### 7.5 ~~(consumer repo, not podbench) `.helm-shared/values.schema.json` rejects its own service's values~~ — WITHDRAWN
 
-`helm template` at HEAD fails schema validation with ~50 errors against
-`services/bl47p-ea-fastcs-01/values.yaml`, including
-`additional properties 'fsGroup' not allowed` under
-`ioc-instance.podSecurityContext` and a doubly-nested
-`'/ioc-instance/ioc-instance'`. Argo evidently does not enforce it (the service
-is deployed), so this is a local-tooling papercut in `p47-services`, recorded
-because the next person to render this chart will hit it in the first minute.
-**Nothing was changed in `p47-services`.**
+The first run reported that `helm template` at HEAD fails schema validation with
+~50 errors, and advised the next person that they would hit it in the first
+minute. **The 2026-08-24 audit tried, and did not hit it.**
+
+Rendering from a `cp -rL` copy of `services/bl47p-ea-fastcs-01` — Chart.yaml and
+`templates` are symlinks into `.helm-shared`, and the copy is what resolves them
+— succeeds with **no** `--skip-schema-validation`: exit 0, 529 lines, the same
+three objects. Helm validates against a `values.schema.json` **in the chart
+root**, and `ls -la services/bl47p-ea-fastcs-01/` shows there is none: only
+`Chart.yaml`, `config/`, `templates/` and `values.yaml`. The only reference to
+the shared schema is the `## yaml-language-server: $schema=` comment at
+`values.yaml:1`, which is an editor hint that Helm never reads.
+
+So the errors were an artefact of how the first run built its scratch copy, not
+a property of `p47-services`, and "Argo evidently does not enforce it" was an
+explanation for something that needs none. **Whether the shared schema would
+reject these values if it were ever placed in a chart root is not measured** —
+nothing in this session put it there. `p47-services` was not written to by
+either run.
 
 ---
 
@@ -601,3 +647,45 @@ Unchanged. `bl47p-ea-fastcs-01-0` is `Running`, 2/2, `restartCount` 0, still
 hotfix-wired, still mounting a `Bound` 2Gi claim that git no longer declares.
 `p47-services` is on `podbench-hotfix-claim` at `94b74d2` with a clean working
 tree. No seat was landed. Nothing was deleted.
+
+## 10. Audit, 2026-08-24 — every measurement retaken
+
+A second agent re-took the cluster and git measurements independently and re-ran
+all four verbs, read-only, against the same unchanged state.
+
+**Reproduced exactly, no discrepancy:** §1 in full (creation 17:31:54Z,
+`restartCount` 0 on both containers, started 17:32:04Z, `imageID`
+`sha256:e803e316b14f…`, no `ephemeralContainers` key at all, no probe of any
+kind on either container, eight volumes, the supervisor `args` character for
+character, pod `securityContext` `{fsGroup 37887, runAsUser/runAsGroup 36096,
+supplementalGroupsPolicy Strict}`); §2 in full (`Bound`, created 05:53:32Z, PV
+`pvc-e69a71fe…` created 05:53:51Z with `reclaimPolicy: Delete`, both
+annotations, `argocd-controller`'s last write 05:53:32Z, exactly one mounting
+pod); §3's line numbers, all six, against the file; the remote SHA via `gh`;
+§5's four transcripts **byte-for-byte**, with the same exit codes 0 / 0 / 2 / 1
+and the same empty stderr on three of them; §6's labels through
+`podbench.oci.image_labels` and all three `gh api` results.
+
+**§4 re-rendered from scratch and reproduced**: three objects at HEAD, one
+object added by `--set podbench-hotfix-claim.enabled=true`, StatefulSet
+byte-identical, `configHash` label `cd39d292…` on both, and the only volume
+diffs `configMap.defaultMode: 420` and `hostPath.type: ""`. The verdict stands.
+`.helm-shared/Chart.yaml`'s own comment — "the chart renders absolutely nothing
+unless a service sets `podbench-hotfix-claim.enabled`" — corroborates it a third
+way.
+
+**Corrected above, four places:** the `--skip-schema-validation` parenthetical
+in §4 and the whole of §7.5 (withdrawn — the schema never applied); the
+"same age" rounding in §4; §7.1's false claim about the base commit `init` would
+record, plus its untested remedy; and §7.3, which now names the `beamline-data`
+hazard as well as the under-enumeration.
+
+**Nothing was mutated by either run.** The pod's `resourceVersion` was
+`1054070622` on two reads minutes apart, and its `managedFields` carry only
+`kube-controller-manager` (create, 17:31:54Z) and `kubelet` (status, 17:32:05Z)
+— no other manager has ever written to this object, which is what an ephemeral
+container, a patch or an exec would have left. The PVC is at `resourceVersion`
+`1053856421`. `/home/giles/code/p47-services` is clean at `94b74d2`.
+
+`just lint`, `just types` (0 errors) and `just test` (1752 passed, 40 skipped)
+are green.
