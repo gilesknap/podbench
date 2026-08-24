@@ -272,11 +272,34 @@ uses that stanza.
 **The exposure, stated exactly.** `authorized_keys` gates ssh; it does **not**
 gate `kubectl exec`. Anyone with `pods/exec` in the namespace can enter the seat,
 and podbench's own report advertises that path. Today there is nothing there to
-steal — the seat holds no credentials of its own. A forwarded agent adds exactly
-one thing: **your personal git identity**, usable by anyone with exec rights for
-as long as the session is open. That is a specific, bounded escalation, not "the
-seat is insecure", and on a namespace that is your own team it may be entirely
-acceptable.
+steal — the seat holds no credentials of its own.
+
+A forwarded agent adds one thing, and it is **wider than "your git identity"**,
+which an earlier draft of this plan said and got wrong: an agent forwards *keys*,
+not a destination, so whoever reaches the socket can authenticate as you to **any
+host that trusts your key** — jump boxes, other beamline machines, other orgs.
+Bounded in time to the session, unbounded in reach within it.
+
+**Why it is still the least-bad credential to put in a seat** (Giles,
+2026-08-24, and this is the argument that decides it): nothing is written to
+disk, and `SSH_AUTH_SOCK` is set only in the *ssh session's* environment, so a
+colleague's `kubectl exec` session does not have it and cannot stumble into it.
+Deliberate use is easy; accidental use essentially does not happen. A cached `gh`
+token or `.git-credentials` on a shared path is the opposite on every count —
+persistent, copyable, silently reused, and still working next week. **The private
+key never enters the pod**, so the exposure ends with the session rather than
+leaving something behind.
+
+**Two mitigations to document rather than build**, both user-side:
+
+- `ssh-add -c` makes the agent prompt locally on every use, so silent use becomes
+  impossible.
+- Destination-constrained keys (OpenSSH 8.9+, `ssh-add -h`) bind the key to named
+  destinations, which closes the "unbounded in reach" half above.
+
+**One caution before enabling it**: RBAC groups at a facility often include
+service accounts and CI identities alongside humans, so "who can exec here" may
+be a larger set than "my colleagues". Read the rolebinding rather than assuming.
 
 **The host trust half, which agent forwarding does not solve.** The measured
 failure is `Host key verification failed` — `known_hosts`, not authentication.
