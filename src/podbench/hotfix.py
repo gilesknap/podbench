@@ -100,7 +100,7 @@ from .model import (
     and_list,
     as_dict,
 )
-from .oci import REVISION_LABEL, SOURCE_LABEL
+from .oci import REVISION_LABEL, SOURCE_LABEL, parse_reference
 from .oci import image_labels as read_image_labels
 from .spec import target_uid_gid
 
@@ -151,6 +151,8 @@ __all__ = [
     "VENV_DISAGREES_WITH_POD",
     "VENV_INVISIBLE_TO_STATUS",
     "NO_SOURCE_REPO",
+    "SOURCE_LABEL_UNCORROBORATED",
+    "image_name_agrees",
     "CLAIM_NOT_MOUNTED",
     "CLAIM_ALREADY_SEEDED",
     "SEAT_NOT_RUNNING",
@@ -2280,6 +2282,25 @@ project's history. Hence :func:`corroborate_source` — the label is believed
 only where something that did not come from the image agrees with it.
 """
 
+SOURCE_LABEL_UNCORROBORATED = (
+    "the image names {source}, which its own repository {image} does not "
+    "correspond to. OCI labels are inherited from the base image unless the "
+    "build overrides them, and `hotfix init` with no `--repo` clones whatever "
+    "the label names: pass `--repo URL` if that is not this application's "
+    "source."
+)
+"""``check``'s ``source`` row when the only thing naming the repository is a
+label the image's own name contradicts.
+
+A ``WARN`` and not a ``FAIL``, because ``init`` does not refuse this state - it
+clones the label's repository and records an ``ASSUMED`` base
+(:func:`base_commit_from`). The defect this replaced was the opposite error: an
+``[ok]`` under "nothing measured here blocks `podbench hotfix init`", which made
+``check`` *more* confident than the verb it exists to speak for. Measured
+2026-08-23 on ``fastcs-example-debug:2025.10.1``, whose labels are
+``ubuntu-devcontainer``'s throughout - see :data:`LABELS_FROM_BASE_IMAGE`.
+"""
+
 
 def same_repository(one: str, other: str) -> bool:
     """Whether two spellings of a git remote name the same repository.
@@ -2315,6 +2336,39 @@ def _repo_key(url: str) -> str:
         # scp-style `host:path`, which has no slash before the colon.
         text = f"{head}/{tail}"
     return text.rstrip("/").removesuffix(".git").rstrip("/")
+
+
+def image_name_agrees(image: str, source: str) -> bool:
+    """Whether the image's *own* name corresponds to the repository *source* names.
+
+    The one corroborator that is free and always available: a registry path is
+    not part of the config blob, so a base image cannot have set it. Every
+    other independent naming of the repository - ``--repo``, the seeded
+    checkout's ``origin`` - has to be supplied or read from somewhere, and on
+    an unseeded claim there is no checkout to read one from.
+
+    It is a correspondence and not an equality, because a debug or a runtime
+    variant is built from the same source under a suffixed name: measured
+    2026-08-23, ``fastcs-example-debug`` is built from ``fastcs-example``, and
+    an equality test would cry wolf on every image built that way.
+
+    >>> image_name_agrees("ghcr.io/dls/fastcs-example-debug:2025.10.1",
+    ...                   "https://github.com/DiamondLightSource/fastcs-example")
+    True
+    >>> image_name_agrees("ghcr.io/dls/fastcs-example-debug:2025.10.1",
+    ...                   "https://github.com/DiamondLightSource/ubuntu-devcontainer")
+    False
+    >>> image_name_agrees("", "https://github.com/acme/api")
+    False
+    """
+    ref = parse_reference(image)
+    if ref is None or not source.strip():
+        return False
+    named = ref.repository.lower().rpartition("/")[2]
+    repo = _repo_key(source).rpartition("/")[2]
+    if not named or not repo:
+        return False
+    return named == repo or named.startswith(f"{repo}-") or repo.startswith(f"{named}-")
 
 
 def corroborate_source(
@@ -4275,16 +4329,52 @@ def _source_check(target: HotfixTarget, repo: str | None) -> PreflightCheck:
     The registry is not read at all when the flag answers it - a round trip on
     the way into an emergency, for a value already in hand, which is the
     ordering ``init`` uses too.
+
+    **A bare non-empty label is not an answer** (measured 2026-08-23, evidence
+    ``phase7-the-contradiction.md`` §6/§7.1). OCI labels are inherited, and the
+    target this mode was proved against advertises its base image's repository,
+    revision and title throughout, so an ``[ok]`` on the label alone green-lit
+    cloning another project entirely. Four states, and the row says which one
+    it is in:
+
+    * ``--repo`` was given - independent of the image by construction, ``OK``;
+    * no label and no flag - ``init`` refuses, ``FAIL``;
+    * a label the image's own name corroborates
+      (:func:`image_name_agrees`) - ``OK``, naming what corroborated it;
+    * a label nothing corroborates - ``WARN``, because ``init`` proceeds.
+
+    The two corroborators it does **not** take are named here so the row cannot
+    be read as having taken them: the seeded checkout's ``origin``, which
+    :func:`init` reads and ``check`` cannot without a seat, and the manifest's
+    own ``repo``, which exists only once ``init`` has run. Neither is available
+    in the state this verb is written for - an unseeded claim, before starting.
     """
     named = (repo or "").strip()
     if named:
         return PreflightCheck("source", CheckStatus.OK, f"--repo names {named}")
-    labels = read_image_labels(target.image_digest or target.image) or {}
+    reference = target.image_digest or target.image
+    labels = read_image_labels(reference) or {}
     source = (labels.get(SOURCE_LABEL) or "").strip()
-    if source:
-        return PreflightCheck("source", CheckStatus.OK, f"the image names {source}")
+    if not source:
+        return PreflightCheck(
+            "source", CheckStatus.FAIL, NO_SOURCE_REPO.format(label=SOURCE_LABEL)
+        )
+    ref = parse_reference(reference)
+    # The repository without its tag or digest: that is what the label is
+    # compared against, and naming the whole reference spends two lines of the
+    # row on a version nothing here read.
+    named_image = f"{ref.registry}/{ref.repository}" if ref is not None else reference
+    if image_name_agrees(reference, source):
+        return PreflightCheck(
+            "source",
+            CheckStatus.OK,
+            f"the image names {source}, which its own repository "
+            f"{named_image} corroborates - an inherited label would not",
+        )
     return PreflightCheck(
-        "source", CheckStatus.FAIL, NO_SOURCE_REPO.format(label=SOURCE_LABEL)
+        "source",
+        CheckStatus.WARN,
+        SOURCE_LABEL_UNCORROBORATED.format(image=named_image, source=source),
     )
 
 

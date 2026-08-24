@@ -144,11 +144,30 @@ $ podbench hotfix check bl47p-ea-fastcs-01-0 -n p47-beamline
   [ok]    interpreter    the image keeps one at /python
   [ok]    liveness       the container declares no livenessProbe, so the
                          hold has nothing to short-circuit
-  [ok]    source         the image names
-                         https://github.com/DiamondLightSource/fastcs-example
+  [warn]  source         the image names
+                         https://github.com/DiamondLightSource/ubuntu-devcontainer,
+                         which its own repository
+                         ghcr.io/diamondlightsource/fastcs-example-debug
+                         does not correspond to. OCI labels are
+                         inherited from the base image unless the build
+                         overrides them, and `hotfix init` with no
+                         `--repo` clones whatever the label names: pass
+                         `--repo URL` if that is not this application's
+                         source.
 ------------------------------------------------------------------------
 VERDICT: nothing measured here blocks `podbench hotfix init` (exit 0)
 ```
+
+That `source` row is the real one, measured against this IOC on 2026-08-23.
+**OCI labels are inherited**: `fastcs-example-debug` never overrode its base
+image's, so it advertises `ubuntu-devcontainer`'s repository, revision and title,
+and the revision provably does not exist in `fastcs-example`. `init` with no
+`--repo` would clone that repository and you would edit the wrong project. The
+one corroborator that costs nothing is the image's own registry path — a base
+image cannot have written that — so a label the path corresponds to (a `-debug`
+or `-runtime` variant counts as corresponding) is `[ok]`, and one it does not is
+this `warn`. It is a warning rather than a blocker because `init` does not refuse
+the state; `--repo` is what settles it.
 
 It is read-only, it lands no seat, and it exits **1** while anything blocks — so
 run it, fix what it names, run it again. Each blocker it reports is a chart

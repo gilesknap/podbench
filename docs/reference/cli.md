@@ -1184,7 +1184,12 @@ Notes:
   breaks `apply`'s hold rather than `init`. `check` takes `--repo` because `init`
   does — an image naming no source repository is a state `init` refuses, so it is
   a blocker here, and a check that could not hear the flag would refuse a target
-  the next command accepts. On a claim that is already seeded the three rows only
+  the next command accepts. A label that *is* there is corroborated rather than
+  believed: OCI labels are inherited from the base image, so the row is `[ok]` only
+  where the image's own registry path corresponds to the repository the label names
+  (a `-debug` or `-runtime` variant counts), and a `warn` otherwise. It is a warning
+  and not a blocker because `init` does not refuse the state — it clones the label's
+  repository and records an `ASSUMED` base. On a claim that is already seeded the three rows only
   a seed reads — the target root, the project and the interpreter — are **not
   asked**, because `init` does not read them either. Where no seat is running yet,
   the seat's view of the target's root is reported **unmeasured** rather than

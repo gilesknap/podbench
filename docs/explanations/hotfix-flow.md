@@ -266,7 +266,8 @@ one read-only pass and gives the answer an exit code.
   [ok]    project        the image keeps one at /app
   [ok]    interpreter    the image keeps one at /python
   [warn]  liveness       a httpGet livenessProbe cannot be short-circuited …
-  [ok]    source         the image names https://github.com/…
+  [warn]  source         the image names https://github.com/…/ubuntu-devcontainer,
+                         which its own repository … does not correspond to …
 ------------------------------------------------------------------------
 VERDICT: 1 blocker before `podbench hotfix init` can work (exit 1)
 BLOCKERS: supervisor
@@ -295,6 +296,19 @@ and each has a failure mode behind it:
   would be sending the reader into precisely the second attempt the verb exists to
   remove. Hearing the flag is the other half of the same rule: without it the row
   would refuse a target `init --repo URL` accepts.
+* **A source label is corroborated, never taken on trust.** OCI labels are inherited
+  from the base image unless the build overrides them, and the IOC this mode was proved
+  against does not override them: `fastcs-example-debug:2025.10.1` advertises
+  `ubuntu-devcontainer`'s repository and revision, and that revision provably does not
+  exist in `fastcs-example`. `check` used to print `[ok] the image names
+  …/ubuntu-devcontainer` under "nothing measured here blocks `hotfix init`" — a
+  pre-flight *more* confident than the verb it speaks for, since `init` with no
+  `--repo` clones that repository and records an `ASSUMED` base. The corroborator it
+  can always take is the image's own registry path, which is not in the config blob and
+  so cannot have been inherited; a `-debug` or `-runtime` variant of the named
+  repository counts as corresponding. What it cannot take on an unseeded claim is the
+  checkout's `origin` — there is no checkout — so the row says which corroboration it
+  had, and a label nothing corroborates is a `warn` and not a blocker.
 * **A claim that is already seeded retires three rows.** `init` short-circuits its
   whole seed on `{checkout}/pyproject.toml`, which makes the target root, the project
   and the interpreter moot — so `check` does not ask them either. This is the state a

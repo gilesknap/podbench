@@ -52,6 +52,7 @@ def pod_json(
     *,
     name: str = "api-7f9-abc",
     digest: str = BASE_DIGEST,
+    image: str = "ghcr.io/acme/api:1.4.0",
     owner: str | None = "replicaset",
     annotations: dict[str, str] | None = None,
     seat: bool = True,
@@ -63,7 +64,7 @@ def pod_json(
         metadata["ownerReferences"] = [
             {"kind": owner.title(), "name": "api-7f9", "controller": True}
         ]
-    container: dict[str, Any] = {"name": "app", "image": "ghcr.io/acme/api:1.4.0"}
+    container: dict[str, Any] = {"name": "app", "image": image}
     if claim:
         # The listing's whole filter: a volume, which a GitOps controller
         # reconciles towards rather than strips.
@@ -73,9 +74,7 @@ def pod_json(
     spec: dict[str, Any] = {"containers": [container]}
     status: dict[str, Any] = {
         "phase": "Running",
-        "containerStatuses": [
-            {"name": "app", "image": "ghcr.io/acme/api:1.4.0", "imageID": digest}
-        ],
+        "containerStatuses": [{"name": "app", "image": image, "imageID": digest}],
     }
     if seat:
         spec["ephemeralContainers"] = [{"name": "podbench-1"}]
@@ -4238,6 +4237,73 @@ def test_check_hears_repo_the_way_init_does() -> None:
     assert (check, init) == (0, 0)
     # `init` reads them anyway, for the revision that dates the base commit.
     assert reads
+
+
+def test_a_source_label_the_image_contradicts_is_not_green_lit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The live defect (evidence §6, §7.1).
+
+    `ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1` advertises its
+    base image's labels wholesale - source, revision and title all name
+    `ubuntu-devcontainer`, and the revision provably does not exist in
+    `fastcs-example`. `check` printed `[ok] the image names …/ubuntu-devcontainer`
+    under "nothing measured here blocks `podbench hotfix init`", which is a
+    pre-flight being *more* confident than the verb it speaks for: `init` with
+    no `--repo` clones that repository and records an ASSUMED base.
+    """
+    image = "ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1"
+    digest = "ghcr.io/diamondlightsource/fastcs-example-debug@sha256:e803"
+    runner = hotfixable(pod_json(owner=None, claim=True, image=image, digest=digest))
+    inherited = {
+        oci.SOURCE_LABEL: "https://github.com/DiamondLightSource/ubuntu-devcontainer",
+        oci.REVISION_LABEL: "603392d2fd2f3c583e149f4d1266553ccc7a2d90",
+    }
+
+    def base_images_labels(image: str) -> dict[str, str]:
+        return inherited
+
+    with mock.patch.object(hotfix, "read_image_labels", base_images_labels):
+        code = hotfix.main(CHECK, runner=runner)
+
+    out = capsys.readouterr().out
+    source = rows(out)["source"]
+    assert source.startswith("[warn]")
+    # Both namings, so the reader can see which one is suspected and why.
+    assert "ubuntu-devcontainer" in source
+    assert "fastcs-example-debug" in source
+    # Beat three: the flag that settles it.
+    assert "--repo" in source
+    # Not a blocker, because `init` does not refuse this state - it clones.
+    assert code == 0
+    assert "nothing measured here blocks" in out
+
+
+def test_a_source_label_the_images_own_name_corroborates_is_ok(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The corroborator, named rather than implied.
+
+    A registry path is not in the config blob, so a base image cannot have set
+    it - which is what makes it the one independent naming `check` can take on
+    an unseeded claim, where there is no checkout and so no `origin`. It is a
+    correspondence and not an equality: a `-debug` variant is built from the
+    unsuffixed source.
+    """
+    image = "ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1"
+    digest = "ghcr.io/diamondlightsource/fastcs-example-debug@sha256:e803"
+    runner = hotfixable(pod_json(owner=None, claim=True, image=image, digest=digest))
+    own = {oci.SOURCE_LABEL: "https://github.com/DiamondLightSource/fastcs-example"}
+
+    def its_own_labels(image: str) -> dict[str, str]:
+        return own
+
+    with mock.patch.object(hotfix, "read_image_labels", its_own_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    source = rows(capsys.readouterr().out)["source"]
+    assert source.startswith("[ok]")
+    assert "corroborates" in source
 
 
 def test_an_already_seeded_claim_is_not_blocked_on_rows_init_never_reads(
