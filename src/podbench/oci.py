@@ -92,6 +92,9 @@ that looks like a missing image."""
 _USER_AGENT = "podbench"
 
 _CHALLENGE = re.compile(r'(\w+)="([^"]*)"')
+
+_FETCHABLE_SCHEMES = frozenset({"http", "https"})
+"""The only schemes this module may open. See :func:`_fetchable`."""
 """The ``key="value"`` pairs of a ``WWW-Authenticate: Bearer`` challenge."""
 
 _BARE_DIGEST = re.compile(r"[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}")
@@ -289,7 +292,7 @@ def _anonymous_token(get: Fetch, headers: Mapping[str, str]) -> str | None:
         return None
     fields = dict(_CHALLENGE.findall(challenge))
     realm = fields.get("realm")
-    if not realm:
+    if not realm or not _fetchable(realm):
         return None
     query = urllib.parse.urlencode(
         {key: fields[key] for key in ("service", "scope") if key in fields}
@@ -313,8 +316,44 @@ def _document(body: bytes) -> dict[str, Any]:
     return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else {}
 
 
+def _fetchable(url: str) -> bool:
+    """Whether ``url`` is one this module may open at all.
+
+    The ``realm`` of a ``WWW-Authenticate`` challenge is chosen by whatever
+    registry the *image string* named, and :func:`_urlopen` goes through
+    urllib's default opener, which also serves ``file:``. Unchecked, a registry
+    can answer 401 with ``realm="file:///etc/passwd"`` - or a link-local
+    metadata address - and :func:`_anonymous_token` will read it and send what
+    came back to that same registry as ``Authorization: Bearer``. So the realm
+    is the one URL here built from a stranger's bytes, and the scheme is what
+    makes it safe to open.
+
+    The **host** is deliberately not checked. A real registry's token endpoint
+    is routinely a different host from its API - Docker Hub answers
+    ``registry-1.docker.io`` with a realm on ``auth.docker.io`` - so pinning
+    the realm to the host already being talked to would refuse the default
+    registry.
+
+    >>> _fetchable("https://auth.docker.io/token")
+    True
+    >>> _fetchable("file:///etc/passwd")
+    False
+    >>> _fetchable("http://169.254.169.254/latest/meta-data/")
+    True
+    """
+    return urllib.parse.urlsplit(url).scheme in _FETCHABLE_SCHEMES
+
+
 def _urlopen(url: str, headers: Mapping[str, str]) -> Response:
-    """The real fetcher. GET only, and it reads a bounded body."""
+    """The real fetcher. GET only, and it reads a bounded body.
+
+    The scheme is re-checked here rather than only at the realm, because this
+    is the single place the module actually opens anything: a ``ValueError``
+    lands in :func:`image_labels`'s own catch and degrades to "not measured",
+    which is what every other failure here does.
+    """
+    if not _fetchable(url):
+        raise ValueError(f"refusing to fetch a non-http(s) URL: {url!r}")
     request = urllib.request.Request(url, headers=dict(headers))
     try:
         with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT) as handle:

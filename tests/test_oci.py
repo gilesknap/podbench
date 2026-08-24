@@ -215,3 +215,56 @@ def test_a_bare_digest_is_not_a_reference_to_docker_hub() -> None:
     assert oci.parse_reference("sha256:" + "a" * 64) is None
     assert oci.image_labels("sha256:" + "a" * 64, fetch=registry) is None
     assert registry.calls == []
+
+
+# -- the realm is a stranger's URL ------------------------------------------
+
+
+def test_a_realm_that_is_not_http_is_never_fetched() -> None:
+    """A registry chooses its own `realm`, and urllib's default opener serves
+    `file:`. Unchecked, a 401 pointing at a local path would be read and its
+    contents sent straight back to that registry as a bearer token."""
+    registry = a_registry(
+        challenge=oci.Response(
+            401, {"www-authenticate": 'Bearer realm="file:///etc/passwd"'}, b""
+        )
+    )
+
+    assert oci.image_labels("ghcr.io/acme/api:1.4.0", fetch=registry) is None
+    assert not any(url.startswith("file:") for url, _ in registry.calls)
+
+
+def test_a_realm_on_another_host_is_still_followed() -> None:
+    """Docker Hub answers `registry-1.docker.io` with a realm on
+    `auth.docker.io`, so the scheme is the check and the host is not."""
+    elsewhere = "https://auth.example.test/token?service=ghcr.io&scope=s"
+    registry = a_registry(
+        challenge=oci.Response(
+            401,
+            {
+                "www-authenticate": (
+                    'Bearer realm="https://auth.example.test/token",'
+                    'service="ghcr.io",scope="s"'
+                )
+            },
+            b"",
+        )
+    )
+    registry.pages[(elsewhere, False)] = oci.Response(200, {}, body({"token": TOKEN}))
+
+    assert oci.image_labels("ghcr.io/acme/api:1.4.0", fetch=registry) == LABELS
+
+
+def test_a_bad_realm_degrades_to_unmeasured_rather_than_raising() -> None:
+    """`image_labels` never raises, so a refused realm has to come back as the
+    same "could not be measured" every other failure does - not a traceback out
+    of `hotfix init`. The guard is on `_urlopen` as well as on the realm,
+    because that is the one place this module actually opens anything, and its
+    ValueError lands in that same catch."""
+
+    def challenge(url: str, headers: Mapping[str, str]) -> oci.Response:
+        return oci.Response(
+            401, {"www-authenticate": 'Bearer realm="file:///etc/passwd"'}, b""
+        )
+
+    assert oci.image_labels("ghcr.io/acme/api:1.4.0", fetch=challenge) is None
