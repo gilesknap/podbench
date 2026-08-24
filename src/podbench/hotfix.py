@@ -169,6 +169,7 @@ __all__ = [
     "pod_fs_group",
     "pod_claim_name",
     "WIRING_IS_THE_APPLICATIONS_OWN",
+    "SEAT_HOME_IS_THE_SEATS",
     "FSGROUP_NOT_ATTRIBUTED",
     "CLAIM_OUTLIVES_THE_FLIP",
     "CLAIM_GONE_BUT_STILL_WIRED",
@@ -4669,9 +4670,9 @@ class RetirementCheck:
 WIRING_IS_THE_APPLICATIONS_OWN = (
     "{pod} still carries {what}. Those are fields in the application's own pod "
     "template, not in the claim's chart, so turning the claim off does not "
-    "remove them: take those entries back out of the application's values and "
-    "redeploy - the entries, and not the whole `volumes` and `volumeMounts` "
-    "keys, which a helm list replaces rather than merges."
+    "remove them: take those entries - and not the whole `volumes` and "
+    "`volumeMounts` keys, which carry the service's own - back out of the "
+    "application's values and redeploy."
 )
 """Said when the pod is still wired for hotfix mode.
 
@@ -4692,6 +4693,31 @@ in both keys - repeated there on purpose, because a helm list *replaces* across
 the parent/child merge. Somebody who deleted the two keys wholesale would
 unmount the beamline directory. :data:`EXISTING_MOUNTS_WARNING` says exactly
 this on the way in, and nothing said it on the way out.
+
+What survives onto the terminal is the instruction — *the entries, not the
+keys* — and the fact that the keys carry the service's own entries too. The
+helm merge rule behind it is the mechanism, and it is written out once in
+``docs/how-to/hotfix-a-running-pod.md`` directly under this report's own
+sample.
+"""
+
+SEAT_HOME_IS_THE_SEATS = (
+    "{volume} is declared as well, and it is the seat's rather than the "
+    "hotfix's: `attach` and `vscode` use it, so take it out only if no seat is "
+    "wanted on this pod again."
+)
+"""The sixth value hotfix mode wires, and the second one it must not count.
+
+``hotfix values`` emits :data:`~podbench.model.SEAT_HOME_VOLUME` beside the
+claim, so a reader working from the pod's *mounts* would leave it behind -
+nothing mounts it - and the ``wiring`` row has to name it (evidence §7.3). It
+must not be *counted*, for :data:`FSGROUP_NOT_ATTRIBUTED`'s reason and one
+worse: the volume is not hotfix-specific.
+:func:`podbench.launcher.seat_identity_mounts` gives any seat a home from it,
+and a facility that wants ``attach`` to keep
+working keeps it after the hotfix is retired. Counted, that pod reports a step
+outstanding that nothing can close, and ``retire`` - the verb whose whole value
+is a count somebody can trust - could never print "retirement is complete".
 """
 
 FSGROUP_NOT_ATTRIBUTED = (
@@ -4843,25 +4869,29 @@ def hotfix_wiring(pod_json: Mapping[str, Any]) -> tuple[str, ...]:
     said "still wired" without saying *which keys* leaves them to diff the pod
     against the snippet by eye.
 
-    The seat's home volume is here because :func:`values_snippet` emits it and
-    nothing mounts it, so it is the entry a reader working from the pod's mounts
-    alone would leave behind (evidence §7.3). ``command`` is named only where
-    the pod actually carries podbench's, since the loop is shell text and a
-    chart that supplied its own ``bash -c`` would have it either way.
+    Only what is hotfix-specific: this tuple is what
+    :data:`RetirementStep.WIRING` is ticked off, so an entry here is a step
+    somebody has to close. The seat's home volume is emitted by
+    :func:`values_snippet` too and is *named* by the row rather than counted
+    (:data:`SEAT_HOME_IS_THE_SEATS`) - it belongs to ``attach`` as much as to
+    hotfix mode, and a pod that keeps it has still finished its retirement.
+
+    ``command`` is named only where the pod actually carries podbench's, since
+    the loop is shell text and a chart that supplied its own ``bash -c`` would
+    have it either way.
 
     >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-app"}],
     ...     "containers": [{"name": "app"}]}})
     ('the podbench-app volume',)
     >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-home"}],
     ...     "containers": []}})
-    ('the podbench-home volume',)
+    ()
     """
     spec = as_dict(pod_json.get("spec"))
     declared = declared_volumes(pod_json)
     carried: list[str] = []
-    for volume in (HOTFIX_CLAIM_VOLUME, SEAT_HOME_VOLUME):
-        if volume in declared:
-            carried.append(f"the {volume} volume")
+    if HOTFIX_CLAIM_VOLUME in declared:
+        carried.append(f"the {HOTFIX_CLAIM_VOLUME} volume")
     if claim_container(pod_json) is not None:
         carried.append(f"a volumeMount at {HOTFIX_APP_PATH}")
     for entry in _as_list(spec.get("containers")):
@@ -4948,6 +4978,7 @@ def retirement(
     """
     carried = hotfix_wiring(pod_json)
     fs_group = pod_fs_group(pod_json)
+    home = SEAT_HOME_VOLUME in declared_volumes(pod_json)
     pod = _as_str(as_dict(pod_json.get("metadata")).get("name")) or "this pod"
     if not carried and claim.present is False:
         # Said once, on the two rows it makes moot, in `_seed_checks`' words and
@@ -4957,13 +4988,13 @@ def retirement(
         return [
             RetirementCheck(RetirementStep.BRANCH, None, moot),
             RetirementCheck(RetirementStep.IMAGE, None, moot),
-            _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group),
+            _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group, home=home),
             _claim_check_row(claim, reference=reference),
         ]
     return [
         _branch_check(manifest, wired=bool(carried), reference=reference),
         _image_check(manifest, current_digest=current_digest),
-        _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group),
+        _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group, home=home),
         _claim_check_row(claim, reference=reference),
     ]
 
@@ -4996,11 +5027,17 @@ def _branch_check(
         # refuses that exact claim - "there is no hotfix to consolidate ...
         # retire the claim instead". Two verbs pointing at each other about one
         # claim, in a report whose whole value is that its count is right.
+        #
+        # Hedged to what was measured, and only that: `ahead` is a *recorded*
+        # field, written by `init` and `apply`, while `consolidate` recounts
+        # from `git log` in the checkout. Somebody who committed in the seat by
+        # hand without running `apply` has commits this row cannot see, and
+        # `--delete-claim` is the destructive direction to be wrong in.
         return RetirementCheck(
             step,
             True,
-            "this claim records no commits of its own, so there is nothing to "
-            "consolidate and nothing that retiring it would discard.",
+            "this claim records no commits of its own, so nothing it records "
+            "would be discarded by retiring it.",
         )
     return RetirementCheck(
         step,
@@ -5053,17 +5090,36 @@ def _wiring_check(
     pod: str,
     claim: ClaimState,
     fs_group: int | None = None,
+    home: bool = False,
 ) -> RetirementCheck:
+    """The ``wiring`` row: what is counted, and what is only named.
+
+    The two named values are on the *done* arm as well as the wired one, and
+    that is the point of them. "Carries none of the hotfix wiring" reads as an
+    all-clear over the whole values file, and the reader taking it as one is
+    exactly the reader still holding an ``fsGroup`` this run cannot attribute
+    (:data:`FSGROUP_NOT_ATTRIBUTED`) and a home volume that is the seat's
+    (:data:`SEAT_HOME_IS_THE_SEATS`). Naming them only while something else is
+    outstanding would drop them at the moment the last edit is being made.
+    """
     step = RetirementStep.WIRING
+    named: list[str] = []
+    if home:
+        named.append(SEAT_HOME_IS_THE_SEATS.format(volume=SEAT_HOME_VOLUME))
+    if fs_group is not None:
+        named.append(FSGROUP_NOT_ATTRIBUTED.format(gid=fs_group))
+    aside = "".join(f" {sentence}" for sentence in named)
     if not carried:
         return RetirementCheck(
             step,
             True,
             f"{pod} carries none of the hotfix wiring: no {HOTFIX_CLAIM_VOLUME} "
-            f"or {SEAT_HOME_VOLUME} volume, no mount at {HOTFIX_APP_PATH}, no "
-            "supervisor loop.",
+            f"volume, no mount at {HOTFIX_APP_PATH}, no supervisor loop." + aside,
         )
     if claim.present is False and claim.name is not None and not claim.deleted:
+        # No aside: this arm is the loud one, and a pod whose claim has gone
+        # while it is still mounting it has a reschedule to survive before
+        # anybody edits a values file.
         return RetirementCheck(
             step,
             False,
@@ -5072,9 +5128,7 @@ def _wiring_check(
     detail = WIRING_IS_THE_APPLICATIONS_OWN.format(
         pod=pod, what=and_list(list(carried))
     )
-    if fs_group is not None:
-        detail += " " + FSGROUP_NOT_ATTRIBUTED.format(gid=fs_group)
-    return RetirementCheck(step, False, detail)
+    return RetirementCheck(step, False, detail + aside)
 
 
 def _claim_check_row(claim: ClaimState, *, reference: str) -> RetirementCheck:

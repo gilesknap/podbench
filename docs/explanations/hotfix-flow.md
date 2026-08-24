@@ -789,16 +789,18 @@ cluster where a retirement has actually got to, and performs the one step podben
                          the fix is *not* measured — podbench compares digests,
                          not contents.
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the podbench-app
-                         volume, the podbench-home volume, a volumeMount at
-                         /podbench/app and the supervisor loop in command and
-                         args. Those are fields in the application's own pod
-                         template, not in the claim's chart, so turning the
-                         claim off does not remove them: take those entries
-                         back out … the entries, and not the whole `volumes`
-                         and `volumeMounts` keys, which a helm list replaces
-                         rather than merges. podSecurityContext.fsGroup is
-                         37887, which `hotfix values` emits too; whether this
-                         pod had one before the hotfix is not measured here …
+                         volume, a volumeMount at /podbench/app and the
+                         supervisor loop in command and args. Those are fields
+                         in the application's own pod template, not in the
+                         claim's chart, so turning the claim off does not
+                         remove them: take those entries — and not the whole
+                         `volumes` and `volumeMounts` keys, which carry the
+                         service's own — back out of the application's values
+                         and redeploy. podbench-home is declared as well, and
+                         it is the seat's rather than the hotfix's …
+                         podSecurityContext.fsGroup is 37887, which `hotfix
+                         values` emits too; whether this pod had one before the
+                         hotfix is not measured here …
   [ ]     claim          bl47p-ea-fastcs-01-podbench-project still exists …
 ------------------------------------------------------------------------
 VERDICT: 2 of 4 steps of retirement remain (exit 1)

@@ -366,16 +366,19 @@ $ podbench hotfix retire bl47p-ea-fastcs-01-0 -n p47-beamline
   [ ]     image          the deployed image is still sha256:aaaa1111,
                          the one the hotfix was made against
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the
-                         podbench-app volume, the podbench-home volume,
-                         a volumeMount at /podbench/app and the
-                         supervisor loop in command and args. Those are
-                         fields in the application's own pod template,
-                         not in the claim's chart, so turning the claim
-                         off does not remove them: take those entries
-                         back out of the application's values and
-                         redeploy - the entries, and not the whole
-                         `volumes` and `volumeMounts` keys, which a helm
-                         list replaces rather than merges.
+                         podbench-app volume, a volumeMount at
+                         /podbench/app and the supervisor loop in
+                         command and args. Those are fields in the
+                         application's own pod template, not in the
+                         claim's chart, so turning the claim off does
+                         not remove them: take those entries - and not
+                         the whole `volumes` and `volumeMounts` keys,
+                         which carry the service's own - back out of the
+                         application's values and redeploy.
+                         podbench-home is declared as well, and it is
+                         the seat's rather than the hotfix's: `attach`
+                         and `vscode` use it, so take it out only if no
+                         seat is wanted on this pod again.
                          podSecurityContext.fsGroup is 37887, which
                          `hotfix values` emits too; whether this pod had
                          one before the hotfix is not measured here, so
@@ -393,14 +396,21 @@ REMAINING: image, wiring, claim
 usually carry its own as well — `beamline-data` on this IOC. A helm list
 *replaces* across the parent/child merge rather than merging into it, which is
 why the service repeats what it inherits, so deleting either key wholesale
-unmounts the beamline directory. The `fsGroup` is the one value the pod cannot
-attribute: podbench emits one, and an application may have declared its own, so
-`retire` names it rather than counting it.
+unmounts the beamline directory.
+
+**Two of the six values are named rather than counted**, because they are not
+the hotfix's to claim. The `fsGroup` is one podbench emits and an application
+may have declared for itself, and the pod cannot say which. `podbench-home` is
+the **seat's** home volume: `attach` and `vscode` mount it on any pod that
+declares it, so a pod that finished its retirement and kept it has still
+finished — counted, it would leave `retire` red forever on a step nothing could
+close. Both are named on the row whether or not anything else is outstanding.
 
 A claim that never carried a commit — seeded and never `apply`-ed — has its
-`branch` step **done**, not outstanding: there is nothing to consolidate and
-nothing that retiring it discards. `consolidate` refuses that claim for the same
-reason.
+`branch` step **done**, not outstanding: nothing it *records* would be discarded
+by retiring it, and `consolidate` refuses that claim for the same reason. The
+hedge is deliberate: the count comes off the manifest, written by `init` and
+`apply`, so commits made in the seat by hand without `apply` are not in it.
 
 Read-only, it lands no seat, and it exits **1** while any measured step is
 outstanding. `[x]` means *measured done*; a step that could not be measured stays

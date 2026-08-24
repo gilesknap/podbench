@@ -1859,6 +1859,11 @@ def test_a_claim_carrying_no_commits_has_its_branch_step_done() -> None:
     assert not branch.remaining
     # And no offer of the command that would refuse this very claim.
     assert "podbench hotfix consolidate" not in branch.detail
+    # Hedged to what was measured: `ahead` is *recorded*, by `init` and
+    # `apply`, while `consolidate` recounts from `git log`. A seat somebody
+    # committed in by hand has commits this row cannot see, and `--delete-claim`
+    # is the destructive direction to be wrong in.
+    assert "nothing it records would be discarded" in branch.detail
     report = hotfix.format_retirement(checks)
     assert "3 of 4 steps of retirement remain (exit 1)" in report
     assert "REMAINING: image, wiring, claim" in report
@@ -1887,7 +1892,9 @@ def test_the_wiring_row_names_every_value_that_has_to_come_out() -> None:
     which under `--from-pod` is podbench's own entries only, while the service's
     `volumes` and `volumeMounts` also carry its beamline hostPath. A helm list
     replaces rather than merges (rule 5), so deleting those two keys wholesale
-    unmounts the beamline directory.
+    unmounts the beamline directory. What the row carries is the instruction -
+    the entries, not the keys - and the merge rule behind it is in the how-to,
+    under this report's own sample.
     """
     checks = hotfix.retirement(
         wired_pod(),
@@ -1905,11 +1912,12 @@ def test_the_wiring_row_names_every_value_that_has_to_come_out() -> None:
         "podSecurityContext.fsGroup is 37887",
     ):
         assert named in wiring, named
-    # The fsGroup is named, never counted: an application may have declared its
-    # own, and the pod cannot say which.
+    # The fsGroup and the home volume are named, never counted: an application
+    # may have declared its own fsGroup, and the home volume is the seat's.
     assert "not measured here" in wiring
-    # The hazard, replacing the advice that caused it.
-    assert "replaces rather than merges" in wiring
+    assert "it is the seat's rather than the hotfix's" in wiring
+    # The hazard, replacing the advice that caused it: the entries, not the keys.
+    assert "and not the whole `volumes` and `volumeMounts` keys" in wiring
     assert "`podbench hotfix values` emitted" not in wiring
 
 
@@ -1976,6 +1984,54 @@ def test_a_finished_retirement_says_so_and_exits_zero() -> None:
     # measured it.
     flowed = " ".join(report.split())
     assert flowed.count("not asked: the claim is gone") == 2
+
+
+def test_a_pod_that_kept_the_seats_home_volume_is_still_retired() -> None:
+    """The home volume is named, never counted.
+
+    `hotfix values` emits it, so the `wiring` row has to name it - but it is
+    the *seat's*, and a facility that wants `attach` and `vscode` to keep
+    working on this pod keeps it after the hotfix is gone. Counted, that pod
+    would report a step outstanding that nothing can close and `retire` could
+    never print "retirement is complete": a permanent exit 1 on a verb whose
+    whole value is a count somebody can trust.
+    """
+    kept_the_home_volume = wired_pod(wired=False)
+    kept_the_home_volume["spec"]["volumes"] = [
+        {"name": model.SEAT_HOME_VOLUME, "emptyDir": {"sizeLimit": "2Gi"}}
+    ]
+    checks = hotfix.retirement(
+        kept_the_home_volume, None, claim=hotfix.ClaimState(CLAIM, False)
+    )
+    assert not any(check.remaining for check in checks)
+    report = hotfix.format_retirement(checks)
+    assert "VERDICT: retirement is complete (exit 0)" in report
+    flowed = " ".join(report.split())
+    # Still named on the way out, and still on the two rows the gone claim
+    # makes moot - the early return only fires because nothing is counted.
+    assert "it is the seat's rather than the hotfix's" in flowed
+    assert flowed.count("not asked: the claim is gone") == 2
+
+
+def test_the_done_wiring_row_names_the_values_it_cannot_attribute() -> None:
+    """ "Carries none of the hotfix wiring" reads as an all-clear over the whole
+    values file, and the reader taking it as one is exactly the reader still
+    holding an `fsGroup` this run cannot attribute. Both named values are on
+    this arm too, or they vanish at the moment the last edit is made."""
+    unwired_but_not_untouched = wired_pod(wired=False)
+    unwired_but_not_untouched["spec"]["securityContext"] = {"fsGroup": 37887}
+    unwired_but_not_untouched["spec"]["volumes"] = [
+        {"name": model.SEAT_HOME_VOLUME, "emptyDir": {}}
+    ]
+    checks = hotfix.retirement(
+        unwired_but_not_untouched, None, claim=hotfix.ClaimState(CLAIM, True)
+    )
+    wiring = rows_by_step(checks)[hotfix.RetirementStep.WIRING]
+    assert wiring.done is True
+    detail = " ".join(wiring.detail.split())
+    assert "carries none of the hotfix wiring" in detail
+    assert "podSecurityContext.fsGroup is 37887" in detail
+    assert model.SEAT_HOME_VOLUME in detail
 
 
 def test_retire_refuses_to_delete_a_claim_the_pod_still_mounts(
