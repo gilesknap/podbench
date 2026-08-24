@@ -1,0 +1,911 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>S7 — The hold loop: relaunching without restarting the container &#8212; podbench 0.8.0 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=486e5634"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=30646c52"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'explanations/spikes/s7';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://gilesknap.github.io/podbench/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="icon" href="../../_static/dls-logo.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="What is proven, and what is not" href="../status.html" />
+    <link rel="prev" title="S6 — Suspending an Argo-managed workload: server-side apply field ownership" href="s6.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.8.0" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/dls-logo.svg" class="logo__image only-light" alt=""/>
+    <img src="../../_static/dls-logo.svg" class="logo__image only-dark pst-js-only" alt=""/>
+  
+  
+    <p class="title logo__title">podbench</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../how-to.html">
+    How-to Guides
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../explanations.html">
+    Explanations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../reference.html">
+    Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/gilesknap/podbench" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/podbench" title="PyPI" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fas fa-cube fa-lg" aria-hidden="true"></i><span class="visually-hidden">PyPI</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../ways-in.html">Ways in</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../attach-flow.html">What <code class="docutils literal notranslate"><span class="pre">attach</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../dev-flow.html">What <code class="docutils literal notranslate"><span class="pre">dev</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../hotfix-flow.html">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">Architecture</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../decisions.html">Architectural Decision Records</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0001-record-architecture-decisions.html">1. Record architecture decisions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0002-switched-to-python-copier-template.html">2. Adopt python-copier-template for project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0003-publish-to-pypi-and-drop-the-kubectl-plugin.html">3. Publish the launcher to PyPI and drop the kubectl plugin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0004-adopt-typer-for-the-cli.html">4. Adopt typer for the CLI, and spend the one runtime dependency on it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../decisions/0005-spend-a-second-runtime-dependency-on-round-tripping-yaml.html">5. Spend a second runtime dependency on round-tripping YAML</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../design-brief.html">The original design brief</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../security.html">Security model</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../spikes.html">Spikes</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="phase0-report.html">Podbench — Phase 0 gate report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s1.html">S1 — ssh transport: sshd -i over kubectl exec as ProxyCommand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s2.html">S2 — vscode-server inside an ephemeral container</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html">S3 — gdb attach with sysroot against a distroless target</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s4.html">S4 — Python takeover: <code class="docutils literal notranslate"><span class="pre">--copy-to</span></code> dev pod, uv editable install, relaunch on the pod IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s5.html">S5 — No-cap fallback: same-UID, Yama diagnosis, and the capability ladder</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s6.html">S6 — Suspending an Argo-managed workload: server-side apply field ownership</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">S7 — The hold loop: relaunching without restarting the container</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../status.html">What is proven, and what is not</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../explanations.html" class="nav-link">Explanations</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../spikes.html" class="nav-link">Spikes</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">S7 — The hold loop: relaunching without restarting the container</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="s7-the-hold-loop-relaunching-without-restarting-the-container">
+<h1>S7 — The hold loop: relaunching without restarting the container<a class="headerlink" href="#s7-the-hold-loop-relaunching-without-restarting-the-container" title="Link to this heading">#</a></h1>
+<p><strong>Verdict:</strong> the mechanism WORKS and is worth what it costs — a relaunch that
+restores service in <strong>~6.8s</strong> against a kubelet restart ladder of <strong>15s, 23s,
+45s</strong> — but the loop as originally drafted was <strong>wrong in a way that produced no
+error at all</strong>, and the wrapped liveness probe is load-bearing rather than
+precautionary. Both were measured, not reasoned.</p>
+<p><strong>Date:</strong> 2026-08-22 (clusters: pollux <code class="docutils literal notranslate"><span class="pre">p47-beamline</span></code>, kubelet v1.34.5, node
+<code class="docutils literal notranslate"><span class="pre">bl47p-ea-serv-01</span></code>; and the k3s bench, kubelet v1.36.3+k3s1)</p>
+<hr class="docutils" />
+<section id="why-this-was-run">
+<h2>Why this was run<a class="headerlink" href="#why-this-was-run" title="Link to this heading">#</a></h2>
+<p>Hotfix mode relaunches an edited service in place. The alternative — restarting
+the container — costs the kubelet’s CrashLoopBackOff ladder and, worse, takes
+the developer’s seat with it: an ephemeral container shares the target
+container’s namespaces, so when the kubelet tears the target down the seat is
+not orphaned but <strong>SIGKILLed</strong>, <code class="docutils literal notranslate"><span class="pre">exitCode:</span> <span class="pre">137</span></code>
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/161">#161</a>). A VS Code
+session and a debugpy attach die with it.</p>
+<p>So the design replaces the restart with a supervisor written in the deployment’s
+own values, holding the container alive across a child relaunch. This spike
+measures that supervisor before any podbench code is written against it.</p>
+</section>
+<section id="what-was-tested">
+<h2>What was tested<a class="headerlink" href="#what-was-tested" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">podbench-test-fastcs</span></code>, the Phase 0 duplicate of <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01-0</span></code>
+(<code class="docutils literal notranslate"><span class="pre">k8s/hotfix-harness/podbench-test-fastcs.yaml</span></code>) — <code class="docutils literal notranslate"><span class="pre">fastcs-example-debug</span></code>,
+<code class="docutils literal notranslate"><span class="pre">stdio-socket</span> <span class="pre">--ptty</span></code> as the real entrypoint, hold loop as PID 1, and a wrapped
+liveness probe carrying the live IOC’s own timings.</p>
+</section>
+<section id="findings">
+<h2>Findings<a class="headerlink" href="#findings" title="Link to this heading">#</a></h2>
+<section id="killing-the-recorded-pid-leaves-the-old-service-running-and-says-nothing">
+<h3>1. Killing the recorded pid leaves the old service running, and says nothing<a class="headerlink" href="#killing-the-recorded-pid-leaves-the-old-service-running-and-says-nothing" title="Link to this heading">#</a></h3>
+<p>The loop as drafted records <code class="docutils literal notranslate"><span class="pre">$!</span></code> and the killer signals that pid. On this target
+that reaps <em>part</em> of the tree and leaves the part that matters:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pid</span><span class="o">=</span><span class="mi">1</span>     <span class="n">ppid</span><span class="o">=</span><span class="mi">0</span>     <span class="n">bash</span> <span class="o">-</span><span class="n">c</span> <span class="o">...</span>                     <span class="o">&lt;-</span> <span class="n">the</span> <span class="n">loop</span>
+<span class="n">pid</span><span class="o">=</span><span class="mi">11</span>    <span class="n">ppid</span><span class="o">=</span><span class="mi">1</span>     <span class="o">/</span><span class="nb">bin</span><span class="o">/</span><span class="n">sh</span> <span class="o">-</span><span class="n">c</span> <span class="n">pptty</span> <span class="s2">&quot;... fastcs-example run ...&quot;</span>
+<span class="n">pid</span><span class="o">=</span><span class="mi">13</span>    <span class="n">ppid</span><span class="o">=</span><span class="mi">11</span>    <span class="o">.../</span><span class="n">pptty</span> <span class="n">stdbuf</span> <span class="o">-</span><span class="n">oL</span> <span class="o">-</span><span class="n">eL</span> <span class="n">fastcs</span><span class="o">-</span><span class="n">example</span> <span class="n">run</span> <span class="o">...</span>
+<span class="n">pid</span><span class="o">=</span><span class="mi">14</span>    <span class="n">ppid</span><span class="o">=</span><span class="mi">13</span>    <span class="o">.../</span><span class="n">fastcs</span><span class="o">-</span><span class="n">example</span> <span class="n">run</span> <span class="o">...</span>      <span class="o">&lt;-</span> <span class="n">ORIGINAL</span><span class="p">,</span> <span class="n">still</span> <span class="n">alive</span>
+<span class="n">pid</span><span class="o">=</span><span class="mi">217</span>   <span class="n">ppid</span><span class="o">=</span><span class="mi">1</span>     <span class="o">.../</span><span class="n">stdio</span><span class="o">-</span><span class="n">socket</span> <span class="o">--</span><span class="n">ptty</span> <span class="o">...</span>     <span class="o">&lt;-</span> <span class="n">the</span> <span class="n">relaunched</span> <span class="n">child</span>
+<span class="n">pid</span><span class="o">=</span><span class="mi">237</span>   <span class="n">ppid</span><span class="o">=</span><span class="mi">236</span>   <span class="o">.../</span><span class="n">fastcs</span><span class="o">-</span><span class="n">example</span> <span class="n">run</span> <span class="o">...</span>      <span class="o">&lt;-</span> <span class="n">second</span> <span class="n">IOC</span><span class="p">,</span> <span class="n">deaf</span>
+<span class="n">listening</span><span class="o">-</span><span class="n">socket</span> <span class="n">inodes</span> <span class="k">for</span> <span class="p">:</span><span class="mi">5064</span> <span class="o">-&gt;</span> <span class="p">{</span><span class="s1">&#39;67467575&#39;</span><span class="p">}</span>
+<span class="n">pid</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="n">holding</span> <span class="p">:</span><span class="mi">5064</span> <span class="o">-&gt;</span> <span class="p">[</span><span class="mi">14</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>After <strong>ten</strong> “successful” relaunches the pod was still served by pid 14 — the
+process started when the container booted. <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> was 0, the pid file
+advanced every time, and a naive port check answered in 0.00s because the <em>stale</em>
+listener never stopped answering. A hotfix applied this way appears to work and
+changes nothing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">stdio-socket</span> <span class="pre">--ptty</span></code> allocates a pseudo-terminal, which puts the real process in
+its <strong>own session</strong>. So it escapes a signal aimed at the recorded pid’s process
+group too — <code class="docutils literal notranslate"><span class="pre">set</span> <span class="pre">-m</span></code> plus <code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">--</span> <span class="pre">-$child</span></code> reaps <code class="docutils literal notranslate"><span class="pre">sh</span></code> and <code class="docutils literal notranslate"><span class="pre">pptty</span></code> and still
+leaves the IOC, reparented onto PID 1 with the port.</p>
+<p><strong>What works:</strong> collect the descendant tree through <code class="docutils literal notranslate"><span class="pre">ppid</span></code> links <em>before</em> any
+parent dies, signal deepest-first, then <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code> stragglers. Anything that
+signals a pid, a process group, or a session is not enough on a target that
+allocates a pty — which is every target using <code class="docutils literal notranslate"><span class="pre">stdio-socket</span> <span class="pre">--ptty</span></code>, i.e. every
+epics-containers IOC.</p>
+<p><strong>The check that catches it</strong> is not “did the pid file change” and not “is the
+port answering”, both of which pass while broken. It is <strong>did the port change
+owner</strong>.</p>
+</section>
+<section id="with-the-tree-reaped-relaunch-is-6-8s-and-pid-1-never-moves">
+<h3>2. With the tree reaped, relaunch is ~6.8s and PID 1 never moves<a class="headerlink" href="#with-the-tree-reaped-relaunch-is-6-8s-and-pid-1-never-moves" title="Link to this heading">#</a></h3>
+<p>Ten consecutive relaunches under hold, on the fixed loop:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>iteration</p></th>
+<th class="head"><p>child</p></th>
+<th class="head"><p>loop notices</p></th>
+<th class="head"><p>serving again</p></th>
+<th class="head"><p>IOCs alive</p></th>
+<th class="head"><p>:5064 owner</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>422 → 478</p></td>
+<td><p>0.94s</p></td>
+<td><p>6.47s</p></td>
+<td><p>1</p></td>
+<td><p>484</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>478 → 520</p></td>
+<td><p>1.46s</p></td>
+<td><p>6.77s</p></td>
+<td><p>1</p></td>
+<td><p>526</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>520 → 562</p></td>
+<td><p>1.57s</p></td>
+<td><p>6.73s</p></td>
+<td><p>1</p></td>
+<td><p>574</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>562 → 610</p></td>
+<td><p>1.36s</p></td>
+<td><p>6.61s</p></td>
+<td><p>1</p></td>
+<td><p>616</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>610 → 652</p></td>
+<td><p>1.45s</p></td>
+<td><p>6.71s</p></td>
+<td><p>1</p></td>
+<td><p>658</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>652 → 694</p></td>
+<td><p>1.42s</p></td>
+<td><p>6.58s</p></td>
+<td><p>1</p></td>
+<td><p>700</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p>694 → 736</p></td>
+<td><p>1.46s</p></td>
+<td><p>6.78s</p></td>
+<td><p>1</p></td>
+<td><p>742</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>736 → 784</p></td>
+<td><p>1.50s</p></td>
+<td><p>6.79s</p></td>
+<td><p>1</p></td>
+<td><p>790</p></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>784 → 826</p></td>
+<td><p>1.59s</p></td>
+<td><p>6.83s</p></td>
+<td><p>1</p></td>
+<td><p>832</p></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>826 → 868</p></td>
+<td><p>1.46s</p></td>
+<td><p>6.77s</p></td>
+<td><p>1</p></td>
+<td><p>874</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Exactly one IOC alive throughout, a new port owner every time, <code class="docutils literal notranslate"><span class="pre">restartCount</span></code>
+still 0, and PID 1’s <code class="docutils literal notranslate"><span class="pre">starttime</span></code> identical before and after — <code class="docutils literal notranslate"><span class="pre">83569553</span></code>. The
+container never restarted, so a seat sharing its namespaces would have survived
+all ten.</p>
+</section>
+<section id="fail-fast-is-intact">
+<h3>3. Fail-fast is intact<a class="headerlink" href="#fail-fast-is-intact" title="Link to this heading">#</a></h3>
+<p>With no hold file present, killing the child exited PID 1 with the child’s status
+and the kubelet restarted the container exactly as it does today:
+<code class="docutils literal notranslate"><span class="pre">restartCount</span></code> 0 → 1, <code class="docutils literal notranslate"><span class="pre">lastState.terminated.exitCode:</span> <span class="pre">143</span></code>, <code class="docutils literal notranslate"><span class="pre">reason:</span> <span class="pre">Error</span></code>.</p>
+<p>This is what makes the mechanism safe to deploy: absent a hold file — the
+production case — behaviour is unchanged.</p>
+</section>
+<section id="the-wrapped-liveness-probe-is-load-bearing-and-provably-so">
+<h3>4. The wrapped liveness probe is load-bearing, and provably so<a class="headerlink" href="#the-wrapped-liveness-probe-is-load-bearing-and-provably-so" title="Link to this heading">#</a></h3>
+<p>Held, with the child’s config moved aside so it could not come back, both checks
+were run at the same instant:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">wrapped</span> <span class="n">probe</span>   <span class="p">(</span><span class="n">hold</span> <span class="n">present</span><span class="p">):</span> <span class="n">PASS</span>
+<span class="n">unwrapped</span> <span class="n">check</span> <span class="p">(</span><span class="n">same</span> <span class="n">instant</span><span class="p">):</span> <span class="n">FAIL</span>
+</pre></div>
+</div>
+<p>Then the same held pod, dead child, CA port down throughout:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>probe</p></th>
+<th class="head"><p>outcome</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>wrapped</strong></p></td>
+<td><p><strong>344s, <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> 0, <code class="docutils literal notranslate"><span class="pre">ready=true</span></code>, no <code class="docutils literal notranslate"><span class="pre">Unhealthy</span></code> event at all</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>unwrapped</strong></p></td>
+<td><p><strong>restarted at t+122s</strong> — <code class="docutils literal notranslate"><span class="pre">Liveness</span> <span class="pre">probe</span> <span class="pre">failed:</span> <span class="pre">bash:</span> <span class="pre">connect:</span> <span class="pre">Connection</span> <span class="pre">refused</span></code>, <code class="docutils literal notranslate"><span class="pre">failed</span> <span class="pre">liveness</span> <span class="pre">probe,</span> <span class="pre">will</span> <span class="pre">be</span> <span class="pre">restarted</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The unwrapped number is consistent with the probe’s own arithmetic: period 30 ×
+failureThreshold 3 = 90s, plus up to one period before the first failing tick.</p>
+<p>The timings are not invented. They are <code class="docutils literal notranslate"><span class="pre">bl47p-ea-simdet-01</span></code>’s own
+(<code class="docutils literal notranslate"><span class="pre">exec</span></code>, <code class="docutils literal notranslate"><span class="pre">periodSeconds:</span> <span class="pre">30</span></code>, <code class="docutils literal notranslate"><span class="pre">failureThreshold:</span> <span class="pre">3</span></code>, <code class="docutils literal notranslate"><span class="pre">timeoutSeconds:</span> <span class="pre">1</span></code>), so
+~90s is what a real epics-containers IOC gives you. Only <code class="docutils literal notranslate"><span class="pre">initialDelaySeconds</span></code>
+was shortened, 120 → 30, to cut setup time.</p>
+<p><strong>7 of 18 containers in <code class="docutils literal notranslate"><span class="pre">p47-beamline</span></code> declare a <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code>.</strong> The IOCs that
+do are the <code class="docutils literal notranslate"><span class="pre">exec</span></code>/30/3 shape above; <code class="docutils literal notranslate"><span class="pre">p47-rabbitmq</span></code> is 30/5 (~150s) and the two
+<code class="docutils literal notranslate"><span class="pre">httpGet</span></code> services are 10/3 (~30s). The canonical hotfix target,
+<code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01</span></code>, declares <strong>none</strong> — so the wrapper is dead weight there and
+essential three pods over. It cannot be omitted on the grounds that the target in
+front of you has no probe.</p>
+</section>
+<section id="the-hold-loop-has-no-backoff-and-the-kubelet-s-was-the-only-one">
+<h3>5. The hold loop has no backoff, and the kubelet’s was the only one<a class="headerlink" href="#the-hold-loop-has-no-backoff-and-the-kubelet-s-was-the-only-one" title="Link to this heading">#</a></h3>
+<p>While held with a child that could not start, the loop relaunched it as fast as
+the child could exit — roughly one attempt every 1.5s, indefinitely, CPU-throttled
+by the container’s 500m limit and nothing else.</p>
+<p>That is the flip side of Finding 3’s ladder comparison: the hold does not merely
+<em>avoid</em> the kubelet’s backoff, it <strong>replaces it with none at all</strong>. For the
+intended use — an edit that works — this is the point. For an edit that does not
+compile it is a spin. Nothing here was harmed by it, but <code class="docutils literal notranslate"><span class="pre">apply</span></code> should not leave
+a pod held with a permanently failing child, which is why the hold carries an
+absolute deadline (decision 4).</p>
+</section>
+</section>
+<section id="the-two-ladders-each-against-its-own-kubelet">
+<h2>The two ladders, each against its own kubelet<a class="headerlink" href="#the-two-ladders-each-against-its-own-kubelet" title="Link to this heading">#</a></h2>
+<p>Measured by differencing <code class="docutils literal notranslate"><span class="pre">lastState.terminated</span></code> across restarts. Do <strong>not</strong> use
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">events</span></code>: the kubelet coalesces repeated <code class="docutils literal notranslate"><span class="pre">BackOff</span></code> events and the
+timestamps do not survive it, which is why an earlier attempt was inconclusive.
+<code class="docutils literal notranslate"><span class="pre">state.running.startedAt</span></code> is a dead end too — a container that exits instantly is
+almost never <em>observed</em> running, so the field is absent for most restarts.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>restart</p></th>
+<th class="head"><p>pollux, v1.34.5</p></th>
+<th class="head"><p>bench, v1.36.3+k3s1</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>—</p></td>
+<td><p>0s</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>15s</p></td>
+<td><p>15s</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>23s</p></td>
+<td><p>25s</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>45s</p></td>
+<td><p>44s</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>—</p></td>
+<td><p>83s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>KEP-4603’s reduced backoff is not in effect at 1.36.3+k3s1.</strong> The ladder is
+materially unchanged two minor versions on, so the hold is exactly as
+load-bearing on a modern kubelet as on pollux’s. Each ladder belongs to its own
+version and neither substitutes for the other.</p>
+</section>
+<section id="what-this-establishes">
+<h2>What this establishes<a class="headerlink" href="#what-this-establishes" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>The hold loop must reap the child’s <strong>descendant tree</strong>, not its pid, group or
+session. This is a correctness requirement, not an optimisation: the failure is
+silent and leaves the old code serving.</p></li>
+<li><p>Verification must be <strong>“did the port change owner”</strong>. A changed pid file and an
+answering port both pass while broken.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span></code> must emit the <strong>wrapped</strong> probe wherever the target declares
+one, and the wrapper must short-circuit on the hold file.</p></li>
+<li><p>Relaunch costs ~6.8s to full service against 15–45s of kubelet ladder, and
+costs the seat nothing rather than SIGKILLing it.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="s6.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">S6 — Suspending an Argo-managed workload: server-side apply field ownership</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../status.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">What is proven, and what is not</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-this-was-run">Why this was run</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-was-tested">What was tested</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#findings">Findings</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#killing-the-recorded-pid-leaves-the-old-service-running-and-says-nothing">1. Killing the recorded pid leaves the old service running, and says nothing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#with-the-tree-reaped-relaunch-is-6-8s-and-pid-1-never-moves">2. With the tree reaped, relaunch is ~6.8s and PID 1 never moves</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fail-fast-is-intact">3. Fail-fast is intact</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-wrapped-liveness-probe-is-load-bearing-and-provably-so">4. The wrapped liveness probe is load-bearing, and provably so</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-hold-loop-has-no-backoff-and-the-kubelet-s-was-the-only-one">5. The hold loop has no backoff, and the kubelet’s was the only one</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-two-ladders-each-against-its-own-kubelet">The two ladders, each against its own kubelet</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-establishes">What this establishes</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/gilesknap/podbench/edit/0.8.0/docs/explanations/spikes/s7.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../../_sources/explanations/spikes/s7.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.20.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

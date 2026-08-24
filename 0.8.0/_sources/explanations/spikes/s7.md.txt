@@ -1,0 +1,181 @@
+# S7 — The hold loop: relaunching without restarting the container
+
+**Verdict:** the mechanism WORKS and is worth what it costs — a relaunch that
+restores service in **~6.8s** against a kubelet restart ladder of **15s, 23s,
+45s** — but the loop as originally drafted was **wrong in a way that produced no
+error at all**, and the wrapped liveness probe is load-bearing rather than
+precautionary. Both were measured, not reasoned.
+
+**Date:** 2026-08-22 (clusters: pollux `p47-beamline`, kubelet v1.34.5, node
+`bl47p-ea-serv-01`; and the k3s bench, kubelet v1.36.3+k3s1)
+
+---
+
+## Why this was run
+
+Hotfix mode relaunches an edited service in place. The alternative — restarting
+the container — costs the kubelet's CrashLoopBackOff ladder and, worse, takes
+the developer's seat with it: an ephemeral container shares the target
+container's namespaces, so when the kubelet tears the target down the seat is
+not orphaned but **SIGKILLed**, `exitCode: 137`
+([#161](https://github.com/gilesknap/podbench/issues/161)). A VS Code
+session and a debugpy attach die with it.
+
+So the design replaces the restart with a supervisor written in the deployment's
+own values, holding the container alive across a child relaunch. This spike
+measures that supervisor before any podbench code is written against it.
+
+## What was tested
+
+`podbench-test-fastcs`, the Phase 0 duplicate of `bl47p-ea-fastcs-01-0`
+(`k8s/hotfix-harness/podbench-test-fastcs.yaml`) — `fastcs-example-debug`,
+`stdio-socket --ptty` as the real entrypoint, hold loop as PID 1, and a wrapped
+liveness probe carrying the live IOC's own timings.
+
+## Findings
+
+### 1. Killing the recorded pid leaves the old service running, and says nothing
+
+The loop as drafted records `$!` and the killer signals that pid. On this target
+that reaps *part* of the tree and leaves the part that matters:
+
+```
+pid=1     ppid=0     bash -c ...                     <- the loop
+pid=11    ppid=1     /bin/sh -c pptty "... fastcs-example run ..."
+pid=13    ppid=11    .../pptty stdbuf -oL -eL fastcs-example run ...
+pid=14    ppid=13    .../fastcs-example run ...      <- ORIGINAL, still alive
+pid=217   ppid=1     .../stdio-socket --ptty ...     <- the relaunched child
+pid=237   ppid=236   .../fastcs-example run ...      <- second IOC, deaf
+listening-socket inodes for :5064 -> {'67467575'}
+pid(s) holding :5064 -> [14]
+```
+
+After **ten** "successful" relaunches the pod was still served by pid 14 — the
+process started when the container booted. `restartCount` was 0, the pid file
+advanced every time, and a naive port check answered in 0.00s because the *stale*
+listener never stopped answering. A hotfix applied this way appears to work and
+changes nothing.
+
+`stdio-socket --ptty` allocates a pseudo-terminal, which puts the real process in
+its **own session**. So it escapes a signal aimed at the recorded pid's process
+group too — `set -m` plus `kill -- -$child` reaps `sh` and `pptty` and still
+leaves the IOC, reparented onto PID 1 with the port.
+
+**What works:** collect the descendant tree through `ppid` links *before* any
+parent dies, signal deepest-first, then `SIGKILL` stragglers. Anything that
+signals a pid, a process group, or a session is not enough on a target that
+allocates a pty — which is every target using `stdio-socket --ptty`, i.e. every
+epics-containers IOC.
+
+**The check that catches it** is not "did the pid file change" and not "is the
+port answering", both of which pass while broken. It is **did the port change
+owner**.
+
+### 2. With the tree reaped, relaunch is ~6.8s and PID 1 never moves
+
+Ten consecutive relaunches under hold, on the fixed loop:
+
+| iteration | child | loop notices | serving again | IOCs alive | :5064 owner |
+|---|---|---|---|---|---|
+| 1 | 422 → 478 | 0.94s | 6.47s | 1 | 484 |
+| 2 | 478 → 520 | 1.46s | 6.77s | 1 | 526 |
+| 3 | 520 → 562 | 1.57s | 6.73s | 1 | 574 |
+| 4 | 562 → 610 | 1.36s | 6.61s | 1 | 616 |
+| 5 | 610 → 652 | 1.45s | 6.71s | 1 | 658 |
+| 6 | 652 → 694 | 1.42s | 6.58s | 1 | 700 |
+| 7 | 694 → 736 | 1.46s | 6.78s | 1 | 742 |
+| 8 | 736 → 784 | 1.50s | 6.79s | 1 | 790 |
+| 9 | 784 → 826 | 1.59s | 6.83s | 1 | 832 |
+| 10 | 826 → 868 | 1.46s | 6.77s | 1 | 874 |
+
+Exactly one IOC alive throughout, a new port owner every time, `restartCount`
+still 0, and PID 1's `starttime` identical before and after — `83569553`. The
+container never restarted, so a seat sharing its namespaces would have survived
+all ten.
+
+### 3. Fail-fast is intact
+
+With no hold file present, killing the child exited PID 1 with the child's status
+and the kubelet restarted the container exactly as it does today:
+`restartCount` 0 → 1, `lastState.terminated.exitCode: 143`, `reason: Error`.
+
+This is what makes the mechanism safe to deploy: absent a hold file — the
+production case — behaviour is unchanged.
+
+### 4. The wrapped liveness probe is load-bearing, and provably so
+
+Held, with the child's config moved aside so it could not come back, both checks
+were run at the same instant:
+
+```
+wrapped probe   (hold present): PASS
+unwrapped check (same instant): FAIL
+```
+
+Then the same held pod, dead child, CA port down throughout:
+
+| probe | outcome |
+|---|---|
+| **wrapped** | **344s, `restartCount` 0, `ready=true`, no `Unhealthy` event at all** |
+| **unwrapped** | **restarted at t+122s** — `Liveness probe failed: bash: connect: Connection refused`, `failed liveness probe, will be restarted` |
+
+The unwrapped number is consistent with the probe's own arithmetic: period 30 ×
+failureThreshold 3 = 90s, plus up to one period before the first failing tick.
+
+The timings are not invented. They are `bl47p-ea-simdet-01`'s own
+(`exec`, `periodSeconds: 30`, `failureThreshold: 3`, `timeoutSeconds: 1`), so
+~90s is what a real epics-containers IOC gives you. Only `initialDelaySeconds`
+was shortened, 120 → 30, to cut setup time.
+
+**7 of 18 containers in `p47-beamline` declare a `livenessProbe`.** The IOCs that
+do are the `exec`/30/3 shape above; `p47-rabbitmq` is 30/5 (~150s) and the two
+`httpGet` services are 10/3 (~30s). The canonical hotfix target,
+`bl47p-ea-fastcs-01`, declares **none** — so the wrapper is dead weight there and
+essential three pods over. It cannot be omitted on the grounds that the target in
+front of you has no probe.
+
+### 5. The hold loop has no backoff, and the kubelet's was the only one
+
+While held with a child that could not start, the loop relaunched it as fast as
+the child could exit — roughly one attempt every 1.5s, indefinitely, CPU-throttled
+by the container's 500m limit and nothing else.
+
+That is the flip side of Finding 3's ladder comparison: the hold does not merely
+*avoid* the kubelet's backoff, it **replaces it with none at all**. For the
+intended use — an edit that works — this is the point. For an edit that does not
+compile it is a spin. Nothing here was harmed by it, but `apply` should not leave
+a pod held with a permanently failing child, which is why the hold carries an
+absolute deadline (decision 4).
+
+## The two ladders, each against its own kubelet
+
+Measured by differencing `lastState.terminated` across restarts. Do **not** use
+`kubectl get events`: the kubelet coalesces repeated `BackOff` events and the
+timestamps do not survive it, which is why an earlier attempt was inconclusive.
+`state.running.startedAt` is a dead end too — a container that exits instantly is
+almost never *observed* running, so the field is absent for most restarts.
+
+| restart | pollux, v1.34.5 | bench, v1.36.3+k3s1 |
+|---|---|---|
+| 1 | — | 0s |
+| 2 | 15s | 15s |
+| 3 | 23s | 25s |
+| 4 | 45s | 44s |
+| 5 | — | 83s |
+
+**KEP-4603's reduced backoff is not in effect at 1.36.3+k3s1.** The ladder is
+materially unchanged two minor versions on, so the hold is exactly as
+load-bearing on a modern kubelet as on pollux's. Each ladder belongs to its own
+version and neither substitutes for the other.
+
+## What this establishes
+
+* The hold loop must reap the child's **descendant tree**, not its pid, group or
+  session. This is a correctness requirement, not an optimisation: the failure is
+  silent and leaves the old code serving.
+* Verification must be **"did the port change owner"**. A changed pid file and an
+  answering port both pass while broken.
+* `hotfix values` must emit the **wrapped** probe wherever the target declares
+  one, and the wrapper must short-circuit on the hold file.
+* Relaunch costs ~6.8s to full service against 15–45s of kubelet ladder, and
+  costs the seat nothing rather than SIGKILLing it.
