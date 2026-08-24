@@ -270,7 +270,7 @@ worked yesterday" is explicable.
 | Resources | none possible — shares the workload's limits | its own requests and limits |
 | Storage | the container's writable layer, against the pod's ephemeral-storage budget | an `emptyDir` workspace (4 Gi); the chart's scratch PVC exists but the launcher cannot mount it yet |
 | Risk to the workload | real: OOM, eviction | none; the origin pod is untouched |
-| Debugging | attach to the live process, read-only inspection, or debugpy where `podbench vscode` provisions it into the target | gdb-launch, debugpy, the relaunch loop |
+| Debugging | attach to the live process, read-only inspection, or debugpy where `podbench debug-config --provision` installs it into the target | gdb-launch, debugpy, the relaunch loop |
 
 Hotfix mode — a PVC mounted *beside* the app's project so a fix survives
 restarts and reschedules — is the one mode that requires deploy-time
@@ -281,11 +281,13 @@ is hidden by the mount, which is what lets the seed be a plain copy rather than
 an initContainer racing the application.
 
 The workflow ships as `podbench hotfix` (`values` for the chart snippet, then
-`check`/`init`/`apply`/`status`/`consolidate`/`retire`). It met a cluster on 2026-08-22 — an edit
+`check`/`init`/`restart`/`status`/`retire`). Committing and pushing are ordinary git
+in the seat: podbench wrapped both once, and a wrapper that records what git did is
+a record one hand commit makes false. It met a cluster on 2026-08-22 — an edit
 reached a live IOC's running code with `restartCount` unchanged — and two things
 about it remain undemonstrated: survival across pod replacement, which needs a
-real claim rather than the generic ephemeral volume that run used, and
-`consolidate`, which no cluster has run. See
+real claim rather than the generic ephemeral volume that run used, and `status`'s
+laptop-side `git ls-remote`, which no cluster has driven. See
 [What `hotfix` does](hotfix-flow.md).
 
 ## See also

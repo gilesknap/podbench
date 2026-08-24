@@ -630,10 +630,14 @@ sshd
 
 vscode
   The laptop verb that lands an Observe-mode seat, sizes the pod against
-  {term}`vscode-server`'s measured footprint, provisions debugpy into the target
-  and opens the editor on the seat's home. Both mutations are **on by default** —
-  `--no-resize` and `--no-provision` decline them — which makes it the only verb
-  that changes a running workload without being asked for a number. See
+  {term}`vscode-server`'s measured footprint, and opens the editor on the seat's
+  home — or, on a hotfixed pod, on the claim. It writes no project or claim file
+  and installs nothing into the target; the one file it writes is the seat's own
+  `~/.vscode-server/data/Machine/settings.json`, which sits below the opened
+  folder whenever that folder is the home. Debugging is a step it offers, run in
+  the seat as `podbench debug-config`. The resize is its one mutation, **on by
+  default** with `--no-resize` to decline, which makes it the only verb that
+  changes a running workload without being asked for a number. See
   {term}`resize subresource` and {term}`mode`.
 
 vscode-server

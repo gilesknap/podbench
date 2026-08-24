@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -34,12 +35,21 @@ from podbench.kubectl import (
     KubectlTimeoutError,
 )
 from podbench.launcher import (
+    AGENT_SOCKET_PROBE,
     DEV_SIDECAR_REUSED_NOTE,
+    FORGE_NO_REMOTE,
+    FORGE_NOT_TRUSTED,
+    FORGE_REMOTES_ARGV,
+    FORWARD_AGENT_MASTER_OFFER,
+    FORWARD_AGENT_MASTER_WARNING,
+    FORWARD_AGENT_WARNING,
     NO_TARGET_CONTAINER,
     OTHER_MODES_NOTE,
+    READ_SEAT_KNOWN_HOSTS,
     UNKNOWN_SEAT_VERSION,
     UNMOUNTED_HOTFIX_NOTE,
     VERSION_SKEW_WARNING,
+    WRITE_SEAT_KNOWN_HOSTS,
     LauncherError,
     SeatInfo,
     Session,
@@ -48,6 +58,7 @@ from podbench.launcher import (
     capability_report_from_json,
     container_names,
     current_namespace,
+    debug_command,
     default_host_alias,
     dev_seat,
     emit_ssh_config,
@@ -75,6 +86,7 @@ from podbench.launcher import (
     running_seat,
     runs_hotfix_supervisor,
     same_build,
+    seat_directories,
     seat_layout,
     seats,
     shares_workload_volume,
@@ -105,7 +117,7 @@ from podbench.model import (
     describe_pause,
 )
 from podbench.proc import Credentials
-from podbench.provision import PROVISION_DEST, claim_destination
+from podbench.provision import claim_destination
 from podbench.resize import Headroom
 from podbench.spec import (
     admission_rewrites,
@@ -353,6 +365,9 @@ class FakeCluster:
         allowed_uids: Sequence[int] = (),
         seat_status: str | None = None,
         whoami: str | None = "kubernetes-admin",
+        git_remotes: str = "",
+        seat_known_hosts: str | None = None,
+        ssh_master: str | None = None,
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -426,6 +441,23 @@ class FakeCluster:
         # already has a debugger: a fake that always needed provisioning would
         # make "provisioned nothing" untestable.
         self.unprovisioned = False
+        self.forge_dirs: list[str] = []
+        # What `git remote -v` prints in the seat, and what its
+        # `~/.ssh/known_hosts` holds. Both empty by default: the seat with no
+        # checkout and no host trust is the state every attach starts from, and
+        # `--forward-agent` has to say so rather than claim a seed.
+        self.git_remotes = git_remotes
+        self.seat_known_hosts = seat_known_hosts
+        # The ControlMaster this laptop already has open for the seat, and the
+        # `SSH_AUTH_SOCK` a session on it would see. `None` is no master at
+        # all, which is where every attach starts; `""` is one opened before
+        # `--forward-agent` was passed, which is what silently swallows it.
+        self.ssh_master = ssh_master
+        # A laptop with no `ssh` on PATH. `run_subprocess` lets
+        # `subprocess.run`'s FileNotFoundError straight out, so this is what the
+        # launcher actually meets there - and `--forward-agent` is the first
+        # thing that spawns the binary at all.
+        self.no_ssh_binary = False
 
     # -- Runner protocol ---------------------------------------------------
 
@@ -443,6 +475,26 @@ class FakeCluster:
             # test never starts an editor.
             return CommandResult(tuple(argv), 0, "", "")
         if argv[0] == "ssh":
+            if self.no_ssh_binary:
+                raise FileNotFoundError(2, "No such file or directory", "ssh")
+            if "-O" in argv:
+                # `ssh -O check`, which talks to the ControlPath and not to the
+                # network. 255 is what it exits with when no master is there,
+                # and that is the default: a unit test starts from a laptop
+                # that has never connected to this seat.
+                if self.ssh_master is None:
+                    return CommandResult(
+                        tuple(argv),
+                        255,
+                        "",
+                        "Control socket connect(…): No such file or directory\n",
+                    )
+                return CommandResult(tuple(argv), 0, "Master running (pid=1)\n", "")
+            if argv[-1] == AGENT_SOCKET_PROBE:
+                # What a session on that master gets. `""` is the master opened
+                # before `--forward-agent` was ever passed, which is the whole
+                # of the p47 defect.
+                return CommandResult(tuple(argv), 0, f"{self.ssh_master}\n", "")
             # `--open`'s preflight, for the same reason: it proves the alias
             # before anything is written, and a unit test opens no connection.
             if argv[-1].startswith(("mkdir -p ~/", "test -e ~/")):
@@ -779,6 +831,16 @@ class FakeCluster:
                 json.dumps({"version": "0.2.0", "configurations": self.configurations})
             )
         if command[:2] == ["sh", "-c"]:
+            if command[2] == FORGE_REMOTES_ARGV[2]:
+                self.forge_dirs = command[4:]
+                return _ok(self.git_remotes)
+            if command[2] == READ_SEAT_KNOWN_HOSTS[2]:
+                if self.seat_known_hosts is None:
+                    return _fail("cat: no such file", returncode=1)
+                return _ok(self.seat_known_hosts)
+            if command[2] == WRITE_SEAT_KNOWN_HOSTS[2]:
+                self.seat_known_hosts = stdin or ""
+                return _ok("")
             return self._seat_file(command[2], stdin)
         if command[:1] == ["cat"] and command[-1].endswith("authorized_keys"):
             if self.authorized_keys is None:
@@ -1765,7 +1827,7 @@ def test_the_report_says_iterate_is_available_on_a_hotfixed_pod() -> None:
     assert session.hotfixed
     (iterate,) = [f for f in features(session) if f.name.startswith("iterate")]
     assert iterate.available
-    assert "hotfix apply" in iterate.note
+    assert "hotfix restart" in iterate.note
     # The sentence that was wrong here is gone, not merely outvoted.
     assert "sacrificial" not in iterate.note
     assert "sacrificial" not in iterate.reason
@@ -4145,7 +4207,7 @@ def test_open_configures_the_seats_home_and_opens_that(
 
     settings = json.loads(cluster.seat_files[MACHINE_SETTINGS])
     assert settings["files.watcherExclude"]["**/proc/**"] is True
-    assert "/root/.vscode/launch.json" in cluster.seat_files
+    assert set(cluster.seat_files) == {MACHINE_SETTINGS}
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
     assert editor[-1] == (
         "/usr/bin/code",
@@ -4179,12 +4241,13 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     )
     assert code == 0
 
-    # The claim's own .vscode gets launch.json and nothing else (D1b): it is a
-    # committed checkout on an NFS PVC, so every other file podbench used to
-    # author there was a permanent line in the user's git diff.
+    # Nothing lands on the claim at all (#230). It is a committed checkout on an
+    # NFS PVC, so anything podbench authored there was a permanent line in the
+    # user's git diff - and the launch.json that was the last of them went stale
+    # at the next restart anyway, because it is keyed on a pid.
     assert [
         name for name in cluster.seat_files if name.startswith(f"{HOTFIX_APP_PATH}/")
-    ] == [f"{HOTFIX_APP_PATH}/.vscode/launch.json"]
+    ] == []
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
     assert editor[-1][-1] == HOTFIX_APP_PATH
     # Flattened, because the note is wrapped under its own tick before it is
@@ -4195,17 +4258,17 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     assert "the only tree here where an edit reaches the running process" in out
 
 
-def test_open_on_a_hotfix_pod_provisions_into_the_claim_and_says_so(
+def test_the_debug_step_offered_on_a_hotfix_pod_names_the_claim(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The other half of #189's pod, and the first link of the 2026-08-24
     cascade: the seat cannot write the target's root-owned ``/opt``, so a
-    ``--provision`` aimed there installs nothing, emits no configuration, and
-    leaves the report saying only "no launch.json".
+    ``--provision`` aimed there installs nothing and emits no configuration.
 
-    The destination reaches the seat as a flag rather than being decided there,
-    because only this side can see the pod - and it is named in the same block
-    that already says where the claim was mounted.
+    Only this side can see the pod, so only it can spell the destination — which
+    is why the offered command carries it rather than leaving the user to find
+    out by running the short one. The assessment gets it too, as the extra path
+    ``debug-config`` searches for a copy an earlier step installed.
     """
     cluster = FakeCluster(layout_pod())
     code = main(
@@ -4220,8 +4283,12 @@ def test_open_on_a_hotfix_pod_provisions_into_the_claim_and_says_so(
     assert runs
     for call in runs:
         assert call[call.index("--provision-dest") + 1] == dest
-    out = " ".join(capsys.readouterr().out.split())
-    assert f"any debugpy this run installs goes to {dest} on the claim" in out
+    # Not flattened: the offer's two spaces are what mark the right-hand half
+    # pasteable, and a report that collapsed them would pass a flattened match.
+    assert (
+        "to debug, in the seat:  podbench debug-config --provision "
+        f"--provision-dest {dest}"
+    ) in capsys.readouterr().out
 
 
 def test_open_follows_the_claim_to_wherever_the_application_mounts_it(
@@ -4420,12 +4487,22 @@ def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
     assert cluster.seat_files == {}
 
 
-def test_open_does_not_ask_for_the_verb_it_has_just_run(
+def test_the_window_is_offered_the_debug_step_it_no_longer_takes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A step the reader has already had done for them reads as a step that did
-    not happen - and `--open` reports what debug-config actually got, which the
-    static line cannot."""
+    """Slice 2 of #230, and the inversion of what this used to assert.
+
+    The offer was suppressed here because ``vscode`` ran ``debug-config``
+    itself and reported what it got — a step the reader has already had done
+    for them reads as a step that did not happen. It no longer runs it, so the
+    suppression is what would leave the debugger undiscoverable: the run prints
+    nothing else that names the verb.
+
+    It is an offer rather than a step: the two spaces mark the command as
+    pasteable, and it lives under ``next`` with the other things a reader might
+    do, because a step in the ``editor`` block is the past tense and goes
+    through the paragraph wrap that collapses those spaces.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     assert (
         main(
@@ -4435,20 +4512,24 @@ def test_open_does_not_ask_for_the_verb_it_has_just_run(
         )
         == 0
     )
-    captured = capsys.readouterr()
+    out = capsys.readouterr().out
 
-    assert "run `podbench debug-config` in the seat" not in captured.out
+    assert "to debug, in the seat:  podbench debug-config --provision" in out
+    assert out.index("over Remote-SSH") < out.index("to debug, in the seat:")
     # The rest of the block is what the reader needs either way.
-    assert "ssh config written to" in captured.out
+    assert "ssh config written to" in out
 
 
 def test_without_open_the_seat_is_still_told_how_to_get_a_launch_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """One spelling for both verbs. ``attach`` names no destination and no
+    ``--provision``: it touches the workload not at all, and the flag that
+    would is not one of its own."""
     cluster = FakeCluster(pod_document(uid=1000))
     assert main(attach_argv(tmp_path), runner=cluster, which=lambda _: None) == 0
 
-    assert "run `podbench debug-config` in the seat" in capsys.readouterr().out
+    assert "to debug, in the seat:  podbench debug-config" in capsys.readouterr().out
 
 
 def test_attach_carries_no_flag_that_mutates_the_workload(
@@ -4472,11 +4553,17 @@ def test_attach_carries_no_flag_that_mutates_the_workload(
     assert "--provision" in capsys.readouterr().err
 
 
-def test_vscode_provisions_a_target_that_says_it_needs_it(tmp_path: Path) -> None:
-    """The seat is the only thing that can see the target, and it names the flag
-    in its own refusal. So the answer is already in hand when the refusal
-    arrives, and the round trip it used to cost was podbench asking the user to
-    retype a fact it had just measured."""
+def test_vscode_provisions_nothing_however_loudly_the_seat_asks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Slice 1 of #230, at the verb.
+
+    The seat names ``--provision`` in its own refusal and this verb used to
+    answer it. Now it relays the refusal and offers the step: the debugger's
+    bill — ~15 MB in the workload's writable layer and a ptrace of a probed
+    application — is paid by somebody who asked for a debugger, not by everyone
+    who asked for an editor.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     cluster.unprovisioned = True
     code = main(
@@ -4487,47 +4574,30 @@ def test_vscode_provisions_a_target_that_says_it_needs_it(tmp_path: Path) -> Non
     assert code == 0
 
     asked = [call for call in cluster.calls if "debug-config" in call]
-    assert len(asked) == 2, "the refusal is answered once, not looped on"
+    assert len(asked) == 1, "one assessment, and nothing that acts on it"
     assert "--provision" not in asked[0]
-    assert "--provision" in asked[1]
-
-
-def test_vscode_provisions_nothing_a_target_did_not_ask_for(tmp_path: Path) -> None:
-    """A target that already has a debugger is not a target to install one into.
-    `--provision` was never "always"; the consent the verb carries is spent only
-    where the seat said it is the blocker."""
-    cluster = FakeCluster(pod_document(uid=1000))
-    assert (
-        main(
-            vscode_argv(tmp_path),
-            runner=cluster,
-            which=lambda name: f"/usr/bin/{name}",
-        )
-        == 0
+    # Named on the terminal, though: it is the flag the offered step carries.
+    assert "to debug, in the seat:  podbench debug-config --provision" in (
+        capsys.readouterr().out
     )
 
-    assert not any("--provision" in call for call in cluster.calls)
 
-
-def test_no_provision_leaves_the_target_exactly_as_it_is(
+def test_the_verb_carries_no_flag_that_mutates_the_workload(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Issue #45's decision, kept as an opt-out: ~15 MB into the workload's
-    writable layer is a mutation, and a user who declines it gets the offer they
-    used to get instead of the act."""
+    """``--no-provision`` went with the thing it declined. There is nothing left
+    to opt out of, and a flag that only ever meant "keep doing nothing" is one
+    more thing to explain."""
     cluster = FakeCluster(pod_document(uid=1000))
-    cluster.unprovisioned = True
-    assert (
-        main(
-            vscode_argv(tmp_path, "--no-provision"),
-            runner=cluster,
-            which=lambda name: f"/usr/bin/{name}",
-        )
-        == 0
+    code = main(
+        vscode_argv(tmp_path, "--no-provision"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
     )
 
-    assert not any("--provision" in call for call in cluster.calls)
-    assert "--provision" in " ".join(capsys.readouterr().out.split())
+    assert code == 2
+    assert cluster.added == []
+    assert "--no-provision" in capsys.readouterr().err
 
 
 def test_open_follows_the_home_volume_rather_than_assuming_root(
@@ -4544,10 +4614,7 @@ def test_open_follows_the_home_volume_rather_than_assuming_root(
     )
     assert code == 0
 
-    assert set(cluster.seat_files) == {
-        MACHINE_SETTINGS,
-        "/home/podbench/.vscode/launch.json",
-    }
+    assert set(cluster.seat_files) == {MACHINE_SETTINGS}
     opened = [
         call
         for call in cluster.calls
@@ -4579,23 +4646,29 @@ def test_open_on_a_seat_with_no_stanza_says_so_rather_than_opening_nothing(
     assert "no ssh config was written" in captured.out
 
 
-def test_open_stops_at_a_seat_file_it_cannot_write(
+def test_a_seat_whose_machine_settings_refuse_a_write_still_opens(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A refused write is the layer's own sentence, not `kubectl exec`'s argv -
-    and it ends the run, because a window opened without the exclude list is the
-    walk that OOMs a seat which cannot be restarted."""
+    """The one file left, and it fails as a line rather than as a refusal.
+
+    ``podbench agent`` already wrote the excludes at seat start-up, so a run
+    that cannot add to them has not left the window unguarded — it has failed to
+    repair a guard that is probably there. The line says *unmeasured* rather
+    than fine, because this side cannot tell.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
-    cluster.unwritable.add("/root/.vscode/launch.json")
+    cluster.unwritable.add(MACHINE_SETTINGS)
     code = main(
         vscode_argv(tmp_path, "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
 
-    assert code == 2
-    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
-    assert "cannot write /root/.vscode/launch.json" in capsys.readouterr().err
+    assert code == 0
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] != []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "could not write" in out
+    assert "the excludes are whatever `podbench agent` wrote at seat start-up" in out
 
 
 def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(
@@ -6979,15 +7052,13 @@ def test_a_hotfixed_seat_provisions_into_the_claim_it_carries() -> None:
     The path is read off the mount rather than assumed to be `HOTFIX_APP_PATH`:
     the application chose the mountPath and podbench only matched it.
     """
-    dest, why = provision_destination(*seat_of(hotfixed_pod(mounted=True)))
+    dest = provision_destination(*seat_of(hotfixed_pod(mounted=True)))
 
     expected = f"{HOTFIX_APP_PATH}/.podbench-debugpy"
     assert dest == expected
-    # And it says which of the two it chose, in the report that already says
-    # where the claim was mounted.
-    assert why is not None
-    assert expected in why
-    assert PROVISION_DEST in why
+    # And it is named on the terminal, in the step the reader is offered rather
+    # than in a sentence about a run that no longer installs anything.
+    assert expected in debug_command(*seat_of(hotfixed_pod(mounted=True)))
 
 
 def test_a_seat_without_the_claim_keeps_the_default_it_can_at_least_fail_on() -> None:
@@ -7000,7 +7071,7 @@ def test_a_seat_without_the_claim_keeps_the_default_it_can_at_least_fail_on() ->
     not: the claim is one path in *both* namespaces only where both containers
     mount it. Choosing it from a seat that does not would be choosing on an
     assumption rather than on the mount."""
-    assert provision_destination(*seat_of(hotfixed_pod(mounted=False))) == (None, None)
+    assert provision_destination(*seat_of(hotfixed_pod(mounted=False))) is None
 
 
 def test_a_pod_with_no_layout_is_left_exactly_as_it_was() -> None:
@@ -7012,7 +7083,8 @@ def test_a_pod_with_no_layout_is_left_exactly_as_it_was() -> None:
         ephemeral_statuses=[running_status("podbench-1")],
     )
 
-    assert provision_destination(*seat_of(pod)) == (None, None)
+    assert provision_destination(*seat_of(pod)) is None
+    assert debug_command(*seat_of(pod)) == "podbench debug-config --provision"
 
 
 def test_the_claim_destination_is_named_so_it_cannot_meet_the_project() -> None:
@@ -7337,3 +7409,332 @@ def test_a_reconnect_does_not_name_the_other_modes(
 
     flowed = " ".join(capsys.readouterr().out.split())
     assert " ".join(OTHER_MODES_NOTE.split()) not in flowed
+
+
+# -- agent forwarding, and the host trust it does not supply ----------------
+
+
+def laptop_known_hosts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str
+) -> None:
+    """Give this run a ``~/.ssh/known_hosts`` of its own."""
+    home = tmp_path / "laptop"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "known_hosts").write_text(text)
+    monkeypatch.setenv("HOME", str(home))
+
+
+GITHUB_KEY = "github.com ssh-ed25519 AAAAC3NzForge"
+ORIGIN = "origin\tgit@github.com:DiamondLightSource/fastcs-example.git (fetch)\n"
+
+
+def test_forward_agent_asks_for_the_agent_and_seeds_the_forge_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both halves, because either alone leaves git in the seat broken.
+
+    Measured on p47 2026-08-24: with the key forwarded and nothing else done,
+    `git fetch` stops at `Host key verification failed` - the failure is host
+    trust before it is ever authentication.
+    """
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + " laptop\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    assert main(attach_argv(tmp_path, "--forward-agent"), runner=cluster) == 0
+
+    stanza = (tmp_path / "cfg" / "config.d" / "demo-target-1.conf").read_text()
+    assert "    ForwardAgent yes\n" in stanza
+    assert "StrictHostKeyChecking yes" in stanza
+    assert cluster.seat_known_hosts == GITHUB_KEY + "\n"
+    out = capsys.readouterr().out
+    assert "seeded 1 known_hosts entry in the seat for github.com" in out
+
+
+def test_the_flag_says_what_it_costs_in_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`authorized_keys` gates ssh and does not gate exec, and this is where
+    the reader finds that out. Flowed, because the line wraps."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert FORWARD_AGENT_WARNING.format(namespace="demo") in flowed
+    assert "WARNING" in flowed
+
+
+def test_without_the_flag_nothing_is_lent_and_nothing_is_asked_of_the_seat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default costs an attach nothing: no line, no exec, no write."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path), runner=cluster)
+
+    stanza = (tmp_path / "cfg" / "config.d" / "demo-target-1.conf").read_text()
+    assert "ForwardAgent" not in stanza
+    assert cluster.seat_known_hosts is None
+    assert cluster.forge_dirs == []
+
+
+def test_an_https_remote_is_told_it_needs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Silence here would read as "seeded", and the two have different fixes."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        git_remotes="origin\thttps://github.com/x/y.git (fetch)\n",
+    )
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.seat_known_hosts is None
+    assert " ".join(FORGE_NO_REMOTE.split()) in " ".join(
+        capsys.readouterr().out.split()
+    )
+
+
+def test_a_forge_the_laptop_has_never_verified_is_not_invented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing here weakens verification: no entry of the user's own, no seed.
+
+    The alternative - `StrictHostKeyChecking no`, or a forge key baked into the
+    image - is what `ssh-over-exec` refuses for the seat's own host key, and
+    the principle does not stop at the pod.
+    """
+    laptop_known_hosts(monkeypatch, tmp_path, "internal.example.com ssh-rsa OTHER\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.seat_known_hosts is None
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(FORGE_NOT_TRUSTED.format(hosts="github.com").split()) in flowed
+
+
+def test_the_seed_merges_rather_than_evicting_what_the_seat_already_trusts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second attach into a seat somebody is sitting in must not truncate it,
+    which is :func:`podbench.agent.ensure_authorized_keys`' rule one file over."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        git_remotes=ORIGIN,
+        seat_known_hosts="other.example.com ssh-rsa KEPT\n",
+    )
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.seat_known_hosts is not None
+    assert cluster.seat_known_hosts.splitlines() == [
+        "other.example.com ssh-rsa KEPT",
+        GITHUB_KEY,
+    ]
+
+
+def test_print_config_stays_pasteable_under_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--print-config` output is pasted into a config file byte for byte, so
+    the warning goes in as an ssh comment and nothing is written anywhere."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent", "--print-config"), runner=cluster)
+
+    out = capsys.readouterr().out
+    assert "ForwardAgent yes" in out
+    assert "WARNING" not in out
+    assert "kubectl exec" in out
+    assert cluster.seat_known_hosts is None
+
+
+def test_the_seat_is_asked_about_every_directory_it_mounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The checkout is in the pod, not on the laptop, and a seat that mounts
+    nothing has only its home to be asked about."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    session = attach(talking_to(cluster), "target")
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.forge_dirs == [seat_layout(session).home]
+
+
+def test_a_dev_pods_workspace_is_scanned_though_its_seat_is_no_ephemeral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`podbench dev`'s seat is an ordinary sidecar in `spec.containers`, so the
+    ephemeral-only lookup answered None for it and the scan fell back to the
+    home alone - the same false "no ssh git remote found in the seat" this
+    branch had just fixed for `ssh-config`, on the pod whose workspace volume is
+    where `dev-bootstrap` puts the checkout. `dev` takes `--forward-agent`."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            sidecar={"name": "podbench", "volumeMounts": [{"mountPath": "/workspace"}]},
+        ),
+        git_remotes=ORIGIN,
+    )
+    session = Session(
+        seat=ContainerRef(PodRef("demo", "target"), "podbench"),
+        workload="app",
+        rung=Rung.DEGRADED,
+        reused=False,
+        uid=1000,
+    )
+
+    emit_ssh_config(
+        talking_to(cluster),
+        session,
+        identity=identity(tmp_path),
+        config_dir=str(tmp_path / "cfg"),
+        forward_agent=True,
+    )
+
+    assert "/workspace" in cluster.forge_dirs
+    assert cluster.seat_known_hosts == GITHUB_KEY + "\n"
+
+
+def test_the_claim_is_scanned_even_where_nothing_set_hotfixed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`ssh-config` is the path the p47 defect shipped on (2026-08-24).
+
+    `attach` sets `session.hotfixed` and this verb did not, so the scan went
+    through `editor_folder`, saw `/home/podbench` alone, and stated as fact
+    that the seat had no ssh remote - on a pod whose claim at `/podbench/app`
+    has an `origin` on github.com. The mounts are read off the seat's own spec
+    now, which does not depend on the flag at all.
+    """
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(hotfixed_pod(mounted=True), git_remotes=ORIGIN)
+
+    code = main(
+        [
+            "ssh-config",
+            "target",
+            "-n",
+            "demo",
+            "--identity",
+            identity(tmp_path),
+            "--config-dir",
+            str(tmp_path / "cfg"),
+            "--forward-agent",
+        ],
+        runner=cluster,
+    )
+
+    assert code == 0
+    assert HOTFIX_APP_PATH in cluster.forge_dirs
+    assert cluster.seat_known_hosts == GITHUB_KEY + "\n"
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(FORGE_NO_REMOTE.split()) not in flowed
+
+
+def test_the_scan_does_not_depend_on_the_flag_the_attach_path_sets() -> None:
+    """The same directories either way, which is what makes the verb that does
+    not set `hotfixed` behave like the one that does."""
+    session, seat_spec = seat_of(hotfixed_pod(mounted=True))
+
+    unset = replace(session, hotfixed=False)
+
+    assert HOTFIX_APP_PATH in seat_directories(unset, seat_spec)
+    assert seat_directories(unset, seat_spec) == seat_directories(session, seat_spec)
+
+
+def test_a_master_opened_without_forwarding_is_not_left_to_swallow_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured on p47 (2026-08-24): with the flag on and the stanza correct,
+    the first attempt answered `SSH_AUTH_SOCK=unset` and `Permission denied
+    (publickey)`, because an earlier `podbench vscode` had left a master open
+    without forwarding and the new session multiplexed onto it. `ControlPersist`
+    is in every stanza podbench writes, so this is the *normal* path."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="")
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    out = capsys.readouterr().out
+    alias = "podbench-demo-target-1"
+    assert " ".join(FORWARD_AGENT_MASTER_WARNING.format(alias=alias).split()) in (
+        " ".join(out.split())
+    )
+    # Verbatim, because it is the half of the line that gets pasted: the two
+    # spaces are what mark it, and a wrap through it would break the command.
+    assert FORWARD_AGENT_MASTER_OFFER.format(alias=alias) in out
+
+
+def test_a_master_that_already_forwards_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second `--forward-agent` run finds its own master, and telling that
+    reader to close a working connection is a warning about nothing."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="/tmp/ssh-XX/agent.7"
+    )
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert "ssh -O exit" not in capsys.readouterr().out
+
+
+def test_no_master_means_nothing_is_said_and_nothing_is_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The good case, and the cheap one: `-O check` fails on the ControlPath
+    and no session is opened to ask a master that is not there."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert "ssh -O exit" not in capsys.readouterr().out
+    assert not [call for call in cluster.calls if call[-1] == AGENT_SOCKET_PROBE]
+
+
+def test_a_laptop_with_no_ssh_binary_still_gets_its_seat_and_its_stanza(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`run_subprocess` lets `subprocess.run`'s FileNotFoundError out untouched
+    and `main` catches five exception types, none of them that one - so the
+    master probe used to end the run in a traceback, *after* the seat had landed
+    and the stanza had been written. An ssh that cannot be reached is unknown
+    rather than a stale master, and an ssh that is not installed is the same
+    answer."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="")
+    cluster.no_ssh_binary = True
+
+    code = main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ssh config written to" in out
+    # Nothing is claimed about a master nothing could ask about.
+    assert "ssh -O exit" not in out
+
+
+def test_without_the_flag_the_master_is_not_asked_about_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A master with no agent is only a defect where an agent was asked for."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="")
+
+    main(attach_argv(tmp_path), runner=cluster)
+
+    assert "ssh -O exit" not in capsys.readouterr().out
+    assert not [call for call in cluster.calls if "-O" in call]

@@ -49,10 +49,10 @@ from .cli import new_app, require_subcommand, run
 from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph
 from .editor import (
     CONNECTION_HINT,
+    DEFAULT_SSH,
     OK,
     WARN,
     EditorError,
-    Provision,
     is_step,
     open_seat,
     resolve_editor,
@@ -103,7 +103,7 @@ from .model import (
     measured_rung,
 )
 from .proc import Credentials
-from .provision import PROVISION_DEST, claim_destination
+from .provision import claim_destination
 from .resize import (
     CPU,
     EDITOR_HEADROOM,
@@ -153,6 +153,8 @@ from .sshcfg import (
     SshdLayout,
     client_config,
     ensure_control_dir,
+    forge_known_hosts,
+    git_remote_hosts,
     host_key_alias,
     known_hosts_entry,
 )
@@ -169,6 +171,9 @@ __all__ = [
     "EDITOR_RESIZE_NOTE",
     "EDITOR_STORAGE_WARNING",
     "EDITOR_UNMEASURED_WARNING",
+    "FORWARD_AGENT_MASTER_OFFER",
+    "FORWARD_AGENT_MASTER_WARNING",
+    "FORWARD_AGENT_WARNING",
     "HOST_KEY_ARGV",
     "ID_CORRECTION_WARNING",
     "LADDER",
@@ -209,6 +214,8 @@ __all__ = [
     "editor_key_refusal",
     "emit_ssh_config",
     "features",
+    "forge_seed_notes",
+    "master_without_agent",
     "forget_known_hosts",
     "forget_ssh_config",
     "format_age",
@@ -258,6 +265,8 @@ __all__ = [
     "is_hotfixed",
     "runs_hotfix_supervisor",
     "shares_workload_volume",
+    "DEBUG_COMMAND",
+    "debug_command",
     "DEV_SIDECAR_PROVISION_NOTE",
     "DEV_SIDECAR_REUSED_NOTE",
     "OTHER_MODES_NOTE",
@@ -876,27 +885,18 @@ does not mount it lands the same way. ``session.hotfixed`` is true in all three
 while there is nothing on the claim's path to open, and opening it anyway would
 put an editor on an empty directory in the seat's own rootfs."""
 
-PROVISION_DEST_CLAIM_NOTE = (
-    "any debugpy this run installs goes to {dest} on the claim, not {default}: "
-    "on a hotfixed pod that is the tree the seat shares with the target and can "
-    "write without being root"
-)
-"""Said when ``--provision`` is pointed at the claim rather than at ``/opt``.
+DEBUG_COMMAND = "podbench debug-config"
+"""The step that turns a seat into a debugger, and the whole of what it costs.
 
-The third unasked-for answer in this command, and it gets a line for
-:data:`HOTFIX_CLAIM_MOUNTED_NOTE`'s reason: a destination podbench chose is only
-acceptable if the output names it, and this one decides where 15 MB lands in
-somebody's PVC.
+Since #230 podbench authors no ``launch.json`` of its own: the verb writes one
+into ``.vscode/`` of whatever directory it is run from, which is the folder the
+window opened, and it writes it *when asked* rather than at window-open. That is
+what makes it correct across a restart — every configuration podbench can author
+is pid-keyed, and a restart changes the pid — and it is why this is an offer in
+``next`` rather than a step in ``editor``.
 
-Conditional, because the run is: ``--provision`` installs only where the seat
-says debugpy is the blocker, so a target that ships its own is never written to
-and a line promising an install would be reporting an event that did not
-happen. The destination still matters there - it is also the extra path
-``debug-config`` searches for the target's own copy.
-
-Only where the claim won. The default is what every pod without the layout has
-always used, and a line saying so on all of them would be an announcement that
-nothing happened."""
+:func:`debug_command` is what a caller that can see the pod spells it with.
+"""
 
 HOTFIX_CLAIM_UNMOUNTABLE_NOTE = (
     "this pod carries the hotfix layout, but the claim could not be mounted "
@@ -1190,10 +1190,83 @@ def seat_claim_path(
     return _mount_path(mount) if mount is not None else ""
 
 
+def seat_container_spec(
+    pod_json: Mapping[str, Any], name: str
+) -> Mapping[str, Any] | None:
+    """This seat's own container spec, of either kind of container.
+
+    :func:`~podbench.spec.ephemeral_container` reads ``spec.ephemeralContainers``
+    and nothing else, which is the right question for an ``attach`` seat and the
+    wrong one for a ``podbench dev`` sidecar: that is an ordinary container in
+    ``spec.containers`` (:func:`dev_seat`), so an ephemeral-only lookup answers
+    ``None`` for it. Every caller here wants the seat's ``volumeMounts``, and a
+    dev pod's are the whole point - the workspace volume is where the checkout
+    goes.
+
+    Ephemeral first, because that is the common seat and because a pod cannot
+    hold an ephemeral container and an ordinary one under one name anyway: the
+    API server refuses a duplicate across the three lists.
+
+    >>> pod = {"spec": {"containers": [{"name": "podbench", "image": "sidecar"}]}}
+    >>> seat_container_spec(pod, "podbench")
+    {'name': 'podbench', 'image': 'sidecar'}
+    >>> seat_container_spec(pod, "podbench-1") is None
+    True
+    """
+    ephemeral = ephemeral_container(pod_json, name)
+    if ephemeral is not None:
+        return ephemeral
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        container = as_dict(entry)
+        if _entry_name(container) == name:
+            return container
+    return None
+
+
+def seat_directories(
+    session: Session, seat_spec: Mapping[str, Any] | None
+) -> list[str]:
+    """Every directory in the seat where a checkout could be, home included.
+
+    Read off the seat's own ``volumeMounts`` and **not** through
+    :func:`seat_claim_path`, which is the defect this replaced: that function
+    opens on ``session.hotfixed``, a flag ``attach`` sets and ``ssh-config``
+    does not, so on p47 (2026-08-24) the forge scan saw ``/home/podbench``
+    alone and reported "no ssh git remote found in the seat" on a pod whose
+    claim at ``/podbench/app`` has an ``origin`` on github.com. A false
+    statement of fact, on exactly the pod the flag exists for.
+
+    The scan does not need to know which mount is the claim, only where to
+    look, and asking the spec is both cheaper and honest on a pod podbench
+    knows nothing else about: a checkout mounted from a PVC the application
+    declared is as much a git repository as a hotfix claim. ``git -C <dir>
+    remote -v`` on a directory that is not a repository prints nothing and
+    costs one ``execve``, so a mount that holds no checkout is free.
+
+    >>> from podbench.model import ContainerRef, PodRef, Rung
+    >>> seat = ContainerRef(PodRef("demo", "api"), "podbench-1")
+    >>> session = Session(
+    ...     seat=seat, workload="app", rung=Rung.FULL, reused=False, uid=0
+    ... )
+    >>> spec = {"volumeMounts": [{"mountPath": "/podbench/app"}, {"mountPath": "/"}]}
+    >>> seat_directories(session, spec)
+    ['/podbench/app', '/root']
+
+    ``/`` drops out because :func:`_mount_path` strips the trailing slash off
+    every path and leaves nothing: a whole-rootfs mount is not a checkout, and
+    a git walk from there is the walk with no bottom the editor's excludes are
+    about.
+    """
+    mounts = _as_list(as_dict(seat_spec).get("volumeMounts"))
+    paths = (_mount_path(as_dict(entry)) for entry in mounts)
+    home = seat_layout(session).home
+    return list(dict.fromkeys([*(path for path in paths if path), home]))
+
+
 def provision_destination(
     session: Session, seat_spec: Mapping[str, Any] | None
-) -> tuple[str | None, str | None]:
-    """Where ``--provision`` should install debugpy, and the line that says why.
+) -> str | None:
+    """Where the debug step should install debugpy on this pod.
 
     ``None`` is "whatever the seat's own default is"
     (:data:`podbench.provision.PROVISION_DEST`), and it is deliberately not the
@@ -1227,12 +1300,71 @@ def provision_destination(
     silently changed after a refusal would turn a permissions bug into a mystery
     about which path is live, and ``flavour._target_debugpy`` searches exactly
     one extra path on the next run.
+
+    Nothing podbench runs installs debugpy any more (#230), so this answers two
+    questions rather than one: it is spelled into the step
+    :func:`debug_command` offers, and it is passed to the *assessment* run as
+    the extra path ``debug-config`` searches for a copy an earlier step already
+    installed (``editor.PROVISION_DEST_FLAG``).
     """
     folder = seat_claim_path(session, seat_spec)
-    if not folder:
-        return None, None
-    dest = claim_destination(folder)
-    return dest, PROVISION_DEST_CLAIM_NOTE.format(dest=dest, default=PROVISION_DEST)
+    return claim_destination(folder) if folder else None
+
+
+def debug_command(
+    session: Session,
+    seat_spec: Mapping[str, Any] | None,
+    *,
+    dev_pod: bool = False,
+) -> str:
+    """The debug step for *this* pod, ready to paste into the seat's terminal.
+
+    Three shapes, and every difference between them is a fact only the launcher
+    holds:
+
+    >>> from dataclasses import replace
+    >>> from podbench.model import ContainerRef, PodRef, Rung
+    >>> seat = ContainerRef(PodRef("demo", "api"), "podbench-1")
+    >>> plain = Session(seat=seat, workload="app", rung=Rung.FULL, reused=False)
+    >>> debug_command(plain, None)
+    'podbench debug-config --provision'
+    >>> debug_command(plain, None, dev_pod=True)
+    'podbench debug-config'
+    >>> hotfixed = replace(plain, hotfixed=True)
+    >>> mount = {"volumeMounts": [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": "/app"}]}
+    >>> debug_command(hotfixed, mount)
+    'podbench debug-config --provision --provision-dest /app/.podbench-debugpy'
+
+    ``--provision`` is spelled by default because the common target is a Python
+    workload that cannot import debugpy, and a step offered without it lands the
+    reader on the refusal rather than on a debugger. It is dropped on a dev pod
+    for :data:`DEV_SIDECAR_PROVISION_NOTE`'s reason — there is no live target to
+    inject into, and the launch configuration needs none.
+
+    ``--provision-dest`` is spelled only where podbench had to choose one
+    (:func:`provision_destination`), so the offer on a pod with no hotfix layout
+    is the shortest true command rather than one carrying podbench's own default
+    back to it.
+
+    Composed here rather than left to the reader because every part of it is
+    something the seat cannot work out and the user should not have to: on a
+    hotfixed pod the seat's own destination is a root-owned ``/opt`` that the
+    degraded rung cannot write, and the whole cascade behind that — no
+    importable debugpy, no configuration, no adapter — follows from one
+    ``EACCES``.
+
+    No pid. ``debug-config`` picks the best candidate itself, and ``podbench
+    pids`` is how a reader chooses another; naming one here would guess at the
+    moment the guess is least likely to survive, since a restart changes it.
+    """
+    dest = provision_destination(session, seat_spec)
+    return " ".join(
+        [
+            DEBUG_COMMAND,
+            *([] if dev_pod else ["--provision"]),
+            *([] if dest is None else ["--provision-dest", dest]),
+        ]
+    )
 
 
 def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
@@ -1815,12 +1947,12 @@ the user typed.
 """
 
 DEV_SIDECAR_PROVISION_NOTE = (
-    "not provisioning: this is Iterate mode's seat, where the application is "
-    "launched from the seat rather than found running in another container. "
-    "There is no live target to install debugpy into, and the launch "
-    "configuration needs none"
+    "the debug step below needs no `--provision` here: this is Iterate mode's "
+    "seat, where the application is launched from the seat rather than found "
+    "running in another container, so there is no live target to install "
+    "debugpy into and the launch configuration needs none"
 )
-"""Why ``vscode`` spends nothing on provisioning a dev pod.
+"""Why the offer :func:`debug_command` composes is shorter on a dev pod.
 
 Not a decline that could have gone the other way: provisioning targets a running
 process in the *workload* container, and :func:`podbench.spec.dev_pod_spec` idles
@@ -1831,6 +1963,10 @@ Both halves of provisioning - the debugpy install and the server injection - are
 "there is no live target", so the line says it once. That Iterate mode's launch
 configuration starts the interpreter under the debugger instead is
 :mod:`podbench.vscode`'s to author and the how-to's to explain.
+
+Said at all because an offer that quietly differs between two pods teaches the
+reader nothing: the flag is missing here for a reason, and the reason is not
+that podbench forgot it.
 """
 
 OTHER_OWNER_WARNING = (
@@ -3862,7 +3998,7 @@ def _iterate_feature(hotfixed: bool = False) -> Feature:
         return Feature(
             "iterate (edit, relaunch, verify through the Service)",
             True,
-            note="`podbench hotfix apply` relaunches the application's own "
+            note="`podbench hotfix restart` relaunches the application's own "
             "child in place: this pod carries the supervisor, so the loop runs "
             "on the live workload without a second pod and without restarting "
             "the container.",
@@ -4362,6 +4498,7 @@ def ssh_stanza(
     host_alias: str,
     user: str,
     invocation: KubectlInvocation | None = None,
+    forward_agent: bool = False,
 ) -> str:
     """The ``Include``-able ssh config stanza for this seat."""
     return client_config(
@@ -4372,6 +4509,7 @@ def ssh_stanza(
         layout=seat_layout(session),
         user=user,
         kubectl=invocation,
+        forward_agent=forward_agent,
     )
 
 
@@ -4612,6 +4750,259 @@ def forget_known_hosts(alias: str, path: Path) -> bool:
     return True
 
 
+# -- agent forwarding, and the forge keys it does not supply -----------------
+
+FORWARD_AGENT_WARNING = (
+    "agent forwarding is on, so anyone who can `kubectl exec` into "
+    "{namespace} can authenticate as you, to every host that trusts these "
+    "keys, until this session ends - `authorized_keys` gates ssh and does not "
+    "gate exec. `ssh-add -c` makes the agent ask you first."
+)
+"""The one line ``--forward-agent`` earns, printed by every verb that offers it.
+
+One line by the rule the other warnings here follow. The mechanism - a separate
+``ssh-agent`` holding only the git key, destination-constrained keys, and the
+caution that a facility's RBAC group routinely includes service accounts and CI
+identities as well as colleagues - is in ``docs/how-to/vscode-remote-ssh.md``,
+said once, where somebody deciding whether to use the flag will meet it.
+
+It names the *namespace* because that is the set the reader can go and read a
+rolebinding for, and because the exposure is a fact about where this pod is
+rather than about podbench. What it does **not** say is that the forwarded
+credential is the least-bad one available - that is why podbench offers the flag
+at all, and it belongs in :func:`podbench.sshcfg.client_config`'s docstring
+rather than on the terminal of somebody who has already chosen it.
+"""
+
+FORWARD_AGENT_MASTER_WARNING = (
+    "an ssh session for {alias} is already open and has no agent on it, and a "
+    "new connection multiplexes onto that master rather than reading the "
+    "stanza just written - so `ForwardAgent yes` reaches nothing, and git in "
+    "the seat stops at `Permission denied (publickey)`."
+)
+"""Said when a live ControlMaster would silently swallow the flag.
+
+Measured on p47 (2026-08-24): with the flag on and the stanza correct, the
+first attempt answered ``SSH_AUTH_SOCK=unset`` and ``Permission denied
+(publickey)`` because an earlier ``podbench vscode`` had left a master open
+without forwarding; ``ssh -O exit`` and the identical command then worked.
+``ControlMaster auto`` with ``ControlPersist`` is in every stanza podbench
+writes, so this is the *normal* path for anyone adding the flag to a pod they
+have already attached to, and the symptom reads as a key problem.
+
+Podbench does not close the master itself. It owns the ``ControlPath`` and
+could, but the connection riding it is routinely a VS Code window - Remote-SSH
+multiplexes over the same socket - and tearing one down from a verb whose job
+is to *write a config file* is a second silent surprise in place of the first.
+The remedy is one line and one command, and the reader is the only one who
+knows whether an editor is on the other end.
+"""
+
+FORWARD_AGENT_MASTER_OFFER = "close it first:  ssh -O exit {alias}"
+"""The remedy, as an offer rather than in the warning above.
+
+``console.wrap`` collapses runs of whitespace, so a pasteable command inside a
+paragraph comes back unpasteable; the two-space form has to be its own line.
+"""
+
+AGENT_SOCKET_PROBE = 'echo "$SSH_AUTH_SOCK"'
+"""Ask a session whether it got an agent, in the session's own words.
+
+``printenv`` would be the tidier spelling and is the wrong one: it exits 1 for a
+variable that is unset, which is indistinguishable from the ssh call itself
+failing.
+"""
+
+FORGE_REMOTES_ARGV = (
+    "sh",
+    "-c",
+    'for dir in "$@"; do git -C "$dir" remote -v 2>/dev/null; done',
+    "sh",
+)
+"""Ask the seat which ssh forges its checkouts name, over ``kubectl exec``.
+
+The directories arrive as ``"$@"`` rather than spliced into the script: they
+come from a mountPath the application chose, and a path with a space in it
+would otherwise become two directories and a shell error.
+
+Asked of the seat rather than guessed at from the laptop, because the checkout
+is *in the pod* - a hotfix claim, mounted where the application mounts it - and
+the laptop may hold no copy of the repository at all.
+"""
+
+_SEAT_HOME = (
+    'home=$(getent passwd "$1" 2>/dev/null | cut -d: -f6); '
+    '[ -n "$home" ] || home="$HOME"; '
+)
+"""The ssh session's home, resolved the way sshd resolves it.
+
+``$HOME`` under ``kubectl exec`` is the *image's*, and on a ``podbench dev``
+sidecar that is the workspace volume while sshd puts the session in the home the
+projected passwd record names (:func:`podbench.agent.session_home`). Seeding the
+first one would write a ``known_hosts`` no ssh session ever reads, and it would
+do so successfully. The fallback is for a seat whose image has no ``getent``.
+"""
+
+READ_SEAT_KNOWN_HOSTS = ("sh", "-c", _SEAT_HOME + 'cat "$home/.ssh/known_hosts"', "sh")
+WRITE_SEAT_KNOWN_HOSTS = (
+    "sh",
+    "-c",
+    _SEAT_HOME + 'mkdir -p "$home/.ssh" && chmod 700 "$home/.ssh" && '
+    'cat > "$home/.ssh/known_hosts" && chmod 600 "$home/.ssh/known_hosts"',
+    "sh",
+)
+"""Read and replace the seat's ``known_hosts``, under the ssh session's home.
+
+Read-then-write rather than an append, for the reason
+:func:`podbench.agent.ensure_authorized_keys` merges: a second attach into a
+seat somebody is already sitting in must not evict what is there. The merge
+happens on the laptop because that is where the entries being merged in are.
+"""
+
+FORGE_SEEDED = "seeded {count} known_hosts {entries} in the seat for {hosts}"
+FORGE_NO_REMOTE = (
+    "no ssh git remote found in the seat, so its known_hosts was left alone; "
+    "an https remote needs none, and a clone made later will need `ssh-keyscan`"
+)
+FORGE_NOT_TRUSTED = (
+    "your own known_hosts has no entry for {hosts}, so the seat's was left "
+    "alone: nothing here invents trust you have not already given"
+)
+FORGE_UNWRITTEN = (
+    "could not write the seat's known_hosts ({detail}), so git over ssh there "
+    "will still stop at `Host key verification failed`"
+)
+
+
+def seat_forge_hosts(
+    kubectl: Kubectl, seat: ContainerRef, directories: Sequence[str]
+) -> tuple[str, ...]:
+    """The ssh hosts the git remotes in ``directories`` name, asked of the seat."""
+    if not directories:
+        return ()
+    result = kubectl.exec_(
+        seat.pod.name,
+        [*FORGE_REMOTES_ARGV, *directories],
+        container=seat.container,
+        check=False,
+    )
+    return git_remote_hosts(result.stdout)
+
+
+def master_without_agent(
+    runner: Runner, *, alias: str, config: Path, ssh: str = DEFAULT_SSH
+) -> bool:
+    """Whether a master is already open for ``alias`` and carries no agent.
+
+    Two questions, because only the second one is the user's. ``ssh -O check``
+    is a local call on the ``ControlPath`` podbench itself wrote - no network,
+    no authentication - and a failure there is the good case: no master, so the
+    next connection reads the stanza and forwards. Where one *is* running, it
+    is asked what a session on it gets, because a master opened by an earlier
+    ``--forward-agent`` run forwards perfectly well and telling that reader to
+    close it would be a warning about nothing. The measurement is available and
+    costs ~0.06 s over an established master, which is the whole of the reason
+    this asks rather than assumes.
+
+    An ssh that cannot be reached at all is **not** reported as a stale master:
+    the answer is unknown, the connection is broken in a way the reader's next
+    command will say out loud, and inventing a remedy for it would send them to
+    ``ssh -O exit`` for a socket that is not the problem.
+
+    An ssh binary that is not *there* is the same answer, and it is caught here
+    rather than left to ``main``. ``runner`` is :func:`run_subprocess`, which
+    lets :class:`OSError` out of :func:`subprocess.run` untouched, and
+    ``--forward-agent`` is the first thing that makes ``attach`` and
+    ``ssh-config`` spawn ``ssh`` at all - so on a laptop without one the
+    traceback would land *after* the seat had landed and the stanza had been
+    written, which is the one moment this function must not fail loudly.
+    """
+    base = [ssh, "-F", str(config)]
+    try:
+        if runner(
+            [*base, "-O", "check", alias], timeout=DEFAULT_CALL_TIMEOUT
+        ).returncode:
+            return False
+        session = runner(
+            [*base, alias, AGENT_SOCKET_PROBE], timeout=DEFAULT_CALL_TIMEOUT
+        )
+    except (KubectlError, OSError):
+        return False
+    return session.returncode == 0 and not session.stdout.strip()
+
+
+def user_known_hosts() -> str:
+    """The laptop's own ``known_hosts``, or ``""`` when there is none.
+
+    ``~/.ssh/known_hosts`` and not the file podbench manages under
+    :func:`client_dir`: this is the user's own record of hosts *they* have
+    verified, which is the only trust decision worth copying anywhere.
+    """
+    path = Path("~/.ssh/known_hosts").expanduser()
+    return path.read_text(errors="replace") if path.is_file() else ""
+
+
+def forge_seed_notes(
+    kubectl: Kubectl,
+    session: Session,
+    *,
+    login: str,
+    directories: Sequence[str],
+) -> list[str]:
+    """Copy the forge's host keys into the seat, and say what happened.
+
+    Only ever called under ``--forward-agent``, because a seat that cannot
+    authenticate has no use for a forge's host key. The two halves are one
+    slice for the reason the p47 measurement gave: with the key forwarded and
+    nothing else done, ``git fetch`` in a seat stops at ``Host key verification
+    failed`` - so agent forwarding on its own buys nothing at all.
+
+    Every outcome is one line, and none of them is silence. "Nothing was
+    copied" is the answer in three different situations - no ssh remote, no
+    entry of the user's own, a write that failed - and they have different next
+    moves.
+    """
+    hosts = seat_forge_hosts(kubectl, session.seat, directories)
+    if not hosts:
+        return [FORGE_NO_REMOTE]
+    named = ", ".join(hosts)
+    entries = forge_known_hosts(user_known_hosts(), hosts)
+    if not entries:
+        return [FORGE_NOT_TRUSTED.format(hosts=named)]
+    existing = kubectl.exec_(
+        session.seat.pod.name,
+        list(READ_SEAT_KNOWN_HOSTS) + [login],
+        container=session.seat.container,
+        check=False,
+    )
+    merged: list[str] = []
+    for line in [*existing.stdout.splitlines(), *entries]:
+        if line.strip() and line not in merged:
+            merged.append(line)
+    written = kubectl.exec_(
+        session.seat.pod.name,
+        list(WRITE_SEAT_KNOWN_HOSTS) + [login],
+        container=session.seat.container,
+        stdin="\n".join(merged) + "\n",
+        check=False,
+    )
+    if written.returncode != 0:
+        return [FORGE_UNWRITTEN.format(detail=_forge_detail(written.stderr))]
+    return [
+        FORGE_SEEDED.format(
+            count=len(entries),
+            entries="entry" if len(entries) == 1 else "entries",
+            hosts=named,
+        )
+    ]
+
+
+def _forge_detail(stderr: str) -> str:
+    """The seat's own complaint, on one line and never empty."""
+    first = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
+    return first or "no error text"
+
+
 def write_ssh_config(stanza: str, path: Path) -> Path:
     """Write the stanza to its own file, overwriting it wholesale.
 
@@ -4761,6 +5152,8 @@ def emit_ssh_config(
     user: str | None = None,
     print_config: bool = False,
     opening: bool = False,
+    debug_command: str = DEBUG_COMMAND,
+    forward_agent: bool = False,
 ) -> SshSeat:
     """Generate the client stanza for a landed seat, and write it.
 
@@ -4777,11 +5170,23 @@ def emit_ssh_config(
     when the seat was never asked, or answered with an image too old to know the
     flag.
 
-    ``opening`` drops the closing "run ``podbench debug-config`` in the seat"
-    line, because ``vscode`` is about to run it and say what it got. Only that
-    one line: the alias, the ``Include`` and the ssh command are what the reader
-    needs whether or not a window opens, and that verb's own exit code is not
-    evidence the window connected.
+    ``opening`` changes only the alias line's tense: ``vscode`` prints this
+    block *after* opening a window, so the alias is what a later reconnect
+    needs rather than what to do now.
+
+    ``forward_agent`` puts ``ForwardAgent yes`` in the stanza *and* seeds the
+    seat's ``known_hosts`` from the user's own, because on the p47 measurement
+    (2026-08-24) the first thing ``git fetch`` in a seat hit was ``Host key
+    verification failed`` rather than an authentication failure. One flag for
+    both halves: either alone leaves git in the seat exactly as broken.
+
+    ``debug_command`` is the debug step this pod's reader should paste, and it
+    is the caller's to compose because only the caller knows the pod: on a
+    hotfixed one the seat's own ``--provision`` destination is unwritable (see
+    :func:`debug_command`). It is offered on **every** path, including
+    ``opening``, which is the whole of issue #230's second half — the step used
+    to be suppressed here because ``vscode`` ran ``debug-config`` itself, and it
+    no longer does.
     """
     if session.ssh is not None and session.ssh.refused:
         # Nothing below can help: sshd resolves the login name before it looks
@@ -4830,16 +5235,69 @@ def emit_ssh_config(
         host_alias=alias,
         user=login,
         invocation=KubectlInvocation(binary=kubectl.binary, context=kubectl.context),
+        forward_agent=forward_agent,
     )
     if print_config:
-        return SshSeat("\n".join([*notes, stanza]), alias=alias)
+        # As an ssh comment, because this output is pasted into a config file
+        # byte for byte and a `WARNING` lead would be pasted with it. Nothing is
+        # written anywhere on this path, so no known_hosts is seeded either -
+        # the reader is looking at a stanza, not using one.
+        warning = (
+            [f"# {FORWARD_AGENT_WARNING.format(namespace=session.pod.namespace)}"]
+            if forward_agent
+            else []
+        )
+        return SshSeat("\n".join([*warning, *notes, stanza]), alias=alias)
     path = write_ssh_config(
         stanza, ssh_config_path(directory, session.pod, session.seat.container)
     )
+    forge: list[str] = []
+    master: list[str] = []
+    if forward_agent and master_without_agent(kubectl.runner, alias=alias, config=path):
+        # Before the seeding, because it is about the stanza that was just
+        # written rather than about the seat, and because the reader who has to
+        # act on it should meet it beside the flag's own warning.
+        master = [
+            *paragraph(
+                FORWARD_AGENT_MASTER_WARNING.format(alias=alias),
+                first=f"{WARNING_LEAD}  ",
+                indent=" " * WARNING_HANG,
+            ),
+            FORWARD_AGENT_MASTER_OFFER.format(alias=alias),
+        ]
+    if forward_agent:
+        # Every mount the seat carries plus its home, and not the one folder an
+        # editor would open: `editor_folder` is gated on `session.hotfixed`,
+        # which `ssh-config` does not set, so on p47 the scan missed the claim
+        # it was looking at and said there was no remote (2026-08-24).
+        #
+        # Of either container list. A `podbench dev` seat is an ordinary
+        # sidecar, so an ephemeral-only lookup returns None there and the scan
+        # falls back to the home alone - which is the same false "no ssh git
+        # remote found in the seat", on a pod whose workspace volume holds the
+        # checkout, and `dev` takes this flag.
+        seat_spec = seat_container_spec(pod_json, session.seat.container)
+        forge = forge_seed_notes(
+            kubectl,
+            session,
+            login=login,
+            directories=seat_directories(session, seat_spec),
+        )
     return SshSeat(
         "\n".join(
             [
+                *(
+                    paragraph(
+                        FORWARD_AGENT_WARNING.format(namespace=session.pod.namespace),
+                        first=f"{WARNING_LEAD}  ",
+                        indent=" " * WARNING_HANG,
+                    )
+                    if forward_agent
+                    else []
+                ),
+                *master,
                 *notes,
+                *forge,
                 f"ssh config written to {path}",
                 # The hint names the verb that *checks* the edit as well as the
                 # line itself: this one is the only setup step podbench has ever
@@ -4859,21 +5317,15 @@ def emit_ssh_config(
                     else f"then:  ssh {alias}   "
                     f"(or Remote-SSH: Connect to Host -> {alias})"
                 ),
-                # The VS Code debugger needs a launch.json whose pid,
-                # sysroot-prefixed program and setup ordering are all things
-                # this launcher already knows and a human cannot guess; every
-                # wrong answer fails silently rather than erroring. Dropped
-                # under `vscode`, which runs that verb itself a few lines further
-                # down and reports what it actually got: a step the reader has
-                # already had done for them reads as a step that did not happen.
-                *(
-                    []
-                    if opening
-                    else [
-                        "to debug in VS Code, run `podbench debug-config` in the "
-                        "seat (writes .vscode/launch.json)"
-                    ]
-                ),
+                # An offer, in the shape `console` recognises: two spaces mark
+                # the right-hand half as pasteable, and it is printed verbatim
+                # however long it runs, because a wrap through a command is a
+                # command that cannot be selected. Nothing podbench runs writes
+                # a launch.json any more (#230), so this is the only place the
+                # debugger is named at all - and it is one line rather than the
+                # sentence it used to be, because the reader's next action is
+                # the whole of it.
+                f"to debug, in the seat:  {debug_command}",
             ]
         ),
         alias=alias,
@@ -6117,6 +6569,17 @@ _PrintConfig = Annotated[
         help="print the ssh stanza instead of writing it to the config dir",
     ),
 ]
+_ForwardAgent = Annotated[
+    bool,
+    typer.Option(
+        "--forward-agent",
+        help="let git in the seat use your ssh keys: `ForwardAgent yes` in the "
+        "stanza, and the seat's known_hosts seeded from your own for whatever "
+        "forge its git remotes name. Off by default, because `authorized_keys` "
+        "gates ssh and does not gate `kubectl exec` - anyone with pods/exec in "
+        "the namespace can authenticate as you for the life of the session",
+    ),
+]
 
 
 _Target = Annotated[
@@ -6480,12 +6943,13 @@ def _editor_step(note: str) -> None:
     and a wrapped line beginning with one under a bulleted list reads as a new
     item; the indent cannot be forged that way.
 
-    Anything else is the **seat's own stderr**, relayed by
-    :func:`podbench.editor._relay`, and it is printed exactly as it arrived.
-    It used to go through the same wrap, which collapses whitespace and breaks
-    on spaces - and one of those relayed lines is the two-line injection
-    command whose first line ends in a continuation ``\\`` that means nothing
-    once something follows it.
+    Anything else is text ``open_seat`` did not author, and it is printed
+    exactly as it arrived. It sends only steps today - the seat's own narration
+    stopped being relayed with issue #230 - but this branch is what makes that
+    a change of behaviour rather than a change of *layout*: the wrap below
+    collapses whitespace and breaks on spaces, so a relayed line with a
+    trailing continuation ``\\`` or an internal run of two spaces comes back
+    meaning something else.
     """
     if not is_step(note):
         # As a `Text`, so none of the line rules run over it. This is somebody
@@ -6504,9 +6968,9 @@ def _open_editor(
     wiring: SshSeat,
     *,
     editor: str,
-    provision: Provision,
     runner: Runner | None,
     seat_spec: Mapping[str, Any] | None = None,
+    agent_socket: str | None = None,
 ) -> None:
     """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
 
@@ -6526,6 +6990,11 @@ def _open_editor(
     Each line is printed as it arrives rather than collected: the extension
     install bootstraps vscode-server in the seat, which is a download, and a
     progress report that appears only once it has finished is not one.
+
+    Nothing here writes into that folder or installs anything into the target
+    (#230). The destination still travels, because on the assessment run it is
+    a *search* path rather than an install one; :func:`debug_command` spells the
+    same value into the step the reader is offered.
     """
     if wiring.alias is None:
         raise EditorError(
@@ -6536,7 +7005,6 @@ def _open_editor(
     emit("editor")
     home = seat_layout(session).home
     folder, why = editor_folder(session, seat_spec)
-    provision_dest, why_dest = provision_destination(session, seat_spec)
     if why is not None:
         # Before the steps rather than after: this is the decision every one of
         # them is carried out against, and `open_seat` reports the folder it
@@ -6547,12 +7015,6 @@ def _open_editor(
         # won, because nothing went wrong - the answer was simply not the one
         # the command line asked for.
         _editor_step(f"{WARN if folder == home else OK} {why}")
-    if why_dest is not None and provision is not Provision.NEVER:
-        # Beside the folder note and under the same rule, but silent under
-        # `--no-provision`: nothing will be installed on that run, and naming a
-        # destination nobody is going to write to is a step reporting an event
-        # that did not happen.
-        _editor_step(f"{OK} {why_dest}")
     open_seat(
         kubectl,
         session.seat,
@@ -6560,9 +7022,9 @@ def _open_editor(
         folder=folder,
         report=_editor_step,
         editor=editor,
-        provision=provision,
-        provision_dest=provision_dest,
+        provision_dest=provision_destination(session, seat_spec),
         runner=runner,
+        agent_socket=agent_socket,
     )
 
 
@@ -6601,6 +7063,7 @@ def _build_app(
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
+        forward_agent: _ForwardAgent = False,
         timeout: _Timeout = 120.0,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
@@ -6644,13 +7107,14 @@ def _build_app(
                 host_alias=host_alias,
                 ssh_user=ssh_user,
                 print_config=print_config,
+                forward_agent=forward_agent,
             ).note
         )
         raise typer.Exit(0)
 
     @app.command(
         name="vscode",
-        help="land a seat sized and provisioned for an editor, and open it",
+        help="land a seat sized for an editor, and open a window on it",
     )
     def vscode_command(
         pod: _Pod = None,
@@ -6679,23 +7143,23 @@ def _build_app(
                 "has the room is left alone either way",
             ),
         ] = False,
-        no_provision: Annotated[
-            bool,
-            typer.Option(
-                "--no-provision",
-                help="author whatever fits the target as it stands. Without it, "
-                "a Python workload gets debugpy installed where it cannot "
-                "import one, and its server started where nothing is listening "
-                "on the port the configuration connects to - the two ways a "
-                "target reaches F5 with no debugger behind it. Mutates the "
-                "workload: ~15 MB of shared ephemeral storage, needs egress "
-                "from the pod, ptraces the app for a few seconds, and no "
-                "restart survives it",
-            ),
-        ] = False,
         identity: _Identity = DEFAULT_IDENTITY,
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
+        forward_agent: _ForwardAgent = False,
+        agent_socket: Annotated[
+            str | None,
+            typer.Option(
+                "--agent-socket",
+                metavar="SOCKET",
+                help="forward this agent rather than the one your shell has, "
+                "and turn `--forward-agent` on. `ssh-agent -a SOCKET` then "
+                "`SSH_AUTH_SOCK=SOCKET ssh-add ~/.ssh/id_git` keeps a git-only "
+                "agent, so only that key reaches the pod. It is set for the "
+                "`code` this run launches, so a VS Code already running has "
+                "the environment it was started with instead",
+            ),
+        ] = None,
         timeout: _Timeout = 120.0,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
@@ -6703,6 +7167,10 @@ def _build_app(
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
+        # `--agent-socket` implies the flag. Accepting it alone would set
+        # SSH_AUTH_SOCK for a `code` whose stanza never says ForwardAgent, so
+        # the run would look configured and forward nothing.
+        forward_agent = forward_agent or agent_socket is not None
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         key_path, public_key = read_public_key(identity)
         # Both before the namespace is listed, and `code` for a harsher reason
@@ -6756,6 +7224,15 @@ def _build_app(
             print()
             emit("\n".join(paragraph(OTHER_MODES_NOTE, first="  ", indent="  ")))
         print()
+        # Iterate mode needs no provisioning at all: the seat launches the
+        # application itself, so debugpy is installed where the launch
+        # configuration needs it and there is no live process in the workload
+        # container to inject a server into - `dev_pod_spec` idles that
+        # container to `sleep` for exactly this reason. Injecting anyway would
+        # succeed against `sleep` and report a debugger nobody can reach. So the
+        # step this run offers is shorter here, and the note says why.
+        in_dev_pod = is_dev_pod(landed_pod)
+        seat_spec = ephemeral_container(landed_pod, session.seat.container)
         wiring = _wire(
             kube,
             session,
@@ -6765,15 +7242,10 @@ def _build_app(
             ssh_user=ssh_user,
             print_config=False,
             opening=True,
+            debug_command=debug_command(session, seat_spec, dev_pod=in_dev_pod),
+            forward_agent=forward_agent,
         )
-        # Iterate mode is provisioned by construction, not by exec: the seat
-        # launches the application itself, so debugpy is installed where the
-        # launch configuration needs it and there is no live process in the
-        # workload container to inject a server into - `dev_pod_spec` idles that
-        # container to `sleep` for exactly this reason. Injecting anyway would
-        # succeed against `sleep` and report a debugger nobody can reach.
-        in_dev_pod = is_dev_pod(landed_pod)
-        if in_dev_pod and not no_provision:
+        if in_dev_pod:
             emit(
                 "\n".join(
                     paragraph(DEV_SIDECAR_PROVISION_NOTE, first="  ", indent="  ")
@@ -6786,14 +7258,10 @@ def _build_app(
                 kube,
                 session,
                 wiring,
-                seat_spec=ephemeral_container(landed_pod, session.seat.container),
+                seat_spec=seat_spec,
                 editor=editor,
-                provision=(
-                    Provision.NEVER
-                    if no_provision or in_dev_pod
-                    else Provision.IF_NEEDED
-                ),
                 runner=runner,
+                agent_socket=agent_socket,
             )
             opened = True
         finally:
@@ -6838,6 +7306,7 @@ def _build_app(
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
+        forward_agent: _ForwardAgent = False,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
@@ -6883,6 +7352,11 @@ def _build_app(
             identity_mounted=seat.identity_mounted,
             owner=seat.owner,
             credentials=credentials,
+            # Read here as well as in `attach`, because a `Session` that says a
+            # hotfixed pod is not one is a lie every reader of `seat_claim_path`
+            # inherits - and one of them, the forge scan, shipped on it. The pod
+            # json is already in hand, so the honest value costs nothing.
+            hotfixed=is_hotfixed(pod_json),
             # Asked again rather than assumed: this command exists to regenerate
             # a stanza from another machine, where nothing of the original
             # attach is in hand.
@@ -6897,6 +7371,7 @@ def _build_app(
                 host_alias=host_alias,
                 ssh_user=ssh_user,
                 print_config=print_config,
+                forward_agent=forward_agent,
             ).note
         )
         raise typer.Exit(0)
@@ -7018,6 +7493,8 @@ def _wire(
     ssh_user: str | None,
     print_config: bool,
     opening: bool = False,
+    debug_command: str = DEBUG_COMMAND,
+    forward_agent: bool = False,
 ) -> SshSeat:
     """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
     return emit_ssh_config(
@@ -7029,6 +7506,8 @@ def _wire(
         user=ssh_user,
         print_config=print_config,
         opening=opening,
+        debug_command=debug_command,
+        forward_agent=forward_agent,
     )
 
 

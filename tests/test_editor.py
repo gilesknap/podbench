@@ -10,12 +10,22 @@ when broken: the excludes must be on disk before the window that starts the
 walk, and an extension must install with ``--remote``, since a locally installed
 one runs the debug adapter on the laptop where no ``/proc/<pid>/root`` path
 means anything.
+
+Since #230 the third thing asserted here is a *negative*: this module writes
+nothing into the folder it opens and provisions nothing into the target. Both
+are silent when broken too — a stray ``launch.json`` is a line in somebody's git
+diff on an NFS PVC, and a stray ``--provision`` is 15 MB and a ptrace nobody
+asked for — so the fake keeps its file store and the tests read it for
+emptiness rather than for content.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import os
+import socket
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,23 +34,24 @@ from podbench.editor import (
     CONNECTION_HINT,
     OK,
     PROVISION_DEST_FLAG,
-    PROVISION_FLAG,
     SERVER_CLI_ATTEMPTS,
     SERVER_CLI_INTERVAL,
+    SSH_AUTH_SOCK,
     UNREACHABLE_CAUSES,
     EditorError,
-    Provision,
+    forwarded_agent,
     is_step,
     open_seat,
     resolve_editor,
 )
 from podbench.kubectl import CommandResult, Kubectl
 from podbench.model import ContainerRef, PodRef
-from podbench.vscode import (
-    INTERPRETER_NOTE,
-    PYTHON_INTERPRETER_KEY,
-    WITHHELD_NOTE,
-)
+from podbench.vscode import INTERPRETER_NOTE, PYTHON_INTERPRETER_KEY
+
+PROVISION_FLAG = "--provision"
+"""Spelled out rather than imported, because nothing on this side of the wire
+knows it any more (#230): the tests below assert that podbench never sends it,
+and a constant imported from the module under test could not say that."""
 
 SEAT = ContainerRef(PodRef("demo", "api-7f9"), "podbench-1")
 ALIAS = "podbench-demo-api-7f9"
@@ -83,9 +94,6 @@ class FakeSeat:
         configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
         debug_config_rc: int = 0,
         debug_config_stderr: str = "",
-        provision_rc: int = 0,
-        provision_stderr: str | None = None,
-        provisioned_configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
         files: dict[str, str] | None = None,
         unreadable: Sequence[str] = (),
         unwritable: Sequence[str] = (),
@@ -101,12 +109,6 @@ class FakeSeat:
         self.configurations = list(configurations)
         self.debug_config_rc = debug_config_rc
         self.debug_config_stderr = debug_config_stderr
-        self.provision_rc = provision_rc
-        # A separate narration for the provisioning run, because the two runs
-        # genuinely say different things: only the second one can report what a
-        # DAP handshake answered.
-        self.provision_stderr = provision_stderr
-        self.provisioned_configurations = list(provisioned_configurations)
         self.provisioned = False
         self.files = dict(files or {})
         self.unreadable = set(unreadable)
@@ -127,6 +129,9 @@ class FakeSeat:
         self.seat_install_rc = seat_install_rc
         self.seat_installed: list[str] = []
         self.calls: list[tuple[str, ...]] = []
+        # What each child would have inherited. `subprocess.run` copies
+        # `os.environ` at spawn, so this is the same read the real one makes.
+        self.agents: list[str | None] = []
 
     def __call__(
         self,
@@ -137,6 +142,7 @@ class FakeSeat:
         timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
+        self.agents.append(os.environ.get(SSH_AUTH_SOCK))
         if argv[0] == "code":
             return self._editor(list(argv))
         if argv[0] == "ssh":
@@ -151,19 +157,16 @@ class FakeSeat:
         # resolves: matching a bare `debug-config` here would keep this fake
         # green against a launcher that execs nothing in a real seat.
         if command[:2] == ["podbench", "debug-config"]:
-            if PROVISION_FLAG in command:
-                self.provisioned = True
-                self.debug_config_rc = self.provision_rc
-                self.configurations = list(self.provisioned_configurations)
-                if self.provision_stderr is not None:
-                    self.debug_config_stderr = self.provision_stderr
+            # Recorded, never honoured: `open_seat` must not send this, and a
+            # fake that quietly served it would let the regression through.
+            self.provisioned = self.provisioned or PROVISION_FLAG in command
             if self.debug_config_rc != 0:
                 return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
             document = {"version": "0.2.0", "configurations": self.configurations}
             # stderr on a *successful* run too: debug-config narrates the
-            # assessment and prints the injection command there, and relaying
-            # that is the difference between a launch.json that connects and one
-            # whose F5 meets a closed port.
+            # assessment there, and relaying it is how the reader learns that
+            # the debug step they are about to be offered will need
+            # `--provision`.
             return CommandResult((), 0, json.dumps(document), self.debug_config_stderr)
         if command[:2] == ["sh", "-c"] and command[2].startswith("mkdir -p"):
             assert stdin is not None, "a write must carry its content on stdin"
@@ -275,9 +278,9 @@ def run_open(
     seat: FakeSeat,
     *,
     folder: str = HOME,
-    provision: Provision = Provision.NEVER,
     provision_dest: str | None = None,
     naps: list[float] | None = None,
+    agent_socket: str | None = None,
 ) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
     goes rather than returning a list at the end, because the install is a
@@ -290,9 +293,9 @@ def run_open(
         folder=folder,
         report=notes.append,
         editor="code",
-        provision=provision,
         provision_dest=provision_dest,
         runner=seat,
+        agent_socket=agent_socket,
         # Never the real one: waiting for a vscode-server that a fake will never
         # bootstrap is five minutes of a unit suite that is meant to take
         # seconds. `naps` is how a test that cares about the wait sees it.
@@ -464,59 +467,77 @@ def test_a_settings_file_that_will_not_parse_is_left_alone() -> None:
     assert any("left exactly as it is" in note for note in notes)
 
 
-def test_a_projects_own_commented_vscode_files_are_merged_into() -> None:
-    """The 2026-08-24 measurement, through the verb that hit it: on a hotfixed
-    pod the folder opened is the application's checkout, and a real project
-    ships all four ``.vscode/*.json`` committed, with comments and a trailing
-    comma. Both merges refused, and no ``launch.json`` means no F5."""
-    launch = f"{HOME}/.vscode/launch.json"
-    seat = FakeSeat(
-        files={
-            MACHINE: '{\n  // ours\n  "editor.tabSize": 2,\n}\n',
-            launch: '{\n  "configurations": [\n    // none yet\n  ],\n}\n',
-        }
-    )
+def test_a_commented_settings_file_is_merged_into_rather_than_refused() -> None:
+    """The 2026-08-24 measurement, on the file that is left. A hand-edited VS
+    Code settings file is JSONC — comments and a trailing comma — and a parser
+    that refuses one leaves the seat with whatever `podbench agent` managed at
+    start-up, which on a re-created ~/.vscode-server is nothing at all."""
+    seat = FakeSeat(files={MACHINE: '{\n  // ours\n  "editor.tabSize": 2,\n}\n'})
     notes = run_open(seat)
 
     assert not any("left exactly as it is" in note for note in notes)
     assert "// ours" in seat.files[MACHINE]
-    assert "// none yet" in seat.files[launch]
-    assert DEBUGPY_CONFIG["name"] in seat.files[launch]
+    assert "**/proc/**" in seat.files[MACHINE]
 
 
-# -- launch.json -------------------------------------------------------------
+# -- nothing in the folder ---------------------------------------------------
 
 
-def test_the_targets_launch_json_is_written_into_the_same_folder() -> None:
+def test_no_launch_json_is_written_where_one_used_to_be() -> None:
+    """Slice 1 of #230, at the level the write happened.
+
+    Every configuration podbench can author is pid-named and pid-keyed, and a
+    restart changes the pid — measured across restarts on the p47 replica,
+    `fastcs-example` was pid 12, then 2446, then 13. So a launch.json written at
+    window-open is stale almost immediately, on the workflow that is now the
+    common one. Writing nothing cannot go stale.
+    """
+    seat = FakeSeat()
+    notes = run_open(seat)
+
+    assert f"{HOME}/.vscode/launch.json" not in seat.files
+    assert not any("launch.json" in note for note in notes)
+
+
+def test_the_folder_that_opens_is_left_exactly_as_it_was() -> None:
+    """The falsification the plan named: after a run against a hotfixed pod,
+    `git status` on the user's checkout shows nothing podbench authored. The
+    folder there is a committed checkout on an NFS PVC, so anything written is a
+    permanent line in somebody's diff."""
+    seat = FakeSeat()
+    run_open(seat, folder=CLAIM)
+
+    assert [name for name in seat.files if name.startswith(f"{CLAIM}/")] == []
+    assert set(seat.files) == {MACHINE}
+
+
+def test_the_assessment_still_says_which_extensions_the_seat_needs() -> None:
+    """What the run keeps, and why it is not a debugger feature.
+
+    `code --install-extension --remote` answers from the *laptop's* install
+    list, so the seat's own extensions are unknowable from here; only
+    `debug-config` can see the target, and its answer is what says whether this
+    is a Python seat or a C++ one. Nothing about asking mutates anything —
+    `--print-config` neither writes nor probes.
+    """
     seat = FakeSeat()
     run_open(seat)
 
-    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
-    assert document["configurations"] == [DEBUGPY_CONFIG]
-
-
-def test_a_second_open_updates_its_own_entry_rather_than_appending() -> None:
-    seat = FakeSeat()
-    run_open(seat)
-    run_open(seat)
-
-    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
-    assert document["configurations"] == [DEBUGPY_CONFIG]
+    assert seat.installed == ["ms-python.python", "ms-python.debugpy"]
+    assert seat.files == {MACHINE: seat.files[MACHINE]}
 
 
 def test_a_target_no_debugger_fits_still_gets_the_guard_and_the_folder() -> None:
-    """debug-config already named every mechanism that said no on its stderr.
-    The excludes and the folder are the rest of the seat, and they are the half
-    that keeps it alive."""
+    """The excludes and the folder are the rest of the seat, and they are the
+    half that keeps it alive. A target no debugger fits costs an F5."""
     seat = FakeSeat(
         debug_config_rc=2, debug_config_stderr="no debugger flavour could be emitted"
     )
     notes = run_open(seat)
 
-    assert f"{HOME}/.vscode/launch.json" not in seat.files
     assert MACHINE in seat.files
     assert seat.installed == []
-    assert any("no launch.json" in note for note in notes)
+    assert any("no debug extension was installed" in note for note in notes)
 
 
 # -- what the seat said ------------------------------------------------------
@@ -529,8 +550,14 @@ _REFUSAL = (
     "debug-config: no debugger flavour could be emitted for this target - every "
     "mechanism that said no is named above\n"
 )
-"""A live refusal, trimmed. The shape that matters is that the diagnosis is in
-the *middle*: the last line points at the ones above it."""
+"""A live refusal, trimmed. Two shapes matter here: it is *per-candidate prose
+about a debugger*, none of which this verb set up, and its diagnosis is the last
+thing `debug-config` says rather than the last thing on the stream — over a real
+`kubectl exec` there is a `command terminated with exit code 2` after it."""
+
+_LIVE_TRAILER = "command terminated with exit code 2\n"
+"""What kubectl appends to a failed exec's stderr. Measured on live p47,
+2026-08-24, where it was quoted at the user as the reason for the failure."""
 
 _SUCCESS = (
     "debug-config: python target, observe mode, x86_64\n"
@@ -543,279 +570,155 @@ _SUCCESS = (
 """A live *successful* run, trimmed. It names the flag, which is the whole
 point: the prerequisites are met and there is still nothing to connect to."""
 
-_WITHHELD = (
-    "debug-config: --provision: injected in 1.8s, but nothing is listening on "
-    "127.0.0.1:37516 (Connection refused): the injector returned 0 and left no "
-    "server behind\n"
-    "debug-config: --provision: no debug session could be started on "
-    f"127.0.0.1:37516, {WITHHELD_NOTE} for pid 13 and whatever launch.json "
-    "already holds is kept\n"
-)
-"""Run 3 on p47, once slice 2 gates the write on the handshake (#218).
 
-The seat proved, with a DAP `initialize`, that no session can be started - so
-the retry's *empty* answer is a measurement and not an absence, and the laptop
-may not paper over it with the first run's."""
+def test_the_assessments_per_candidate_notes_stay_in_the_seat() -> None:
+    """The measured defect: 15 lines of the report's 90 on live p47 were the
+    assessment narrating about a debugger this run deliberately did not set up.
 
-_NO_DEBUGPY_WANTED = (
-    "debug-config: c++ target, observe mode, x86_64\n"
-    "debug-config: emitting cppdbg for pid 1\n"
-)
-"""A run with nothing debugpy-shaped about it, which must never provision."""
-
-
-def test_the_whole_refusal_is_relayed_not_just_its_last_line() -> None:
-    """ "every mechanism that said no is named above" is the last line, so a
-    caller that keeps only the last line points at output it just discarded —
-    which is exactly how a missing launch.json read as a podbench bug."""
+    `--print-config` emitted nothing and wrote nothing anywhere, so "also
+    emitting for pid 7" read as the very thing #230 removed, and an injection
+    command is advice about a debugger nobody asked this verb for.
+    """
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     notes = run_open(seat)
 
-    assert any("debugpy is not importable by the target" in note for note in notes)
+    flowed = " ".join(notes)
+    assert "python target, observe mode" not in flowed
+    assert "install it into the target from this seat" not in flowed
+    assert "--provision" not in flowed
 
 
-def test_the_injection_command_survives_a_successful_run() -> None:
-    """The debugpy configuration is emitted once the prerequisites are met, and
-    nothing is listening until the injection runs. Dropping stderr on success
-    writes a launch.json whose F5 meets a closed port with nothing said."""
+def test_an_assessment_that_could_not_be_read_is_worth_one_line() -> None:
+    """What survives, and why it is not the same thing as relaying.
+
+    The extensions and the interpreter both come off this run, so a reader
+    whose window opens without them is owed the fact - once, with the seat's
+    own diagnosis quoted and the rest of it left where it can still be read.
+    """
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL + _LIVE_TRAILER)
+    notes = run_open(seat)
+
+    about = [note for note in notes if "no debug extension was installed" in note]
+    assert len(about) == 1
+    # `debug-config`'s own last word, which on a real exec is not the last line
+    # of the stream: kubectl's trailer is.
+    assert "no debugger flavour could be emitted" in about[0]
+    assert "command terminated" not in about[0]
+    assert "podbench debug-config --print-config" in about[0]
+
+
+def test_a_run_that_fits_a_debugger_says_nothing_about_the_debugger() -> None:
+    """The successful case is the one that reads worst relayed: a port number
+    and a paste-me injection command, from a run that started no server. What
+    the reader gets instead is the extension install, which is the editor fact
+    the assessment was made for."""
     seat = FakeSeat(debug_config_stderr=_SUCCESS)
     notes = run_open(seat)
 
-    assert f"{HOME}/.vscode/launch.json" in seat.files
-    assert any("nothing is listening on 127.0.0.1:5678" in note for note in notes)
-    # One note per line: the launcher's report formatter re-wraps on whitespace,
-    # so the continuation backslash only survives at the end of its own note.
-    assert any(note.endswith("\\") for note in notes)
+    flowed = " ".join(notes)
+    assert not seat.files.keys() - {MACHINE}
+    assert "127.0.0.1:5678" not in flowed
+    assert "PYTHONPATH" not in flowed
+    assert any(note.startswith(f"{OK} installing ms-python.python") for note in notes)
 
 
 def test_a_seat_that_never_ran_the_verb_still_says_what_happened() -> None:
-    """127 from a `podbench` the image does not resolve carries sh's message and
-    no narration at all, and that message is the whole diagnosis."""
+    """127 from a `podbench` the image does not resolve narrates nothing at all,
+    so there is no diagnosis to quote. The exit code is what is left, and it is
+    said rather than left as an empty quote."""
     seat = FakeSeat(debug_config_rc=127, debug_config_stderr="")
     notes = run_open(seat)
 
-    assert any("no launch.json: it said nothing" in note for note in notes)
+    assert any("it exited 127 and said nothing" in note for note in notes)
 
 
-# -- provisioning ------------------------------------------------------------
-
-
-def test_the_offer_names_the_flag_that_was_declined() -> None:
-    """Reached only by somebody who said `--no-provision`: everywhere else the
-    seat's refusal is answered rather than reported. So the remedy is the flag
-    to drop, not a flag to add."""
-    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
-    notes = run_open(seat)
-
-    assert any("without `--no-provision`" in note for note in notes)
-
-
-def test_a_refusal_naming_the_flag_is_answered_rather_than_reported() -> None:
-    """The seat has just said debugpy is the blocker and the verb's name is the
-    consent, so the fact is already in hand. Asking the user to retype it was
-    the round trip this removes."""
-    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL, provision_rc=0)
-    notes = run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert seat.provisioned
-    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
-    assert document["configurations"] == [DEBUGPY_CONFIG]
-    # The refusal is relayed and *then* answered: debug-config is the only thing
-    # that can see the target, so its account of why debugpy is the blocker is
-    # the diagnosis. A run that hid it would be asserting the need for the
-    # install rather than showing it.
-    relayed = next(
-        i for i, note in enumerate(notes) if "nothing above could be turned" in note
-    )
-    answered = next(
-        i for i, note in enumerate(notes) if "provisioning debugpy now" in note
-    )
-    ran = next(i for i, note in enumerate(notes) if "--provision is mutating" in note)
-    assert relayed < answered < ran
-    assert not any("without `--no-provision`" in note for note in notes)
-
-
-def test_a_target_that_needs_nothing_is_provisioned_anyway_by_nobody() -> None:
-    """`IF_NEEDED` is not `ALWAYS`. A seat that asked for nothing gets nothing,
-    and spending an install on it would mutate a workload for no reason."""
-    seat = FakeSeat(debug_config_stderr=_NO_DEBUGPY_WANTED)
-    notes = run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert not seat.provisioned
-    assert not any(note.startswith("--provision") for note in notes)
-
-
-def test_a_configuration_pointing_at_a_closed_port_is_provisioned() -> None:
-    """The trigger is the seat naming the flag, not the seat exiting non-zero.
-
-    A Python workload that ships its own debugpy meets every prerequisite, so
-    `debug-config` exits 0 and emits a configuration - and nothing is listening
-    on the port it connects to until the injection runs. Keying the retry on
-    the exit code sent exactly that target to F5 with `ECONNREFUSED`, from the
-    one verb whose contract is a debuggable target. Measured on a Diamond IOC,
-    2026-08-21.
-    """
-    seat = FakeSeat(debug_config_stderr=_SUCCESS)
-    notes = run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert seat.provisioned
-    # Relayed, then answered, then run - the same order a refusal takes, since
-    # the seat's own account of what is missing is the diagnosis either way.
-    said = next(i for i, note in enumerate(notes) if "nothing is listening" in note)
-    answered = next(
-        i for i, note in enumerate(notes) if "provisioning debugpy now" in note
-    )
-    ran = next(i for i, note in enumerate(notes) if "--provision is mutating" in note)
-    assert said < answered < ran
-
-
-def test_a_closed_port_offers_the_flag_to_somebody_who_declined_it() -> None:
-    """`--no-provision` is the only way to `NEVER`, so the remedy is the flag to
-    drop. It has to be offered for this blocker too: the reader has just been
-    handed a launch.json and told, four lines up, that it connects to nothing."""
-    seat = FakeSeat(debug_config_stderr=_SUCCESS)
-    notes = run_open(seat, provision=Provision.NEVER)
-
-    assert not seat.provisioned
-    assert any("without `--no-provision`" in note for note in notes)
-
-
-def test_a_failed_install_keeps_the_configuration_the_first_run_authored() -> None:
-    """Nothing to lose while the trigger was a refusal - the first run had no
-    configurations by definition. Now it has good ones whose only fault is a
-    closed port, and the command to open that port by hand was relayed with
-    them. Dropping both on a failed install would make the retry a regression
-    for the case it was widened to serve."""
-    seat = FakeSeat(debug_config_stderr=_SUCCESS, provision_rc=2)
-    run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert seat.provisioned
-    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
-    assert document["configurations"] == [DEBUGPY_CONFIG]
-
-
-def test_a_withheld_configuration_is_not_replaced_by_the_first_runs_dead_port() -> None:
-    """The other half of #218, one layer up.
-
-    The fallback exists so that a provisioning run failing on egress does not
-    take the first run's good configurations with it. A *withheld* answer is the
-    one case where it must not fire: the first run's configurations name a port
-    it never started a server on either, so falling back to them writes exactly
-    the closed port the seat has just refused to write.
-    """
+def test_a_seat_whose_shell_answered_is_quoted_rather_than_the_trailer() -> None:
+    """Nothing narrated, but something said: sh's own message is the diagnosis
+    there, and kubectl's trailer sits after it on the same stream."""
     seat = FakeSeat(
-        debug_config_stderr=_SUCCESS,
-        provision_stderr=_WITHHELD,
-        provisioned_configurations=(),
-    )
-    notes = run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert seat.provisioned
-    assert f"{HOME}/.vscode/launch.json" not in seat.files
-    assert any(WITHHELD_NOTE in note for note in notes)
-
-
-def test_the_retry_cannot_loop_however_loudly_it_names_the_flag() -> None:
-    """A provisioning run narrates with `--provision:` on every line, so the
-    string it is recognised by is in its own stderr by construction. The guard
-    is `not provision`, and it is the whole of the no-loop guarantee."""
-    seat = FakeSeat(debug_config_stderr=_SUCCESS)
-    run_open(seat, provision=Provision.IF_NEEDED)
-
-    runs = [call for call in seat.calls if "debug-config" in call]
-    assert len(runs) == 2
-    assert sum(PROVISION_FLAG in call for call in runs) == 1
-
-
-def test_a_refusal_for_any_other_reason_is_not_retried() -> None:
-    """There is no --provision for a missing delve. The retry is keyed on the
-    seat naming the flag, which it does for debugpy and for nothing else, so a
-    target podbench cannot help is not ptraced on the way to finding out."""
-    seat = FakeSeat(
-        debug_config_rc=2,
-        debug_config_stderr="debug-config: no gdb in this image, and no lldb\n",
-    )
-    notes = run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert not seat.provisioned
-    assert not any("--provision" in note for note in notes)
-
-
-def test_no_provision_offer_for_a_flavour_it_cannot_help() -> None:
-    """There is no --provision for a missing delve, and an offer that does not
-    apply is a step the reader takes and learns nothing from."""
-    seat = FakeSeat(
-        debug_config_rc=2,
-        debug_config_stderr="debug-config: no gdb in this image, and no lldb\n",
+        debug_config_rc=127,
+        debug_config_stderr=f"sh: 1: podbench: not found\n{_LIVE_TRAILER}",
     )
     notes = run_open(seat)
 
-    assert not any("--provision" in note for note in notes)
+    assert any("podbench: not found" in note for note in notes)
+    assert not any("command terminated" in note for note in notes)
 
 
-def test_provision_asks_the_seat_and_gets_a_launch_json() -> None:
-    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL, provision_rc=0)
-    run_open(seat, provision=Provision.ALWAYS)
+def test_an_interpreter_survives_an_assessment_that_otherwise_failed() -> None:
+    """A refusal still measures the target's interpreter, and the line must not
+    claim otherwise: the window's "no interpreter found" popup is answered from
+    a run that fitted no debugger at all."""
+    seat = FakeSeat(
+        debug_config_rc=2,
+        debug_config_stderr=(
+            f"debug-config: {INTERPRETER_NOTE}{CLAIM_INTERPRETER}\n{_REFUSAL}"
+        ),
+    )
+    notes = run_open(seat, folder=CLAIM)
 
-    assert seat.provisioned
-    document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
-    assert document["configurations"] == [DEBUGPY_CONFIG]
-    assert seat.installed == ["ms-python.python", "ms-python.debugpy"]
+    assert json.loads(seat.files[MACHINE])[PYTHON_INTERPRETER_KEY] == CLAIM_INTERPRETER
+    assert not any("no interpreter set" in note for note in notes)
 
 
-def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
-    """It is a uv resolve and download into somebody else's writable layer. A
-    cost named after the write is not a cost the user got to decline.
+# -- nothing in the target ---------------------------------------------------
 
-    Counted in *seat* calls rather than in calls: the reachability preflight
-    runs first and deliberately so - provisioning writes into the workload and
-    ptraces it, which is not worth spending on a seat no editor can reach - but
-    it opens one ssh connection and changes nothing.
+
+def test_nothing_is_provisioned_however_loudly_the_seat_asks() -> None:
+    """Slice 1 of #230, at the level the mutation happened.
+
+    The seat names `--provision` on both of debugpy's blockers, and this side of
+    the wire used to answer it: an editor was asked for, and a ~15 MB install
+    into the workload's writable layer plus a ptrace of a probed application is
+    the debugger's bill. It is now paid by the step the report offers, by
+    somebody who asked for a debugger.
     """
+    for stderr in (_REFUSAL, _SUCCESS):
+        seat = FakeSeat(debug_config_stderr=stderr, debug_config_rc=0)
+        run_open(seat)
+
+        assert not seat.provisioned
+        assert not any(PROVISION_FLAG in call for call in seat.calls)
+
+
+def test_the_reader_is_sent_to_the_seat_rather_than_read_the_seats_reasoning() -> None:
+    """Nothing here answers the refusal any more, and nothing here recites it:
+    the assessment writes and probes nothing, so the same command run in the
+    seat prints the same reasoning to somebody who asked for it."""
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
-    timeline: list[tuple[str, int]] = []
-    open_seat(
-        Kubectl("demo", runner=seat),
-        SEAT,
-        alias=ALIAS,
-        folder=HOME,
-        report=lambda note: timeline.append((note, _seat_calls(seat))),
-        editor="code",
-        provision=Provision.ALWAYS,
-        runner=seat,
-    )
-    notice, announced = next(
-        (note, calls) for note, calls in timeline if "--provision" in note
-    )
-    assert announced == 0
-    # The mutation and the flag, which is what a one-line warning owes the
-    # reader. The three specific costs - egress, no restart survives it, ~15 MB
-    # of shared ephemeral storage - are `provision.CAVEATS`, printed by the
-    # seat that is spending them and relayed here verbatim, and written out in
-    # docs/how-to/vscode-remote-ssh.md for anyone who wants them beforehand.
-    # Saying them a third time on the laptop is what made this block unreadable.
-    assert "mutating the workload" in notice
-    assert "debugpy" in notice and "ptraces" in notice
+    notes = run_open(seat)
+
+    assert any("in the seat prints the whole of what it saw" in note for note in notes)
+    assert not seat.provisioned
 
 
-def test_a_chosen_destination_reaches_both_runs_of_debug_config() -> None:
-    """Only the launcher can see the pod, so only it can know that this seat's
-    own default is a directory the seat cannot write (issue #189's pod: `/opt`
-    is root-owned and the degraded rung is uid 37887).
+def test_there_is_no_second_run_to_answer_anything_with() -> None:
+    """The retry is gone with the consent that drove it. One assessment, so the
+    extensions installed cannot come from two measurements of one target."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    run_open(seat)
 
-    On the assessment run as well as the provisioning one, because
-    `--provision-dest` is also the extra path `debug-config` searches for the
-    target's own copy - so a reconnect finds what an earlier run installed
-    instead of offering to install it again.
+    assert len([call for call in seat.calls if "debug-config" in call]) == 1
+
+
+def test_a_chosen_destination_reaches_the_assessment() -> None:
+    """Only the launcher can see the pod, so only it can know this seat's own
+    default is a directory the seat cannot write (issue #189's pod: `/opt` is
+    root-owned and the degraded rung is uid 37887).
+
+    Nothing here installs to it. It is passed because it is also the extra path
+    `debug-config` searches for the target's own copy — so a window opened after
+    the user ran the debug step finds what that step installed, and asks for the
+    Python extensions on the strength of it.
     """
     seat = FakeSeat(debug_config_stderr=_SUCCESS)
     dest = "/podbench/app/.podbench-debugpy"
-    run_open(seat, provision=Provision.IF_NEEDED, provision_dest=dest)
+    run_open(seat, provision_dest=dest)
 
     runs = [call for call in seat.calls if "debug-config" in call]
-    assert len(runs) == 2
-    for call in runs:
-        assert call[call.index(PROVISION_DEST_FLAG) + 1] == dest
+    assert len(runs) == 1
+    assert runs[0][runs[0].index(PROVISION_DEST_FLAG) + 1] == dest
+    assert PROVISION_FLAG not in runs[0]
 
 
 def test_no_destination_leaves_the_argv_as_it_has_always_been() -> None:
@@ -824,19 +727,9 @@ def test_no_destination_leaves_the_argv_as_it_has_always_been() -> None:
     `--provision-dest` would refuse the whole run, and podbench meets one only
     on a pod where it had nothing to override anyway."""
     seat = FakeSeat(debug_config_stderr=_SUCCESS)
-    run_open(seat, provision=Provision.IF_NEEDED)
-
-    assert not any(PROVISION_DEST_FLAG in call for call in seat.calls)
-
-
-def test_nothing_is_provisioned_unless_it_is_asked_for() -> None:
-    """Issue #45: writing ~15 MB into the workload is the larger of the two
-    mutations a config author must be asked for."""
-    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     run_open(seat)
 
-    assert not seat.provisioned
-    assert not any(PROVISION_FLAG in call for call in seat.calls)
+    assert not any(PROVISION_DEST_FLAG in call for call in seat.calls)
 
 
 # -- extensions --------------------------------------------------------------
@@ -861,18 +754,16 @@ def test_a_c_target_asks_for_cpptools_alone() -> None:
     assert seat.installed == ["ms-vscode.cpptools"]
 
 
-def test_the_only_file_written_into_the_folder_is_launch_json() -> None:
-    """D1b, and the falsification the plan named: after a run against a hotfixed
-    pod, ``git status`` on the user's checkout must show nothing podbench
-    authored other than ``.vscode/launch.json``. ``extensions.json`` was
-    recommendations only — this module installs the extensions itself and then
-    asks the seat whether they landed — and the excludes moved to the seat's own
-    machine settings."""
+def test_installing_an_extension_writes_nothing_into_the_folder() -> None:
+    """The extension install is the one thing left that touches the seat on
+    behalf of a debugger, and it lands in ``~/.vscode-server`` — never in the
+    folder. D1b moved ``settings.json`` and ``extensions.json`` out; #230 took
+    ``launch.json``, which was the last of them."""
     seat = FakeSeat()
-    run_open(seat, folder="/podbench/app")
+    run_open(seat, folder=CLAIM)
 
-    under_folder = [name for name in seat.files if name.startswith("/podbench/app/")]
-    assert under_folder == ["/podbench/app/.vscode/launch.json"]
+    assert seat.installed == ["ms-python.python", "ms-python.debugpy"]
+    assert [name for name in seat.files if name.startswith(f"{CLAIM}/")] == []
 
 
 def test_an_install_that_fails_is_reported_and_the_folder_still_opens() -> None:
@@ -1177,40 +1068,38 @@ def test_a_folder_that_could_end_the_seat_is_refused_not_assumed_away(
     assert seat.calls == [], "nothing is written and nothing is opened"
 
 
-def test_a_file_that_cannot_be_written_ends_the_run_before_anything_opens() -> None:
-    """The first of these files is the exclude list, and a window opened without
-    it walks /proc/<pid>/root. The sentence names the layer that refused, which
-    a raw KubectlError - argv and all - does not."""
-    seat = FakeSeat(unwritable=[f"{HOME}/.vscode/launch.json"])
-    with pytest.raises(EditorError, match="cannot write /root/.vscode/launch.json"):
-        run_open(seat)
+def test_machine_settings_that_cannot_be_written_are_a_line_not_a_refusal() -> None:
+    """The one file left, and it fails softly: `podbench agent` already wrote
+    the excludes at seat start-up, so what this run adds is the interpreter and
+    a repair. Neither is worth refusing to open an editor over — but the line
+    says *unmeasured* rather than fine, because a file that could not be read
+    might be one that no longer carries `**/proc/**`."""
+    seat = FakeSeat(unwritable=[MACHINE])
+    notes = run_open(seat)
 
-    assert [call for call in seat.calls if call[0] == "code"] == []
+    assert any("could not write" in note and MACHINE in note for note in notes)
+    assert [call for call in seat.calls if call[0] == "code"] != []
 
 
 def test_a_file_that_cannot_be_read_is_not_replaced_with_a_fresh_one() -> None:
     """`cat` exits non-zero for "not there" and for "could not read it" alike,
     and reading the second as the first turns the merge this promises into a
     replacement of whatever the seat was already carrying."""
-    launch = '{"configurations": [{"name": "mine"}]}'
-    seat = FakeSeat(
-        files={f"{HOME}/.vscode/launch.json": launch},
-        unreadable=[f"{HOME}/.vscode/launch.json"],
-    )
-    with pytest.raises(EditorError, match="cannot read /root/.vscode/launch.json"):
-        run_open(seat)
+    mine = '{"editor.tabSize": 2}'
+    seat = FakeSeat(files={MACHINE: mine}, unreadable=[MACHINE])
+    notes = run_open(seat)
 
-    assert seat.files[f"{HOME}/.vscode/launch.json"] == launch
+    assert seat.files[MACHINE] == mine
+    assert any("could not read" in note and MACHINE in note for note in notes)
 
 
 def test_a_file_that_is_simply_absent_is_written_rather_than_refused() -> None:
     """The common case, and the one the exit code has to keep distinct: a first
-    --open meets a seat with no .vscode directory at all."""
+    run meets a seat with no ~/.vscode-server at all."""
     seat = FakeSeat()
     run_open(seat)
 
     assert MACHINE in seat.files
-    assert f"{HOME}/.vscode/launch.json" in seat.files
 
 
 def test_the_editor_is_found_on_path_and_named_by_its_absolute_route() -> None:
@@ -1219,27 +1108,31 @@ def test_the_editor_is_found_on_path_and_named_by_its_absolute_route() -> None:
     )
 
 
-def test_the_files_are_written_where_the_folder_is_and_nowhere_else() -> None:
+def test_the_only_file_written_anywhere_is_the_machine_settings() -> None:
+    """Wherever the folder is. The excludes are the seat's own, under the ssh
+    login's home, and #230 left them as the whole of what a run writes."""
     seat = FakeSeat()
     run_open(seat, folder="/home/podbench")
 
-    assert set(seat.files) == {MACHINE, "/home/podbench/.vscode/launch.json"}
+    assert set(seat.files) == {MACHINE}
 
 
 def test_a_write_creates_the_directory_and_never_redirects_stderr() -> None:
     """Closing or replacing fd 2 in a ``kubectl exec``'d process tears down the
-    CRI exec stream and truncates the write with a zero exit (report 3.1)."""
+    CRI exec stream and truncates the write with a zero exit (report 3.1).
+
+    Only the machine settings go this way now, and they go over ssh — so the
+    scripts are read off the ssh calls rather than the exec ones.
+    """
     seat = FakeSeat()
     run_open(seat)
 
-    scripts = [call[-1] for call in seat.calls if call[-2:-1] == ("-c",)]
-    assert scripts, seat.calls
-    for script in scripts:
-        assert "2>" not in script and ">/dev/null" not in script
+    scripts = [call[-1] for call in seat.calls if call[0] == "ssh" and len(call) > 5]
     writes = [script for script in scripts if "cat > " in script]
     assert writes, scripts
     for script in writes:
         assert script.startswith("mkdir -p ")
+        assert "2>" not in script and ">/dev/null" not in script
 
 
 def test_nothing_here_shells_out_to_a_second_assessment() -> None:
@@ -1253,38 +1146,121 @@ def test_nothing_here_shells_out_to_a_second_assessment() -> None:
     assert assessments[0][-1] == "--print-config"
 
 
-def test_every_step_carries_a_tick_and_the_seats_own_words_do_not() -> None:
-    """The two shapes `report` emits, and the reason they are laid out apart.
+def test_every_note_is_a_step_of_this_modules_own() -> None:
+    """The report is a checklist, and since #230 it is only that.
 
-    A step is this module's own claim and wraps under its tick. Relayed stderr
-    is somebody else's text: it is printed exactly as it arrived, because one
-    of those lines ends in a continuation `\\` that means nothing once anything
-    follows it, and because a `debug-config:` at the head of one is a label to
-    `console`'s eye and is not one.
+    The seat's narration used to come through here as a second shape, laid out
+    raw because reflowing somebody else's text destroys it - a continuation `\\`
+    that means nothing once anything follows it, a `debug-config:` that is a
+    label to `console`'s eye and is not one. Now nothing but steps is reported,
+    and each is one line, because the reliably-skipped part of a report is the
+    prose in it.
     """
-    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
-    notes = run_open(seat, provision=Provision.IF_NEEDED)
+    for stderr in (_REFUSAL, _SUCCESS):
+        seat = FakeSeat(debug_config_rc=2, debug_config_stderr=stderr)
+        notes = run_open(seat)
 
-    ours = [note for note in notes if is_step(note)]
-    relayed = [note for note in notes if not is_step(note)]
-    assert ours and relayed
-    # Verbatim, indent and all: the seat wraps its own narration, and this
-    # line is the continuation of the one above it. Anything on this side that
-    # reflowed or stripped it would run the two together.
-    assert "  `podbench debug-config --provision` runs" in relayed
-    for note in ours:
-        # One line each. The mechanism lives in docs/how-to/vscode-remote-ssh.md,
-        # because the reliably-skipped part of a report is the prose in it.
-        assert "\n" not in note
-        assert len(note.split(". ")) <= 2, note
+        assert notes
+        for note in notes:
+            assert is_step(note), note
+            assert "\n" not in note
+            # The mechanism lives in docs/how-to/vscode-remote-ssh.md, said once.
+            assert len(note.split(". ")) <= 2, note
 
 
-def test_each_file_is_one_line_and_the_directory_is_said_once() -> None:
-    """A `wrote <base>/<name>.json` line per file is one fact said N times."""
+def test_only_one_line_claims_to_have_written_anything() -> None:
+    """There is one file left, so there is one such line. It used to be two, and
+    before D1b it was four, each carrying the same directory."""
     notes = run_open(FakeSeat())
 
     wrote = [note for note in notes if note.startswith(f"{OK} wrote")]
-    assert wrote == [
-        f"{OK} wrote {MACHINE} in the seat: the folder-walk excludes",
-        f"{OK} wrote launch.json in {HOME}/.vscode",
-    ]
+    assert wrote == [f"{OK} wrote {MACHINE} in the seat: the folder-walk excludes"]
+
+
+# -- which agent the seat is lent --------------------------------------------
+
+
+@pytest.fixture
+def git_agent(tmp_path: Path) -> Iterator[str]:
+    """A real AF_UNIX socket, because :func:`forwarded_agent` checks for one."""
+    path = tmp_path / "git-agent.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(path))
+        # Listening, because that is what `forwarded_agent` measures: a bound
+        # socket nobody accepts on is the stale inode a killed agent leaves,
+        # and it is the case the check exists to refuse.
+        server.listen(1)
+        yield str(path)
+
+
+def test_every_child_sees_the_named_agent_and_the_caller_gets_its_own_back(
+    git_agent: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`code` is not the only child that has to see it.
+
+    The preflight and the three ssh calls after it all travel over the same
+    stanza, and a run that pointed only the editor at the git agent would
+    forward the user's whole agent from every other one.
+    """
+    monkeypatch.setenv(SSH_AUTH_SOCK, "/run/user/1000/keyring/ssh")
+    seat = FakeSeat()
+
+    run_open(seat, agent_socket=git_agent)
+
+    assert seat.agents, "nothing was spawned"
+    assert set(seat.agents) == {git_agent}
+    # Restored, because this is process-global state and the caller did not ask
+    # for it to change.
+    assert os.environ[SSH_AUTH_SOCK] == "/run/user/1000/keyring/ssh"
+
+
+def test_no_socket_named_leaves_the_shells_agent_exactly_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--forward-agent` on its own forwards whatever the shell already has."""
+    monkeypatch.setenv(SSH_AUTH_SOCK, "/run/user/1000/keyring/ssh")
+    seat = FakeSeat()
+
+    run_open(seat)
+
+    assert set(seat.agents) == {"/run/user/1000/keyring/ssh"}
+
+
+def test_an_agent_that_is_not_listening_is_refused_before_anything_runs(
+    tmp_path: Path,
+) -> None:
+    """ssh with an SSH_AUTH_SOCK naming nothing forwards nothing and says so
+    nowhere; the failure would arrive in the seat minutes later, as a git
+    authentication error pointing at the key."""
+    seat = FakeSeat()
+
+    with pytest.raises(EditorError, match="ssh-agent -a"):
+        run_open(seat, agent_socket=str(tmp_path / "never-started.sock"))
+
+    assert seat.calls == []
+
+
+def test_a_plain_file_is_not_an_agent(tmp_path: Path) -> None:
+    ordinary = tmp_path / "id_git"
+    ordinary.write_text("PRIVATE")
+
+    with pytest.raises(EditorError, match="not a listening socket"):
+        with forwarded_agent(str(ordinary)):
+            pass
+
+
+def test_a_socket_its_agent_died_under_is_not_an_agent(tmp_path: Path) -> None:
+    """ssh-agent unlinks its socket when it exits cleanly and on no other path,
+    so a crash or a reboot leaves an inode that is still S_ISSOCK and still
+    connects to nothing. A stat-only check accepted it, and ssh then started
+    with an SSH_AUTH_SOCK that forwards nothing - which is the failure this
+    refusal exists to move from the seat to the laptop."""
+    stale = tmp_path / "dead-agent.sock"
+    bound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    bound.bind(str(stale))
+    bound.close()
+
+    assert stale.is_socket(), "the file outlives the process, which is the trap"
+    with pytest.raises(EditorError, match="not a listening socket"):
+        with forwarded_agent(str(stale)):
+            pass

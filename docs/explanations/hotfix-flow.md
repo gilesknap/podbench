@@ -16,10 +16,18 @@ kubelet's CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relaunc
 It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.
 
-Seven verbs: `values`, `check`, `init`, `apply`, `status`, `consolidate`, `retire`.
+Six verbs: `values`, `check`, `init`, `restart`, `status`, `retire`.
 `values` reads the target pod and emits the chart snippet the whole thing depends on;
 `check` says whether the deployed result is one `init` can work on; `retire` says how
 far the fix has got back out again.
+
+**Committing and pushing are ordinary git in the seat.** There were two more verbs,
+`apply` and `consolidate`, and each was git plus one field written into the manifest.
+Both are gone ([#232](https://github.com/gilesknap/podbench/issues/232)): the seat has
+a working git since 0.9.0, and a manifest that records what git did is a record one
+hand commit or one hand push makes false without anything noticing. What is left is
+the work git cannot do from in there — relaunching the application, and measuring
+where the claim has got to.
 
 ## The layout it requires
 
@@ -209,7 +217,7 @@ thing this mode cannot get wrong from a desk is checked from one.
       exec <your entrypoint>
     ) &
     child=$!
-    echo $child > /tmp/podbench-child.pid                ← what `apply` kills
+    echo $child > /tmp/podbench-child.pid                ← what `restart` kills
     wait $child; rc=$?
     kill -TERM -"$child" 2>/dev/null || true             ← reap the strays
     [ -e /tmp/podbench-hold ] || exit $rc                ← fail-fast by default
@@ -219,7 +227,7 @@ thing this mode cannot get wrong from a desk is checked from one.
 Three things about it, each of which failed silently before it was measured:
 
 * **The runtime switch is inside the loop.** Evaluated once at container start it can
-  never see a claim seeded afterwards, so the first `apply` after an `init` would
+  never see a claim seeded afterwards, so the first `restart` after an `init` would
   relaunch the *image's* code and report success — new pids, `restartCount` 0, and the
   old binary still serving. The `.venv` it looks for is `--claim-venv`'s default, and
   the same value has to reach `init`: a switch looking for one directory and a rebuild
@@ -287,7 +295,7 @@ and each has a failure mode behind it:
   distroless container is a real possibility, and is reported as **not measured** rather
   than as a project that is absent.
 * **A `warn` is not a blocker**, the way it is not in `doctor`. A non-exec
-  `livenessProbe` is one: `init` accepts such a target and it is `apply`'s hold the
+  `livenessProbe` is one: `init` accepts such a target and it is the relaunch's hold the
   kubelet will cut short, so it is a thing to deal with rather than a reason for this
   command to stop.
 * **It asks `init`'s questions in `init`'s terms, which is why it takes `--repo`.**
@@ -370,7 +378,7 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
 │   can carry the supervisor while the container runs something    │
 │   else — an image whose ENTRYPOINT wins, values that never       │
 │   reached this pod. A refusal, not a warning: with nothing to    │
-│   relaunch, `apply` would kill the application, the kubelet      │
+│   relaunch, a restart would kill the application, the kubelet    │
 │   would restart the container, and your seat would go with it.   │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ├─ no supervisor ──────────────▶ exit 2
@@ -456,7 +464,11 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
 │ RECORD THE PROVENANCE — on the claim, and only there             │
 │   write /podbench/app/.podbench-hotfix.json                      │
 │     checkout, repo, base image + digest, interpreter, container, │
-│     commit, base_commit, author, timestamp                       │
+│     base_commit (+ whether it was assumed), claim venv           │
+│                                                                  │
+│   Only what git cannot answer. No commit, no count, no author,   │
+│   no timestamp: the claim is a clone with a real origin, and     │
+│   `status` asks it (#232).                                       │
 │                                                                  │
 │   Not on the workload's pod template. A GitOps controller        │
 │   reconciles a volume towards its spec but strips an annotation  │
@@ -501,8 +513,8 @@ landed beside the venv the supervisor is looking for would leave the pod quietly
 running the image's code — the one failure this whole mode exists to avoid. Passing it
 to `init` means passing the same value to `hotfix values`.
 
-`init` records it in the manifest, and `apply` reads it from there rather than
-taking a flag of its own
+`init` records it in the manifest, and `restart --reinstall` reads it from there
+rather than taking a flag of its own
 ([#209](https://github.com/gilesknap/podbench/issues/209)). Before it did, a
 packaging change under `init --claim-venv env` was rebuilt into `.venv` while the
 switch went on looking in `env` — the same silent revert, arrived at from the one
@@ -547,15 +559,20 @@ naming of the repository that did not come out of the image. Where `origin`
 disagrees it wins, and the base is recorded as assumed.
 
 Where nothing corroborates them — no labels, a registry that wants credentials,
-or no checkout in the image to ask — the base is recorded as **assumed** and `status` says
-`+N commit(s) from an assumed base`. That is the point of the item rather than a
-fallback from it: a derived count printed as though it were measured is worse
-than one that admits what it stands on.
+or no checkout in the image to ask — the base is recorded as **assumed** and the
+`claim` row says `an assumed base, so the count is a guess`. That is the point of the
+item rather than a fallback from it: a derived count printed as though it were
+measured is worse than one that admits what it stands on.
 
-## `hotfix apply` — commit, rebuild if needed, relaunch
+## `hotfix restart` — relaunch the application in place
+
+The inner loop: you restart twenty times and commit once, when it works. It writes
+nothing at all — no `add`, no `commit`, no manifest — because committing is `git
+commit` in the seat and a verb that required `-m` per iteration is what pushed the
+edit-run-look loop out of podbench altogether.
 
 ```text
-podbench hotfix apply TARGET -m "message" [--no-bounce]
+podbench hotfix restart TARGET [--reinstall]
     │
     ▼
    resolve the target and the seat (exactly as init does)
@@ -565,44 +582,22 @@ podbench hotfix apply TARGET -m "message" [--no-bounce]
     │
     ├─ absent ──────────────────────────────────▶ exit 2  ("run init first")
     ▼
+   require_supervisor — before anything is killed, not after: with no
+   supervisor the tree-kill takes the application down with nothing
+   behind it, and the kubelet restarts the container and the seat with it
+    │
+    ▼
+   --reinstall?  yes → env UV_CACHE_DIR=… uv sync … in the APPLICATION
+                       container, into the venv the manifest records.
+                       Before the kill: a relaunch onto a half-built venv
+                       is the state this mode exists to avoid.
+    │
+    ▼
+   cat /tmp/podbench-child.pid                       → the pid before
+    │
+    ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ COMMIT                                                           │
-│   git -C SRC status --porcelain                                  │
-│     dirty → git add -A                                           │
-│             git -c user.name=… -c user.email=… commit -m "…"     │
-│     clean → "nothing new to commit" (a hand commit in the seat   │
-│             is a normal way to get here)                         │
-│                                                                  │
-│   Not optional: a hotfix that is only a working-tree edit has no │
-│   sha, and without a sha the manifest cannot say what is running │
-│   and `consolidate` has nothing to push.                         │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ MEASURE THE DRIFT                                                │
-│   git -C SRC rev-parse HEAD                                      │
-│   git -C SRC log <base_commit>..HEAD     → commits ahead         │
-│   git -C SRC diff --name-only <last recorded commit>..HEAD       │
-│                                                                  │
-│   Keyed on the commit range, not on whether the tree was dirty:  │
-│   several hand commits can accumulate between two applies.       │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
-                 pyproject.toml / setup.py / setup.cfg / MANIFEST.in
-                 among the changed paths?
-                    │                          │
-                yes │                          │ no
-                    ▼                          ▼
-       rerun the venv rebuild          "editable install still valid"
-       in the application container    (an editable install is a path
-                    │                   redirection: new code is free,
-                    │                   a new entry point is not)
-                    └───────────┬─────────────┘
-                                ▼
-   write the manifest back      (commit, author, timestamp, ahead, commits[:20])
-                                ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ RELAUNCH  (unless --no-bounce) — one exec, three steps           │
+│ RELAUNCH — one exec, three steps                                 │
 │                                                                  │
 │   1  date -u -d "+120 seconds" +%s > /tmp/podbench-hold          │
 │      trap 'rm -f /tmp/podbench-hold' EXIT                        │
@@ -629,8 +624,56 @@ podbench hotfix apply TARGET -m "message" [--no-bounce]
 │   mattering, which is what lets this work on a bare pod.         │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
+   cat /tmp/podbench-child.pid                       → the pid after
+    │
+    ▼
+   git -C SRC status --porcelain      ← one read, two readings
+     dirty → "the claim is dirty and running: N files uncommitted (…)"
+     clean → "the claim is clean and running: the new process loaded <sha>"
+     pyproject.toml / setup.py / setup.cfg / MANIFEST.in among the
+     uncommitted paths, and no --reinstall → "the editable install still
+     describes the old packaging … re-run with `--reinstall`"
+    │
+    ▼
+   SRC/.vscode/launch.json exists?
+     no  → nothing (a restart is not an ask for a debugger)
+     yes → podbench debug-config --provision --provision-dest <claim>
+                                 --output SRC/.vscode/launch.json
+           failure → a line in the report, not a failed restart
+    │
+    ▼
                         actions printed, exit 0
 ```
+
+What `restart` owes in exchange for writing nothing is the **dirty line**. An
+uncommitted change on a live process is the one divergence no repository anywhere
+records — a larger one than a committed change, not a smaller — so it is said on every
+restart, clean or dirty. `status` measures the same thing from the other end.
+
+**`--reinstall` is where `apply`'s one non-git step went.** An editable install is a
+path redirection: new *code* is picked up for free, which is what makes this loop
+cheap, but a new entry point or a renamed package is baked into the `.dist-info` at
+install time. `apply` inferred that from the range of commits it had just made, and
+that input is exactly what a mode with no recorded commit does not have — so it is a
+flag. The half the working tree *can* see is said as a line rather than acted on: a
+`uv sync` on every restart would cost the inner loop the thing that makes it one.
+
+Two things the report is careful about:
+
+* **Which pid.** `/tmp/podbench-child.pid` holds the *supervisor's* child, and
+  on the measured target (`bl47p-ea-fastcs-01-0`, 2026-08-24) that was pid 7,
+  `stdio-socket --ptty`, with the `fastcs-example` anybody would debug at pid 13
+  three levels below it. The line says `stopped the supervisor child pid 7 and
+  its tree` because the kill is a tree kill and because calling 7 "the
+  application" would send a reader to the wrong process.
+* **Which debug configuration.** Every configuration podbench authors is
+  pid-keyed, so an untouched `launch.json` after a relaunch names a closed port
+  — which presents as a broken adapter rather than as a stale file. Refreshing
+  it is cheap: debugpy's files are already on the claim and a fresh process can
+  be served again, so the one-shot problem does not arise. The gate is the
+  document's existence and nothing weaker, because `--provision` ptraces the
+  workload and installs into it; the justification for doing that without asking
+  again is entirely that the user ran the debug step and has not retracted it.
 
 ## `hotfix status` — the point of the whole mode
 
@@ -679,6 +722,23 @@ podbench hotfix status [-n NS] [-A] [--no-probe]
     ├─ neither a manifest nor a hold → not listed
     │      (a deployed-but-unused claim is not a hotfix)
     │
+    ├─ a SECOND exec, only where there is a manifest — ordinary git in
+    │  the claim, reading local objects and refs:
+    │      command -v git                            ← 90: unmeasured
+    │      git -C SRC status --porcelain             ← dirty, and which
+    │      git -C SRC rev-parse HEAD                 ← what is running
+    │      git -C SRC rev-list --count <base>..HEAD  ← how far ahead
+    │      git -C SRC branch -r --contains HEAD      ← as of the clone
+    │
+    │   Two execs and not one because the count is measured from the
+    │   manifest's base commit, and the manifest arrives in the first
+    │   one. No network, no credential, no agent: measured in a seat on
+    │   the live p47 pod with `git fetch` in the same session dying on
+    │   host verification, and every one of these answered.
+    │
+    ├─ ONE `git ls-remote --heads <repo>` per distinct repository, run
+    │  HERE, on the laptop, under a 5s bound (unless --no-remote)
+    │
     ├─ read the container's current image + imageID from status
     │
     ├─ digest differs from the one recorded?
@@ -689,14 +749,22 @@ podbench hotfix status [-n NS] [-A] [--no-probe]
 
      interpreter   the venv's bin/python will not run, or its version
                    moved
-     superseded    consolidated onto a branch AND the image has changed
-                   since: the claim is now shadowing the released fix
-                   with an older copy of it
      image-changed the image was upgraded under a live hotfix, so the
                    upgrade has not reached the running code
      unreadable    a manifest is present on the claim and will not parse
      not-hotfixed  held, but nothing hotfixed here
-     active        hotfixed, base image unchanged, N commits ahead
+     active        hotfixed, and nothing here needs attention
+    │
+    ▼
+   and four measured rows under each pod:
+
+     claim   <head> is N commits ahead of <base>
+     dirty   N files uncommitted, and they are what is running (…)
+     remote  <head> is the tip of <branch>, checked just now
+     image   unchanged since the hotfix was made (sha256:…)
+
+   with the first three replaced by one `git` row saying `unmeasured`
+   wherever the claim's container has no git
     │
     ▼
    plus a `held` column, orthogonal to all of the above:
@@ -711,6 +779,43 @@ podbench hotfix status [-n NS] [-A] [--no-probe]
    exit 0 only if every row is `active` AND unheld
 ```
 
+**The four rows are measured on every run, and nothing about them is recorded.** The
+manifest used to carry the commit, the count, the author, the timestamp and the branch,
+and #232 removed all five: the seat has ordinary git, so one hand commit or one hand
+push makes a recorded field false while everything goes on printing it. What the
+manifest keeps is what git cannot know — where the claim came from, which commit and
+which image it was seeded against, how it is laid out.
+
+**Three of the four need a git in the claim's container, and say so when there is
+none.** `status` reads the claim through the *application* container rather than
+through a seat, because the whole value of the listing is finding a hotfix nobody told
+you about — which is a pod you have not attached to. A distroless application image
+has no git; the report then prints one `git  unmeasured …` row rather than three rows
+reporting an unread claim as clean. (Measured on `bl47p-ea-fastcs-01-0`: that container
+*does* carry `/usr/bin/git`, which is a property of that image and not a rule.)
+
+**The `remote` row is asked from the laptop.** An exec session has no `SSH_AUTH_SOCK`
+— agent forwarding exists only inside an ssh session — so the pod could not use a
+forwarded agent even once one is offered, and the claim's remote on the live target is
+ssh: `git fetch --dry-run origin` in its seat answers `Host key verification failed`.
+The laptop already holds both halves, credentials and connectivity, so podbench reads
+the shas out over exec and runs `git ls-remote` here. Three rules on that row, each
+with the failure it stops:
+
+* **It is bounded** (5s, once per repository). A status verb that hangs on a network
+  call is worse than one that says less.
+* **A failure is `unmeasured`, never "not pushed".** A forge that is down, a
+  repository that wants a credential this laptop does not have, a `git` that is not
+  installed: none of those is evidence that nobody pushed. Where the query fails the
+  row falls back to what the *clone* last fetched, and says that is what it is.
+* **`ls-remote` returns ref tips, not ancestry.** The row can say a commit is the tip
+  of a branch. It cannot cheaply say it has been merged, so it does not imply it.
+
+**Nothing on those rows moves the exit code.** A dirty claim is the ordinary inner
+loop, an unpushed one is the ordinary state of a fix made an hour ago, and a row that
+could not be measured is not an assertion in either direction. The exit code stays what
+it has always been: does a hotfix in this namespace need somebody today?
+
 `-A`/`--all-namespaces` is the same listing over the cluster, with the same exit code.
 That is the difference between the shutdown-checklist assertion this command's exit
 code has always sold and a shell loop over namespaces the operator has to write and
@@ -718,48 +823,50 @@ keep correct ([#205](https://github.com/gilesknap/podbench/issues/205) item 5). 
 pod is still read through a client bound to *its own* namespace: one `-n` wrong on an
 exec reads a claim out of a different pod, or out of none.
 
-A row whose hotfix has been consolidated also carries a **retirement** line naming
-which steps are left — see `hotfix retire` below. `superseded` on its own was correct
-and indefinite, which is a state nobody can act on.
+A row whose **image has moved** also carries a **retirement** line naming which steps
+are left — see `hotfix retire` below. That gate used to be the recorded
+`consolidated_branch`; the image is the better one of the two, because it turns on the
+cluster in front of you rather than on somebody having run a verb.
 
 The hold is a column and not a clause in the health sentence because they are
 different questions and either can be true alone: a perfectly healthy hotfix can sit in
 a pod nobody released, and a pod that was **never hotfixed at all** can be left held by
-an `apply` that died mid-flight. That second case is real and nothing else will notice
+a relaunch that died mid-flight. That second case is real and nothing else will notice
 it — its liveness probe is short-circuited and its supervisor is relaunching without
 backoff — which is why a held pod is listed whether or not it carries a manifest, and
 why the hold moves the exit code.
 
-## `hotfix consolidate` — get it back into an image
+## Getting it back into an image
 
-```text
-podbench hotfix consolidate TARGET --branch fix/thing [--dry-run]
-    │
-    ▼
-   read the manifest; git -C SRC log <base>..HEAD
-    │
-    ├─ not ahead ───────────────────────────────▶ exit 2
-    ▼        ("if the fix is already in the image, retire the claim instead")
-   git -C SRC push origin HEAD:refs/heads/<branch>
-    │
-    ▼
-   record consolidated_branch in the manifest (on the claim)
-    │        → from now on `status` can call a stale claim `superseded`
-    ▼        rather than leaving it a mystery
-   print the retirement checklist:
-     1. gh pr create --head <branch> …
-     2. merge; let CI build and publish the image
-     3. roll the workload onto it and confirm it is healthy
-     4. take the five values back out of the application's own chart
-     5. turn the claim's boolean off and delete the claim
-   … and name `podbench hotfix retire`, which measures which of
-     those have landed
-```
+podbench has no verb for this half, and deleting the one it had is
+[#232](https://github.com/gilesknap/podbench/issues/232). `consolidate` was
+`git push origin HEAD:refs/heads/<branch>` plus a manifest field, and it handled no
+credentials — so pushing from the seat was exactly as hard with it as without it, and
+on the pod it was built for it did not work at all: the claim's remote is
+`git@github.com:…`, the seat has no key and no `known_hosts`, and the push dies on
+`Host key verification failed` (measured on `bl47p-ea-fastcs-01-0`, 2026-08-24). The
+manifest field it wrote was worse than useless once anybody pushed by hand.
 
-The PR is not opened here: that needs a forge client podbench does not depend on, and
-a printed `gh pr create` is one paste. Until step 5 the claim keeps shadowing the
-image's project — the runtime switch prefers a seeded claim, and it does not care that
-the fix is now in the image too.
+The steps themselves have not changed, and they are still the order:
+
+1. `git push` the claim's checkout as a branch — from the seat once it can reach the
+   forge, or from a laptop clone;
+2. `gh pr create`, merge, and let CI build and publish the image;
+3. roll the workload onto the new image and confirm it is healthy;
+4. take the volume, volumeMount, `command`, `args` and `podSecurityContext` back out
+   of the *application's* own values, and redeploy;
+5. turn the claim off (`podbench-hotfix-claim.enabled=false`, or
+   `hotfixProject.enabled=false` on the central route) **and** delete it — it is
+   annotated `Prune=false`, so the flip alone leaves it.
+
+Steps 4 and 5 are the two nobody does, and they are two because the first lives in the
+application's values and the second in the claim's chart: turning the claim off leaves
+the pod wired, which is how a claim goes on shadowing a fixed image. `podbench hotfix
+status` says whether step 1 has happened — it asks the forge — and `podbench hotfix
+retire` measures 3, 4 and 5.
+
+Until step 5 the claim keeps shadowing the image's project — the runtime switch prefers
+a seeded claim, and it does not care that the fix is now in the image too.
 
 Step 5 is two actions and not one, deliberately. The claim carries both
 `helm.sh/resource-policy: keep` and
@@ -782,8 +889,6 @@ Steps 4 and 5 above are the ones nobody does, and nothing tracked them
 cluster where a retirement has actually got to, and performs the one step podbench can:
 
 ```text
-  [x]     branch         consolidated onto hotfix/beamtime-14, so the claim is
-                         no longer the only copy of this fix
   [x]     image          the deployed image is sha256:bbbb…, and the hotfix was
                          made against sha256:aaaa…. Whether the rebuild included
                          the fix is *not* measured — podbench compares digests,
@@ -803,7 +908,7 @@ cluster where a retirement has actually got to, and performs the one step podben
                          hotfix is not measured here …
   [ ]     claim          bl47p-ea-fastcs-01-podbench-project still exists …
 ------------------------------------------------------------------------
-VERDICT: 2 of 4 steps of retirement remain (exit 1)
+VERDICT: 2 of 3 steps of retirement remain (exit 1)
 REMAINING: wiring, claim
 ```
 
@@ -817,9 +922,16 @@ Somebody had done step 5 and not step 4, and the state that leaves — a pod wir
 claim its chart no longer declares — is worse than either end of the checklist, because
 it fails only when that PVC is finally pruned and only at the next reschedule.
 
-Four rows and not five, because these are the four a cluster can be *asked* about:
-opening the PR and merging it leave no trace podbench can read, while rolling the
-image, unwiring the pod and deleting the claim each do.
+Three rows and not five, because these are the three a cluster can be *asked* about:
+getting the fix onto a branch, opening the PR and merging it leave no trace podbench
+can read, while rolling the image, unwiring the pod and deleting the claim each do.
+
+There was a fourth, `branch`, and #232 dropped it with the field it read.
+`consolidated_branch` was written by `consolidate` and could be made a lie by one hand
+push — the whole objection that deleted the verb. Whether the fix exists anywhere but
+the claim is a live question now, asked by `status` against the forge and reported as
+`unmeasured` when the forge cannot be reached; retirement turns only on what can be
+measured from the cluster in front of you.
 
 The rules the report keeps, each with the failure it exists to stop:
 
@@ -827,15 +939,9 @@ The rules the report keeps, each with the failure it exists to stop:
   detail saying why, and it moves the exit code in neither direction. A retirement that
   lies is worse than the checklist it replaces, which is #205 item 4's own
   falsification.
-* **The manifest can only be read while something mounts the claim**, so `branch` and
-  `image` go unmeasured the moment the pod is unwired — which is exactly when the
-  deletion becomes safe. The verb says so rather than carrying the last answer forward.
-* **A step with nothing in it is done, not outstanding.** A claim that was seeded and
-  never `apply`-ed carries no commits, so `branch` is `[x]`: there is nothing to
-  consolidate and nothing that retiring the claim discards. It read `[ ]  0 commit(s)
-  … `podbench hotfix consolidate …` first` on the live target, about a claim
-  `consolidate` refuses with "there is no hotfix to consolidate … retire the claim
-  instead" — two verbs pointing at each other, and a count of four when three remained.
+* **The manifest can only be read while something mounts the claim**, so `image` goes
+  unmeasured the moment the pod is unwired — which is exactly when the deletion becomes
+  safe. The verb says so rather than carrying the last answer forward.
 * **The `wiring` row names what `values` emits, and does not send anyone at the keys.**
   It named three things when six values were wired, and its closing clause pointed at
   "the values `podbench hotfix values` emitted" — which under `--from-pod` is
@@ -881,28 +987,43 @@ claim is gone.
 ## Every cluster call, in order
 
 ```text
-  init / apply / consolidate:
+  init / restart:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
    2  kubectl -n NS get deployment NAME -o json     ┐ or get pod NAME -o json,
    3  kubectl -n NS get pods -l <matchLabels> -o json│ then get replicaset / get
    4  kubectl -n NS get pod POD -o json             ┘ deployment walking upwards
                                                      (+ the seat lookup)
    5  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
-                                                     # init: require the supervisor
+                                                     # init and restart: require
+                                                     # the supervisor
    6  kubectl -n NS exec -c SEAT POD -- <cp / git / cat / test / sh -c 'cat > …'>
                                                      # the seed, and every claim
                                                      # read and write
    7  kubectl -n NS exec -c APP  POD -- env UV_CACHE_DIR=… uv sync …
-                                                     # init, and apply when
-                                                     # packaging metadata moved
-   8  kubectl -n NS exec -c APP  POD -- bash -c '<hold; kill the tree; release>'
-                                                     # apply, unless --no-bounce
+                                                     # init, and restart under
+                                                     # --reinstall
+   8  kubectl -n NS exec -c APP  POD -- cat /tmp/podbench-child.pid
+                                                     # restart, either side of 9
+   9  kubectl -n NS exec -c APP  POD -- bash -c '<hold; kill the tree; release>'
+                                                     # every restart
+  10  kubectl -n NS exec -c SEAT POD -- podbench debug-config --provision …
+                                                     # restart, only where the
+                                                     # claim already has a
+                                                     # .vscode/launch.json
 
   status:
    1  kubectl -n NS get pods -o json
    2  kubectl -n NS exec -c APP POD -- sh -c 'cat manifest; cat hold; date'
                                                      # per candidate pod
-   3  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
+   3  kubectl -n NS exec -c APP POD -- sh -c '<git status/rev-parse/rev-list/
+                                               branch -r>'
+                                                     # only where there is a
+                                                     # manifest to count from
+   4  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
+   5  git ls-remote --heads REPO                     # NOT kubectl: run here,
+                                                     # once per repository,
+                                                     # bounded, and skipped
+                                                     # under --no-remote
 
   values:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
@@ -961,8 +1082,8 @@ cluster terms Hotfix mode is now watching, plus the one deletion that ends it.
    keeps running the claim's code, so the upgrade does not reach what is executing.
    The manifest records the digest it was made against and `status` compares it, which
    is what turns a silent shadow into `image-changed`.
-2. **Single replica only.** RWO, one checkout, one venv; an `apply` on either of two
-   pods is a race with no winner.
+2. **Single replica only.** RWO, one checkout, one venv; an edit and a restart on
+   either of two pods is a race with no winner.
 
 There used to be a third — an interpreter bump breaking the venv, because `bin/python`
 pointed at a path inside the image. That is now *fixed* rather than reported: the

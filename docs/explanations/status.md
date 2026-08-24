@@ -89,9 +89,10 @@ untested**, as is a second Kubernetes version.
 **`podbench vscode` has now been driven end to end against a GUI client**, on
 2026-08-21, against a live EPICS IOC on a Diamond production cluster
 (`p47-beamline/bl47p-ea-fastcs-01-0`, seat `0.4.0b3`, over an ssh API tunnel
-from home). The verb probes the alias, sizes the pod, provisions debugpy, writes
-the three `.vscode` files, installs the remote extensions and opens the seat's
-home. Everything but the provisioning step worked first time: the extensions
+from home). At the time the verb probed the alias, sized the pod, provisioned
+debugpy, wrote the three `.vscode` files, installed the remote extensions and
+opened the seat's home. Everything but the provisioning step worked first time:
+the extensions
 unpacked in the remote, Remote-SSH connected, and after the server was started
 the debugger attached, **breakpoints bound and source resolved** through the
 `/proc/<pid>/root` path mappings — so issue #112's collision did not bite even
@@ -101,16 +102,18 @@ verb against the same pod reconnects to the existing seat correctly.
 What the run found is that the provisioning step *never fired*, because its
 trigger was the wrong one: it keyed on a target that cannot import debugpy,
 where this target ships its own, so the emitted `launch.json` connected to a
-port nothing was listening on. That is fixed — the trigger is now the seat
-naming `--provision`, which it does for either blocker — but the fix is itself
-only unit-tested, and **the resize path remains unproven live**: this pod had
-1513 MiB of headroom against vscode-server's measured 1215 MiB, so nothing had
-to be resized.
+port nothing was listening on. **The whole of that machinery is gone** (#230):
+`podbench vscode` writes no `launch.json` and provisions nothing, and debugging
+is `podbench debug-config --provision`, run in the seat when you want one. What
+that run proved about the parts that remain — the alias probe, the extensions,
+Remote-SSH, the path mappings — still holds. **The resize path remains unproven
+live**: this pod had 1513 MiB of headroom against vscode-server's measured
+1215 MiB, so nothing had to be resized.
 
-Two of the verb's steps mutate the workload **by default** — `--no-resize` and
-`--no-provision` opt out — and both carry the caveats already recorded under
-resize and provisioning. The headroom it sizes from is read with
-`kubectl top pod`, and reports **unmeasured** where there is no metrics API.
+The verb has one mutation left and it is **on by default** — `--no-resize` opts
+out — carrying the caveats already recorded under resize. The headroom it sizes
+from is read with `kubectl top pod`, and reports **unmeasured** where there is
+no metrics API.
 
 **Hotfix mode has met a cluster, and two things about it are still
 undemonstrated.** On 2026-08-22 an edit reached the running code of a live IOC
@@ -132,7 +135,8 @@ untouched, and stays on issue #34.
 What that run did **not** show is survival across pod replacement — it used a
 generic ephemeral volume, which dies with its pod, because a real claim needs
 `create` on persistentvolumeclaims that the test account does not have — and
-`consolidate`, which no cluster has ever run. Everything else here is unit-tested
+`status`'s laptop-side `git ls-remote`, which no cluster has driven. Everything
+else here is unit-tested
 against a temp directory and a fake `kubectl`. See
 [What `hotfix` does](hotfix-flow.md).
 

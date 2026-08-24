@@ -165,6 +165,7 @@ __all__ = [
     "GDB_WRAPPER",
     "INTERPRETER_NOTE",
     "MACHINE_SETTINGS_PATH",
+    "NARRATION_PREFIX",
     "PYTHON_INTERPRETER_KEY",
     "SEAT_MACHINE_SETTINGS",
     "WITHHELD_NOTE",
@@ -177,6 +178,7 @@ __all__ = [
     "delve_configuration",
     "ephemeral_port",
     "extensions_for",
+    "last_narrated",
     "launch_json_text",
     "launch_setup_commands",
     "lldb_configuration",
@@ -322,6 +324,44 @@ was an annoying right one. :data:`INTERPRETER_NOTE` carries the measurement and
 :func:`podbench.editor.open_seat` decides, because only the laptop side knows
 whether the seat and the target share the tree the path is in.
 """
+
+NARRATION_PREFIX = "debug-config: "
+"""What every line this verb narrates on stderr opens with.
+
+Written by :func:`_warn` so a reader can tell podbench's account of the
+assessment from whatever else lands on the same stream. It is also what lets a
+*caller* do it, and a caller needs it more: ``debug-config`` is normally reached
+over ``kubectl exec``, which appends its own
+:data:`~podbench.kubectl.EXEC_TRAILER` to the same stderr, and the injection
+command below is deliberately printed **unprefixed** so that it can be pasted.
+Between the two, the last line of this verb's stderr is regularly neither the
+diagnosis nor even this program's words — which is how a live ``hotfix restart``
+came to quote ``command terminated with exit code 2`` at a user (p47,
+2026-08-24).
+"""
+
+
+def last_narrated(stderr: str) -> str:
+    """The last thing ``debug-config`` itself said, without its prefix.
+
+    ``""`` when it said nothing — a ``podbench`` the image cannot resolve exits
+    127 with only ``sh``'s message, and that message is somebody else's to
+    quote.
+
+    >>> last_narrated("debug-config: python target\\ndebug-config: nothing fits\\n")
+    'nothing fits'
+    >>> last_narrated("debug-config: paste this:\\nPYTHONPATH=/proc/13/root \\\\\\n")
+    'paste this:'
+    >>> last_narrated("sh: 1: podbench: not found\\n")
+    ''
+    """
+    said = [
+        line[len(NARRATION_PREFIX) :].strip()
+        for line in stderr.splitlines()
+        if line.startswith(NARRATION_PREFIX)
+    ]
+    return said[-1] if said else ""
+
 
 INTERPRETER_NOTE = "the target's interpreter is "
 """How the measured interpreter reaches the laptop, which is over **stderr**.
@@ -1120,7 +1160,7 @@ def merge_launch_json(existing: str | None, configuration: Mapping[str, Any]) ->
 def _warn(message: str) -> None:
     """Warnings go to stderr, so ``--print-config`` stays pasteable."""
     for line in message.splitlines():
-        print(f"debug-config: {line}", file=sys.stderr)
+        print(f"{NARRATION_PREFIX}{line}", file=sys.stderr)
 
 
 def _parse_source_map(entries: Sequence[str]) -> tuple[dict[str, str], list[str]]:
@@ -2245,7 +2285,7 @@ def _for_target(
             # own first sentence ("the configuration above connects to a closed
             # port") would name a configuration this run did not write.
             print(
-                "debug-config: --provision: the injection this run attempted, "
+                f"{NARRATION_PREFIX}--provision: the injection this run attempted, "
                 "to run by hand - it runs in *this seat*, whose interpreter and "
                 "PYTHONPATH are not the target's however alike they are "
                 f"spelled:\n{injection_command(target, seat, injected_on)}",
@@ -2363,14 +2403,13 @@ def _hint(
     something authoring a launch.json may do on its own, since it ptraces the
     workload and leaves a server inside it.
 
-    ``--provision`` is named here, and that is load-bearing rather than
-    politeness: :func:`podbench.editor._author` reads the flag out of this
-    stderr to decide whether ``podbench vscode`` should answer the need itself.
-    Until it was named, a target that could *already* import debugpy took the
-    prerequisites-met path straight past ``Provision.IF_NEEDED`` — the trigger
-    was the install blocker alone — and the verb whose whole contract is a
-    debuggable target emitted a launch.json pointing at a closed port. Measured
-    on a Diamond IOC, 2026-08-21.
+    ``--provision`` is named here for a reader who has just run this verb
+    without it, and it is the *second* of debugpy's two blockers: a target that
+    can already import debugpy meets every prerequisite, so the configuration is
+    emitted and nothing is listening on the port it connects to. Both blockers
+    have one answer and it is this flag. Since #230 nothing on the laptop reads
+    this line to decide anything - ``podbench vscode`` offers the step and the
+    reader runs it - so what it owes is a person, not a parser.
 
     The seat is named too, because on this pod's shape it is ambiguous: the
     workload's venv and the seat's are both ``/app/.venv``, so the interpreter
@@ -2391,7 +2430,7 @@ def _hint(
     if exposure is not None:
         _warn(exposure)
     print(
-        f"debug-config: nothing is listening on {DEBUGPY_HOST}:{port} yet, so "
+        f"{NARRATION_PREFIX}nothing is listening on {DEBUGPY_HOST}:{port} yet, so "
         "the configuration above connects to a closed port. `podbench "
         "debug-config --provision` starts the server itself; by hand it is the "
         "command below, which runs in *this seat* - the interpreter is the "

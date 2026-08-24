@@ -22,7 +22,7 @@ $ podbench --help
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
 │ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
-│ vscode         land a seat sized and provisioned for an editor, and open it                      │
+│ vscode         land a seat sized for an editor, and open a window on it                          │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
@@ -366,6 +366,14 @@ what that seat can actually do.
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
+│ --forward-agent                              let git in the seat use your ssh keys:              │
+│                                              `ForwardAgent yes` in the stanza, and the seat's    │
+│                                              known_hosts seeded from your own for whatever forge │
+│                                              its git remotes name. Off by default, because       │
+│                                              `authorized_keys` gates ssh and does not gate       │
+│                                              `kubectl exec` - anyone with pods/exec in the       │
+│                                              namespace can authenticate as you for the life of   │
+│                                              the session                                         │
 │ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
 │                                              that wait and nothing else: one kubectl call is     │
 │                                              bounded separately, at 30s                          │
@@ -494,6 +502,32 @@ Notes:
     that a pod somebody prepared for podbench does not read as one whose
     preparation failed. Where a seat *does* carry the identity, the same line
     credits it.
+* **`--forward-agent` is what makes git in the seat work**, and it is two
+  changes rather than one: `ForwardAgent yes` in the stanza, and the seat's
+  `known_hosts` seeded with the entries your own file already holds for the ssh
+  hosts its git remotes name. The measured first failure in a seat is `Host key
+  verification failed`, not an authentication error, so either half alone
+  leaves `git fetch` exactly as broken. Nothing is invented: a host you have
+  never verified is reported as such, entries are rewritten to name one host
+  each, and `@revoked`/`@cert-authority` lines are never copied. An https clone
+  of a public repository needs none of it. The scan is over every directory the
+  seat mounts plus its home, so a checkout on a hotfix claim is found on the
+  verbs that never looked at the hotfix layout.
+  * **An ssh master that is already open swallows the flag**, because
+    `ControlPersist` is in every stanza podbench writes and a new connection
+    inherits the settings the master was opened with. podbench asks `ssh -O
+    check` and, where a master is running, asks it what `SSH_AUTH_SOCK` a
+    session gets; one with no agent earns a warning and the `ssh -O exit`
+    that fixes it. It is not closed for you — a VS Code window is usually on
+    the other end.
+  * It is a flag and not a default because the exposure is real:
+    `authorized_keys` gates ssh and does **not** gate `kubectl exec`, so anyone
+    with `pods/exec` in the namespace can authenticate as you, to any host that
+    trusts the forwarded keys, until the session ends. One line on the report
+    says so; the mechanism, the `ssh-add -c` and destination-constrained-key
+    mitigations, and the caution that facility RBAC groups often include
+    service accounts and CI identities are in
+    [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md).
 * `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
   `get` and `patch` on `pods/resize`. An attach that used neither prints one
   line offering them; one that used either prints what it cost — including that
@@ -527,17 +561,24 @@ Notes:
 
 ### `vscode`
 
-Land a seat, size the pod for an editor, make the target debuggable, and open
-VS Code on it over Remote-SSH. Everything `attach` does, plus the three things a
-VS Code session needs that a bare seat does not — which is why it is a verb and
-not a flag: `attach` adds a container to the pod and touches the workload not at
-all, and two of these steps change it.
+Land a seat, size the pod for an editor, and open VS Code on it over Remote-SSH.
+Everything `attach` does, plus the things a VS Code session needs that a bare
+seat does not — which is why it is a verb and not a flag: `attach` adds a
+container to the pod and touches the workload not at all, and the resize does.
+
+Since #230 it **writes no project or claim file and installs nothing into the
+target**. The one file it writes is the seat's own machine settings,
+`~/.vscode-server/data/Machine/settings.json` — which on an ordinary pod is
+*below* the folder it opens, because that folder is the seat's home; the
+checkout, the claim and anything under them are untouched. Debugging is a step
+you run, and the run offers it: see `debug-config` below, and the offer line
+under `next`.
 
 ```
                                                                                                     
  Usage: podbench vscode [OPTIONS] [POD]                                                             
                                                                                                     
- land a seat sized and provisioned for an editor, and open it                                       
+ land a seat sized for an editor, and open a window on it                                           
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
@@ -614,19 +655,26 @@ all, and two of these steps change it.
 │                                              this verb makes that `--resize MEMORY` would        │
 │                                              otherwise have to be typed with a number. A pod     │
 │                                              that already has the room is left alone either way  │
-│ --no-provision                               author whatever fits the target as it stands.       │
-│                                              Without it, a Python workload that cannot import    │
-│                                              debugpy has it installed and its server started,    │
-│                                              because that target gets no launch.json at all      │
-│                                              otherwise. Mutates the workload: ~15 MB of shared   │
-│                                              ephemeral storage, needs egress from the pod,       │
-│                                              ptraces the app for a few seconds, and no restart   │
-│                                              survives it                                         │
 │ --identity                  KEY              ssh key to authorise in the seat and name in the    │
 │                                              generated stanza                                    │
 │                                              [default: ~/.ssh/id_ed25519]                        │
 │ --ssh-user                  NAME             login name to put in the stanza                     │
 │ --host-alias                NAME             ssh Host name for the seat                          │
+│ --forward-agent                              let git in the seat use your ssh keys:              │
+│                                              `ForwardAgent yes` in the stanza, and the seat's    │
+│                                              known_hosts seeded from your own for whatever forge │
+│                                              its git remotes name. Off by default, because       │
+│                                              `authorized_keys` gates ssh and does not gate       │
+│                                              `kubectl exec` - anyone with pods/exec in the       │
+│                                              namespace can authenticate as you for the life of   │
+│                                              the session                                         │
+│ --agent-socket              SOCKET           forward this agent rather than the one your shell   │
+│                                              has, and turn `--forward-agent` on. `ssh-agent -a   │
+│                                              SOCKET` then `SSH_AUTH_SOCK=SOCKET ssh-add          │
+│                                              ~/.ssh/id_git` keeps a git-only agent, so only that │
+│                                              key reaches the pod. It is set for the `code` this  │
+│                                              run launches, so a VS Code already running has the  │
+│                                              environment it was started with instead             │
 │ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
 │                                              that wait and nothing else: one kubectl call is     │
 │                                              bounded separately, at 30s                          │
@@ -646,6 +694,16 @@ all, and two of these steps change it.
 `POD` and every option `attach` takes mean the same thing here; only the two
 below are its own. (`attach --print-config` is the one option `vscode` does
 *not* take — see below.)
+
+`--agent-socket` is this verb's alone, and it is the reason the flag is worth
+having here: podbench launches `code`, so it can set `SSH_AUTH_SOCK` for that
+child. Point it at an agent holding only your git key
+(`ssh-agent -a SOCKET; SSH_AUTH_SOCK=SOCKET ssh-add ~/.ssh/id_git`) and only
+that key ever reaches the pod. It implies `--forward-agent`, refuses a path
+that is not a listening socket, and applies to every child of the run — `code`,
+the preflight, and the ssh calls that write the machine settings. A VS Code
+that is **already running** spawns ssh with the environment it was started
+with, so close the window first or export `SSH_AUTH_SOCK` before launching it.
 
 #### Sizing the pod
 
@@ -736,10 +794,11 @@ In order it:
   interpreter is in another mount namespace and the seat's file at that path
   is a different one, so no key is written and the extension's own picker
   decides. It is `machine-overridable`, so a value you set wins;
-* runs `podbench debug-config --print-config` in the seat and merges the result
-  into `<home>/.vscode/launch.json`, matching on configuration name, so a
-  second run updates its own entries rather than appending copies;
-* installs **only** the extensions the emitted configurations name, with
+* runs `podbench debug-config --print-config` in the seat and **writes nothing
+  with the answer**. `--print-config` neither writes a file nor probes the
+  target, so this is a measurement and not a mutation; what it is for is the
+  two lines below;
+* installs **only** the extensions the assessed configurations name, with
   `code --remote ssh-remote+<alias> --install-extension` — which is the
   "Install in SSH: `<alias>`" button as a flag. A locally installed extension
   runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
@@ -766,61 +825,59 @@ reads the config dir. Use `attach --print-config` for a stanza to paste. A
 target no debugger fits is not a failure — the excludes, the folder and the
 terminals are the rest of the seat.
 
-`debug-config`'s own stderr is relayed line by line rather than summarised.
-It is the only thing in the run that can see the target, so its narration is
-the diagnosis — it names every mechanism that said no, and on success it also
-carries the injection command, which the emitted debugpy configuration needs
-and cannot state: the entry is written once the *prerequisites* are met, and
-nothing is listening until that command is run.
+`debug-config`'s own narration is **not** relayed into the report. The
+assessment is an internal probe of this verb, asked for two editor facts — the
+extensions and the interpreter — and everything else it says is about a
+debugger this run did not set up. An assessment that could not be read is one
+`[warn]` line naming what was lost and quoting `debug-config`'s own last word;
+the reasoning behind it is still in the seat, one `podbench debug-config
+--print-config` away.
 
-#### Provisioning
+#### The debug step, offered rather than taken
 
-Provisioning means *make this target debuggable*, and it is what the verb does
-unless `--no-provision` says otherwise. It is the answer to the commonest
-empty-handed case: a Python target whose image has no debugpy. The injection
-bootstrap runs inside the target's interpreter, so debugpy has to be importable
-*there*; without it no configuration can be emitted and the verb writes no
-`launch.json` at all.
+`next` ends with an offer, and it is the only place this run names a debugger:
 
-It does both halves. The seat installs debugpy into the target with `uv`,
-resolved for the *target's* Python version rather than the seat's, and then
-starts the debugpy server inside the app — so the emitted configuration has
-something to connect to and F5 works when the command finishes. The two are
-one step because issue #45 ordered these mutations and put *installing* above
-*injecting*: a run already allowed the larger one has been allowed the
-smaller, and asking twice left the configuration emitted, the port closed and
-the first F5 at `ECONNREFUSED`.
+```
+  to debug, in the seat:  podbench debug-config --provision
+```
 
-It is a mutation and is reported as one. It writes ~15 MB into the workload's
-writable layer, on an ephemeral-storage budget the seat shares with the workload and
-**cannot reserve** — an ephemeral container may not declare `resources`
-(report 3.9); it needs egress from the pod, since uv resolves and downloads
-from an index; starting the server ptraces the app, so it stops answering
-probes for the few seconds that takes (~3 s measured, against the deadlines
-the report above prints); and a restart of the target container ends the
-debugging. The two halves do not expire together: the **server** never
-survives a restart, being a live process in the container that died, while the
-**install** survives one where `--provision-dest` names a volume mounted into
-the target — an `emptyDir` is pod-scoped and outlives a container, and so does a
-hotfixed pod's claim, which is where this verb installs on one — and not at the
-default `/opt/podbench-debugpy`, which is the container's own writable
-layer. Either way the next step is another `podbench vscode`, since without the
-server nothing is listening. Installing debugpy into the app image, or baking
-`debugpy.listen()` into the app, is the durable answer.
+Run it in the window's own terminal. `debug-config` writes `.vscode/launch.json`
+into the directory it is run from, which is the folder VS Code just opened.
 
-A **bare** `debug-config` still only prints the injection command. That is
-`injection_command`'s rule unchanged — authoring a `launch.json` may not
-ptrace the workload on its own — and `--provision` is what revokes it.
+Three reasons it is a step and not something this verb does for you:
 
-It happens only where the seat says it is the blocker. `debug-config` names
-`--provision` in its own refusal when debugpy is what is missing and for no
-other flavour — there is no `--provision` for a missing delve — so the retry is
-keyed on the seat's own words rather than on this side guessing the target's
-language a second time. A target that already has a debugger is not touched,
-and `--no-provision` gets the offer instead of the act. Where the target's
-rootfs is read-only the write fails with `EROFS` — the mount flag lives in the target's
-mount namespace — and the seat's own `podbench debug-config --provision-dest`
-is what points it at a writable volume instead.
+* **a restart changes the pid**, and every configuration podbench can author is
+  pid-named and pid-keyed. Measured across restarts on the p47 replica, the same
+  process was pid 12, then 2446, then 13 — so anything written at window-open is
+  stale as soon as the inner loop turns once;
+* **the folder is often a committed checkout** on a shared volume, where a
+  written file is a permanent line in somebody's `git status`;
+* **provisioning is a mutation on somebody else's container** — ~15 MB in the
+  workload's writable layer, egress from the pod, and a ptrace that stops the
+  app answering its probes for a few seconds. Editing needs none of it, and most
+  runs never debug.
+
+The offer is composed for *this* pod, because two of its parts are facts only
+the launcher holds:
+
+* on a **hotfixed** pod it carries `--provision-dest <claim>/.podbench-debugpy`.
+  The seat there runs at the target's own uid with no capabilities and `/opt` in
+  the target is root-owned `0755`, so the seat's own default is refused by
+  ordinary file permissions — and the whole cascade behind it (no importable
+  debugpy, no configuration, no `launch.json`, no adapter) follows from that one
+  `EACCES`. The claim is writable, is the same directory in both mount
+  namespaces, and is a volume, so the install outlives a restart there;
+* on a **dev pod** it drops `--provision` altogether, and the run says why:
+  Iterate mode launches the application from the seat, so there is no live
+  target to inject into and the launch configuration needs none.
+
+A later `podbench vscode` passes that same destination to its assessment run, as
+an extra path `debug-config` searches for the target's own debugpy — so a window
+opened after the step knows this is a Python seat.
+
+`podbench attach` prints the same offer, without `--provision` and without a
+destination: it touches the workload not at all, and neither flag is one of
+its own.
 
 Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
 mode is on the **workload's** ephemeral-storage budget: a server plus one
@@ -848,23 +905,31 @@ the pod.
 │                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
-│                                    stanza                                                        │
-│                                    [default: ~/.ssh/id_ed25519]                                  │
-│ --ssh-user              NAME       login name to put in the stanza                               │
-│ --host-alias            NAME       ssh Host name for the seat                                    │
-│ --print-config                     print the ssh stanza instead of writing it to the config dir  │
-│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
-│                                    with the candidates instead. Already implied when stdin is    │
-│                                    not a tty                                                     │
-│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
-│ --context               NAME       kubeconfig context                                            │
-│ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
-│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
-│                                    ~/.podbench)                                                  │
-│ --help                             Show this message and exit.                                   │
+│ --identity               KEY        ssh key to authorise in the seat and name in the generated   │
+│                                     stanza                                                       │
+│                                     [default: ~/.ssh/id_ed25519]                                 │
+│ --ssh-user               NAME       login name to put in the stanza                              │
+│ --host-alias             NAME       ssh Host name for the seat                                   │
+│ --print-config                      print the ssh stanza instead of writing it to the config dir │
+│ --forward-agent                     let git in the seat use your ssh keys: `ForwardAgent yes` in │
+│                                     the stanza, and the seat's known_hosts seeded from your own  │
+│                                     for whatever forge its git remotes name. Off by default,     │
+│                                     because `authorized_keys` gates ssh and does not gate        │
+│                                     `kubectl exec` - anyone with pods/exec in the namespace can  │
+│                                     authenticate as you for the life of the session              │
+│ --no-prompt                         never ask which pod: an ambiguous or missing POD is refused  │
+│                                     with the candidates instead. Already implied when stdin is   │
+│                                     not a tty                                                    │
+│ --namespace      -n      NAMESPACE  namespace (default: the kubeconfig context's own)            │
+│ --context                NAME       kubeconfig context                                           │
+│ --kubectl                BIN        kubectl binary to use [default: kubectl]                     │
+│ --config-dir             DIR        where the generated ssh config and known_hosts live (default │
+│                                     ~/.podbench)                                                 │
+│ --help                              Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+`--forward-agent` means here exactly what it means on `attach`, and it is the way to add agent forwarding and the forge's host keys to a seat that is already running: the stanza is regenerated and the seat's `known_hosts` is seeded on the spot. This is also the verb most likely to meet an ssh master that is already open, which would inherit its own settings and not the new stanza's; podbench says so and names the `ssh -O exit` that clears it.
 
 Fails if there is no running podbench container in the pod.
 
@@ -949,35 +1014,40 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 │                   dev pods                                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
-│ --context               NAME       kubeconfig context                                            │
-│ --container             NAME       container to take over                                        │
-│ --name                  NAME       dev pod name (default: POD-podbench)                          │
-│ --image                 REF        podbench image (default: the image built from this launcher's │
-│                                    version)                                                      │
-│ --port                  PORT       the port your app serves                                      │
-│ --take-traffic                     copy the origin's labels so the dev pod shares Service        │
-│                                    traffic with it. Off by default: joining a production Service │
-│                                    silently is a foot-cannon                                     │
-│ --cutover               SERVICE    point SERVICE exclusively at the dev pod, recording its       │
-│                                    selector for an exact restore at teardown                     │
-│ --identity              KEY        ssh key to authorise in the sidecar and name in the generated │
-│                                    stanza                                                        │
-│                                    [default: ~/.ssh/id_ed25519]                                  │
-│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
-│                                    ~/.podbench)                                                  │
-│ --host-alias            NAME       ssh Host name for the sidecar                                 │
-│ --delete                           tear the dev pod down                                         │
-│ --timeout               SECONDS    seconds to wait for the dev pod to reach Running. It bounds   │
-│                                    that wait and nothing else: it is `kubectl wait`'s own        │
-│                                    deadline, backed by a kill 15s later, and every other kubectl │
-│                                    call is bounded separately, at 30s                            │
-│                                    [default: 120.0]                                              │
-│ --dry-run                          print the authored pod instead of creating it                 │
-│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
-│                                    with the candidates instead. Already implied when stdin is    │
-│                                    not a tty                                                     │
-│ --help                             Show this message and exit.                                   │
+│ --namespace      -n      NAMESPACE  namespace (default: the kubeconfig context's own)            │
+│ --context                NAME       kubeconfig context                                           │
+│ --container              NAME       container to take over                                       │
+│ --name                   NAME       dev pod name (default: POD-podbench)                         │
+│ --image                  REF        podbench image (default: the image built from this           │
+│                                     launcher's version)                                          │
+│ --port                   PORT       the port your app serves                                     │
+│ --take-traffic                      copy the origin's labels so the dev pod shares Service       │
+│                                     traffic with it. Off by default: joining a production        │
+│                                     Service silently is a foot-cannon                            │
+│ --cutover                SERVICE    point SERVICE exclusively at the dev pod, recording its      │
+│                                     selector for an exact restore at teardown                    │
+│ --identity               KEY        ssh key to authorise in the sidecar and name in the          │
+│                                     generated stanza                                             │
+│                                     [default: ~/.ssh/id_ed25519]                                 │
+│ --config-dir             DIR        where the generated ssh config and known_hosts live (default │
+│                                     ~/.podbench)                                                 │
+│ --host-alias             NAME       ssh Host name for the sidecar                                │
+│ --forward-agent                     let git in the sidecar use your ssh keys: `ForwardAgent yes` │
+│                                     in the stanza, and its known_hosts seeded from your own for  │
+│                                     whatever forge the workspace's git remotes name. Off by      │
+│                                     default, because `authorized_keys` gates ssh and does not    │
+│                                     gate `kubectl exec`                                          │
+│ --delete                            tear the dev pod down                                        │
+│ --timeout                SECONDS    seconds to wait for the dev pod to reach Running. It bounds  │
+│                                     that wait and nothing else: it is `kubectl wait`'s own       │
+│                                     deadline, backed by a kill 15s later, and every other        │
+│                                     kubectl call is bounded separately, at 30s                   │
+│                                     [default: 120.0]                                             │
+│ --dry-run                           print the authored pod instead of creating it                │
+│ --no-prompt                         never ask which pod: an ambiguous or missing POD is refused  │
+│                                     with the candidates instead. Already implied when stdin is   │
+│                                     not a tty                                                    │
+│ --help                              Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1026,15 +1096,16 @@ Notes:
 ### `hotfix`
 
 Durable in-place fixes: the project on a ReadWriteOnce claim beside the
-application, every change a git commit, and a `status` that will not let a
+application, ordinary git in the seat, and a `status` that will not let a
 hotfixed pod go unnoticed.
 
 :::{warning}
 Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC's running
 code with `restartCount` unchanged and both seats alive. Two things about it are
 still undemonstrated — survival across pod replacement, which needs a real claim
-rather than the generic ephemeral volume that run used, and `consolidate`, which
-no cluster has run. `hotfix values --from-pod` was measured against the live
+rather than the generic ephemeral volume that run used, and `status`'s laptop-side
+`git ls-remote`, which no cluster has driven. `hotfix values --from-pod` was
+measured against the live
 `bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01` targets, and is where the volume and
 probe warnings below came from.
 :::
@@ -1054,20 +1125,19 @@ seat, where the claim is already in this process's own mount namespace.
 
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
- Durable in-place fixes: the project on a claim beside the application, every change a commit, and
- a status command that will not let a hotfixed pod go unnoticed.
+ Durable in-place fixes: the project on a claim beside the application, ordinary git in the seat,
+ and a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
-│ values       emit the helm values an application's chart needs                                   │
-│ check        say what would stop a hotfix on this target, before starting one                    │
-│ init         seed the claim from the running container, clone the source, rebuild the venv       │
-│ apply        commit the change on the claim and relaunch the running child                       │
-│ status       every hotfixed pod in the namespace, and its drift                                  │
-│ consolidate  push the claim's checkout as a branch for the rebuild                               │
-│ retire       what is left of retiring this hotfix, and the one step podbench can take            │
+│ values   emit the helm values an application's chart needs                                       │
+│ check    say what would stop a hotfix on this target, before starting one                        │
+│ init     seed the claim from the running container, clone the source, rebuild the venv           │
+│ restart  relaunch the application on the claim, committing nothing                               │
+│ status   every hotfixed pod in the namespace, measured                                           │
+│ retire   what is left of retiring this hotfix, and the one step podbench can take                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1076,16 +1146,16 @@ seat, where the claim is already in this process's own mount namespace.
 | `values --app NAME --from-pod POD` | read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place |
 | `check TARGET` | every prerequisite `init` has, measured in one read-only pass, with a verdict and an exit code |
 | `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
-| `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
-| `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — its drift, and what is wrong with it |
-| `consolidate --branch B TARGET` | push the checkout as a branch and print the retirement checklist |
-| `retire TARGET` | which steps of that checklist have landed, measured against the cluster, and `--delete-claim` to take the last one |
+| `restart TARGET` | relaunch the application's own child on whatever is on the claim — no message, no commit, no manifest write — and say whether the code now running is committed; `--reinstall` rebuilds the venv first |
+| `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — measured: how far ahead the claim is, what is uncommitted, whether anything upstream has it, and whether the image moved |
+| `retire TARGET` | which steps of retirement have landed, measured against the cluster, and `--delete-claim` to take the last one |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
-across `init`, `apply` and `consolidate`: `--container`, `--seat`, `--local`,
-`--author`, and `--venv` — which is the mountPath the claim is mounted at,
-beside the application's own project and never over it, and which is **read off
-the pod** rather than asked for. `check` takes `--container` and `--seat`, and
+across `init` and `restart`: `--container`, `--seat`, `--local`, and `--venv` —
+which is the mountPath the claim is mounted at, beside the application's own
+project and never over it, and which is **read off the pod** rather than asked
+for. No verb takes `--author` or `-m`: podbench writes no commits, so there is
+nothing to name. `check` takes `--container` and `--seat`, and
 `retire` takes `--container`. `values` runs before any of that exists, so it
 takes a `--from-pod POD` rather than a `TARGET` and has its own flags, listed
 below.
@@ -1132,8 +1202,9 @@ Notes:
   have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
   `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
   looking for and the pod goes on quietly running the image's code. `init`
-  records it in the manifest and `apply` reads it from there; `apply` has no such
-  flag, because a rebuild that has to be told twice is one that gets told once
+  records it in the manifest and `restart --reinstall` reads it from there; that
+  flag has no `--claim-venv` of its own, because a rebuild that has to be told
+  twice is one that gets told once
   ([#209](https://github.com/gilesknap/podbench/issues/209)).
 * **`--venv` is read off the pod, and a value that disagrees is refused.** The
   claim is podbench's own `podbench-app` volume, so its `mountPath` in the
@@ -1150,8 +1221,8 @@ Notes:
   anonymously and with a short timeout. The old default for the base was
   `git rev-parse HEAD` of the fresh clone, which without `--ref` is the default
   branch's tip and is almost never what the released image was built from —
-  while `status`'s `+N commit(s)` and everything `consolidate` pushes are
-  differences against it. A revision the clone does not contain is not believed.
+  while `status`'s `claim` row is a difference against it. A revision the clone
+  does not contain is not believed.
 
   **The labels themselves are corroborated first.** OCI labels are inherited, so
   a derived image advertises its base image's repository and revision unless the
@@ -1161,23 +1232,80 @@ Notes:
   that, because the clone came from the same label. podbench asks the seeded
   checkout's `origin` instead, and where it disagrees `origin` wins.
 
-  Where nothing corroborates them the base is recorded as **assumed** and `status`
-  prints `+N commit(s) from an assumed base` rather than a derived count wearing
-  a measurement's clothes.
+  Where nothing corroborates them the base is recorded as **assumed** and the
+  `claim` row says `an assumed base, so the count is a guess` rather than
+  printing a difference wearing a measurement's clothes.
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
-* `consolidate` does not open a PR; it prints the `gh pr create` line.
+* **`restart` is the inner loop, and it writes nothing.** No `-m`, no commit, no
+  index, no manifest — you restart twenty times and commit once, with ordinary
+  git in the seat. What it prints in exchange is whether the code now running is
+  committed: `the claim is dirty and running: 2 files uncommitted (…)`, or the
+  clean form naming the sha the new process loaded. An uncommitted change on a
+  live process is the one divergence no repository anywhere records, which is
+  what makes relaunch-without-commit sound rather than a hole in the model. It
+  refuses a container with no supervisor — there is nothing to relaunch, and the
+  kill would take the seat with it — and it refuses before anything is killed.
+* **`--reinstall` is the one thing `restart` does that is not a relaunch.** An
+  editable install bakes the packaging in at install time, so a change to
+  `pyproject.toml` or the lockfile needs `uv sync` run again on the claim or a
+  new entry point is simply not there. It is a flag rather than an inference
+  because the input the old `apply` inferred from — the range of commits since
+  the last one — is exactly what a mode with no recorded commit does not have.
+  Where a packaging file is among the *uncommitted* paths, `restart` says the
+  install is stale and names the flag.
+* **The pid `restart` names is the supervisor's own child**, which is what
+  `/tmp/podbench-child.pid` holds and is *not* the process a breakpoint goes in:
+  measured on `bl47p-ea-fastcs-01`, the file held 7 and the `fastcs-example`
+  under it was 13, three levels down. The kill is a tree kill rooted at the
+  recorded pid, so `stopped the supervisor child pid 7 and its tree` is the
+  whole of what stopped; `podbench pids` is how to see the rest of it.
+* **`restart` refreshes a debug configuration only where one already exists.**
+  Every configuration podbench authors is pid-keyed and a relaunch changes the
+  pid, so a `.vscode/launch.json` on the claim is re-authored by re-running
+  `podbench debug-config --provision` in the seat and F5 keeps working across
+  the loop. No `launch.json` means nothing runs at all: `--provision` ptraces the
+  workload and installs into it, and a restart is not an ask for a debugger. A
+  refresh that fails is a line in the report rather than a failed restart — the
+  application is already back by then, and only F5 is still pointing at the old
+  process.
+* **`status` measures; it does not read a record.** Under each pod are four rows.
+  `claim` counts commits between the manifest's base and the checkout's `HEAD`;
+  `dirty` names what is uncommitted, which is the state no repository anywhere
+  records and the one most worth surfacing; `remote` says whether any branch is
+  at that commit; `image` compares the manifest's `baseImageDigest` against the
+  live `imageID`, and is the row that needs no git at all — an image that moved
+  under the mount means the claim's venv is shadowing whatever was released.
+* **Three of those rows come from git in the claim, and go `unmeasured` without
+  it.** `status` reads the claim through the *application* container, not through
+  a seat, because the listing's value is that it finds a hotfix nobody told you
+  about — on a pod you have not attached to. A distroless application image has
+  no git, and the report then says so once rather than reporting the claim as
+  clean.
+* **The `remote` row is asked from the laptop.** An exec session has no
+  `SSH_AUTH_SOCK` — agent forwarding exists only inside an ssh session — so the
+  pod could not ask even with an agent forwarded to a seat; measured on the live
+  p47 pod, `git fetch` in its seat answers `Host key verification failed`. The
+  laptop holds both halves, so podbench reads the shas out over exec and runs
+  `git ls-remote` here, once per distinct repository and under a 5s bound. A
+  failure is **unmeasured**, never "not pushed". `ls-remote` returns ref *tips*,
+  so the row can say a commit is the tip of a branch and never that it was
+  merged. `--no-remote` turns the network half off, leaving what the claim last
+  fetched.
 * `status` exits **1** when any pod needs attention, so "no hotfix here needs somebody
-  today" is a testable shutdown assertion. It is **not** the assertion "nothing here is
-  still to be retired": a consolidated fix whose image has not moved is a live hotfix
+  today" is a testable shutdown assertion. Nothing on the four measured rows moves it:
+  a dirty claim is the ordinary inner loop, an unpushed one is the ordinary state of a
+  fix made an hour ago, and a row that could not be measured is not an assertion in
+  either direction. It is also **not** the assertion "nothing here is still to be
+  retired": a fix whose image has not moved is a live hotfix
   doing its job, so retirement is not part of a row's `ok` and `status` can exit 0 on a
   pod `retire` reports several steps short. `retire` is the verb that stays red until a
   retirement is finished. `-A`/`--all-namespaces` is that assertion for the
   whole cluster, with the same exit code — the facility-wide form used to be a shell
   loop the operator had to write and keep correct. Every pod is still read through a
   client bound to its own namespace.
-* `retire` is the retirement checklist as a measurement rather than as prose. Four
-  rows — `branch`, `image`, `wiring`, `claim` — because those are the four a cluster
+* `retire` is the retirement checklist as a measurement rather than as prose. Three
+  rows — `image`, `wiring`, `claim` — because those are the three a cluster
   can be asked about, and `[x]` goes on **only** a step that was measured done: an
   unmeasured one is `[ ]` with a detail saying why, and it moves the exit code in
   neither direction. It is read-only and lands no seat unless `--delete-claim` is
@@ -1188,9 +1316,11 @@ Notes:
   deletion: nothing mounted the claim, so what was on it went unread, and a chart that
   still declares the claim will have the next sync recreate it. Exit **1** while any
   measured step is outstanding.
-* `retire`'s `branch` step is **done** on a claim that records no commits: a seeded
-  claim nobody ever `apply`-ed has nothing to consolidate and nothing that retiring it
-  discards, and `consolidate` refuses that same claim.
+* **`retire` has no `branch` row.** It read a field `consolidate` wrote, and one
+  hand push made that field a lie — which is the whole objection that deleted both.
+  Whether the fix is anywhere but the claim is a live question, asked by `status`
+  against the forge; retirement turns only on what can be measured from the cluster
+  in front of you.
 * `retire`'s `wiring` row names both volumes, the mount and the supervisor loop in
   `command` and `args`, and it says to take those *entries* out of the application's
   values rather than the whole `volumes` and `volumeMounts` keys — a helm list replaces
@@ -1209,7 +1339,7 @@ Notes:
   read-only: it writes nothing and lands no seat, because an ephemeral container
   cannot be taken back off a pod and a verb run to ask a question must not spend
   one. A non-exec `livenessProbe` is `warn` rather than a blocker by design: it
-  breaks `apply`'s hold rather than `init`. `check` takes `--repo` because `init`
+  breaks the hold a later `restart` takes rather than `init`. `check` takes `--repo` because `init`
   does — an image naming no source repository is a state `init` refuses, so it is
   a blocker here, and a check that could not hear the flag would refuse a target
   the next command accepts. A label that *is* there is corroborated rather than
