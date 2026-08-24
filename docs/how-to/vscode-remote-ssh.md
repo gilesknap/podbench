@@ -710,6 +710,19 @@ An **https** clone of a public repository needs none of this. If your remote is
 `https://github.com/…` the flag has nothing to do, and podbench says so instead
 of pretending it seeded something.
 
+**On a brand-new `podbench dev` pod there is nothing to scan yet.** The stanza is
+generated when the pod is created, and `dev-bootstrap` clones after that, so the
+seeding half finds no remote and says so — the forwarding half works from the
+first connection. If that first clone is an ssh one, seed the host by hand in
+the seat before you run it:
+
+```console
+$ ssh-keyscan github.com >> ~/.ssh/known_hosts
+```
+
+A dev pod that inherits a volume with a checkout already on it — the origin's
+volumes are copied wholesale — is scanned like any other seat.
+
 ### Adding the flag to a seat you are already connected to
 
 **A connection that is already open swallows it.** Every stanza podbench writes
