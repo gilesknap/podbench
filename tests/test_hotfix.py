@@ -1291,6 +1291,78 @@ def test_a_failed_debug_refresh_is_a_line_and_not_a_failed_restart() -> None:
     assert any("no candidate could be provisioned" in action for action in actions)
 
 
+LIVE_REFUSAL = (
+    "debug-config: pid 13 (fastcs-example): python target, observe mode, x86_64\n"
+    "debug-config: debugpy unavailable: ptrace to pid 13 was refused - the seat "
+    "holds CapEff 0000000000000000\n"
+    "debug-config: no debugger flavour could be emitted for this target - every "
+    "mechanism that said no is named above\n"
+    "command terminated with exit code 2\n"
+)
+"""What a refusal looks like over ``kubectl exec``, measured on live p47.
+
+Four lines, and the last one is kubectl's. Trimmed from the 2026-08-24 run on
+``p47-beamline/bl47p-ea-fastcs-01-0``, whose seat was degraded: no ptrace
+capability, so nothing could be emitted at all.
+"""
+
+
+def test_a_failed_refresh_quotes_the_command_and_not_kubectl() -> None:
+    """The measured defect: the line named kubectl's exit-status trailer.
+
+    `command terminated with exit code 2` is this side's account of the exec,
+    and it sat three lines below `debug-config`'s own diagnosis - so the report
+    told the reader the exit code they already knew and threw away the reason.
+    """
+    store = hotfixed_store()
+    store.files[LAUNCH_JSON] = "{}"
+    store.failures["podbench debug-config"] = LIVE_REFUSAL
+
+    actions = restarted(store)
+
+    refresh = next(action for action in actions if "could not refresh" in action)
+    assert "no debugger flavour could be emitted" in refresh
+    assert "command terminated" not in refresh
+    # The prefix goes with it: the sentence is quoted inside one podbench wrote,
+    # and `debug-config: debug-config:` reads as a stutter.
+    assert "debug-config:" not in refresh
+
+
+def test_a_refresh_that_said_nothing_of_its_own_says_that() -> None:
+    """The empty case, which must not degrade to an empty quote.
+
+    A stderr that is only kubectl's trailer leaves nothing of the command's to
+    quote, and the detail lands between a colon and a full stop: an empty one
+    reads as podbench having failed to notice its own failure.
+    """
+    store = hotfixed_store()
+    store.files[LAUNCH_JSON] = "{}"
+    store.failures["podbench debug-config"] = "command terminated with exit code 2\n"
+
+    actions = restarted(store)
+
+    refresh = next(action for action in actions if "could not refresh" in action)
+    assert "said nothing" in refresh
+    assert ": ." not in refresh
+
+
+def test_a_verb_the_image_cannot_resolve_is_quoted_as_it_stands() -> None:
+    """Nothing narrated, but something said. 127 from a `podbench` the image
+    does not resolve carries sh's message and no narration at all, and that
+    message is the whole diagnosis."""
+    store = hotfixed_store()
+    store.files[LAUNCH_JSON] = "{}"
+    store.failures["podbench debug-config"] = (
+        "sh: 1: podbench: not found\ncommand terminated with exit code 127\n"
+    )
+
+    actions = restarted(store)
+
+    refresh = next(action for action in actions if "could not refresh" in action)
+    assert "podbench: not found" in refresh
+    assert "command terminated" not in refresh
+
+
 def test_restart_refuses_a_container_without_the_supervisor() -> None:
     """Checked before anything is killed: with no supervisor the tree-kill takes
     the application down with nothing behind it, and the kubelet restarts the

@@ -78,6 +78,7 @@ from .kubectl import (
     KubectlError,
     KubectlTimeoutError,
     Runner,
+    command_said,
     run_subprocess,
 )
 from .launcher import (
@@ -107,6 +108,7 @@ from .oci import REVISION_LABEL, SOURCE_LABEL, parse_reference
 from .oci import image_labels as read_image_labels
 from .provision import claim_destination
 from .spec import target_uid_gid
+from .vscode import last_narrated
 
 __all__ = [
     "MANIFEST_FILENAME",
@@ -1901,7 +1903,11 @@ def read_claim_git(
         )
     parts = result.stdout.split(STATE_SEPARATOR)
     if result.returncode != 0 or len(parts) != _GIT_SECTIONS:
-        said = _last_line(result.stderr) or _last_line(result.stdout)
+        # kubectl's trailer dropped: `command terminated with exit code 128` is
+        # this side's account of the exec, and the row is asking what *git*
+        # said.
+        spoke = command_said(result.stderr) or command_said(result.stdout)
+        said = spoke[-1] if spoke else ""
         return ClaimGit(
             reachable=False,
             detail="unmeasured: the git read in container "
@@ -2016,9 +2022,10 @@ def remote_tips(
     except OSError as error:
         return RemoteTips(detail=f"git could not be run here: {error}")
     if result.returncode != 0:
-        return RemoteTips(
-            detail=_relay(_last_line(result.stderr)) or "git ls-remote failed"
-        )
+        # This git runs on the laptop, so there is no kubectl trailer between
+        # its last word and this line - the plain last line is the command's.
+        spoke = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+        return RemoteTips(detail=_relay(spoke[-1]) if spoke else "git ls-remote failed")
     refs: list[tuple[str, str]] = []
     for line in result.stdout.splitlines():
         sha, _, ref = line.partition("\t")
@@ -3307,20 +3314,40 @@ def _refresh_debug_config(store: HotfixStore, checkout: str) -> list[str]:
         check=False,
     )
     if result.returncode != 0:
-        detail = _last_line(result.stderr) or _last_line(result.stdout) or "no output"
-        return [DEBUG_REFRESH_FAILED.format(path=path, detail=detail)]
+        return [DEBUG_REFRESH_FAILED.format(path=path, detail=_refusal_detail(result))]
     return [f"refreshed {path} against the new process"]
 
 
-def _last_line(text: str) -> str:
-    """The last non-empty line of somebody else's output.
+def _refusal_detail(result: CommandResult) -> str:
+    """Why the refresh did not happen, in the words of the thing that refused.
 
-    A whole relayed stderr in the middle of a three-line report is the report
-    nobody reads; ``debug-config``'s diagnosis is on its final line, and the rest
-    of it is still in the seat for anyone who wants it.
+    Three sources, in falling order of how much they know, because the line
+    this feeds has room for exactly one of them.
+
+    ``debug-config`` narrates every step of its assessment under
+    :data:`~podbench.vscode.NARRATION_PREFIX`, so **its own last narrated line
+    is the diagnosis** — and taking the last line of the stream instead is
+    wrong twice over. Measured on the live p47 pod (2026-08-24), a refusal was
+    quoted back to the user as kubectl's ``command terminated with exit code
+    2`` while ``no debugger flavour could be emitted for this target`` sat
+    three lines above it; and on a run that *does* fit debugpy the last line is
+    the unprefixed injection command, which is a paste and not a reason.
+
+    A command that narrated nothing said something else — ``sh``'s ``not
+    found`` for a 127, or kubectl's own failure to open the stream — and that
+    is quoted as it stands, minus the trailer
+    (:func:`~podbench.kubectl.command_said`).
+
+    A command that said nothing at all gets the one fact there is, which is the
+    exit code. Never the empty string: this detail is interpolated into
+    :data:`DEBUG_REFRESH_FAILED` between a colon and a full stop, and an empty
+    one reads as podbench having failed to notice.
     """
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return lines[-1] if lines else ""
+    narrated = last_narrated(result.stderr)
+    if narrated:
+        return narrated
+    said = command_said(result.stderr) or command_said(result.stdout)
+    return said[-1] if said else f"it exited {result.returncode} and said nothing"
 
 
 STALE_INSTALL_NOTE = (
