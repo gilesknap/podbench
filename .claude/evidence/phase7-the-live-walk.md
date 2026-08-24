@@ -198,10 +198,23 @@ the `ephemeral-containers` skill) and stayed running, unused, for the rest of
 this session; it is accounted for in §8.
 
 **This is a defect worth fixing**: `hotfix init`'s auto-land should accept
-`--image`/`--pull` (or read `$PODBENCH_IMAGE`, which `attach` already
-honours) so an operator following the branch-image discipline this project
-requires is not forced to pre-land a seat by hand before `init` can be told
-which build to use.
+`--image`/`--pull`, or resolve `$PODBENCH_IMAGE` itself before calling
+`attach`. **Correction, verified against source after this run**: the
+parenthetical originally here claimed `attach` "already honours"
+`$PODBENCH_IMAGE`; that overstates what was checked. `attach()`
+(`launcher.py:2275`) takes `image` as a plain keyword defaulting to
+`DEFAULT_IMAGE` — it does not read the environment itself. The env var is
+resolved one layer up, only by the CLI wrappers that call it (the `podbench
+attach` command, `launcher.py:6170`; `doctor.py:989`). `hotfix.py`'s own
+`seat_container(..., land=True)` calls `attach(kube, pod)` directly
+(`hotfix.py:1623`) with no `image=` argument and no `os.environ` read
+anywhere in `hotfix.py` (checked: zero matches for `os.environ`, `IMAGE_ENV`
+or `DEFAULT_IMAGE` in that file) — so setting `$PODBENCH_IMAGE` before
+running `hotfix init` would **not** have changed which image it landed. The
+substance of the defect stands (auto-land has no image lever and used the
+wrong build here); the suggested fix needs the env-var read added at the
+`hotfix.py` call site, not merely "read" as something already present one
+call away.
 
 ---
 
