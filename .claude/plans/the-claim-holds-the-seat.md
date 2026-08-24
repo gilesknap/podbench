@@ -76,54 +76,68 @@ exported by the devcontainer and points elsewhere. Each worktree has its own
 
 ---
 
-## Verifying on a cluster — two beds, and why it is two
+## Verifying on a cluster — the bench, and what it cannot show
 
-**The harness already exists.** `k8s/hotfix-harness/podbench-test-fastcs.yaml`
-is a duplicate of `bl47p-ea-fastcs-01-0` built for exactly this, and its five
-rules are load-bearing, not decoration: `hostNetwork: false`, the three shared
-claims dropped, **the PV prefix renamed** so it cannot answer for a live IOC,
-a `podbench-test-*` name plus a `podbench.dev/test-duplicate: "true"` label so
-the set is greppable, and deletion at the end of the phase. Reuse it; do not
-re-derive it, and do not relax rule 3 — a second IOC answering a live PV prefix
-is a beamline problem, not a test problem.
+**The bed is the k3s box, `root@187.124.114.170`** — reachable directly from the
+host, verified 2026-08-24. (The `podbench-bed` ssh alias exists only inside the
+devcontainer; from the host, use the address.) Namespace **`podbench-p47`**
+already carries a replica of `bl47p-ea-fastcs-01-0` built 2026-08-24, manifests
+at `/root/podbench-p47/`, teardown `/root/podbench-p47/99-teardown.sh` — which
+also removes four **cluster-scoped** PVs that a namespace delete leaves behind.
 
-It is a bare `kubectl apply`d Pod carrying no `app.kubernetes.io/instance`, so
-Argo never tracks it and never prunes it. That is the ArgoCD independence this
-plan wants, achieved by omission. **Keep it that way**: anything rendered
-through a chart in `p47-services` inherits the tracking label and becomes Argo's
-to prune.
+Chosen over a duplicate in `p47-beamline` because it stays up overnight, and it
+turns out to **collapse two beds into one**: the bench grants `runAsUser: 0`, so
+#42's root seat is reachable there, while the replica runs at uid 36096/37887
+for the degraded path. p47 could only ever show one of those — every attach
+recorded on it lands `rung degraded — uid 37887, CapEff 0`
+(`.claude/evidence/phase8-why-the-adapter-never-answers.md:83`).
 
-**One adaptation is required.** The harness's claim is an
-`ephemeral: volumeClaimTemplate`, which is deleted with the pod. Phase 3's whole
-proposition is *the home survives a pod replacement*; against an ephemeral claim
-that is untestable **by construction**, and it would read as the feature failing
-rather than the harness being wrong. These phases need a standalone PVC.
+Three things are already true there that a p47 duplicate would have needed work
+to match:
 
-**And p47 cannot prove all of it.** Every attach recorded on p47 lands
-`rung degraded — uid 37887, gid 37887, CapEff 0000000000000000`
-(`.claude/evidence/phase8-why-the-adapter-never-answers.md:83`). #42 bites only
-on the **full** rung, where the seat is root and sshd reads `/root` from the
-image's passwd. So:
+* `bl47p-ea-fastcs-01-podbench-project` is a **standalone** 2Gi PVC, `Bound` —
+  not the `ephemeral: volumeClaimTemplate` in
+  `k8s/hotfix-harness/podbench-test-fastcs.yaml`, which is deleted with the pod
+  and would have made Phase 3's proposition untestable by construction.
+* The `LimitRange` is present and calibrated — `default.memory: 256Mi`,
+  `maxLimitRequestRatio.memory: 10`. Without it the resize decision silently
+  takes a different branch and looks fine either way.
+* **No Argo CD at all**, so nothing tracks or prunes the fixture. The
+  independence a hand-applied duplicate had to engineer is free here.
 
-| bed | what only it can prove |
-|---|---|
-| p47 harness, degraded rung | the layout, the non-root home via the passwd record, netapp + LimitRange realism, Argo non-interference |
-| k3s bench (`k3s-test-bed` skill) | the root-seat redirect — #42's actual fix, which p47 never exercises |
+And CLAUDE.md's scratch-namespace rule is **satisfied rather than deviated
+from**: `podbench-p47` is a `podbench-*` namespace, created for the purpose and
+deleted afterwards. No compensating controls needed, and no beamline in reach.
 
-**This deviates from a hard rule, deliberately.** CLAUDE.md says cluster testing
-happens in `podbench-*` namespaces created for the purpose and deleted
-afterwards; the harness runs in `p47-beamline`, which is not one. Decided by the
-user, 2026-08-24, on the grounds that the realism that matters here — netapp,
-the LimitRange, PSA, the real image, a live Argo — is exactly what a scratch
-namespace does not reproduce. The five duplicate rules above **are** the
-compensating control, which is why none of them is negotiable. Do not "correct"
-this back to a scratch namespace, and do not drop the rules because the
-namespace is now the real one.
+**State the box's settings with every result.** `kernel.yama.ptrace_scope` is 0,
+matching the measured DLS node; `apparmor` reads `N`, which the `k3s-test-bed`
+skill requires and which silently denies ptrace when it is not. Read both back
+rather than assuming — the sysctl is runtime-only and a reboot restores it.
 
-**Prove which build you are testing before trusting any cluster result.** Every
-branch push overwrites the same `0.1.0-beta.N-<slug>` tag and a seat pulls
-`IfNotPresent`, so a node that pulled it an hour ago silently serves the old
-layer. `--pull always`, or pin the index digest.
+**Prove which build you are testing.** Two traps that fail in *opposite*
+directions: a branch tag is rewritten on every push and containerd caches it, so
+a node serves a stale layer; and the sync excludes `.git`, so setuptools-scm on
+the bed derives a version from the bed clone's stale HEAD and certifies a fresh
+build as old. Prove freshness by content — grep the image for a symbol that
+cannot exist in the old tree — not by `podbench --version`.
+
+**What the bench cannot show. Record these as unproven, never as passed:**
+
+* **`fsGroup` on netapp.** `local-path` is not NFS, and fsGroup ownership
+  semantics differ by backend. The harness records the beside-the-app fsGroup
+  layout as "proved on netapp in preflight", and a **non-root** seat writing its
+  home on the claim depends on exactly that. A green run on `local-path` does
+  not transfer. This is the one gap worth a later p47 confirmation.
+* **Volume expansion.** `local-path` is `allowVolumeExpansion: false`, so Phase
+  1's 10Gi can only ever be exercised on a **fresh** claim here, never as a
+  resize of an existing one.
+* **Binding mode.** `local-path` is `WaitForFirstConsumer`; netapp is
+  `Immediate`. A claim sits `Pending` until a pod consumes it, so `Bound` means
+  something different on each.
+* PSA `restricted`, Kyverno, SELinux, NFS, arm64 — none of them, so a seat that
+  lands degraded here does so because the fixture said to, not because a policy
+  refused it. Force it with `tests/e2e/apps/strip-sys-ptrace.yaml` when that is
+  the case under test.
 
 **Write evidence to `.claude/evidence/`, link it from the PR.** Measure the
 seat; do not restate the request. Where a measurement could not be taken, say
@@ -211,8 +225,10 @@ pod quietly runs the image's code" branch with it.
 Delete every existing claim on the bench and on p47 rather than reasoning about
 what an old layout looks like under a new mount.
 
-**Verify:** p47 harness, with the claim converted to a standalone PVC. Deploy
-the duplicate, `hotfix init`, then read back four things that are each silent
+**Verify:** the bench, namespace `podbench-p47`, against the existing
+standalone
+claim. Deploy
+the replica, `hotfix init`, then read back four things that are each silent
 when wrong: `hotfix status` lists the pod under the new mountPath; `git status`
 in `/podbench/app` is clean and reports no dubious ownership; `uv sync` built
 into `/podbench/venv` and nothing podbench wrote is inside the checkout; and
@@ -257,14 +273,17 @@ re-attached after a pod replacement finds `~/.vscode-server` already unpacked,
 and nothing the seat writes counts against the pod's ephemeral-storage budget —
 the budget whose overrun evicts the *pod*, application included.
 
-**Verify:** both beds, and neither is optional. On the **p47 harness**
-(degraded rung, uid 37887): the home lands on the claim via the passwd record,
-and — the actual proposition — `delete` the pod, let it come back against the
-same standalone PVC, re-attach, and find `~/.vscode-server` already unpacked.
-Record the second attach's elapsed time against the first. On the **k3s
-bench**, which grants `runAsUser: 0`: a full-rung seat writes its home to the
-claim and not to `/root` on the container layer. p47 cannot show this — it
-never lands a root seat.
+**Verify:** the bench, both rungs, on one box. **Degraded** — the replica runs
+at uid 36096/37887, so the home lands on the claim via the passwd record; then
+`delete` the pod, let it come back against the same standalone PVC, re-attach,
+and find `~/.vscode-server` already unpacked. Record the second attach's elapsed
+time against the first; that number *is* the feature. **Root** — a target
+pinning `runAsUser: 0` gets a full-rung seat, which writes its home to the claim
+and not to `/root` on the container layer. This is #42, and p47 could never have
+shown it.
+
+Report the non-root result as **unproven on netapp**: fsGroup semantics differ
+by backend and this one is `local-path`.
 
 **Falsified if:** a full-rung (root) seat still writes `~/.vscode-server` to the
 container layer, or two seats on one pod share a home, or a seat on a pod with
@@ -294,9 +313,9 @@ The flat layout from Phase 2 is what makes a scoped reset expressible as paths:
 clear `app/` and `venv/`, keep `home/`. Audit every path that clears the claim
 and make the scope explicit rather than inherited.
 
-**Verify:** p47 harness. Put a marker file in `home/`, run every path that
-clears the claim, and confirm the marker survives while `app/` and `venv/` are
-gone and rebuild cleanly.
+**Verify:** the bench. Put a marker file in `home/`, run every path that clears
+the claim, and confirm the marker survives while `app/` and `venv/` are gone and
+rebuild cleanly.
 
 **Falsified if:** any reset path removes `home/`, or a scoped reset leaves a
 stale venv the supervisor then runs.
