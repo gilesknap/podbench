@@ -302,6 +302,16 @@ send    initialize
 recv    -> TIMEOUT, 0 bytes in 15s
 ```
 
+> **Superseded, 2026-08-24 — read `phase8-why-the-adapter-never-answers.md`
+> before using anything in the rest of this section.** The mechanism below is
+> misread. `--for-server <n>` is the *debuggee's* transient endpoints listener,
+> which lives about a second and is then closed; it is not the adapter's
+> server-facing port. Its absence from the socket table, and the "three socket
+> fds", were both reproduced on sessions that work perfectly, so neither is
+> evidence of a wedge. The symptom recorded here — connected, sent, zero bytes —
+> did not reproduce in six attempts, and phase 8 records why it cannot say what
+> caused it. The *observations* below stand; the inference from them does not.
+
 **The adapter accepts the TCP connection and never answers `initialize`.** The
 reason is visible in the node's socket table — the adapter's own server-facing
 port, `--for-server 33215` (`0x81BF`), has **no listener and no connection at
