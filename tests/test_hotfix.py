@@ -3731,7 +3731,10 @@ def test_the_claim_key_goes_to_the_root_whatever_under_says() -> None:
     """It is a subchart's values, and helm looks for those by chart name at the
     root - not inside whatever mapping the target's pod template lives in."""
     document, _ = merged(parent=PARENT)
-    assert document[hotfix.SUBCHART_VALUES_KEY] == {"enabled": True, "size": "2Gi"}
+    assert document[hotfix.SUBCHART_VALUES_KEY] == {
+        "enabled": True,
+        "size": hotfix.CLAIM_DEFAULT_SIZE,
+    }
     assert hotfix.SUBCHART_VALUES_KEY not in document["ioc-instance"]
 
 

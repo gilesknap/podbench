@@ -1371,7 +1371,7 @@ Notes:
 │                                         its timings are carried over; a chart renders a supplied │
 │                                         probe wholesale, so a timing left out becomes the k8s    │
 │                                         default                                                  │
-│    --size                    SIZE       claim size [default: 2Gi]                                │
+│    --size                    SIZE       claim size [default: 10Gi]                                │
 │    --gid                     GID        the application container's gid (default: read from the  │
 │                                         target)                                                  │
 │                                         [default: <the application's runAsGroup>]                │

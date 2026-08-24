@@ -23,7 +23,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from podbench.hotfix import hotfix_claim
+from podbench.hotfix import CLAIM_DEFAULT_SIZE, hotfix_claim
 
 CHARTS = Path(__file__).resolve().parent.parent / "Charts"
 CHART = CHARTS / "podbench-hotfix-claim"
@@ -239,3 +239,26 @@ def test_the_generated_schema_is_committed_and_covers_every_default() -> None:
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert schema["additionalProperties"] is False
     assert set(schema["properties"]) == set(values) | {"global"}
+
+
+def test_the_chart_default_size_is_the_launcher_default_size() -> None:
+    """The one number this chart and the launcher both spell.
+
+    Helm cannot import python, so ``size`` is written twice - here and as
+    :data:`podbench.hotfix.CLAIM_DEFAULT_SIZE` - and a site gets whichever of
+    the two it happened to use: ``hotfix values`` writes the launcher's into the
+    target's values file, while a chart that depends on this one and never
+    mentions ``size`` gets the chart's. Drift between them is a claim sized by
+    accident.
+
+    Both spellings are rendered: ``values.yaml`` supplies ``size`` on an
+    ordinary install, and the template's own fallback is only reached by a
+    values file that sets it to null.
+    """
+    (claim,) = objects(render(CHART, APP, "--set", "enabled=true").stdout)
+    assert claim["spec"]["resources"]["requests"]["storage"] == CLAIM_DEFAULT_SIZE
+
+    (fallback,) = objects(
+        render(CHART, APP, "--set", "enabled=true", "--set", "size=null").stdout
+    )
+    assert fallback["spec"]["resources"]["requests"]["storage"] == CLAIM_DEFAULT_SIZE
