@@ -21,15 +21,20 @@ also **Python-only** and **single-replica only** — the claim is ReadWriteOnce
 and one checkout cannot serve two writers.
 :::
 
-Five verbs, in the order you run them:
+Four verbs, in the order you run them:
 
 ```text
-values       emit the chart values the mode needs, read off the target
-check        say what would stop a hotfix here, before you start one
-init         seed the claim from the running container, clone, rebuild
-apply        commit the edit and relaunch the child in place
-consolidate  push the fix as a branch  →  retire  measure the way back out
+values   emit the chart values the mode needs, read off the target
+check    say what would stop a hotfix here, before you start one
+init     seed the claim from the running container, clone, rebuild
+restart  relaunch the application on what is on the claim
+retire   measure the way back out, and delete the claim
 ```
+
+Committing and pushing are **ordinary git in the seat**. podbench had verbs for
+both once and neither earned its place: `git commit` in the checkout is a commit,
+and `consolidate`'s push handled no credentials, so it was exactly as hard with it
+as without ([#232](https://github.com/gilesknap/podbench/issues/232)).
 
 `podbench hotfix status` is not a step. It is the one to run habitually, and the
 one to leave in a shutdown checklist.
@@ -262,7 +267,7 @@ after it refuse instead, because by then one should exist. Useful flags:
 It is safe to run twice: a claim already carrying `pyproject.toml` short-circuits
 the whole seed.
 
-## 4. Edit, then apply
+## 4. Edit, restart, commit
 
 The edit happens **in the seat**, in the checkout on the claim. Get a seat the
 usual way and work in `/podbench/app`, which is the claim's mount point and the
@@ -279,21 +284,13 @@ $ cd /podbench/app && $EDITOR src/fastcs_example/temp_controller.py
 Remote-SSH](vscode-remote-ssh.md) are the two routes in; either works, and so
 does `kubectl exec`.
 
-Then, from anywhere:
+Then, from anywhere, put the edit into the running process:
 
 ```
-$ podbench hotfix apply bl47p-ea-fastcs-01-0 -n p47-beamline \
-      -m "clamp the setpoint before the ramp"
-committed as giles <giles@example.org>
-no packaging metadata changed; editable install still valid
-1 commit(s) ahead of 4d9a1c2
-relaunched the application in bl47p-ea-fastcs-01 without a restart
+$ podbench hotfix restart bl47p-ea-fastcs-01-0 -n p47-beamline
+stopped the supervisor child pid 7 and its tree, started pid 2446
+the claim is dirty and running: 1 file uncommitted (src/fastcs_example/temp_controller.py)
 ```
-
-Every `apply` is a commit — a hotfix that is only a working-tree edit has no sha,
-and without a sha nothing can say what is running or push it anywhere later.
-Committing by hand in the seat first is fine; `apply` then reports "working tree
-clean; nothing new to commit" and carries on.
 
 The relaunch holds the pod's liveness probe for at most 120 seconds, kills the
 supervisor's child and its whole descendant tree, and lets the supervisor start
@@ -305,35 +302,28 @@ epics-containers IOC — can leave its real process reparented onto PID 1 still
 holding the port, and both "the pid file moved" and "the port answers" look fine
 in that state.
 
-`--no-bounce` commits without relaunching, for a change you want to take effect
-at the next restart instead.
-
-### The inner loop: `restart`, with no commit
-
-`apply` requires `-m`, and it is right to: a hotfix that is only a working-tree
-edit has no sha. But the loop most editing actually is — change a line, run it,
-look — is not twenty hotfixes, it is twenty restarts and one commit at the end.
-That is `hotfix restart`:
+The loop most editing actually is — change a line, run it, look — is twenty
+restarts and one commit at the end, and the commit is git's:
 
 ```
-$ podbench hotfix restart bl47p-ea-fastcs-01-0 -n p47-beamline
-stopped the supervisor child pid 7 and its tree, started pid 2446
-the claim is dirty and running: 2 files uncommitted (src/fastcs_example/temp_controller.py and tests/test_ramp.py)
-
 $ cd /podbench/app && git commit -am "clamp the setpoint before the ramp"
 ```
 
-It writes nothing at all — no commit, no index, no manifest — and the relaunch
-is the same hold-and-tree-kill `apply` performs, so `restartCount` still does
-not move.
+`restart` writes nothing at all — no commit, no index, no manifest write — and
+`restartCount` still does not move.
 
-Three things about what it prints:
+Four things about what it prints:
 
 * **The dirty line is the point of the verb, not decoration.** An uncommitted
-  change on a live process is the one divergence no repository anywhere records,
-  and `hotfix status` reads the manifest, so this is the only place it is said.
+  change on a live process is the one divergence no repository anywhere records.
   When the tree is clean the line says so and names the sha the new process
-  loaded.
+  loaded. `hotfix status` measures the same thing from the other end.
+* **`--reinstall` after a packaging change.** An editable install bakes the
+  packaging in at install time, so a new entry point or a renamed package needs
+  `uv sync` run again on the claim: `podbench hotfix restart … --reinstall`
+  rebuilds the venv before the relaunch. Where `pyproject.toml` or the lockfile
+  is among the uncommitted paths, `restart` says the install is stale and names
+  the flag rather than rebuilding on every iteration.
 * **The pid is the supervisor's own child**, which is what
   `/tmp/podbench-child.pid` holds. It is not the process you would set a
   breakpoint in: on `bl47p-ea-fastcs-01` the file held 7 — the `stdio-socket`
@@ -352,18 +342,40 @@ Three things about what it prints:
 
 ```
 $ podbench hotfix status -n p47-beamline
-  [ok]    p47-beamline/bl47p-ea-fastcs-01-0  +1 commit(s)  9c1f2ab  active — hotfixed, base image unchanged
-    base 4d9a1c2 · giles · 2026-08-23T10:14:02Z
-      9c1f2ab  clamp the setpoint before the ramp
+  [ok]    p47-beamline/bl47p-ea-fastcs-01-0  active — hotfixed, and nothing here needs attention
+    claim   9c1f2ab is 1 commit ahead of 4d9a1c2
+    dirty   nothing uncommitted; what is running is what is committed
+    remote  9c1f2ab is the tip of hotfix/beamtime-14, checked just now
+    image   unchanged since the hotfix was made (sha256:aaaa1111ffff)
 ```
 
-The row's own columns carry the count and the sha, so nothing under it repeats
-them. On a claim carrying no commits at all the line below reads `on its base
-commit · …`, because at `+0` the claim *is* its base and the only thing left to
-say is who seeded it and when.
+**Every one of those four rows is measured on the run, and none of it is
+recorded.** The manifest keeps only what git cannot know — where the claim came
+from, and which commit and image it was seeded against — because the seat has
+ordinary git in it and one hand commit would make a recorded count false while
+`status` went on printing it.
+
+* `claim` and `dirty` come from `git` in the claim, over `kubectl exec`. They
+  need no network and no credential. Where the *application* container has no
+  git — a distroless image, and `status` is most useful on a colleague's pod
+  where you have no seat — all three git rows collapse into one saying
+  `unmeasured`. Never "clean".
+* `remote` is asked **from your laptop**, not from the pod: an exec session has
+  no `SSH_AUTH_SOCK`, so the pod cannot use your agent even when one is
+  forwarded to a seat. podbench reads the shas out over exec and runs `git
+  ls-remote` here, once per repository and under a five-second bound. A forge
+  that does not answer makes the row `unmeasured` — never "not pushed" — and
+  `--no-remote` skips it. It compares branch *tips*, so it can say a commit is
+  the tip of a branch and never that it has been merged.
+* `image` needs no git at all, and is the most valuable of the four: an image
+  that moved under the mount means the claim's venv is now shadowing whatever
+  was released.
 
 It exits **0** only when every row is `active` and unheld, which is what makes it
-usable as an assertion rather than a report:
+usable as an assertion rather than a report. Nothing on the four rows moves that:
+a dirty claim is the ordinary inner loop, an unpushed one is the ordinary state of
+a fix made an hour ago, and a row that could not be measured is not an assertion
+in either direction.
 
 ```
 $ podbench hotfix status -A || echo "something is still hotfixed"
@@ -375,34 +387,35 @@ verdicts worth knowing on sight:
 ```text
 image-changed  the image was upgraded under a live hotfix, so the upgrade has
                not reached the running code — the claim shadows the image
-superseded     consolidated AND the image has moved since: the claim is now an
-               older copy of a fix that shipped
 interpreter    the venv's bin/python will not run, or its version moved
-not-hotfixed   held, but nothing hotfixed here — an apply that died mid-flight
+not-hotfixed   held, but nothing hotfixed here — a relaunch that died mid-flight
 held …         a hold, orthogonal to all of the above; "expiry unmeasured" is
                never "no deadline"
 ```
 
 ## 6. Get it back into an image, then retire the claim
 
+Push the branch with git, from wherever your credentials are:
+
 ```
-$ podbench hotfix consolidate bl47p-ea-fastcs-01-0 -n p47-beamline \
-      --branch hotfix/beamtime-14
+$ cd /podbench/app && git push origin HEAD:refs/heads/hotfix/beamtime-14
 ```
 
-That pushes the claim's checkout as a branch (`--dry-run` says what it would
-push), records the branch in the manifest, and prints the checklist: open the PR,
-merge it, let CI build the image, roll the workload onto it, take the volumes,
-volumeMount, command, args and podSecurityContext back out of the application's
-own values, and turn the claim off.
+In the seat if it can reach your forge, and from a laptop clone if it cannot —
+measured on this very pod, the seat has no key and no `known_hosts`, so a push
+to its `git@github.com:…` remote answers `Host key verification failed`. Whether
+it landed is the `remote` row of `hotfix status`, which asks the forge from your
+laptop.
+
+Then: open the PR, merge it, let CI build the image, roll the workload onto it,
+take the volumes, volumeMount, command, args and podSecurityContext back out of
+the application's own values, and turn the claim off.
 
 The last two are the ones nobody does, so they are measured rather than
 remembered:
 
 ```
 $ podbench hotfix retire bl47p-ea-fastcs-01-0 -n p47-beamline
-  [x]     branch         consolidated onto hotfix/beamtime-14, so the
-                         claim is no longer the only copy of this fix
   [ ]     image          the deployed image is still sha256:aaaa1111,
                          the one the hotfix was made against
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the
@@ -427,7 +440,7 @@ $ podbench hotfix retire bl47p-ea-fastcs-01-0 -n p47-beamline
   [ ]     claim          bl47p-ea-fastcs-01-podbench-project still
                          exists
 ------------------------------------------------------------------------
-VERDICT: 3 of 4 steps of retirement remain (exit 1)
+VERDICT: 3 of 3 steps of retirement remain (exit 1)
 REMAINING: image, wiring, claim
 ```
 
@@ -446,11 +459,12 @@ declares it, so a pod that finished its retirement and kept it has still
 finished — counted, it would leave `retire` red forever on a step nothing could
 close. Both are named on the row whether or not anything else is outstanding.
 
-A claim that never carried a commit — seeded and never `apply`-ed — has its
-`branch` step **done**, not outstanding: nothing it *records* would be discarded
-by retiring it, and `consolidate` refuses that claim for the same reason. The
-hedge is deliberate: the count comes off the manifest, written by `init` and
-`apply`, so commits made in the seat by hand without `apply` are not in it.
+**There is no `branch` row**, and its absence is deliberate. It read a field
+`consolidate` wrote into the manifest, and one push by hand made that field a
+lie. Whether the fix exists anywhere but the claim is a live question now, asked
+by `hotfix status` against the forge; retirement turns only on what can be
+measured from the cluster in front of you. Check `status`'s `remote` row before
+`--delete-claim`, because the deletion is the step that discards commits.
 
 Read-only, it lands no seat, and it exits **1** while any measured step is
 outstanding. `[x]` means *measured done*; a step that could not be measured stays

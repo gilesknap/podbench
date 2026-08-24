@@ -1017,15 +1017,16 @@ Notes:
 ### `hotfix`
 
 Durable in-place fixes: the project on a ReadWriteOnce claim beside the
-application, every change a git commit, and a `status` that will not let a
+application, ordinary git in the seat, and a `status` that will not let a
 hotfixed pod go unnoticed.
 
 :::{warning}
 Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC's running
 code with `restartCount` unchanged and both seats alive. Two things about it are
 still undemonstrated — survival across pod replacement, which needs a real claim
-rather than the generic ephemeral volume that run used, and `consolidate`, which
-no cluster has run. `hotfix values --from-pod` was measured against the live
+rather than the generic ephemeral volume that run used, and `status`'s laptop-side
+`git ls-remote`, which no cluster has driven. `hotfix values --from-pod` was
+measured against the live
 `bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01` targets, and is where the volume and
 probe warnings below came from.
 :::
@@ -1045,21 +1046,19 @@ seat, where the claim is already in this process's own mount namespace.
 
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
- Durable in-place fixes: the project on a claim beside the application, every change a commit, and
- a status command that will not let a hotfixed pod go unnoticed.
+ Durable in-place fixes: the project on a claim beside the application, ordinary git in the seat,
+ and a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
-│ values       emit the helm values an application's chart needs                                   │
-│ check        say what would stop a hotfix on this target, before starting one                    │
-│ init         seed the claim from the running container, clone the source, rebuild the venv       │
-│ apply        commit the change on the claim and relaunch the running child                       │
-│ restart      relaunch the application on the claim, committing nothing                           │
-│ status       every hotfixed pod in the namespace, and its drift                                  │
-│ consolidate  push the claim's checkout as a branch for the rebuild                               │
-│ retire       what is left of retiring this hotfix, and the one step podbench can take            │
+│ values   emit the helm values an application's chart needs                                       │
+│ check    say what would stop a hotfix on this target, before starting one                        │
+│ init     seed the claim from the running container, clone the source, rebuild the venv           │
+│ restart  relaunch the application on the claim, committing nothing                               │
+│ status   every hotfixed pod in the namespace, measured                                           │
+│ retire   what is left of retiring this hotfix, and the one step podbench can take                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1068,19 +1067,16 @@ seat, where the claim is already in this process's own mount namespace.
 | `values --app NAME --from-pod POD` | read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place |
 | `check TARGET` | every prerequisite `init` has, measured in one read-only pass, with a verdict and an exit code |
 | `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
-| `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
-| `restart TARGET` | relaunch the application's own child on whatever is on the claim — no message, no commit, no manifest write — and say whether the code now running is committed |
-| `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — its drift, and what is wrong with it |
-| `consolidate --branch B TARGET` | push the checkout as a branch and print the retirement checklist |
-| `retire TARGET` | which steps of that checklist have landed, measured against the cluster, and `--delete-claim` to take the last one |
+| `restart TARGET` | relaunch the application's own child on whatever is on the claim — no message, no commit, no manifest write — and say whether the code now running is committed; `--reinstall` rebuilds the venv first |
+| `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — measured: how far ahead the claim is, what is uncommitted, whether anything upstream has it, and whether the image moved |
+| `retire TARGET` | which steps of retirement have landed, measured against the cluster, and `--delete-claim` to take the last one |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
-across `init`, `apply`, `restart` and `consolidate`: `--container`, `--seat`,
-`--local`, and `--venv` — which is the mountPath the claim is mounted at,
-beside the application's own project and never over it, and which is **read off
-the pod** rather than asked for. `--author` is on `init`, `apply` and
-`consolidate` and deliberately not on `restart`, which writes no commit for it
-to name. `check` takes `--container` and `--seat`, and
+across `init` and `restart`: `--container`, `--seat`, `--local`, and `--venv` —
+which is the mountPath the claim is mounted at, beside the application's own
+project and never over it, and which is **read off the pod** rather than asked
+for. No verb takes `--author` or `-m`: podbench writes no commits, so there is
+nothing to name. `check` takes `--container` and `--seat`, and
 `retire` takes `--container`. `values` runs before any of that exists, so it
 takes a `--from-pod POD` rather than a `TARGET` and has its own flags, listed
 below.
@@ -1127,8 +1123,9 @@ Notes:
   have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
   `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
   looking for and the pod goes on quietly running the image's code. `init`
-  records it in the manifest and `apply` reads it from there; `apply` has no such
-  flag, because a rebuild that has to be told twice is one that gets told once
+  records it in the manifest and `restart --reinstall` reads it from there; that
+  flag has no `--claim-venv` of its own, because a rebuild that has to be told
+  twice is one that gets told once
   ([#209](https://github.com/gilesknap/podbench/issues/209)).
 * **`--venv` is read off the pod, and a value that disagrees is refused.** The
   claim is podbench's own `podbench-app` volume, so its `mountPath` in the
@@ -1145,8 +1142,8 @@ Notes:
   anonymously and with a short timeout. The old default for the base was
   `git rev-parse HEAD` of the fresh clone, which without `--ref` is the default
   branch's tip and is almost never what the released image was built from —
-  while `status`'s `+N commit(s)` and everything `consolidate` pushes are
-  differences against it. A revision the clone does not contain is not believed.
+  while `status`'s `claim` row is a difference against it. A revision the clone
+  does not contain is not believed.
 
   **The labels themselves are corroborated first.** OCI labels are inherited, so
   a derived image advertises its base image's repository and revision unless the
@@ -1156,9 +1153,9 @@ Notes:
   that, because the clone came from the same label. podbench asks the seeded
   checkout's `origin` instead, and where it disagrees `origin` wins.
 
-  Where nothing corroborates them the base is recorded as **assumed** and `status`
-  prints `+N commit(s) from an assumed base` rather than a derived count wearing
-  a measurement's clothes.
+  Where nothing corroborates them the base is recorded as **assumed** and the
+  `claim` row says `an assumed base, so the count is a guess` rather than
+  printing a difference wearing a measurement's clothes.
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
 * **`restart` is the inner loop, and it writes nothing.** No `-m`, no commit, no
@@ -1168,8 +1165,16 @@ Notes:
   clean form naming the sha the new process loaded. An uncommitted change on a
   live process is the one divergence no repository anywhere records, which is
   what makes relaunch-without-commit sound rather than a hole in the model. It
-  refuses a container with no supervisor for `apply`'s reason, and it refuses
-  before anything is killed.
+  refuses a container with no supervisor — there is nothing to relaunch, and the
+  kill would take the seat with it — and it refuses before anything is killed.
+* **`--reinstall` is the one thing `restart` does that is not a relaunch.** An
+  editable install bakes the packaging in at install time, so a change to
+  `pyproject.toml` or the lockfile needs `uv sync` run again on the claim or a
+  new entry point is simply not there. It is a flag rather than an inference
+  because the input the old `apply` inferred from — the range of commits since
+  the last one — is exactly what a mode with no recorded commit does not have.
+  Where a packaging file is among the *uncommitted* paths, `restart` says the
+  install is stale and names the flag.
 * **The pid `restart` names is the supervisor's own child**, which is what
   `/tmp/podbench-child.pid` holds and is *not* the process a breakpoint goes in:
   measured on `bl47p-ea-fastcs-01`, the file held 7 and the `fastcs-example`
@@ -1185,18 +1190,43 @@ Notes:
   refresh that fails is a line in the report rather than a failed restart — the
   application is already back by then, and only F5 is still pointing at the old
   process.
-* `consolidate` does not open a PR; it prints the `gh pr create` line.
+* **`status` measures; it does not read a record.** Under each pod are four rows.
+  `claim` counts commits between the manifest's base and the checkout's `HEAD`;
+  `dirty` names what is uncommitted, which is the state no repository anywhere
+  records and the one most worth surfacing; `remote` says whether any branch is
+  at that commit; `image` compares the manifest's `baseImageDigest` against the
+  live `imageID`, and is the row that needs no git at all — an image that moved
+  under the mount means the claim's venv is shadowing whatever was released.
+* **Three of those rows come from git in the claim, and go `unmeasured` without
+  it.** `status` reads the claim through the *application* container, not through
+  a seat, because the listing's value is that it finds a hotfix nobody told you
+  about — on a pod you have not attached to. A distroless application image has
+  no git, and the report then says so once rather than reporting the claim as
+  clean.
+* **The `remote` row is asked from the laptop.** An exec session has no
+  `SSH_AUTH_SOCK` — agent forwarding exists only inside an ssh session — so the
+  pod could not ask even with an agent forwarded to a seat; measured on the live
+  p47 pod, `git fetch` in its seat answers `Host key verification failed`. The
+  laptop holds both halves, so podbench reads the shas out over exec and runs
+  `git ls-remote` here, once per distinct repository and under a 5s bound. A
+  failure is **unmeasured**, never "not pushed". `ls-remote` returns ref *tips*,
+  so the row can say a commit is the tip of a branch and never that it was
+  merged. `--no-remote` turns the network half off, leaving what the claim last
+  fetched.
 * `status` exits **1** when any pod needs attention, so "no hotfix here needs somebody
-  today" is a testable shutdown assertion. It is **not** the assertion "nothing here is
-  still to be retired": a consolidated fix whose image has not moved is a live hotfix
+  today" is a testable shutdown assertion. Nothing on the four measured rows moves it:
+  a dirty claim is the ordinary inner loop, an unpushed one is the ordinary state of a
+  fix made an hour ago, and a row that could not be measured is not an assertion in
+  either direction. It is also **not** the assertion "nothing here is still to be
+  retired": a fix whose image has not moved is a live hotfix
   doing its job, so retirement is not part of a row's `ok` and `status` can exit 0 on a
   pod `retire` reports several steps short. `retire` is the verb that stays red until a
   retirement is finished. `-A`/`--all-namespaces` is that assertion for the
   whole cluster, with the same exit code — the facility-wide form used to be a shell
   loop the operator had to write and keep correct. Every pod is still read through a
   client bound to its own namespace.
-* `retire` is the retirement checklist as a measurement rather than as prose. Four
-  rows — `branch`, `image`, `wiring`, `claim` — because those are the four a cluster
+* `retire` is the retirement checklist as a measurement rather than as prose. Three
+  rows — `image`, `wiring`, `claim` — because those are the three a cluster
   can be asked about, and `[x]` goes on **only** a step that was measured done: an
   unmeasured one is `[ ]` with a detail saying why, and it moves the exit code in
   neither direction. It is read-only and lands no seat unless `--delete-claim` is
@@ -1207,9 +1237,11 @@ Notes:
   deletion: nothing mounted the claim, so what was on it went unread, and a chart that
   still declares the claim will have the next sync recreate it. Exit **1** while any
   measured step is outstanding.
-* `retire`'s `branch` step is **done** on a claim that records no commits: a seeded
-  claim nobody ever `apply`-ed has nothing to consolidate and nothing that retiring it
-  discards, and `consolidate` refuses that same claim.
+* **`retire` has no `branch` row.** It read a field `consolidate` wrote, and one
+  hand push made that field a lie — which is the whole objection that deleted both.
+  Whether the fix is anywhere but the claim is a live question, asked by `status`
+  against the forge; retirement turns only on what can be measured from the cluster
+  in front of you.
 * `retire`'s `wiring` row names both volumes, the mount and the supervisor loop in
   `command` and `args`, and it says to take those *entries* out of the application's
   values rather than the whole `volumes` and `volumeMounts` keys — a helm list replaces
@@ -1228,7 +1260,7 @@ Notes:
   read-only: it writes nothing and lands no seat, because an ephemeral container
   cannot be taken back off a pod and a verb run to ask a question must not spend
   one. A non-exec `livenessProbe` is `warn` rather than a blocker by design: it
-  breaks `apply`'s hold rather than `init`. `check` takes `--repo` because `init`
+  breaks the hold a later `restart` takes rather than `init`. `check` takes `--repo` because `init`
   does — an image naming no source repository is a state `init` refuses, so it is
   a blocker here, and a check that could not hear the flag would refuse a target
   the next command accepts. A label that *is* there is corroborated rather than

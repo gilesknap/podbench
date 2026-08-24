@@ -78,7 +78,7 @@ supports
 ```
 
 Read it as the conditional it is. The wrapper short-circuits only while the hold
-file exists — the window `podbench hotfix apply` opens around a relaunch — and
+file exists — the window `podbench hotfix restart` opens around a relaunch — and
 outside that window the target's own check applies and `61-91s` is your budget
 again. The arithmetic is reported rather than discarded because it was never
 wrong: it is what a pause costs once the hold is gone, and what podbench stopped
@@ -369,7 +369,7 @@ of that sentence are false, and the row is ticked instead:
 
 ```
   [x] iterate (edit, relaunch, verify through the Service)
-      `podbench hotfix apply` relaunches the application's own child in
+      `podbench hotfix restart` relaunches the application's own child in
       place: this pod carries the supervisor, so the loop runs on the live
       workload without a second pod and without restarting the container.
 ```

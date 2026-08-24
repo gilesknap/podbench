@@ -438,7 +438,7 @@ The report is six lines of *measured* capability, not of requested capability:
   do not, and it is measured rather than assumed: a seccomp filter that rejects
   `ptrace` takes it away along with everything else;
 * **iterate** — unavailable on an ordinary pod, naming `podbench dev` as the way to
-  it; ticked on a pod carrying the hotfix layout, where `podbench hotfix apply` runs
+  it; ticked on a pod carrying the hotfix layout, where `podbench hotfix restart` runs
   the loop on the live workload;
 * **ssh seat** and **exec seat**, reported separately, because the ssh half needs an
   NSS identity the exec half does not.

@@ -135,7 +135,8 @@ untouched, and stays on issue #34.
 What that run did **not** show is survival across pod replacement — it used a
 generic ephemeral volume, which dies with its pod, because a real claim needs
 `create` on persistentvolumeclaims that the test account does not have — and
-`consolidate`, which no cluster has ever run. Everything else here is unit-tested
+`status`'s laptop-side `git ls-remote`, which no cluster has driven. Everything
+else here is unit-tested
 against a temp directory and a fake `kubectl`. See
 [What `hotfix` does](hotfix-flow.md).
 

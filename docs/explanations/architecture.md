@@ -281,11 +281,13 @@ is hidden by the mount, which is what lets the seed be a plain copy rather than
 an initContainer racing the application.
 
 The workflow ships as `podbench hotfix` (`values` for the chart snippet, then
-`check`/`init`/`apply`/`status`/`consolidate`/`retire`). It met a cluster on 2026-08-22 — an edit
+`check`/`init`/`restart`/`status`/`retire`). Committing and pushing are ordinary git
+in the seat: podbench wrapped both once, and a wrapper that records what git did is
+a record one hand commit makes false. It met a cluster on 2026-08-22 — an edit
 reached a live IOC's running code with `restartCount` unchanged — and two things
 about it remain undemonstrated: survival across pod replacement, which needs a
-real claim rather than the generic ephemeral volume that run used, and
-`consolidate`, which no cluster has run. See
+real claim rather than the generic ephemeral volume that run used, and `status`'s
+laptop-side `git ls-remote`, which no cluster has driven. See
 [What `hotfix` does](hotfix-flow.md).
 
 ## See also
