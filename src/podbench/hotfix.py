@@ -3254,6 +3254,38 @@ def _dirty_paths(porcelain: Sequence[str]) -> tuple[str, ...]:
     return tuple(line[3:].strip() for line in porcelain if line[3:].strip())
 
 
+def _status_said(result: CommandResult) -> str:
+    """A failed ``git status``'s own last word, parenthesised, or nothing.
+
+    :func:`~podbench.kubectl.command_said` drops kubectl's ``command terminated
+    with exit code N`` trailer for :func:`read_claim_git`'s reason: that line is
+    this side's account of the exec, and the sentence it lands in is asking what
+    *git* said.
+    """
+    spoke = command_said(result.stderr) or command_said(result.stdout)
+    return f" ({spoke[-1]})" if spoke else ""
+
+
+RESTART_CLAIM_UNMEASURED = (
+    "unmeasured: `git status` in {checkout} exited {code}{detail}, so whether "
+    "the running code is committed - and whether a packaging change has left "
+    "the editable install stale - was not read. Ask git in the seat: "
+    "`git -C {checkout} status`"
+)
+"""What a restart says when the one read it owes did not answer.
+
+``git status`` is run with ``check=False`` because a restart that worked must not
+be reported as a failure by the line describing it. An empty ``stdout`` is then
+indistinguishable from a clean tree - no git in the container, no checkout at
+``checkout``, a refused exec - and :func:`_claim_state` said "the claim is clean
+and running" about a state nothing had measured, while
+:data:`STALE_INSTALL_NOTE` was suppressed for the same reason.
+
+The same rule :attr:`ClaimGit.reachable` keeps for ``status``, in the same
+vocabulary: an unread claim is **unmeasured**, and must never read as clean.
+"""
+
+
 def _claim_state(store: HotfixStore, checkout: str, porcelain: Sequence[str]) -> str:
     """Whether the code now running is committed, said on every restart.
 
@@ -3385,7 +3417,9 @@ def restart_app(
     What it owes in exchange is :func:`_claim_state`. The manifest records no
     sha at all since #232, and this is where the reason is easiest to see: the
     divergence this verb creates lives in the *working tree*, where only a live
-    read can find it and no record could have anticipated it.
+    read can find it and no record could have anticipated it. When that read
+    does not answer, the line says so - :data:`RESTART_CLAIM_UNMEASURED`, never
+    "clean".
 
     ``reinstall`` is where ``apply``'s one non-git, non-relaunch step went. It
     rebuilt the venv when a commit touched ``pyproject.toml`` or the lockfile,
@@ -3422,13 +3456,21 @@ def restart_app(
     _relaunch(kube, target)
     # One read, two readings. `git status` after the relaunch and not before it,
     # because what this report is about is the process that is now running.
-    porcelain = store.run(
-        git_argv(checkout, "status", "--porcelain"), check=False
-    ).stdout.splitlines()
+    read = store.run(git_argv(checkout, "status", "--porcelain"), check=False)
+    # The returncode is part of the read, not noise around it: an empty stdout
+    # from a *failed* status is not a clean tree (RESTART_CLAIM_UNMEASURED).
+    measured = read.returncode == 0
+    porcelain = read.stdout.splitlines() if measured else []
     packaging = [path for path in _dirty_paths(porcelain) if metadata_changed([path])]
     actions += [
         _pid_transition(before, _recorded_child(kube, target)),
-        _claim_state(store, checkout, porcelain),
+        _claim_state(store, checkout, porcelain)
+        if measured
+        else RESTART_CLAIM_UNMEASURED.format(
+            checkout=checkout,
+            code=read.returncode,
+            detail=_status_said(read),
+        ),
     ]
     if packaging and not reinstall:
         actions.append(

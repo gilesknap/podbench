@@ -1241,6 +1241,35 @@ def test_restart_says_something_true_when_the_claim_is_clean() -> None:
     assert HEAD_SHA[:7] in actions[1]
 
 
+def test_restart_says_unmeasured_when_the_git_read_fails() -> None:
+    """An empty stdout from a *failed* `git status` is not a clean tree. No git
+    in the container, no checkout at the path, a refused exec: all three came
+    back as "the claim is clean and running", a state nothing had measured, and
+    the packaging note was suppressed by the same empty list."""
+    store = hotfixed_store()
+    store.failures[f"{GIT} status --porcelain"] = "fatal: not a git repository"
+
+    actions = restarted(store)
+
+    assert "unmeasured" in actions[1]
+    assert "clean" not in actions[1]
+    # git's own word, not kubectl's account of the exec, and the checkout to ask.
+    assert "fatal: not a git repository" in actions[1]
+    assert CHECKOUT in actions[1]
+
+
+def test_restart_does_not_promise_the_packaging_is_current_it_could_not_read() -> None:
+    """`STALE_INSTALL_NOTE` fires off the same porcelain, so an unread status
+    silences it too - and silence there reads as "nothing to rebuild"."""
+    store = hotfixed_store()
+    store.failures[f"{GIT} status --porcelain"] = "sh: git: not found"
+
+    actions = restarted(store)
+
+    assert not any("--reinstall" in action for action in actions[2:])
+    assert "editable install stale" in actions[1]
+
+
 def test_restart_refreshes_a_debug_configuration_that_already_exists() -> None:
     """Every configuration podbench authors is pid-keyed and the restart just
     changed the pid, so an untouched launch.json is one whose F5 dials a closed
