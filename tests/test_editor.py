@@ -22,7 +22,10 @@ emptiness rather than for content.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import os
+import socket
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -33,8 +36,10 @@ from podbench.editor import (
     PROVISION_DEST_FLAG,
     SERVER_CLI_ATTEMPTS,
     SERVER_CLI_INTERVAL,
+    SSH_AUTH_SOCK,
     UNREACHABLE_CAUSES,
     EditorError,
+    forwarded_agent,
     is_step,
     open_seat,
     resolve_editor,
@@ -124,6 +129,9 @@ class FakeSeat:
         self.seat_install_rc = seat_install_rc
         self.seat_installed: list[str] = []
         self.calls: list[tuple[str, ...]] = []
+        # What each child would have inherited. `subprocess.run` copies
+        # `os.environ` at spawn, so this is the same read the real one makes.
+        self.agents: list[str | None] = []
 
     def __call__(
         self,
@@ -134,6 +142,7 @@ class FakeSeat:
         timeout: float | None = None,
     ) -> CommandResult:
         self.calls.append(tuple(argv))
+        self.agents.append(os.environ.get(SSH_AUTH_SOCK))
         if argv[0] == "code":
             return self._editor(list(argv))
         if argv[0] == "ssh":
@@ -271,6 +280,7 @@ def run_open(
     folder: str = HOME,
     provision_dest: str | None = None,
     naps: list[float] | None = None,
+    agent_socket: str | None = None,
 ) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
     goes rather than returning a list at the end, because the install is a
@@ -285,6 +295,7 @@ def run_open(
         editor="code",
         provision_dest=provision_dest,
         runner=seat,
+        agent_socket=agent_socket,
         # Never the real one: waiting for a vscode-server that a fake will never
         # bootstrap is five minutes of a unit suite that is meant to take
         # seconds. `naps` is how a test that cares about the wait sees it.
@@ -1108,3 +1119,71 @@ def test_only_one_line_claims_to_have_written_anything() -> None:
 
     wrote = [note for note in notes if note.startswith(f"{OK} wrote")]
     assert wrote == [f"{OK} wrote {MACHINE} in the seat: the folder-walk excludes"]
+
+
+# -- which agent the seat is lent --------------------------------------------
+
+
+@pytest.fixture
+def git_agent(tmp_path: Path) -> Iterator[str]:
+    """A real AF_UNIX socket, because :func:`forwarded_agent` checks for one."""
+    path = tmp_path / "git-agent.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(path))
+        yield str(path)
+
+
+def test_every_child_sees_the_named_agent_and_the_caller_gets_its_own_back(
+    git_agent: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`code` is not the only child that has to see it.
+
+    The preflight and the three ssh calls after it all travel over the same
+    stanza, and a run that pointed only the editor at the git agent would
+    forward the user's whole agent from every other one.
+    """
+    monkeypatch.setenv(SSH_AUTH_SOCK, "/run/user/1000/keyring/ssh")
+    seat = FakeSeat()
+
+    run_open(seat, agent_socket=git_agent)
+
+    assert seat.agents, "nothing was spawned"
+    assert set(seat.agents) == {git_agent}
+    # Restored, because this is process-global state and the caller did not ask
+    # for it to change.
+    assert os.environ[SSH_AUTH_SOCK] == "/run/user/1000/keyring/ssh"
+
+
+def test_no_socket_named_leaves_the_shells_agent_exactly_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--forward-agent` on its own forwards whatever the shell already has."""
+    monkeypatch.setenv(SSH_AUTH_SOCK, "/run/user/1000/keyring/ssh")
+    seat = FakeSeat()
+
+    run_open(seat)
+
+    assert set(seat.agents) == {"/run/user/1000/keyring/ssh"}
+
+
+def test_an_agent_that_is_not_listening_is_refused_before_anything_runs(
+    tmp_path: Path,
+) -> None:
+    """ssh with an SSH_AUTH_SOCK naming nothing forwards nothing and says so
+    nowhere; the failure would arrive in the seat minutes later, as a git
+    authentication error pointing at the key."""
+    seat = FakeSeat()
+
+    with pytest.raises(EditorError, match="ssh-agent -a"):
+        run_open(seat, agent_socket=str(tmp_path / "never-started.sock"))
+
+    assert seat.calls == []
+
+
+def test_a_plain_file_is_not_an_agent(tmp_path: Path) -> None:
+    ordinary = tmp_path / "id_git"
+    ordinary.write_text("PRIVATE")
+
+    with pytest.raises(EditorError, match="not a listening socket"):
+        with forwarded_agent(str(ordinary)):
+            pass
