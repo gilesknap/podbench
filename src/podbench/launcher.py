@@ -103,6 +103,7 @@ from .model import (
     measured_rung,
 )
 from .proc import Credentials
+from .provision import PROVISION_DEST, claim_destination
 from .resize import (
     CPU,
     EDITOR_HEADROOM,
@@ -427,9 +428,10 @@ It states the intent and the new limit, not the shortfall that produced them:
 this line, :func:`try_resize`'s outcome and :data:`EDITOR_HEADROOM_WARNING` are
 three reports of one resize, so each says only the part the others cannot.
 
-The number is arithmetic, not a default: :func:`podbench.resize.editor_limit`
-raises the target by the shortfall against
-:data:`podbench.resize.EDITOR_HEADROOM` and rounds up to the next whole GiB.
+The number is a flat default - :data:`podbench.resize.EDITOR_LIMIT`, which the
+headroom decides whether to apply and never how big to make. A reader who wants
+a different one types ``--resize MEMORY``, which is what makes the flat default
+defensible.
 Naming the container is what makes it checkable - the raise goes on the
 *target's* limit, because an ephemeral container may not declare ``resources``
 at all and the pod's ceiling is the sum of its containers'.
@@ -870,6 +872,28 @@ does not mount it lands the same way. ``session.hotfixed`` is true in all three
 while there is nothing on the claim's path to open, and opening it anyway would
 put an editor on an empty directory in the seat's own rootfs."""
 
+PROVISION_DEST_CLAIM_NOTE = (
+    "any debugpy this run installs goes to {dest} on the claim, not {default}: "
+    "on a hotfixed pod that is the tree the seat shares with the target and can "
+    "write without being root"
+)
+"""Said when ``--provision`` is pointed at the claim rather than at ``/opt``.
+
+The third unasked-for answer in this command, and it gets a line for
+:data:`HOTFIX_CLAIM_MOUNTED_NOTE`'s reason: a destination podbench chose is only
+acceptable if the output names it, and this one decides where 15 MB lands in
+somebody's PVC.
+
+Conditional, because the run is: ``--provision`` installs only where the seat
+says debugpy is the blocker, so a target that ships its own is never written to
+and a line promising an install would be reporting an event that did not
+happen. The destination still matters there - it is also the extra path
+``debug-config`` searches for the target's own copy.
+
+Only where the claim won. The default is what every pod without the layout has
+always used, and a line saying so on all of them would be an announcement that
+nothing happened."""
+
 HOTFIX_CLAIM_UNMOUNTABLE_NOTE = (
     "this pod carries the hotfix layout, but the claim could not be mounted "
     "into the seat: {reason}. An editor here reads the image's code, not the "
@@ -1122,8 +1146,34 @@ def editor_folder(
     justification on top of that.
     """
     home = seat_layout(session).home
-    if not session.hotfixed:
+    folder = seat_claim_path(session, seat_spec)
+    if folder is None:
         return home, None
+    if not folder:
+        return home, EDITOR_FOLDER_HOME_NOTE.format(home=home, path=HOTFIX_APP_PATH)
+    return folder, EDITOR_FOLDER_CLAIM_NOTE.format(folder=folder, home=home)
+
+
+def seat_claim_path(
+    session: Session, seat_spec: Mapping[str, Any] | None
+) -> str | None:
+    """Where *this seat* has the hotfix claim, if it has it at all.
+
+    Three answers, and the middle one is the reason this is not
+    :func:`is_hotfixed`: ``None`` for a pod with no layout, ``""`` for a pod
+    that carries one while this seat does not carry the mount, and the mountPath
+    otherwise. The empty string is not a corner case — a ``subPath`` refusal
+    degraded to a note, a reconnect into a seat older than the layout, and
+    ``--no-seat-identity`` all land there — and the two decisions built on this
+    (:func:`editor_folder`, :func:`provision_destination`) both have to hold a
+    path in the seat's own rootfs apart from a path that is genuinely shared.
+
+    Shared by them rather than written twice, for the reason ``dev_pod_name``'s
+    truncation rule is: two copies of "where is the claim" is how a report comes
+    to name a directory the seat does not have.
+    """
+    if not session.hotfixed:
+        return None
     mounts = _as_list(as_dict(seat_spec).get("volumeMounts"))
     mount = next(
         (
@@ -1133,10 +1183,52 @@ def editor_folder(
         ),
         None,
     )
-    folder = _mount_path(mount) if mount is not None else ""
+    return _mount_path(mount) if mount is not None else ""
+
+
+def provision_destination(
+    session: Session, seat_spec: Mapping[str, Any] | None
+) -> tuple[str | None, str | None]:
+    """Where ``--provision`` should install debugpy, and the line that says why.
+
+    ``None`` is "whatever the seat's own default is"
+    (:data:`podbench.provision.PROVISION_DEST`), and it is deliberately not the
+    string: podbench spells ``--provision-dest`` on the seat's command line only
+    where it is *overriding* something, so a seat too old to know the flag is
+    only ever met on a pod where nothing needed overriding.
+
+    The claim is the answer on a hotfixed pod because :data:`PROVISION_DEST` is
+    not one there. ``/opt`` is ``drwxr-xr-x root root`` in a stock image and the
+    degraded rung is the target's own uid with no capabilities, so the install
+    is refused by ordinary file permissions and the whole cascade behind it —
+    no importable debugpy, no configurations, no ``launch.json``, no debug
+    adapter in the seat — follows from that one ``EACCES`` (measured on
+    ``bl47p-ea-fastcs-01-0``, 2026-08-24; pointed at the claim, every step of it
+    succeeded). The claim is also the same inode in both mount namespaces, which
+    is what ``gdb-across-namespaces`` asks of a path both halves of a session
+    name.
+
+    Asked of :func:`seat_claim_path`, so a pod that carries the layout while
+    *this seat* does not carry the mount keeps the default — and **not** because
+    the write would fail. It is spelled through ``/proc/<pid>/root``
+    (:func:`podbench.provision.target_destination`), so it would land in the
+    target's claim whatever this seat mounts. It is because the property the
+    choice rests on is gone: the claim is one path in *both* namespaces only
+    where both containers mount it, and a seat that does not is exactly the seat
+    whose ``/podbench/app`` resolves to something else, or to nothing. Choosing
+    it there would be choosing on an assumption where every other decision in
+    this file is made on the mount.
+
+    There is deliberately **no fallback** between the two. A destination that
+    silently changed after a refusal would turn a permissions bug into a mystery
+    about which path is live, and ``flavour._target_debugpy`` searches exactly
+    one extra path on the next run.
+    """
+    folder = seat_claim_path(session, seat_spec)
     if not folder:
-        return home, EDITOR_FOLDER_HOME_NOTE.format(home=home, path=HOTFIX_APP_PATH)
-    return folder, EDITOR_FOLDER_CLAIM_NOTE.format(folder=folder, home=home)
+        return None, None
+    dest = claim_destination(folder)
+    return dest, PROVISION_DEST_CLAIM_NOTE.format(dest=dest, default=PROVISION_DEST)
 
 
 def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
@@ -6135,8 +6227,8 @@ def _land(
     nothing there decides to spend the pod's memory, so a resize happens only
     where a flag asked for one, which is #54's decision. ``vscode`` does,
     because the editor it is about to open is the one cost measured not to fit
-    (:data:`podbench.resize.EDITOR_HEADROOM`), and the number that fixes it is
-    arithmetic on a headroom this code already reads.
+    (:data:`podbench.resize.EDITOR_HEADROOM`), against a headroom this code
+    already reads.
 
     ``editor`` is the separate question of whether that cost is about to be
     *spent*, and the two come apart at ``--no-resize``: declining the raise is
@@ -6229,8 +6321,10 @@ def _editor_memory(
     The measurement is the same one ``attach`` prints on its ``memory`` row, and
     reading it here costs one extra ``kubectl top pod`` before the seat lands.
     That the seat is not yet in the sum errs by 13-23 MiB
-    (:data:`podbench.resize.SEAT_FOOTPRINT`) against a 1215 MiB threshold, which
-    is under a rounding step of the answer.
+    (:data:`podbench.resize.SEAT_FOOTPRINT`) against a 1215 MiB threshold, and
+    only the threshold is read from the measurement: the limit it asks for is
+    :data:`podbench.resize.EDITOR_LIMIT`, so a seat's worth of drift cannot move
+    the answer at all.
 
     An unmeasured pod is the one case that earns a line without an action. It is
     not a hazard - :attr:`podbench.resize.Headroom.summary` states it as
@@ -6335,6 +6429,7 @@ def _open_editor(
     emit("editor")
     home = seat_layout(session).home
     folder, why = editor_folder(session, seat_spec)
+    provision_dest, why_dest = provision_destination(session, seat_spec)
     if why is not None:
         # Before the steps rather than after: this is the decision every one of
         # them is carried out against, and `open_seat` reports the folder it
@@ -6345,6 +6440,12 @@ def _open_editor(
         # won, because nothing went wrong - the answer was simply not the one
         # the command line asked for.
         _editor_step(f"{WARN if folder == home else OK} {why}")
+    if why_dest is not None and provision is not Provision.NEVER:
+        # Beside the folder note and under the same rule, but silent under
+        # `--no-provision`: nothing will be installed on that run, and naming a
+        # destination nobody is going to write to is a step reporting an event
+        # that did not happen.
+        _editor_step(f"{OK} {why_dest}")
     open_seat(
         kubectl,
         session.seat,
@@ -6353,6 +6454,7 @@ def _open_editor(
         report=_editor_step,
         editor=editor,
         provision=provision,
+        provision_dest=provision_dest,
         runner=runner,
     )
 

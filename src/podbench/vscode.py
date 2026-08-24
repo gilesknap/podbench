@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import typer
 
 from .cli import new_app, run
+from .dap import initialize as dap_initialize
 from .elf import debugpy_helper_name, debugpy_helper_published
 from .execfile import gdb_exec_file
 from .flavour import (
@@ -104,8 +105,17 @@ from .gdbcmd import (
     resolve_target_pids,
     sysroot_path,
 )
+from .jsonc import (
+    Edit,
+    Node,
+    append_items,
+    apply_edits,
+    insert_members,
+    parse,
+    replace_value,
+)
 from .kubectl import Runner, run_subprocess
-from .model import as_dict, describe_pause
+from .model import describe_pause
 from .probe import Attacher, default_attacher
 from .proc import (
     DEFAULT_PROC,
@@ -116,6 +126,7 @@ from .proc import (
 )
 from .provision import (
     PROVISION_DEST,
+    Prover,
     inject_debugpy,
     provision_debugpy,
     provision_paste,
@@ -362,7 +373,7 @@ def merge_extensions_json(
     raises from this file offers "Install in SSH: ``<alias>``", which is the one
     place the choice can still be got wrong by hand.
 
-    Raises ``ValueError`` on a file that will not parse, for the reason
+    Raises ``ValueError`` on a file that is not JSONC either, for the reason
     :func:`merge_launch_configs` does.
 
     >>> print(merge_extensions_json(None, ["golang.go"]), end="")
@@ -375,22 +386,21 @@ def merge_extensions_json(
     """
     if existing is None or not existing.strip():
         return extensions_json_text(recommendations)
-    document: Any
-    try:
-        document = json.loads(existing)
-    except ValueError as error:
-        raise ValueError(
-            f"cannot parse the existing extensions.json: {error}"
-        ) from error
-    if not isinstance(document, dict):
-        raise ValueError("the existing extensions.json is not a JSON object")
-    settings = cast("dict[str, Any]", document)
-    raw: Any = settings.get("recommendations")
-    current = cast("list[Any]", raw) if isinstance(raw, list) else []
-    if not _append_missing(current, recommendations):
+    document = _document(existing, "extensions.json")
+    node = document.member("recommendations")
+    current = cast("list[Any]", node.value) if node and node.items is not None else []
+    missing = [name for name in recommendations if name not in current]
+    if not missing:
         return None
-    settings["recommendations"] = current
-    return json.dumps(settings, indent=2) + "\n"
+    if node is None:
+        edit = insert_members(existing, document, {"recommendations": list(missing)})
+    elif node.items is None:
+        # A `recommendations` that is not a list is a value we cannot add to,
+        # and replacing it is what this function has always done.
+        edit = replace_value(existing, node, list(recommendations))
+    else:
+        edit = append_items(existing, node, missing)
+    return apply_edits(existing, [edit])
 
 
 def machine_settings_text(settings: Mapping[str, Any]) -> str:
@@ -398,24 +408,20 @@ def machine_settings_text(settings: Mapping[str, Any]) -> str:
     return json.dumps(dict(settings), indent=2) + "\n"
 
 
-def _add_missing_keys(current: dict[str, Any], defaults: Mapping[str, Any]) -> bool:
-    """Add the keys ``current`` lacks. Returns whether anything was added."""
-    added = False
-    for key, value in defaults.items():
-        if key not in current:
-            current[key] = value
-            added = True
-    return added
+def _document(existing: str, name: str) -> Node:
+    """The JSONC document in ``existing``, which has to be an object.
 
-
-def _append_missing(current: list[Any], defaults: Sequence[Any]) -> bool:
-    """Append the entries ``current`` lacks. Returns whether anything was."""
-    added = False
-    for value in defaults:
-        if value not in current:
-            current.append(value)
-            added = True
-    return added
+    Both refusals keep the wording they had when these files were read with
+    :func:`json.loads`, because the one that survives — text that is not JSONC
+    either — is still reported to the user verbatim, ``line … column …`` and all.
+    """
+    try:
+        document = parse(existing)
+    except ValueError as error:
+        raise ValueError(f"cannot parse the existing {name}: {error}") from error
+    if document.members is None:
+        raise ValueError(f"the existing {name} is not a JSON object")
+    return document
 
 
 def merge_machine_settings(existing: str | None) -> str | None:
@@ -429,10 +435,11 @@ def merge_machine_settings(existing: str | None) -> str | None:
     existing value always wins, including a deliberate ``"**/proc/**": false``,
     and a pattern we never heard of is left where it is.
 
-    Raises ``ValueError`` when the file cannot be parsed, for the same reason
-    :func:`merge_launch_json` does: VS Code permits comments in ``settings.json``
-    and :mod:`json` does not, so rewriting it would discard whatever this parser
-    could not see. The caller reports the refusal rather than swallowing it —
+    The document is read as JSONC and edited *textually* — see :mod:`podbench.jsonc`
+    — because a settings.json with comments and a trailing comma is what a real
+    project ships, and a merge that reformatted it would be a worse outcome than
+    the refusal it replaces. Text that is not JSONC either still raises
+    ``ValueError``, and the caller reports the refusal rather than swallowing it:
     unapplied excludes are exactly the silence this file exists to end.
 
     >>> shipped = merge_machine_settings(None)
@@ -465,32 +472,31 @@ def merge_folder_settings(existing: str | None) -> str | None:
 def _merge_settings(existing: str | None, defaults: Mapping[str, Any]) -> str | None:
     if existing is None or not existing.strip():
         return machine_settings_text(copy.deepcopy(dict(defaults)))
-    document: Any
-    try:
-        document = json.loads(existing)
-    except ValueError as error:
-        raise ValueError(f"cannot parse the existing settings.json: {error}") from error
-    if not isinstance(document, dict):
-        raise ValueError("the existing settings.json is not a JSON object")
-    settings = cast("dict[str, Any]", document)
-
-    changed = False
+    document = _document(existing, "settings.json")
+    edits: list[Edit] = []
+    absent: dict[str, Any] = {}
     for key, default in defaults.items():
-        current: Any = settings.get(key)
-        if isinstance(default, dict) and isinstance(current, dict):
-            changed |= _add_missing_keys(
-                cast("dict[str, Any]", current), cast("dict[str, Any]", default)
-            )
-        elif isinstance(default, list) and isinstance(current, list):
-            changed |= _append_missing(
-                cast("list[Any]", current), cast("list[Any]", default)
-            )
-        elif key not in settings:
-            settings[key] = copy.deepcopy(cast("Any", default))
-            changed = True
+        node = document.member(key)
+        if node is None:
+            absent[key] = copy.deepcopy(default)
+        elif isinstance(default, dict) and node.members is not None:
+            theirs = cast("dict[str, Any]", node.value)
+            ours = cast("dict[str, Any]", default)
+            missing = {k: v for k, v in ours.items() if k not in theirs}
+            if missing:
+                edits.append(insert_members(existing, node, missing))
+        elif isinstance(default, list) and node.items is not None:
+            patterns = cast("list[Any]", node.value)
+            extra = [
+                value for value in cast("list[Any]", default) if value not in patterns
+            ]
+            if extra:
+                edits.append(append_items(existing, node, extra))
         # Anything else is a value the user set to a shape we did not expect,
         # and theirs beats ours.
-    return machine_settings_text(settings) if changed else None
+    if absent:
+        edits.append(insert_members(existing, document, absent))
+    return apply_edits(existing, edits) if edits else None
 
 
 def target_architecture(machine: str | None = None) -> str | None:
@@ -1004,12 +1010,19 @@ def merge_launch_configs(
     carries its flavour: the match is the name, so two flavours must not share
     one.
 
-    Raises ``ValueError`` when the existing file cannot be parsed. VS Code
-    permits comments in ``launch.json`` and :mod:`json` does not, so refusing is
-    the only safe answer — silently rewriting the file would discard the
-    comments and any configuration this parser could not see.
+    The file this merges into is usually the *application's*, committed and
+    unmodified: on a hotfixed pod ``podbench vscode`` opens the claim, and a
+    normal project ships a ``.vscode/launch.json`` that VS Code's own scaffold
+    wrote with ``//`` comments in it. So it is read as JSONC and edited
+    textually — podbench's own entries are replaced where they stand and new
+    ones appended, and every other byte in the file, comments included, is left
+    exactly where the user put it. See :mod:`podbench.jsonc`.
 
-    >>> print(merge_launch_configs(None, [{"name": "a"}]), end="")
+    Raises ``ValueError`` on text that is not JSONC either, with :mod:`json`'s
+    own wording: a file podbench cannot read is one it must not rewrite.
+
+    >>> written = merge_launch_configs(None, [{"name": "a"}])
+    >>> print(written, end="")
     {
       "version": "0.2.0",
       "configurations": [
@@ -1018,26 +1031,59 @@ def merge_launch_configs(
         }
       ]
     }
+    >>> print(merge_launch_configs(written, [{"name": "a", "port": 1}]), end="")
+    {
+      "version": "0.2.0",
+      "configurations": [
+        {
+          "name": "a",
+          "port": 1
+        }
+      ]
+    }
     """
     if existing is None or not existing.strip():
         return launch_json_text(configurations)
-    document: Any
-    try:
-        document = json.loads(existing)
-    except ValueError as error:
-        raise ValueError(f"cannot parse the existing launch.json: {error}") from error
-    if not isinstance(document, dict):
-        raise ValueError("the existing launch.json is not a JSON object")
-    raw: Any = as_dict(document).get("configurations")
-    entries = cast("list[Any]", raw) if isinstance(raw, list) else []
-    names = {configuration.get("name") for configuration in configurations}
-    merged = [
-        as_dict(entry)
-        for entry in entries
-        if isinstance(entry, dict) and as_dict(entry).get("name") not in names
-    ]
-    merged.extend(dict(configuration) for configuration in configurations)
-    return launch_json_text(merged)
+    document = _document(existing, "launch.json")
+    node = document.member("configurations")
+    if node is None or node.items is None:
+        # No list to merge into — either the key is absent or it holds something
+        # that is not a list, which is the one case where podbench's entries can
+        # only arrive by putting a list there.
+        entries = [dict(configuration) for configuration in configurations]
+        edit = (
+            insert_members(existing, document, {"configurations": entries})
+            if node is None
+            else replace_value(existing, node, entries)
+        )
+        return apply_edits(existing, [edit])
+    edits: list[Edit] = []
+    appended: list[dict[str, Any]] = []
+    claimed: set[int] = set()
+    for configuration in configurations:
+        name = configuration.get("name")
+        # `claimed` guards the one way two of these edits could overlap: two
+        # configurations sharing a name would otherwise both replace the same
+        # entry. Names are unique by construction (see `_name`), and an
+        # invariant worth relying on is worth not corrupting a file over.
+        at = next(
+            (
+                index
+                for index, item in enumerate(node.items)
+                if index not in claimed
+                and item.members is not None
+                and cast("dict[str, Any]", item.value).get("name") == name
+            ),
+            None,
+        )
+        if at is None:
+            appended.append(dict(configuration))
+            continue
+        claimed.add(at)
+        edits.append(replace_value(existing, node.items[at], dict(configuration)))
+    if appended:
+        edits.append(append_items(existing, node, appended))
+    return apply_edits(existing, edits)
 
 
 def merge_launch_json(existing: str | None, configuration: Mapping[str, Any]) -> str:
@@ -1401,6 +1447,7 @@ def _inject(
     port: int,
     host_network: bool | None,
     runner: Runner | None,
+    prove: Prover,
 ) -> bool:
     """Start the debugpy server inside the target, under ``--provision``.
 
@@ -1449,9 +1496,14 @@ def _inject(
         f"a probed pod the deadlines `attach` prints are the budget it spends. "
         f"Running `{command}`"
     )
-    injected = inject_debugpy(command, runner=runner, port=port)
+    injected = inject_debugpy(command, runner=runner, port=port, prove=prove)
     for message in injected.messages:
         _warn(f"--provision: {message}")
+    # `ok` and not `proved`: the caller re-probes for a listener on the strength
+    # of this, and an injection whose adapter never answered still moved the
+    # server off the conventional port. Reporting it as a failure here would
+    # print "nothing is listening" over a port that is genuinely open, which is
+    # the same class of untrue sentence this whole slice exists to remove.
     return injected.ok
 
 
@@ -1695,6 +1747,7 @@ def _run(
     which: Which,
     debugpy_root: str | None,
     choose_port: PortChooser,
+    prove: Prover,
 ) -> int:
     source_map, problems = _parse_source_map(source_map_entries)
     for problem in problems:
@@ -1758,6 +1811,7 @@ def _run(
                 which=which,
                 debugpy_root=debugpy_root,
                 choose_port=choose_port,
+                prove=prove,
                 target_cid=target_cid,
                 host_network=host_network,
                 hint=primary,
@@ -1802,6 +1856,7 @@ def _for_target(
     which: Which,
     debugpy_root: str | None,
     choose_port: PortChooser,
+    prove: Prover,
     target_cid: str | None,
     host_network: bool | None,
     hint: bool,
@@ -1999,6 +2054,7 @@ def _for_target(
             port=injected_on,
             host_network=host_network,
             runner=runner,
+            prove=prove,
         ):
             # The re-measure has to look where the server was actually put, not
             # where a server conventionally is.
@@ -2156,6 +2212,7 @@ def main(
     which: Which = shutil.which,
     debugpy_root: str | None = None,
     port_chooser: PortChooser = ephemeral_port,
+    prover: Prover = dap_initialize,
 ) -> int:
     """``podbench debug-config`` — author ``launch.json`` for this seat.
 
@@ -2166,9 +2223,11 @@ def main(
     question from the machine it happens to run on. ``attacher`` is the ptrace
     backend :func:`measured_attach` uses, and a test that wants an answer out of
     it has to inject one *and* a real ``proc``: against a synthetic tree nothing
-    is attached at all. ``port_chooser`` is the last of them because its default
-    really binds a socket, and a test asserting on the emitted port has to know
-    which number to expect.
+    is attached at all. ``port_chooser`` and ``prover`` are last because their
+    defaults really open sockets: a test asserting on the emitted port has to
+    know which number to expect, and one exercising ``--provision`` has to say
+    what the adapter answers rather than letting a handshake reach whatever holds
+    that port on the machine the suite happens to run on.
     """
     app = new_app()
 
@@ -2336,6 +2395,7 @@ def main(
                 which=which,
                 debugpy_root=debugpy_root,
                 choose_port=port_chooser,
+                prove=prover,
             )
         )
 

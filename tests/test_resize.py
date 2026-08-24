@@ -19,11 +19,13 @@ import pytest
 
 from podbench.resize import (
     CPU,
+    EDITOR_HEADROOM,
     MEMORY,
     SEAT_HEADROOM,
     Headroom,
     ResizeError,
     Want,
+    editor_limit,
     explain_claim_refusal,
     format_cpu,
     format_memory,
@@ -404,6 +406,36 @@ def test_every_pod_measured_on_the_beamline_is_below_the_threshold() -> None:
     ]
     assert thin == []
     assert Headroom(Fraction(100 * MI), Fraction(80 * MI)).below(SEAT_HEADROOM)
+
+
+def test_the_editor_limit_is_idempotent_so_a_second_vscode_is_a_no_op() -> None:
+    """The property the shortfall arithmetic could not have.
+
+    The old target was ``current + EDITOR_HEADROOM - free`` rounded up, and
+    ``free`` is what the editor is *consuming* - so each reconnect sized the pod
+    from the consequences of the last one. Two ``podbench vscode`` runs against
+    one pod took it 1Gi -> 2Gi on 2026-08-24, and a third would have gone again.
+
+    So: feed the answer back in against the *same* headroom - which is the
+    worst case, the reading taken before the raise has been noticed - and there
+    must be nothing left to do.
+    """
+    tight = Headroom(Fraction(GI), Fraction(GI - MI))
+    first = editor_limit(tight, Fraction(GI))
+
+    assert first is not None
+    assert format_memory(first) == "6Gi"
+    assert editor_limit(tight, first) is None
+
+
+def test_a_pod_sized_past_the_editor_limit_is_not_shrunk_to_it() -> None:
+    """A shortfall still asks for a raise, and a raise is never a reduction: a
+    16Gi container with 1Gi free needs the headroom warning, not two thirds of
+    its memory taken away to make room for an editor."""
+    short = Headroom(Fraction(16 * GI), Fraction(15 * GI))
+
+    assert short.below(EDITOR_HEADROOM)
+    assert editor_limit(short, Fraction(16 * GI)) is None
 
 
 def test_a_pod_over_its_own_ceiling_has_nothing_left_rather_than_a_debt() -> None:

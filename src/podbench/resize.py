@@ -50,6 +50,7 @@ from .model import as_dict
 __all__ = [
     "CPU",
     "EDITOR_HEADROOM",
+    "EDITOR_LIMIT",
     "GI",
     "MEMORY",
     "MUTABLE_RESOURCES_REFUSAL",
@@ -569,6 +570,21 @@ vscode`` asks for
 both, and only this one has to be checked against the pod.
 """
 
+EDITOR_LIMIT = Fraction(6 * GI)
+"""What ``podbench vscode`` raises a too-small target to. Flat, on purpose.
+
+The target used to be arithmetic — the shortfall of :data:`EDITOR_HEADROOM`
+against live free memory, rounded up to the next GiB — and live free memory is
+what the editor is *consuming*, so each reconnect computed a bigger number from
+the consequences of the last one. Measured 2026-08-24: two ``podbench vscode``
+runs against one pod took it 1Gi -> 2Gi, and a third would have gone again.
+
+A constant is idempotent by construction, which is the property the shortfall
+could not have, and 6Gi is a number a human can check against the 1215 MiB the
+editor actually costs. ``--resize MEMORY`` still chooses it for anyone whose pod
+disagrees.
+"""
+
 
 @dataclass(frozen=True)
 class Headroom:
@@ -664,24 +680,37 @@ def editor_limit(headroom: Headroom, current: Fraction | None) -> Fraction | Non
     The raise goes on the *target's* limit because that is the only limit a seat
     can move: an ephemeral container may not declare ``resources`` at all, so
     the pod's ceiling is the sum of its containers' and the seat is charged
-    against it. Raising the target by the shortfall therefore raises the pod's
-    ceiling by exactly the same amount.
+    against it. Raising the target therefore raises the pod's ceiling by exactly
+    the same amount.
 
-    Rounded **up to the next whole GiB**, which is margin and a legible number
-    rather than arithmetic exactly on the edge — 1301Mi is the answer nobody can
-    check, 2Gi is the one they can.
+    The headroom decides *whether*; :data:`EDITOR_LIMIT` decides *what to*. The
+    two questions were once one piece of arithmetic, and that made the answer
+    depend on memory the editor was itself using — see :data:`EDITOR_LIMIT` for
+    the ratchet that produced.
 
     ``None`` for every case that is not a measured shortfall, so a caller can
     treat it as "nothing to do":
 
     >>> tight = Headroom(Fraction(256 * MI), Fraction(86 * MI))
     >>> format_memory(editor_limit(tight, Fraction(256 * MI)))
-    '2Gi'
+    '6Gi'
     >>> editor_limit(Headroom(Fraction(8 * GI), Fraction(MI)), Fraction(GI)) is None
     True
     >>> editor_limit(Headroom(Fraction(256 * MI), None), Fraction(MI)) is None
     True
     >>> editor_limit(Headroom(None, None), Fraction(MI)) is None
+    True
+
+    ``None`` too when ``current`` already meets the target, which is both the
+    second run of the verb against a pod the first one sized and the pod that
+    was generously sized to begin with. A limit is never lowered to it: the
+    number is a floor for the editor, not a policy about how big a container
+    ought to be.
+
+    >>> editor_limit(tight, editor_limit(tight, Fraction(256 * MI))) is None
+    True
+    >>> big = Headroom(Fraction(16 * GI), Fraction(15 * GI))
+    >>> editor_limit(big, Fraction(16 * GI)) is None
     True
 
     ``current`` of ``None`` is the container that declares no memory limit. It
@@ -696,7 +725,7 @@ def editor_limit(headroom: Headroom, current: Fraction | None) -> Fraction | Non
     free = headroom.free
     if free is None or current is None or free >= EDITOR_HEADROOM:
         return None
-    return Fraction(math.ceil((current + EDITOR_HEADROOM - free) / GI)) * GI
+    return None if current >= EDITOR_LIMIT else EDITOR_LIMIT
 
 
 def pod_memory_limit(pod_json: Mapping[str, Any]) -> Fraction | None:

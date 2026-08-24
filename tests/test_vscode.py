@@ -15,6 +15,7 @@ Nothing here touches a cluster: pids come from a synthetic ``/proc`` tree.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import socket
@@ -26,9 +27,11 @@ from typing import Any, cast
 import pytest
 
 from podbench import vscode
+from podbench.dap import Answer, Handshake
 from podbench.execfile import gdb_exec_file
 from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
 from podbench.gdbcmd import EXIT_USAGE, RUST_PRETTY_PRINTERS, attach_commands
+from podbench.jsonc import parse as parse_jsonc
 from podbench.kubectl import CommandResult
 from podbench.model import SEIZE_PROBE
 from podbench.probe import AttachOutcome
@@ -383,14 +386,157 @@ def test_merge_keeps_a_hand_written_configuration() -> None:
     assert [item["name"] for item in configurations] == ["mine", "ours"]
 
 
-def test_merge_refuses_a_file_it_cannot_parse() -> None:
-    """VS Code allows comments in launch.json and :mod:`json` does not.
+def test_merge_refuses_a_file_that_is_not_jsonc_either() -> None:
+    """A comment is read now — see below — but a file podbench cannot read is
+    still one it must not rewrite, and the message is unchanged."""
+    with pytest.raises(ValueError, match="cannot parse the existing launch.json"):
+        merge_launch_json("{ 'name': 'mine' }", {"name": "ours"})
 
-    Rewriting it anyway would silently drop the comments and any configuration
-    this parser could not see, so refusing is the only safe answer.
+
+# -- ...into a real project's .vscode, which is JSONC ------------------------
+#
+# Measured 2026-08-24 on a hotfixed `bl47p-ea-fastcs-01-0`, where `podbench
+# vscode` opens the application's own checkout: `fastcs-example` ships all four
+# `.vscode/*.json` committed and unmodified, and both merges refused — one on
+# the `//` comments VS Code's own scaffold writes, one on a trailing comma
+# before `}`. On a hotfixed pod that is the common case, and no launch.json
+# means no F5.
+
+COMMITTED_LAUNCH_JSON = """{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Unit Test",
+      "type": "debugpy",
+      "request": "launch",
+      "justMyCode": false,
+      "program": "${file}",
+      "purpose": ["debug-test"],
+      "env": {
+        // pytest swallows stdout without this
+        "PYTEST_ADDOPTS": "--no-cov -s"
+      }
+    },
+    {
+      "name": "Launch IOC",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "fastcs_example",
+      "args": ["run"]
+    }  // and that is all of them
+  ],
+}
+"""
+"""A project's own file, in the shape VS Code writes and a user commits."""
+
+OURS = {"name": "podbench: attach to app [pid 13] (debugpy)", "type": "debugpy"}
+
+
+def _loads(text: str) -> dict[str, Any]:
+    """What VS Code would read out of the merged file.
+
+    :func:`json.loads` cannot: the point of these fixtures is that they carry
+    comments and a trailing comma, and they still do afterwards. Assertions that
+    have to be non-circular are made on the *text* instead.
     """
-    with pytest.raises(ValueError, match="cannot parse"):
-        merge_launch_json("{ // a comment\n}", {"name": "ours"})
+    return cast("dict[str, Any]", parse_jsonc(text).value)
+
+
+def _changes(before: str, after: str) -> list[str]:
+    """The inserted runs, or a failure if anything was replaced or removed.
+
+    The slice is falsified if the merged file's diff is larger than the block
+    podbench added, so the assertion is on the *shape* of the diff rather than
+    on its content: one contiguous insertion, and every other byte where it was.
+    """
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    inserted: list[str] = []
+    for tag, _, _, start, end in matcher.get_opcodes():
+        assert tag in {"equal", "insert"}, f"{tag}: {after[start:end]!r}"
+        if tag == "insert":
+            inserted.append(after[start:end])
+    return inserted
+
+
+def test_a_committed_launch_json_keeps_its_comments_and_its_configurations() -> None:
+    merged = merge_launch_json(COMMITTED_LAUNCH_JSON, OURS)
+    # Every comment, verbatim and in place — including the one inside a
+    # configuration and the one trailing the last of them, which is where an
+    # appended comma would have landed had it been put at the end of the line.
+    for comment in (
+        "  // Use IntelliSense to learn about possible attributes.\n",
+        "        // pytest swallows stdout without this\n",
+        "    }  // and that is all of them\n",
+    ):
+        assert comment in merged
+    # Both of the project's own configurations, byte for byte.
+    for entry in ('"name": "Debug Unit Test"', '"args": ["run"]'):
+        assert entry in merged
+    added = _changes(COMMITTED_LAUNCH_JSON, merged)
+    assert len(added) == 1
+    assert OURS["name"] in added[0]
+    names = [item["name"] for item in _loads(merged)["configurations"]]
+    assert names == ["Debug Unit Test", "Launch IOC", OURS["name"]]
+
+
+def test_merging_into_a_committed_launch_json_twice_is_idempotent() -> None:
+    """The entry is replaced where it stands, so a reconnect neither appends a
+    second copy nor grows the file."""
+    once = merge_launch_json(COMMITTED_LAUNCH_JSON, OURS)
+    assert merge_launch_json(once, OURS) == once
+    updated = merge_launch_json(once, {**OURS, "port": 5678})
+    assert _changes(once, updated) == [',\n      "port": 5678']
+
+
+def test_a_settings_json_with_a_trailing_comma_merges() -> None:
+    """The second of the two 2026-08-24 refusals, and the one whose failure is
+    quiet: unapplied excludes are what OOM a seat that cannot be restarted."""
+    existing = """{
+  "python.testing.pytestArgs": ["tests"],
+  "python.testing.pytestEnabled": true,
+  "[python]": {
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit",
+    },
+  },
+}
+"""
+    merged = merge_folder_settings(existing) or ""
+    assert _changes(existing, merged)
+    for line in existing.splitlines():
+        assert line in merged
+    document = _loads(merged)
+    assert document["python.testing.pytestArgs"] == ["tests"]
+    assert document["[python]"]["editor.codeActionsOnSave"]
+    assert document["files.watcherExclude"]["**/proc/**"] is True
+
+
+def test_a_comment_or_a_comma_inside_a_string_survives_the_merge() -> None:
+    """A stripper that does not track string literals corrupts these silently,
+    and the file it hands back still parses."""
+    existing = (
+        "{\n"
+        '  "podbench.url": "https://example.invalid/x",\n'
+        '  "podbench.args": "run,--verbose",\n'
+        '  "podbench.said": "he said \\" // not a comment"\n'
+        "}\n"
+    )
+    merged = merge_folder_settings(existing) or ""
+    for line in existing.splitlines()[1:-1]:
+        assert line in merged
+    document = _loads(merged)
+    assert document["podbench.url"] == "https://example.invalid/x"
+    assert document["podbench.args"] == "run,--verbose"
+    assert document["podbench.said"] == 'he said " // not a comment'
+
+
+def test_a_launch_json_with_no_configurations_key_gains_one() -> None:
+    existing = '{\n  // nothing here yet\n  "version": "0.2.0"\n}\n'
+    merged = merge_launch_json(existing, OURS)
+    assert "// nothing here yet" in merged
+    assert _loads(merged)["configurations"] == [OURS]
 
 
 # -- the CLI ----------------------------------------------------------------
@@ -543,11 +689,19 @@ def test_pylance_excludes_are_appended_rather_than_replaced() -> None:
     assert "/proc/**" in excludes
 
 
-def test_merge_refuses_a_settings_file_it_cannot_parse() -> None:
-    """VS Code allows comments in settings.json and :mod:`json` does not, so a
-    rewrite would drop whatever this parser could not see."""
-    with pytest.raises(ValueError, match="cannot parse"):
-        merge_machine_settings("{ // mine\n}")
+def test_a_comment_no_longer_costs_the_excludes() -> None:
+    """The seat-saving excludes were being withheld from every settings.json
+    VS Code's own scaffold had written a comment into."""
+    merged = merge_machine_settings("{ // mine\n}") or ""
+    assert "// mine" in merged
+    assert parse_jsonc(merged).value["search.followSymlinks"] is False
+
+
+def test_merge_refuses_a_settings_file_that_is_not_jsonc_either() -> None:
+    """A file podbench cannot read is one it must not rewrite, and the message
+    the user sees is the one they saw before."""
+    with pytest.raises(ValueError, match="cannot parse the existing settings.json"):
+        merge_machine_settings("{ mine }")
 
 
 def test_merge_refuses_a_document_that_is_not_an_object() -> None:
@@ -640,9 +794,22 @@ def test_recommending_what_is_already_recommended_writes_nothing() -> None:
     assert merge_extensions_json(text, ["golang.go"]) is None
 
 
-def test_extensions_json_that_will_not_parse_is_refused() -> None:
-    with pytest.raises(ValueError, match="cannot parse"):
-        merge_extensions_json("{ // mine\n}", ["golang.go"])
+def test_a_committed_extensions_json_is_recommended_into() -> None:
+    """The fourth file `fastcs-example` ships, and VS Code's scaffold opens it
+    with a comment as well."""
+    scaffold = "// See https://go.microsoft.com/fwlink/?linkid=827846"
+    existing = f'{{\n  {scaffold}\n  "recommendations": ["ms-python.python"]\n}}\n'
+    merged = merge_extensions_json(existing, ["ms-vscode.cpptools"]) or ""
+    assert scaffold in merged
+    assert parse_jsonc(merged).value["recommendations"] == [
+        "ms-python.python",
+        "ms-vscode.cpptools",
+    ]
+
+
+def test_extensions_json_that_is_not_jsonc_either_is_refused() -> None:
+    with pytest.raises(ValueError, match="cannot parse the existing extensions.json"):
+        merge_extensions_json("{ mine }", ["golang.go"])
 
 
 # -- one entry per flavour that applies --------------------------------------
@@ -1091,6 +1258,23 @@ def fixed_port() -> int:
     return INJECT_PORT
 
 
+def answered(_port: int) -> Answer:
+    """A ``prover`` that says the adapter answered. The real one opens a socket.
+
+    Passed at every ``--provision`` call site below rather than left to default,
+    for the reason ``fixed_port`` is: the unit suite may not reach the network,
+    and a handshake against whatever holds that port on the machine the suite
+    happens to run on is not a test of anything.
+    """
+    return Answer(Handshake.ANSWERED, "success: true", 0.01)
+
+
+def never_answers(_port: int) -> Answer:
+    """A ``prover`` in the state the live target was in on 2026-08-24: the port
+    is open, the connection is accepted, and no session can be started."""
+    return Answer(Handshake.SILENT, "nothing arrived in 5s", 5.0)
+
+
 def ss_line(port: int, *, pid: int | None = PID, inode: int = 90210) -> str:
     """One ``ss -lntpe`` row, with the two fields the port filter used to drop.
 
@@ -1457,6 +1641,7 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1491,6 +1676,33 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
         assert caveat in captured.err
 
 
+def test_a_named_destination_beats_the_seats_default_all_the_way_through(
+    tmp_path: Path,
+) -> None:
+    """`--provision-dest` is what the laptop spells on a hotfixed pod, where the
+    seat's own default is a root-owned `/opt` it cannot write. So it has to win
+    over that default for both things the destination is: where uv installs, and
+    the extra path the injection's PYTHONPATH then names."""
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    dest = "/podbench/app/.podbench-debugpy"
+    code = main(
+        [str(PID), "--print-config", "--provision", "--provision-dest", dest],
+        prover=answered,
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=root,
+    )
+
+    assert code == 0
+    assert str(proc / str(PID) / "root" / dest.lstrip("/")) in uv.argv
+    assert not any("podbench-debugpy" in arg and "/opt/" in arg for arg in uv.argv)
+    assert uv.injected is not None
+    assert f"PYTHONPATH=/proc/{PID}/root{dest}" in uv.injected
+
+
 def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1502,6 +1714,7 @@ def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1519,6 +1732,41 @@ def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
     assert "injected in" in captured.err
 
 
+def test_an_injection_whose_adapter_never_answers_is_relayed_as_such(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The live target's state on 2026-08-24, driven end to end through the verb.
+
+    Two things have to hold at once and they pull in opposite directions. The
+    report may not claim a working debugger, because none was proved; and it may
+    not print "nothing is listening" either, because the port genuinely is open
+    and the configuration this run emits has to connect to it. Naming only one of
+    those is how the sentence goes back to being untrue in the other direction.
+    """
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        prover=never_answers,
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=root,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"][0]["connect"] == {
+        "host": "127.0.0.1",
+        "port": INJECT_PORT,
+    }
+    said = " ".join(captured.err.split())
+    assert "no debug session could be started" in said
+    assert "debuggable" not in said
+    assert "nothing is listening" not in said
+
+
 def test_a_target_that_already_has_debugpy_still_gets_a_server(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1534,6 +1782,7 @@ def test_a_target_that_already_has_debugpy_still_gets_a_server(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1556,6 +1805,7 @@ def test_a_refused_injection_is_reported_and_not_claimed(
     uv = InstallingUv(inject_rc=1)
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1636,6 +1886,7 @@ def test_provision_probes_writability_before_it_runs_uv(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision", "--provision-dest", "/readonly/x"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1659,6 +1910,7 @@ def test_provision_refuses_where_no_wheel_could_help(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1683,6 +1935,7 @@ def test_provision_says_no_in_dev_mode_rather_than_installing_anyway(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision", "--mode", "dev"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1711,6 +1964,7 @@ def test_provision_installs_over_its_own_previous_copy(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1734,6 +1988,7 @@ def test_the_targets_own_complete_copy_is_never_written_over(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1758,6 +2013,7 @@ def test_an_incomplete_target_copy_gets_a_complete_one_beside_it(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1778,6 +2034,7 @@ def test_provision_without_uv_says_what_uv_was_for(
     proc, root = provision_seat(tmp_path)
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench"),
         runner=no_listeners,
@@ -1797,6 +2054,7 @@ def test_provision_refuses_to_guess_the_targets_version(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1821,6 +2079,7 @@ def test_provision_on_a_capless_but_readable_seat_installs_and_emits(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1855,6 +2114,7 @@ def test_provision_into_an_unreadable_target_names_the_credentials(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -2034,6 +2294,7 @@ def test_the_server_this_run_starts_gets_a_port_the_kernel_chose(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,

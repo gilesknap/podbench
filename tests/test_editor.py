@@ -23,9 +23,11 @@ import pytest
 from podbench.editor import (
     CONNECTION_HINT,
     OK,
+    PROVISION_DEST_FLAG,
     PROVISION_FLAG,
     SERVER_CLI_ATTEMPTS,
     SERVER_CLI_INTERVAL,
+    UNREACHABLE_CAUSES,
     EditorError,
     Provision,
     is_step,
@@ -246,6 +248,7 @@ def run_open(
     *,
     folder: str = HOME,
     provision: Provision = Provision.NEVER,
+    provision_dest: str | None = None,
     naps: list[float] | None = None,
 ) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
@@ -260,6 +263,7 @@ def run_open(
         report=notes.append,
         editor="code",
         provision=provision,
+        provision_dest=provision_dest,
         runner=seat,
         # Never the real one: waiting for a vscode-server that a fake will never
         # bootstrap is five minutes of a unit suite that is meant to take
@@ -304,12 +308,29 @@ def test_an_unreachable_seat_is_reported_rather_than_opened() -> None:
     # on the last, names a port that does not exist.
     assert "sshd_config: No such file or directory" in message
     assert "kex_exchange_identification" in message
-    assert "attach --new" in message, "a named way out, not just a diagnosis"
+    assert "`--new` lands a fresh seat" in message, (
+        "a named way out, not just a diagnosis"
+    )
     assert [call[0] for call in seat.calls] == ["ssh"], (
         "nothing may run after the probe fails - the extension install reports "
         "success without a connection, and the window would too"
     )
     assert seat.files == {}
+
+
+def test_the_ways_out_name_a_flag_and_never_another_verb() -> None:
+    """``UNREACHABLE_CAUSES`` is reached only from ``check_reachable``.
+
+    Which makes it ``vscode``'s block and nobody else's — ``attach`` never
+    prints it. Two of its bullets used to hard-code ``podbench attach --new``,
+    including the one that fires in the field, so a user who ran ``podbench
+    vscode`` was told to run a different verb. ``--new`` is spelled the same on
+    both, so the remedy is the flag alone.
+    """
+    assert "podbench attach" not in UNREACHABLE_CAUSES
+    assert UNREACHABLE_CAUSES.count("`--new`") == 2, (
+        "both seat-replacing bullets still have to name a way out"
+    )
 
 
 def test_the_alias_is_proven_before_the_first_thing_that_needs_it() -> None:
@@ -375,13 +396,34 @@ def test_settings_a_user_wrote_are_not_clobbered() -> None:
 
 
 def test_a_settings_file_that_will_not_parse_is_left_alone() -> None:
-    """VS Code permits comments and :mod:`json` does not. Rewriting would drop
-    what this parser cannot see, so the file stands and the note says so."""
-    seat = FakeSeat(files={f"{HOME}/.vscode/settings.json": "{ // mine\n}"})
+    """A file that is not JSONC either. Rewriting would drop what this parser
+    cannot see, so the file stands and the note says so."""
+    seat = FakeSeat(files={f"{HOME}/.vscode/settings.json": "{ mine }"})
     notes = run_open(seat)
 
-    assert seat.files[f"{HOME}/.vscode/settings.json"] == "{ // mine\n}"
+    assert seat.files[f"{HOME}/.vscode/settings.json"] == "{ mine }"
     assert any("left exactly as it is" in note for note in notes)
+
+
+def test_a_projects_own_commented_vscode_files_are_merged_into() -> None:
+    """The 2026-08-24 measurement, through the verb that hit it: on a hotfixed
+    pod the folder opened is the application's checkout, and a real project
+    ships all four ``.vscode/*.json`` committed, with comments and a trailing
+    comma. Both merges refused, and no ``launch.json`` means no F5."""
+    settings = f"{HOME}/.vscode/settings.json"
+    launch = f"{HOME}/.vscode/launch.json"
+    seat = FakeSeat(
+        files={
+            settings: '{\n  // ours\n  "editor.tabSize": 2,\n}\n',
+            launch: '{\n  "configurations": [\n    // none yet\n  ],\n}\n',
+        }
+    )
+    notes = run_open(seat)
+
+    assert not any("left exactly as it is" in note for note in notes)
+    assert "// ours" in seat.files[settings]
+    assert "// none yet" in seat.files[launch]
+    assert DEBUGPY_CONFIG["name"] in seat.files[launch]
 
 
 # -- launch.json -------------------------------------------------------------
@@ -661,6 +703,37 @@ def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
     # Saying them a third time on the laptop is what made this block unreadable.
     assert "mutating the workload" in notice
     assert "debugpy" in notice and "ptraces" in notice
+
+
+def test_a_chosen_destination_reaches_both_runs_of_debug_config() -> None:
+    """Only the launcher can see the pod, so only it can know that this seat's
+    own default is a directory the seat cannot write (issue #189's pod: `/opt`
+    is root-owned and the degraded rung is uid 37887).
+
+    On the assessment run as well as the provisioning one, because
+    `--provision-dest` is also the extra path `debug-config` searches for the
+    target's own copy - so a reconnect finds what an earlier run installed
+    instead of offering to install it again.
+    """
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    dest = "/podbench/app/.podbench-debugpy"
+    run_open(seat, provision=Provision.IF_NEEDED, provision_dest=dest)
+
+    runs = [call for call in seat.calls if "debug-config" in call]
+    assert len(runs) == 2
+    for call in runs:
+        assert call[call.index(PROVISION_DEST_FLAG) + 1] == dest
+
+
+def test_no_destination_leaves_the_argv_as_it_has_always_been() -> None:
+    """`None` is "the seat's own default", and it is spelled as an absent flag
+    rather than as the constant: a seat landed by a launcher that predates
+    `--provision-dest` would refuse the whole run, and podbench meets one only
+    on a pod where it had nothing to override anyway."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert not any(PROVISION_DEST_FLAG in call for call in seat.calls)
 
 
 def test_nothing_is_provisioned_unless_it_is_asked_for() -> None:
