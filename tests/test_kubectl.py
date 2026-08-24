@@ -24,6 +24,7 @@ from podbench.kubectl import (
     CommandResult,
     EphemeralContainerError,
     Kubectl,
+    KubectlConflictError,
     KubectlError,
     KubectlTimeoutError,
     next_container_name,
@@ -322,6 +323,88 @@ def test_add_ephemeral_container_replaces_a_same_named_entry() -> None:
     assert stdin is not None
     containers = json.loads(stdin)["spec"]["ephemeralContainers"]
     assert containers == [{"name": "podbench-1", "image": "new"}]
+
+
+CONFLICT = (
+    "Error from server (Conflict): Operation cannot be fulfilled on pods "
+    '"bl47p-ea-fastcs-01-0": the object has been modified; please apply your '
+    "changes to the latest version and try again"
+)
+"""The p47 run of 2026-08-24, verbatim: the kubelet's resize writeback landing
+between podbench's read and its write (#136)."""
+
+
+def test_a_conflicting_write_is_re_read_and_re_sent_under_the_same_name() -> None:
+    """The retry that turns #136's lost seat into a slower one.
+
+    Both halves matter and they are asserted together. The name is *not* burnt
+    by a conflict - nothing was created - so a fresh one would spend one of a
+    finite per-pod supply for nothing; and the body has to be built from a
+    fresh GET, or the second attempt loses to the same stale
+    ``resourceVersion`` as the first.
+    """
+    first = json.dumps({"spec": {"ephemeralContainers": []}})
+    second = json.dumps({"spec": {"ephemeralContainers": [{"name": "other"}]}})
+    runner = FakeRunner(ok(first), fail(CONFLICT), ok(second), ok(""))
+    Kubectl("demo", runner=runner).add_ephemeral_container(
+        "target", {"name": "podbench-1", "image": "podbench:dev"}, backoff=0.0
+    )
+
+    puts = [call for call in runner.calls if "replace" in call[0]]
+    assert len(puts) == 2
+    # Re-read between the attempts, which is the point of retrying at all.
+    gets = [
+        call for call in runner.calls if "--subresource=ephemeralcontainers" in call[0]
+    ]
+    assert len(gets) == 2
+    bodies = [json.loads(stdin) for _, stdin, _ in puts if stdin is not None]
+    assert [
+        [container["name"] for container in body["spec"]["ephemeralContainers"]]
+        for body in bodies
+    ] == [["podbench-1"], ["other", "podbench-1"]]
+    # One container in the final body, under the name the first attempt used:
+    # a retry that landed a second seat would be worse than the bug it fixes.
+    assert bodies[-1]["spec"]["ephemeralContainers"][-1] == {
+        "name": "podbench-1",
+        "image": "podbench:dev",
+    }
+
+
+def test_a_write_that_conflicts_every_time_says_so_and_says_to_re_run() -> None:
+    """The one failure where doing exactly the same thing again works.
+
+    Relaying ``Operation cannot be fulfilled`` unadorned is what the p47 run
+    did, and it reads as podbench being broken rather than as a race.
+    """
+    existing = json.dumps({"spec": {"ephemeralContainers": []}})
+    runner = FakeRunner(
+        *[result for _ in range(3) for result in (ok(existing), fail(CONFLICT))]
+    )
+    with pytest.raises(KubectlConflictError) as raised:
+        Kubectl("demo", runner=runner).add_ephemeral_container(
+            "target", {"name": "podbench-1"}, attempts=3, backoff=0.0
+        )
+
+    message = str(raised.value)
+    assert "conflict" in message
+    assert "transient" in message
+    assert "re-run" in message
+    assert len([call for call in runner.calls if "replace" in call[0]]) == 3
+
+
+def test_a_refusal_that_is_not_a_conflict_is_not_retried() -> None:
+    """A denial is an answer about the request, and asking again gets it again -
+    three times as slowly, and against a broken webhook three times as
+    unhelpfully."""
+    existing = json.dumps({"spec": {"ephemeralContainers": []}})
+    runner = FakeRunner(ok(existing), fail(PSA_SYS_PTRACE_DENIAL))
+    with pytest.raises(KubectlError) as raised:
+        Kubectl("demo", runner=runner).add_ephemeral_container(
+            "target", {"name": "podbench-1"}, backoff=0.0
+        )
+
+    assert not isinstance(raised.value, KubectlConflictError)
+    assert len([call for call in runner.calls if "replace" in call[0]]) == 1
 
 
 def test_a_dry_run_asks_the_api_server_to_store_nothing() -> None:

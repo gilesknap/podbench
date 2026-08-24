@@ -139,6 +139,10 @@ any DAP exchange at all. For that, VS Code's own logs are on disk under the
 bridge profile — `~/.local/state/podbench-vscode-bridge/user-data/logs/` — and
 the extension-host log there is readable directly.
 
+**All of that holds only for an adapter the laptop can see.** A session whose
+adapter lives in the seat produces no `dap.*` events here at all — see the third
+blind spot below — so for those, the seat-side log is the only record.
+
 ## Why the extension is `extensionKind: ["ui"]`
 
 In a Remote-SSH window the *workspace* extension host runs inside the seat,
@@ -156,14 +160,35 @@ silently open a same-named file **on the laptop** — the failure mode the
 
 ## What it cannot do
 
-Two blind spots, and a test that depends on either must say so rather than
-claim a pass:
+Three blind spots, and a test that depends on any of them must say so rather
+than claim a pass:
 
 - **It cannot see the screen.** GNOME refuses `org.gnome.Shell.Screenshot` to
   unsandboxed callers (`AccessDenied`), and the portal route prompts
   interactively every time.
 - **It cannot synthesise input.** No keyboard or mouse events, and under Wayland
   the X11-era tools do not work regardless.
+- **It cannot see the DAP traffic of a seat-side adapter.** `extension.js:368`
+  registers `registerDebugAdapterTrackerFactory('*')` in the **laptop's** UI
+  extension host, while a remote session's adapter descriptor is created in the
+  **seat's** workspace extension host. Nothing proxies a tracker across the two,
+  so no `dap.stopped`, `dap.thread`, `dap.process` or `dap.terminated` is
+  recorded — for a session that is demonstrably running and stopped at a
+  breakpoint. Measured 2026-08-24 on `bl47p-ea-fastcs-01-0`
+  (`.claude/evidence/phase8-vscode-actually-debugs-on-p47.md` §5.1): `debugpy`
+  attached, a breakpoint bound and was hit, and `events` returned `debug.active`
+  and `debug.start` and nothing else.
+
+  This is why `extensionKind: ["ui"]` is not free, and it is the one place that
+  choice costs something. It also reads exactly like a dead session, which is
+  the trap: **absence of `dap.*` is not evidence that debugging failed.** Prove
+  such a session from inside the seat instead — the breakpoint stopping, and
+  `~/.vscode-server/data/logs/*/exthost/ms-python.debugpy/Python Debugger.log`
+  reaching `Received 'debugpySockets' event from debugpy`. A tracker registered
+  from a **workspace**-kind extension would see this traffic, but a workspace
+  extension cannot hold the bridge's socket — the seat is ephemeral and the
+  laptop cannot reach its filesystem — so the two requirements are in direct
+  conflict and this one lost.
 
 So anything reachable only by a mouse gesture, or living inside a webview, is
 out of reach. Everything exposed through the extension API — commands, editor

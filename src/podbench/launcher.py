@@ -163,6 +163,7 @@ __all__ = [
     "CONFIG_D",
     "CONTAINER_BASE",
     "DEFAULT_IMAGE",
+    "EDITOR_KEY_REFUSAL",
     "EDITOR_ORPHAN_HOME_WARNING",
     "EDITOR_PROBE_REMINDER",
     "EDITOR_RESIZE_NOTE",
@@ -205,6 +206,7 @@ __all__ = [
     "default_host_alias",
     "seat_label",
     "seat_suffix",
+    "editor_key_refusal",
     "emit_ssh_config",
     "features",
     "forget_known_hosts",
@@ -418,11 +420,13 @@ EDITOR_RESIZE_NOTE = (
     "for the {needed} vscode-server measured. `--no-resize` declines it; "
     "`--resize MEMORY` chooses the number."
 )
-"""Why ``vscode`` raised a limit nobody typed, printed before it tries.
+"""Why ``vscode`` raised a limit nobody typed, standing in the report.
 
-Before, so that a refusal - which :func:`try_resize` reports on the next line -
-is read against the intent rather than as an act with no motive. The two are one
-mutation and they are two lines because the second is the one that can fail.
+The *intent*, which is the half that is still worth reading once the run is
+over: what came of the raise is printed by :func:`try_resize` at the moment it
+patches, above the report and before anything that could abort the run (D5).
+The two are one mutation and they are two lines because the second is the one
+that can fail.
 
 It states the intent and the new limit, not the shortfall that produced them:
 this line, :func:`try_resize`'s outcome and :data:`EDITOR_HEADROOM_WARNING` are
@@ -2318,6 +2322,22 @@ class Session:
     """What the seat answered about its own login identity; ``None`` when it was
     never asked."""
 
+    key_authorised: bool | None = None
+    """Whether this seat's ``authorized_keys`` carries the key being offered.
+
+    :func:`seat_authorises`' answer, carried rather than reduced to the warning
+    it produces, because two verbs act on it differently: ``attach`` prints the
+    line and runs, while ``vscode`` refuses on ``False``
+    (:func:`editor_key_refusal`), where ssh is the whole deliverable.
+
+    ``False`` is the only state anything refuses on, and it means *measured
+    absent*. ``None`` covers both "nothing asked" - a first landing, or a run
+    carrying no key - and "the file could not be read", which run for the same
+    reason: an unreadable file is not evidence that ssh will be refused, and a
+    preflight whose false negatives block a working setup is worse than no
+    preflight at all.
+    """
+
     seat_version: str | None = None
     """The build of podbench running in the seat, ``None`` when unreadable.
 
@@ -2652,9 +2672,12 @@ def attach(
     # Here and not in the reconnect branch above: the file's path depends on the
     # seat's uid, which the read two lines up is the only measurement of.
     if reused_seat is not None and public_key is not None:
-        key_note = reconnect_key_note(
-            kubectl, session, public_key, dev=reused_seat.kind is SeatKind.DEV
-        )
+        # Measured once and carried, not measured again wherever it is wanted:
+        # `vscode` refuses on this answer (#204) and a second `cat` could give a
+        # different one, so the run would report one thing and act on another.
+        authorised = seat_authorises(kubectl, session, public_key)
+        session = replace(session, key_authorised=authorised)
+        key_note = reconnect_key_note(authorised, dev=reused_seat.kind is SeatKind.DEV)
         if key_note is not None:
             warnings.append(key_note)
 
@@ -4247,12 +4270,22 @@ def seat_authorises(kubectl: Kubectl, session: Session, public_key: str) -> bool
     )
 
 
-def reconnect_key_note(
-    kubectl: Kubectl, session: Session, public_key: str, *, dev: bool
-) -> str | None:
-    """What to say about a reconnect's ssh key, or ``None`` when it is there."""
+def reconnect_key_note(authorised: bool | None, *, dev: bool) -> str | None:
+    """What to say about a reconnect's ssh key, or ``None`` when it is there.
+
+    Takes :func:`seat_authorises`' answer rather than making the measurement,
+    because the same answer decides whether ``vscode`` opens a window at all
+    (:func:`editor_key_refusal`). One ``cat`` per run either way, and the line
+    printed cannot disagree with the decision taken.
+
+    >>> reconnect_key_note(True, dev=False) is None
+    True
+    >>> reconnect_key_note(None, dev=False).startswith("this seat's")
+    True
+    >>> reconnect_key_note(False, dev=True).endswith(_KEY_REMEDY_DEV)
+    True
+    """
     remedy = _KEY_REMEDY_DEV if dev else _KEY_REMEDY_SEAT
-    authorised = seat_authorises(kubectl, session, public_key)
     if authorised:
         return None
     template = (
@@ -4261,6 +4294,55 @@ def reconnect_key_note(
         else RECONNECT_KEY_ABSENT_WARNING
     )
     return template.format(remedy=remedy)
+
+
+EDITOR_KEY_REFUSAL = (
+    "{note} Refused before the report rather than said inside it, because ssh "
+    "is the whole of `podbench vscode`: the report would have read like a "
+    "success and the window would have failed to connect afterwards. "
+    "`podbench attach` reconnects to this seat regardless - its kubectl exec "
+    "helpers need no key."
+)
+"""Said instead of a report when ``vscode`` measures the key absent (#204, D4).
+
+The first sentence is :data:`RECONNECT_KEY_ABSENT_WARNING` verbatim, because it
+is the same fact and one wording: what changes on this verb is what podbench
+*does* about it. Nothing here lands a seat - an ephemeral container's spec is
+immutable, so re-keying means another container, and ``attach-endgame`` refused
+spending a name from a finite per-pod supply to replace a seat a colleague may
+be sitting in.
+
+There is deliberately no flag past this (D4). If one is ever wanted, *a flag* is
+the shape to remember: an override, not an auto-landed replacement, and never a
+silent one.
+"""
+
+
+def editor_key_refusal(session: Session, pod_json: Mapping[str, Any]) -> str | None:
+    """Why ``vscode`` must not open a window on this seat, or ``None`` to go on.
+
+    ``is not False`` and not ``not session.key_authorised``: *unmeasured* -
+    ``None``, an ``authorized_keys`` that could not be read - keeps ``attach``'s
+    behaviour of warning and running. An unreadable file is not evidence that
+    ssh will be refused, and a preflight whose false negatives block a working
+    setup is the failure ``vscode-in-a-seat`` warns of for preflights generally.
+
+    The remedy is re-derived from the pod rather than remembered, because the
+    two seats are re-keyed differently: a sidecar's ``authorized_keys`` is
+    written when the pod is authored, so ``--new`` there lands a seat that does
+    not fix it. Asked as "is the seat I reconnected to *this pod's* sidecar",
+    which is exactly the question :func:`reconnect_key_note` answered from
+    :class:`SeatKind` on the way in.
+    """
+    if session.key_authorised is not False:
+        return None
+    sidecar = dev_seat(pod_json)
+    dev = sidecar is not None and sidecar.name == session.seat.container
+    return EDITOR_KEY_REFUSAL.format(
+        note=RECONNECT_KEY_ABSENT_WARNING.format(
+            remedy=_KEY_REMEDY_DEV if dev else _KEY_REMEDY_SEAT
+        )
+    )
 
 
 def read_host_public_key(kubectl: Kubectl, seat: ContainerRef) -> str | None:
@@ -4891,6 +4973,12 @@ def try_resize(
     the controller that owns it (report R13): the raised limit is on the pod
     object alone, so the next thing to regenerate the pod from an unchanged
     template takes it away again with no other symptom than a seat that OOMs.
+
+    Returned rather than printed only so that the caller owns the stream. It is
+    printed *there and then* and not carried into the report: this is a mutation
+    to somebody's live pod, and a run that dies between the patch and the report
+    - which is what a lost conflict on the seat's write is (#136) - would
+    otherwise never mention it.
     """
     wants: dict[str, Want] = {}
     try:
@@ -6191,6 +6279,20 @@ _Timeout = Annotated[
 ]
 
 
+def _emit_warning(message: str) -> None:
+    """One warning, standing on its own rather than inside a report.
+
+    Same leader and hanging indent :func:`format_session` gives the ones it
+    carries, so a line printed before a report is read - and coloured, and
+    picked out of a paste - as the same kind of thing as the lines inside it.
+    """
+    emit(
+        "\n".join(
+            paragraph(message, first=f"{WARNING_LEAD}  ", indent=" " * WARNING_HANG)
+        )
+    )
+
+
 def _land(
     kubectl: Kubectl,
     pod: str,
@@ -6244,7 +6346,12 @@ def _land(
         # the pod as it stands at the moment it patches, and an explicit
         # `--resize` reaches here having read nothing at all.
         pod_json = kubectl.get_pod(pod)
-        warnings.append(
+        # Printed here, not folded into the report `attach` has yet to earn:
+        # `terminal-reports` puts a caveat about a mutation on the path that
+        # made it, and everything after this line can fail. The p47 run of
+        # 2026-08-24 raised a production pod from 256Mi to 6Gi, lost the seat to
+        # a conflict, and said nothing whatever about the 6Gi (#136).
+        _emit_warning(
             try_resize(
                 kubectl,
                 pod,
@@ -6629,6 +6736,15 @@ def _build_app(
         # before the report, because it is a warning about this pod like every
         # other one on it.
         landed_pod = kube.get_pod(name)
+        # #204: the key was measured on the way in, and this is the first point
+        # after it where a verb can act. Before the report, the ssh stanza and
+        # the window - all three of which would otherwise be spent describing a
+        # run that podbench has already established cannot connect. `attach`
+        # does not have this line and must not: there, ssh is one feature among
+        # several and the exec helpers work without it.
+        refusal = editor_key_refusal(session, landed_pod)
+        if refusal is not None:
+            raise LauncherError(refusal)
         storage = _storage_note(landed_pod, session)
         if storage is not None:
             session = replace(session, warnings=(*session.warnings, storage))
@@ -6710,15 +6826,7 @@ def _build_app(
             # true, and the readiness half is the one with no trace
             # afterwards.
             print()
-            emit(
-                "\n".join(
-                    paragraph(
-                        EDITOR_PROBE_REMINDER,
-                        first=f"{WARNING_LEAD}  ",
-                        indent=" " * WARNING_HANG,
-                    )
-                )
-            )
+            _emit_warning(EDITOR_PROBE_REMINDER)
         raise typer.Exit(0)
 
     @app.command(

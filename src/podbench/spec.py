@@ -32,7 +32,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from .model import (
+    CLAIM_PATH_ENV,
     DEVPOD_LABEL,
+    HOTFIX_CLAIM_VOLUME,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
@@ -330,6 +332,37 @@ def moves(image: str) -> bool:
     return not _IMMUTABLE_TAG.match(tag)
 
 
+def _claim_path_env(
+    volume_mounts: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, str]:
+    """:data:`CLAIM_PATH_ENV`, read off the mounts this container is being given.
+
+    Empty for a container that does not mount :data:`HOTFIX_CLAIM_VOLUME`, which
+    is every ordinary ``attach`` seat: absence is what the seat reads as "no
+    claim", and a variable naming a path it cannot see would be worse than none
+    (:func:`podbench.agent.ensure_seat_gitconfig` would authorise a directory
+    that is not there).
+
+    Derived here rather than passed in beside the mounts because "where is the
+    claim" already has one copy too many - the same reasoning that made
+    :func:`podbench.launcher.seat_claim_path` shared rather than written twice.
+    The mounts and the variable come out of one expression, so they cannot
+    drift.
+
+    >>> _claim_path_env([{"name": "podbench-app", "mountPath": "/srv/app"}])
+    {'PODBENCH_CLAIM_PATH': '/srv/app'}
+    >>> _claim_path_env([{"name": "podbench-home", "mountPath": "/home/x"}])
+    {}
+    """
+    for entry in volume_mounts or ():
+        mount = as_dict(entry)
+        if mount.get("name") != HOTFIX_CLAIM_VOLUME:
+            continue
+        path = mount.get("mountPath")
+        return {CLAIM_PATH_ENV: path} if isinstance(path, str) and path else {}
+    return {}
+
+
 def ephemeral_container_spec(
     *,
     name: str,
@@ -398,6 +431,12 @@ def ephemeral_container_spec(
     environment = dict(env or {})
     if target_container_id is not None:
         environment.setdefault(TARGET_CID_ENV, target_container_id)
+    # The claim's mountPath is the application's choice, so the seat is told it
+    # rather than left to guess: a git checkout owned by a uid this container is
+    # not needs a `safe.directory` before the user's first `git status` in it
+    # (#217, agent.ensure_seat_gitconfig).
+    for key, value in _claim_path_env(volume_mounts).items():
+        environment.setdefault(key, value)
     if environment:
         spec["env"] = [
             {"name": key, "value": value} for key, value in sorted(environment.items())
@@ -843,9 +882,26 @@ def _sidecar(
         security_context["seccompProfile"] = dict(seccomp_profile)
     validate_security_context(security_context)
 
+    mounts: list[dict[str, Any]] = [
+        {"name": WORKSPACE_VOLUME, "mountPath": WORKSPACE_MOUNT_PATH},
+        *(
+            [{"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}]
+            if seat_home
+            else []
+        ),
+        # An ordinary container may subPath, so this seat gets the passwd
+        # file an ephemeral one cannot be given at all.
+        *(seat_identity_volume_mounts() if identity is not None else []),
+    ]
     environment = {
         "HOME": WORKSPACE_MOUNT_PATH,
         TARGET_NAME_ENV: target_container,
+        # Read off the mounts above by the same rule the ephemeral seat uses, so
+        # there is one statement of "the seat is told where the claim is" rather
+        # than two. It contributes nothing today - a dev pod clones the origin's
+        # volumes but this sidecar mounts none of them - and that is exactly why
+        # deriving it beats hard-coding its absence here.
+        **_claim_path_env(mounts),
         **dict(env or {}),
     }
     return {
@@ -862,17 +918,7 @@ def _sidecar(
         "env": [
             {"name": key, "value": value} for key, value in sorted(environment.items())
         ],
-        "volumeMounts": [
-            {"name": WORKSPACE_VOLUME, "mountPath": WORKSPACE_MOUNT_PATH},
-            *(
-                [{"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH}]
-                if seat_home
-                else []
-            ),
-            # An ordinary container may subPath, so this seat gets the passwd
-            # file an ephemeral one cannot be given at all.
-            *(seat_identity_volume_mounts() if identity is not None else []),
-        ],
+        "volumeMounts": mounts,
         "resources": copy.deepcopy(dict(resources or _DEFAULT_SIDECAR_RESOURCES)),
         "securityContext": security_context,
         "readinessProbe": {

@@ -153,14 +153,19 @@ the argv, so the connection happens in the GUI afterwards, and a
 also leaves a `ControlMaster` behind, so the window's own connect is the fast
 one.
 
-**It writes** `.vscode/settings.json`, `.vscode/launch.json` and
-`.vscode/extensions.json` into the folder it is about to open, installs only the
-extensions this target's debugger needs **in the remote window**, and opens the
-seat's home — or, on a pod carrying the hotfix layout, the claim. Those are the
-two steps most easily got wrong by hand, and both fail quietly: the wrong folder
-can end the seat, and a locally installed extension runs the debug adapter on
-your laptop. See [the CLI reference](../reference/cli.md) for the order and the
-refusals.
+**It writes** the seat's machine settings — the excludes, and on a hotfixed pod
+`python.defaultInterpreterPath` for the interpreter your application actually
+runs — then `.vscode/launch.json` into the folder it is about to open, installs
+only the extensions this target's debugger needs **in the remote window**, and
+opens the seat's home or, on a pod carrying the hotfix layout, the claim. Those
+are the two steps most easily got wrong by hand, and both fail quietly: the
+wrong folder can end the seat, and a locally installed extension runs the debug
+adapter on your laptop. See [the CLI reference](../reference/cli.md) for the
+order and the refusals.
+
+`launch.json` is the **only** file it puts in your folder. On a hotfixed pod
+that folder is your own committed checkout on a shared volume, so anything
+written there is a permanent line in somebody's `git status`.
 
 **It sizes the pod.** vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
@@ -220,7 +225,9 @@ next.
 ```
 editor
   [ok] ssh reaches the seat, so Remote-SSH will too
-  [ok] wrote settings.json, launch.json, extensions.json in /root/.vscode
+  [ok] wrote ~/.vscode-server/data/Machine/settings.json in the seat: the
+       folder-walk excludes
+  [ok] wrote launch.json in /root/.vscode
   [ok] installing ms-python.python, ms-python.debugpy in the seat; the first
        bootstraps vscode-server, so this is a download (1215 MiB measured, on
        the workload's ephemeral-storage budget in Observe mode)
@@ -640,24 +647,25 @@ that kills a seat is the first one.
 explorer, and reading the workload's files through `/proc/<pid>/root` is what
 Observe mode is for.
 
-`podbench vscode` writes all of those a second time, into the
-`.vscode/settings.json` of the folder it opens. It opens a *single* folder, so
-that file is VS Code's **workspace** settings, where window- and resource-scoped
-keys are both honoured — including `C_Cpp.files.exclude`, which is the only one
-that stops cpptools' tag parser, and cpptools is what it installs for a
-C/C++ target. The folder copy matters because it is the one podbench fully
-controls: `~/.vscode-server` belongs to the client, and **Kill/Uninstall VS Code
-Server on Host** takes the machine file with it. Inside a home the entry that
-earns its place first is `**/.vscode-server/**` — 700 MiB before a single
-extension, in the folder podbench is about to open.
+`podbench vscode` merges into that same file on every run — over ssh, as the
+login user, so `~` is the home vscode-server itself unpacks into — and adds one
+key the agent cannot know:
 
-The `/proc` and `/sys` entries in that copy are belt-and-braces rather than the
-working guard. `search.exclude` patterns are matched **workspace-relative**, so
-from a folder at `$HOME` its `**/proc/**` cannot match anything;
-`files.watcherExclude` and `python.analysis.exclude` are matched against
-absolute paths and do work from either scope. Machine scope is what covers the
-folder you open *next* — including the `/` that starts the walk with no bottom —
-which is why both copies exist.
+| Setting | Why |
+|---|---|
+| `python.defaultInterpreterPath` | the interpreter the *target* runs, which is what answers "no Python interpreter found" on a pod where attach then works. Written only where the folder being opened is the tree that holds it — on a hotfixed pod, the claim, which resolves to the same file in the seat and in the application. Anywhere else the seat's file at that path is a *different* file, and naming it would be a confident wrong answer |
+
+The key is `machine-overridable`, so a value you set in your own workspace still
+wins over podbench's.
+
+Nothing goes into the opened folder's `.vscode/settings.json` any more, and that
+is a deliberate trade: your folder is often a committed checkout on a shared
+volume, and an exclude list is not worth a permanent line in your `git status`.
+The cost is that **Kill/Uninstall VS Code Server on Host** now deletes
+podbench's excludes with everything else under `~/.vscode-server`. Re-running
+`podbench vscode` puts them back before it opens the folder; a window you keep
+open through a Kill Server and let VS Code reconnect on its own does not get
+them, so re-run the verb rather than reconnecting from the window.
 
 Settings you have written yourself are never overwritten. The file is read as
 JSONC — comments and a trailing comma, which is what VS Code writes and what a
@@ -668,9 +676,10 @@ left exactly as it is, with the reason reported by `podbench agent --self-check`
 and in the container's start-up output.
 
 The one thing that removes them is Remote-SSH's **Kill/Uninstall VS Code Server
-on Host**, which deletes `~/.vscode-server` wholesale. Nothing rewrites the file
-until the agent next starts, so re-attach (`podbench attach --new`) or re-create
-the dev pod before opening a folder again.
+on Host**, which deletes `~/.vscode-server` wholesale. Re-run `podbench vscode`,
+which rewrites the file before it opens anything; re-attaching
+(`podbench attach --new`) or re-creating the dev pod works too, because the
+agent writes them at start-up.
 
 ## When it goes wrong
 

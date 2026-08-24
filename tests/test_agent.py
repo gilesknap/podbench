@@ -18,6 +18,8 @@ import pytest
 
 from podbench import agent
 from podbench.model import (
+    CLAIM_PATH_ENV,
+    HOTFIX_APP_PATH,
     HOTFIX_INTERPRETER_PATH,
     SEAT_IDENTITY_VOLUME,
     SEAT_REPORT_MARKER,
@@ -25,6 +27,7 @@ from podbench.model import (
     Rung,
     SeatReport,
 )
+from podbench.provision import CLAIM_DEST_NAME
 from podbench.sshcfg import SEAT_USER, SshdLayout, sshd_config, unsafe_set_env
 from podbench.vscode import MACHINE_SETTINGS_PATH
 
@@ -37,6 +40,18 @@ SECOND_PUBKEY = "ssh-ed25519 AAAAC3NzaC1SECOND colleague@laptop"
 UNKNOWN_UID = 4242
 """A uid the fake NSS database has no record of — the shape of the degraded
 rung, where the seat runs as a target uid no image could have an account for."""
+
+IMAGE_GITIGNORE = "/etc/podbench/gitignore"
+"""The podbench-owned ignore file ``core.excludesFile`` names. Nothing in the
+package reads it — it is the image's own, and the whole point is that podbench
+writes no ignore file inside the user's repository — so this literal exists only
+to hold the Dockerfile's two halves against each other."""
+
+REAL_SEAT_GITCONFIG_INCLUDE = agent.SEAT_GITCONFIG_INCLUDE
+"""The path the *image*'s baked ``/etc/gitconfig`` includes, captured before
+:func:`seat_gitconfig_include` repoints the constant at a temporary file. The
+two halves are useless apart, so the Dockerfile is checked against this literal
+rather than against the patched value."""
 
 REAL_SEAT_NSS_PATH = agent.SEAT_NSS_PATH
 """The database the *image* ships, captured before :class:`FakePasswd` repoints
@@ -201,6 +216,16 @@ def passwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakePasswd:
     fake = FakePasswd(tmp_path)
     fake.install(monkeypatch)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def seat_gitconfig_include(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Autouse for the same reason :func:`passwd` is: the agent writes this file
+    at a fixed absolute path in the container, and a unit test must not write to
+    the machine's own ``/tmp``."""
+    path = tmp_path / "podbench-gitconfig"
+    monkeypatch.setattr(agent, "SEAT_GITCONFIG_INCLUDE", str(path))
+    return path
 
 
 def make_layout(tmp_path: Path, *, root: bool = True) -> SshdLayout:
@@ -1545,6 +1570,95 @@ def test_the_settings_home_falls_back_when_nss_resolves_nothing(
     monkeypatch.setattr(agent, "_home_for_uid", no_record)
     layout = make_layout(tmp_path)
     assert agent.session_home(layout) == layout.home
+
+
+def test_the_seat_authorises_the_claim_it_was_told_it_mounts(
+    tmp_path: Path, env: dict[str, str], seat_gitconfig_include: Path
+) -> None:
+    """#217: the claim is a checkout owned by a uid the seat is not, so the
+    user's first ``git status`` in the folder ``vscode`` opens is fatal.
+
+    The path is the mountPath the launcher measured and put in the container
+    spec, **never** :data:`HOTFIX_APP_PATH`. That default is exactly the
+    assumption ``launcher.seat_claim_path`` exists to avoid: the application
+    chooses where the claim is mounted and podbench only matches it, so a seat
+    that authorised the default would authorise a directory it does not have and
+    leave the one it does have refused.
+    """
+    mounted = "/srv/beamline/checkout"
+    report = agent.ensure_all(
+        make_layout(tmp_path),
+        env={**env, CLAIM_PATH_ENV: mounted},
+        runner=FakeRunner(),
+    )
+
+    assert report.failures == ()
+    written = seat_gitconfig_include.read_text()
+    assert f'directory = "{mounted}"' in written
+    assert HOTFIX_APP_PATH not in written
+    assert f"wrote {seat_gitconfig_include}" in report.changes
+    # And it is an *ensure*: a second attach into a serving seat changes nothing.
+    again = agent.ensure_all(
+        make_layout(tmp_path),
+        env={**env, CLAIM_PATH_ENV: mounted},
+        runner=FakeRunner(),
+    )
+    assert again.changes == ()
+
+
+def test_a_seat_with_no_claim_is_given_no_gitconfig_at_all(
+    tmp_path: Path, env: dict[str, str], seat_gitconfig_include: Path
+) -> None:
+    """An ordinary ``attach`` seat mounts no claim, and so does every seat an
+    older launcher landed - both arrive with the variable unset.
+
+    Writing a ``safe.directory`` anyway would mean guessing a path, and the only
+    guess available is the default mountPath. The image's baked ``include.path``
+    is what makes silence work: git ignores an include that is not there.
+    """
+    report = agent.ensure_all(make_layout(tmp_path), env=env, runner=FakeRunner())
+
+    assert report.failures == ()
+    assert not seat_gitconfig_include.exists()
+    assert not any("gitconfig" in change for change in report.changes)
+
+
+def test_the_image_bakes_the_half_of_the_gitconfig_that_can_be_baked() -> None:
+    """The other half of #216 and #217, which no test above can see.
+
+    ``core.excludesFile`` is baked because it names two fixed paths - its own,
+    and a pattern for a fixed directory *name* - and a gitignore pattern matches
+    at any depth, so the mountPath varying does not reach it. ``safe.directory``
+    is not, so the image bakes an ``include.path`` under ``/tmp`` instead: the
+    agent cannot create a file in root-owned ``/etc`` on the rungs that are not
+    root.
+
+    Checked against the Dockerfile as text for the reason the extrausers
+    contract above is: the constant and the image are two halves of one
+    agreement, and nothing else in this suite would notice them drifting apart.
+    The pattern is pinned against :data:`CLAIM_DEST_NAME` for the same reason -
+    a rename of the provision directory that missed the image would put the
+    15 MB back in the SCM pane with nothing failing.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+
+    assert "> /etc/gitconfig" in dockerfile, "the seat's system config is baked"
+    assert REAL_SEAT_GITCONFIG_INCLUDE in dockerfile, (
+        "and it includes the one file the agent can write"
+    )
+    # The ignore file's path is the image's alone - no constant here names it -
+    # so what is checked is that the two lines agree: core.excludesFile is given
+    # the path that the line below redirects the pattern into.
+    assert "excludesFile = %s" in dockerfile, "core.excludesFile is baked"
+    assert f"{IMAGE_GITIGNORE} {REAL_SEAT_GITCONFIG_INCLUDE}" in dockerfile, (
+        "and it is the first of the two paths that printf is given"
+    )
+    assert f"> {IMAGE_GITIGNORE}" in dockerfile, (
+        "which has to be the file the pattern is actually written to"
+    )
+    assert f"'{CLAIM_DEST_NAME}/'" in dockerfile, (
+        "the pattern must name the directory --provision actually installs into"
+    )
 
 
 def _seat_proc_tree(

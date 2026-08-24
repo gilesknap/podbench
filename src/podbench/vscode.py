@@ -53,11 +53,25 @@ expected to know which side of that line they are on.
 place *before* the user does anything: File -> Open Folder -> ``/`` is the
 obvious first move in a seat and it can OOM the container unrecoverably. See
 that constant for why each entry is there. :func:`podbench.agent.ensure_vscode_settings`
-is what installs it, because the file lives in a directory the client creates.
-:data:`SEAT_FOLDER_SETTINGS` is the same guard in the folder's own file, which
-is the one copy that survives *Kill/Uninstall VS Code Server on Host* — and the
-only one podbench can put in place from the laptop, which is what
-``podbench vscode`` does.
+installs it at seat start-up, because the file lives in a directory the client
+creates; :func:`podbench.editor.open_seat` merges into the same file on every
+``podbench vscode`` run, which is where :data:`PYTHON_INTERPRETER_KEY` joins it
+— only a run that has measured the *target* knows which interpreter is being
+debugged, and the seat's start-up cannot.
+
+Machine scope and **no folder copy**, which is D1b (2026-08-24). The folder
+``podbench vscode`` opens on a hotfixed pod is the user's committed checkout on
+an NFS PVC, so every file podbench authors there is a permanent line in
+somebody's git diff; ``launch.json`` earns that and a duplicate exclude list
+does not. The cost is stated here rather than left to be discovered:
+*Kill/Uninstall VS Code Server on Host* deletes ``~/.vscode-server`` wholesale,
+so that action now takes podbench's excludes with it — including
+``**/proc/**``, which is the one that stops the recursive walk that OOMs an
+unrestartable seat. Two things cover that: the agent writes them at start-up,
+and a re-run of ``podbench vscode`` restores them on a reconnect.
+What is left uncovered is real — a window kept open through a Kill Server and
+reconnected by VS Code itself, rather than by podbench, opens a folder with no
+excludes.
 """
 
 from __future__ import annotations
@@ -119,13 +133,17 @@ from .model import describe_pause
 from .probe import Attacher, default_attacher
 from .proc import (
     DEFAULT_PROC,
+    DebugpyAdapter,
+    debugpy_adapters,
     env_host_network,
     env_target_container_id,
+    list_processes,
     seat_cwd,
     strip_container_scheme,
 )
 from .provision import (
     PROVISION_DEST,
+    Injected,
     Prover,
     inject_debugpy,
     provision_debugpy,
@@ -145,9 +163,11 @@ __all__ = [
     "ADAPTER_LLDB",
     "EXTENSIONS",
     "GDB_WRAPPER",
+    "INTERPRETER_NOTE",
     "MACHINE_SETTINGS_PATH",
-    "SEAT_FOLDER_SETTINGS",
+    "PYTHON_INTERPRETER_KEY",
     "SEAT_MACHINE_SETTINGS",
+    "WITHHELD_NOTE",
     "ListeningServer",
     "configurations_for",
     "cppdbg_configuration",
@@ -157,15 +177,12 @@ __all__ = [
     "delve_configuration",
     "ephemeral_port",
     "extensions_for",
-    "extensions_json_text",
     "launch_json_text",
     "launch_setup_commands",
     "lldb_configuration",
     "machine_settings_text",
     "main",
     "measured_attach",
-    "merge_extensions_json",
-    "merge_folder_settings",
     "merge_launch_configs",
     "merge_launch_json",
     "merge_machine_settings",
@@ -282,26 +299,59 @@ recursive walk a folder starts that is not.
 """
 
 
-SEAT_FOLDER_SETTINGS: dict[str, Any] = dict(SEAT_MACHINE_SETTINGS)
-"""The same guard, in a file podbench controls — derived, never restated.
+PYTHON_INTERPRETER_KEY = "python.defaultInterpreterPath"
+"""The setting that answers the Python extension's "no interpreter found" popup.
 
-Machine scope reaches every folder and is the right home for all of these, but
-the machine file lives under ``~/.vscode-server``, a directory the client owns
-and *Kill/Uninstall VS Code Server on Host* deletes wholesale. A folder's own
-``.vscode/settings.json`` is the copy that survives that, and the only one
-``podbench vscode`` can write before a client exists.
+Issue #219: the window raises it on a pod where debug attach then works
+perfectly, because nothing had ever told the extension which interpreter the
+seat is looking at. podbench has measured the answer one line earlier — it is
+narrated beside the debugpy configuration — and simply dropped it.
 
-Every key, not a resource-scoped subset. ``vscode`` opens a *single* folder, so
-that file is VS Code's **workspace** settings, which honour window- and
-resource-scoped settings alike; only machine and application scope are dropped
-there, and none of these is either. The asymmetry settles what is left over:
-a key VS Code ignores costs nothing, while an omitted one costs the seat — and
-``C_Cpp.files.exclude`` is the omission that would bite, since cpptools' tag
-parser walks on its own account (so the search and watcher excludes do not stop
-it) and cpptools is exactly what ``vscode`` installs for a C/C++ target.
+In the **machine** file and never in the folder's, because ms-python declares
+this key ``machine-overridable``: a machine value answers the popup for every
+folder the seat opens, and a value the user sets in their own workspace still
+wins over it. That is exactly what #219 asks for, and it is the reason the key
+can be written at all without overriding somebody's choice.
 
-Two copies of an exclude list would be two things to keep true, and the one that
-drifted would go on looking correct right up to the walk that ends the seat.
+Never the *seat's* own interpreter. What the extension is being told is which
+interpreter is being **debugged**, and on a pod without the hotfix layout that
+file is in another mount namespace: the seat's copy at the same path is a
+different file — the collision :func:`python_path_mappings` and issue #90 are
+both shaped around — so naming it is a confident wrong answer where the popup
+was an annoying right one. :data:`INTERPRETER_NOTE` carries the measurement and
+:func:`podbench.editor.open_seat` decides, because only the laptop side knows
+whether the seat and the target share the tree the path is in.
+"""
+
+INTERPRETER_NOTE = "the target's interpreter is "
+"""How the measured interpreter reaches the laptop, which is over **stderr**.
+
+``--print-config`` prints a launch document on stdout and it has to stay
+pasteable byte for byte (the ``terminal-reports`` skill), so a second top-level
+key cannot travel there: pasted into a ``launch.json`` it draws a schema warning
+on the one file this verb exists to hand over. The precedent is
+:data:`podbench.editor.PROVISION_FLAG`, which the launcher already reads out of
+this same narration — this is that wire carrying a value instead of a request.
+
+Said for every Python target rather than only for a hotfixed one, because it is
+a true and useful sentence either way and the *decision* it feeds is not the
+seat's to take: whether the path means anything on the other side depends on
+whether the tree holding it is shared with the seat, which is a fact about the
+pod's mounts (:func:`podbench.editor.interpreter_for_folder`).
+"""
+
+WITHHELD_NOTE = "so no debugpy configuration is written"
+"""How "the handshake refused, keep the file you have" reaches the laptop.
+
+The third thing this stderr carries, after
+:data:`podbench.editor.PROVISION_FLAG` and :data:`INTERPRETER_NOTE`, and it is
+read for the same reason the other two are:
+an empty ``configurations`` list means "nothing fits this target" and "the
+configuration that fits it could not be proved" alike, and only the second of
+those must stop :func:`podbench.editor._configurations` falling back to an
+earlier run's answer. That fallback is right for an injection that failed on
+egress and wrong here, because the answer it would fall back to is a port from
+a run that never started a server either - #218 arriving one layer up.
 """
 
 #: Adapter ``type`` to the extension that contributes it. Keyed on the type
@@ -358,51 +408,6 @@ def extensions_for(configurations: Sequence[Mapping[str, Any]]) -> list[str]:
     return found
 
 
-def extensions_json_text(recommendations: Sequence[str]) -> str:
-    """A whole ``extensions.json`` document, newline-terminated."""
-    return json.dumps({"recommendations": list(recommendations)}, indent=2) + "\n"
-
-
-def merge_extensions_json(
-    existing: str | None, recommendations: Sequence[str]
-) -> str | None:
-    """Add ``recommendations`` to a folder's ``extensions.json``.
-
-    ``None`` means every one of them is already recommended. Recommendations are
-    a *fallback* for the install podbench performs itself: the prompt VS Code
-    raises from this file offers "Install in SSH: ``<alias>``", which is the one
-    place the choice can still be got wrong by hand.
-
-    Raises ``ValueError`` on a file that is not JSONC either, for the reason
-    :func:`merge_launch_configs` does.
-
-    >>> print(merge_extensions_json(None, ["golang.go"]), end="")
-    {
-      "recommendations": [
-        "golang.go"
-      ]
-    }
-    >>> merge_extensions_json('{"recommendations": ["golang.go"]}', ["golang.go"])
-    """
-    if existing is None or not existing.strip():
-        return extensions_json_text(recommendations)
-    document = _document(existing, "extensions.json")
-    node = document.member("recommendations")
-    current = cast("list[Any]", node.value) if node and node.items is not None else []
-    missing = [name for name in recommendations if name not in current]
-    if not missing:
-        return None
-    if node is None:
-        edit = insert_members(existing, document, {"recommendations": list(missing)})
-    elif node.items is None:
-        # A `recommendations` that is not a list is a value we cannot add to,
-        # and replacing it is what this function has always done.
-        edit = replace_value(existing, node, list(recommendations))
-    else:
-        edit = append_items(existing, node, missing)
-    return apply_edits(existing, [edit])
-
-
 def machine_settings_text(settings: Mapping[str, Any]) -> str:
     """A whole machine ``settings.json`` document, newline-terminated."""
     return json.dumps(dict(settings), indent=2) + "\n"
@@ -424,7 +429,9 @@ def _document(existing: str, name: str) -> Node:
     return document
 
 
-def merge_machine_settings(existing: str | None) -> str | None:
+def merge_machine_settings(
+    existing: str | None, *, interpreter: str | None = None
+) -> str | None:
     """Add :data:`SEAT_MACHINE_SETTINGS` to a settings document, clobbering none
     of it. ``None`` means the document already says everything we would say.
 
@@ -442,6 +449,13 @@ def merge_machine_settings(existing: str | None) -> str | None:
     ``ValueError``, and the caller reports the refusal rather than swallowing it:
     unapplied excludes are exactly the silence this file exists to end.
 
+    ``interpreter`` adds :data:`PYTHON_INTERPRETER_KEY`, and is keyword-only and
+    optional because the two callers know different things:
+    :func:`podbench.agent.ensure_vscode_settings` runs at seat start-up, before
+    any target has been measured, and only :func:`podbench.editor.open_seat` has
+    an answer. It goes through the same merge as everything else, so a value the
+    user set at machine scope wins — see the "clobbering none" rule above.
+
     >>> shipped = merge_machine_settings(None)
     >>> json.loads(shipped)["search.followSymlinks"]
     False
@@ -452,21 +466,17 @@ def merge_machine_settings(existing: str | None) -> str | None:
     True
     >>> json.loads(mine)["search.exclude"]["**/proc/**"]
     True
+    >>> pinned = merge_machine_settings(None, interpreter="/podbench/app/.venv/bin/py")
+    >>> json.loads(pinned)["python.defaultInterpreterPath"]
+    '/podbench/app/.venv/bin/py'
+    >>> "python.defaultInterpreterPath" in json.loads(shipped)
+    False
     """
-    return _merge_settings(existing, SEAT_MACHINE_SETTINGS)
-
-
-def merge_folder_settings(existing: str | None) -> str | None:
-    """The same, for the ``.vscode/settings.json`` of the folder about to open.
-
-    The same set — see :data:`SEAT_FOLDER_SETTINGS` — and the same key-by-key
-    merge, so a folder that already carries a user's excludes keeps every one of
-    them.
-
-    >>> json.loads(merge_folder_settings(None))["files.watcherExclude"]["**/proc/**"]
-    True
-    """
-    return _merge_settings(existing, SEAT_FOLDER_SETTINGS)
+    if interpreter is None:
+        return _merge_settings(existing, SEAT_MACHINE_SETTINGS)
+    return _merge_settings(
+        existing, {**SEAT_MACHINE_SETTINGS, PYTHON_INTERPRETER_KEY: interpreter}
+    )
 
 
 def _merge_settings(existing: str | None, defaults: Mapping[str, Any]) -> str | None:
@@ -994,7 +1004,23 @@ def _debugpy_configurations(
 
 
 def launch_json_text(configurations: Sequence[Mapping[str, Any]]) -> str:
-    """A whole ``launch.json`` document, newline-terminated."""
+    """A whole ``launch.json`` document, newline-terminated.
+
+    This is what ``--print-config`` puts on stdout, and it is pasted into a
+    ``launch.json`` by hand often enough that its **top-level keys are part of
+    the contract**: exactly the two a launch document has, and nothing else. A
+    third — the measured interpreter was the candidate, #219 — would make every
+    pasted copy carry a key VS Code's own schema does not know, and draw a
+    squiggle on the file this verb exists to hand over. Anything else podbench
+    has to tell the laptop travels on stderr instead; see
+    :data:`INTERPRETER_NOTE`.
+
+    >>> document = json.loads(launch_json_text([{"name": "podbench: x"}]))
+    >>> sorted(document)
+    ['configurations', 'version']
+    >>> document["version"], [entry["name"] for entry in document["configurations"]]
+    ('0.2.0', ['podbench: x'])
+    """
     document = {"version": _VERSION, "configurations": list(configurations)}
     return json.dumps(document, indent=2) + "\n"
 
@@ -1448,7 +1474,7 @@ def _inject(
     host_network: bool | None,
     runner: Runner | None,
     prove: Prover,
-) -> bool:
+) -> Injected | None:
     """Start the debugpy server inside the target, under ``--provision``.
 
     :func:`podbench.flavour.injection_command`'s docstring says this is printed
@@ -1463,15 +1489,23 @@ def _inject(
 
     Gated on the verdict rather than on the install's return value, so the
     reason a refusal gives is the same sentence :func:`assess` would have given.
+
+    ``None`` is "nothing was injected", and it is a third answer rather than a
+    failure: the caller withdraws a configuration whose port could not be
+    proved, and a run that never touched the workload has nothing to withdraw.
+    The whole :class:`~podbench.provision.Injected` record comes back for the
+    same reason - ``ok`` is the injector's exit code and ``proved`` is whether a
+    DAP session could be started, and the two disagreeing is exactly the
+    2026-08-24 measurement that #218 is (§8.2).
     """
     if mode is Mode.DEV or target.language is not Language.PYTHON:
         # Both already named by `_provision`, which refuses first for the same
         # two reasons; saying it twice would read as two separate problems.
-        return False
+        return None
     if seat.listening_port is not None:
         # Not a no-op worth reporting: `_provision` has just said the same
         # thing, and the emitted configuration connects to it either way.
-        return False
+        return None
     verdict = next(
         (
             item
@@ -1485,7 +1519,7 @@ def _inject(
             "--provision: not starting the server - "
             + (verdict.reason if verdict else "debugpy was not assessed")
         )
-        return False
+        return None
     exposure = _exposure_warning(port, host_network)
     if exposure is not None:
         _warn(f"--provision: {exposure}")
@@ -1499,12 +1533,37 @@ def _inject(
     injected = inject_debugpy(command, runner=runner, port=port, prove=prove)
     for message in injected.messages:
         _warn(f"--provision: {message}")
-    # `ok` and not `proved`: the caller re-probes for a listener on the strength
-    # of this, and an injection whose adapter never answered still moved the
-    # server off the conventional port. Reporting it as a failure here would
-    # print "nothing is listening" over a port that is genuinely open, which is
-    # the same class of untrue sentence this whole slice exists to remove.
-    return injected.ok
+    # Both halves travel, and the caller reads a different one for each
+    # decision: `ok` decides where to re-probe for a listener - an injection
+    # whose adapter never answered has still moved the server off the
+    # conventional port - and `proved` decides whether anything may be written
+    # naming this port at all.
+    return injected
+
+
+def _withhold(pid: int, port: int, *, detail: str | None, remedy: str) -> None:
+    """Say that nothing was written naming ``port``, and why.
+
+    One sentence for both gates - the adapter that was found and the injection
+    that was made - because it is one decision. **The DAP handshake is the only
+    evidence anywhere in a run that a session can be started**, and a
+    configuration naming a port that failed ``initialize`` is one whose F5 hangs
+    or is refused (#218). Written once so the two cannot drift into saying
+    different things about the same verdict, and so
+    :data:`WITHHELD_NOTE` - which the laptop reads out of this line - has a
+    single author.
+
+    ``remedy`` is the caller's, because that is the half that genuinely differs:
+    an adapter that stopped answering wants the app restarted, while an
+    injection that started nothing has a command to run by hand.
+    """
+    _warn(
+        f"no debug session could be started on {DEBUGPY_HOST}:{port}"
+        + (f" ({detail})" if detail else "")
+        + f", {WITHHELD_NOTE} for pid {pid} and whatever launch.json already "
+        "holds is kept - replacing a configuration that worked with one naming "
+        f"a port nothing answers is worse than changing nothing. {remedy}"
+    )
 
 
 def _no_ptrace_clause(target: Target, evidence: PtraceEvidence) -> str:
@@ -1771,6 +1830,16 @@ def _run(
         else env_target_container_id()
     )
     host_network = env_host_network()
+    # Where a debugpy server already is, read out of the PID namespace rather
+    # than guessed from a port (#218). `debugpy.listen()` spawns its adapter
+    # from the debuggee, so the adapter is a *child* of the target and carries
+    # the client port in its own argv - and `ppid` is the discriminator because
+    # under hostNetwork a port names nothing about which pod holds it (#87).
+    #
+    # Enumerated here rather than per candidate: `_for_target` runs once per
+    # offered pid, and this is one walk of a namespace that had 112 processes on
+    # the largest pod surveyed.
+    adapters = debugpy_adapters(list_processes(target_cid, proc=proc))
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
     explicit = bool(requested)
@@ -1814,6 +1883,7 @@ def _run(
                 prove=prove,
                 target_cid=target_cid,
                 host_network=host_network,
+                adapter=adapters.get(candidate),
                 hint=primary,
                 # A verb that prints rather than writes touches nothing, and the
                 # probe is per candidate: N candidates were N real attaches on
@@ -1859,6 +1929,7 @@ def _for_target(
     prove: Prover,
     target_cid: str | None,
     host_network: bool | None,
+    adapter: DebugpyAdapter | None = None,
     hint: bool,
     probe: bool = True,
 ) -> list[dict[str, Any]]:
@@ -1866,11 +1937,18 @@ def _for_target(
 
     ``port`` is ``None`` unless the user named one, and the two questions it
     used to answer are separated here because their answers differ. *Where to
-    look* for a server that is already running is :data:`DEBUGPY_PORT`, the
-    conventional port an app that ran ``-m debugpy`` at start-up will be on.
+    look* for a server that is already running is ``adapter``'s port where this
+    pid has one and :data:`DEBUGPY_PORT` otherwise, the conventional port an app
+    that ran ``-m debugpy`` at start-up will be on.
     *Where a server started from this run should listen* is a port the kernel
     picks (:func:`ephemeral_port`), so that two seats on one node - which under
     ``hostNetwork`` share a network namespace - cannot land on the same one.
+
+    ``adapter`` is the third question, and it is the one #218 was: *where the
+    server this target already has actually is*. A reconnect used to probe 5678,
+    find nothing there, choose a fresh port, inject into a pid debugpy declines
+    to serve twice and emit the new number - replacing a working ``launch.json``
+    with one naming a closed port (2026-08-24, §8.2).
     """
     target = inspect_target(pid, proc=proc, program=program)
     for note in target.notes:
@@ -1917,6 +1995,60 @@ def _for_target(
     attach_ok: bool | None = None
     attach_asked = False
 
+    # **Parentage proves the adapter is this target's; it does not prove it
+    # still answers.** An adapter mid-teardown, or one whose pydevd threads have
+    # exited while the process lingers, is live by `ppid` and dead by
+    # `initialize` - and §9's ten debugpy/pydevd mappings that outlived the
+    # adapter's death are why "still there" is not taken on trust here. So the
+    # port a configuration would name is asked the same question the injection
+    # is judged by, through the same `prove` seam, rather than a second
+    # implementation whose verdict could differ from the one #218 is about.
+    #
+    # It costs one `initialize` and nothing else: §6.1 measured that this probe
+    # does not burn a live adapter's session, which is what makes asking safe on
+    # the reconnect path - now the common one - rather than only on the
+    # injection's.
+    #
+    # Never in dev mode: the dev-mode debugpy entry is a `launch` and names no
+    # port at all, so there is nothing here for a handshake to be evidence of.
+    adapter_answers = True
+    if adapter is not None and mode is not Mode.DEV:
+        answer = prove(adapter.port)
+        adapter_answers = answer.ok
+        if not adapter_answers:
+            wanted = wanted - {Flavour.DEBUGPY}
+            _withhold(
+                target.pid,
+                adapter.port,
+                detail=answer.detail,
+                remedy=(
+                    f"{adapter.describe()} is still running, so this is an "
+                    "adapter that has stopped answering rather than a missing "
+                    "one - and debugpy serves a process once, so nothing is "
+                    "injected over it either. Restart the app to get a process "
+                    "debugpy has not already served; `debugpy.listen()` in the "
+                    "app image needs no injection at all"
+                ),
+            )
+
+    if (
+        adapter is not None
+        and adapter_answers
+        and port is not None
+        and adapter.port != port
+    ):
+        # The adapter wins over `--port`, and is said rather than done quietly:
+        # debugpy refuses a second `listen()` in a process that already has one,
+        # so injecting on the requested port would return 0, start nothing, and
+        # leave the working server unnamed (§8.2). `--port` still decides where
+        # a *new* server goes, which is every target without one.
+        _warn(
+            f"pid {target.pid} is already served by {adapter.describe()} on "
+            f"{DEBUGPY_HOST}:{adapter.port}, so the configuration names that "
+            f"port rather than the {port} you asked for - debugpy serves one "
+            "process once, and a second listen in it starts nothing"
+        )
+
     # Where to look for a server that is already running. It moves exactly once,
     # to the port an injection was actually made on: an ephemeral port is not
     # 5678, so re-probing 5678 after --provision would find the run's own new
@@ -1951,8 +2083,53 @@ def _for_target(
                 chosen = DEBUGPY_PORT
         return chosen
 
+    def survey(listening: int | None, listening_owner: str | None) -> Seat:
+        """The seat as it stands, given who was found serving this target."""
+        nonlocal attach_ok, attach_asked
+        # The languages that reach gdb only (NATIVE_LANGUAGES, which is where
+        # Rust joins), and still, though the debugpy pid
+        # injection now withdraws on the same answer — it drives gdb to `call
+        # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
+        # says about a python-build-standalone interpreter is issue #90's open
+        # question, and measuring it here would settle that issue by accident,
+        # in a verb that otherwise only authors a file, at the price of a gdb
+        # start-up per candidate. #90 is where the Python case joins.
+        load_error = (
+            program_load_error(target.pid, gdb_program, runner=runner)
+            if gdb_program and target.language in NATIVE_LANGUAGES
+            else None
+        )
+        surveyed = survey_seat(
+            target,
+            proc=proc,
+            which=which,
+            debugpy_root=debugpy_root,
+            listening_port=listening,
+            listening_owner=listening_owner,
+            provision_dest=provision_dest,
+            program_load_error=load_error,
+        )
+        if not attach_asked:
+            attach_asked = True
+            attach_ok = measured_attach(
+                target,
+                target_mode,
+                surveyed,
+                proc=proc,
+                attacher=attacher,
+                probe=probe,
+            )
+        return replace(surveyed, target_attach_ok=attach_ok)
+
     def measure() -> Seat:
         nonlocal attach_ok, attach_asked, said_unattributed
+        if adapter is not None:
+            # Attributed by parentage, so no `ss` and no attribution question:
+            # this pid's own child is serving this pid, which is the one fact a
+            # port cannot establish under hostNetwork (#87). A seat with no `ss`
+            # - or one whose sweep names an owner it cannot resolve - still gets
+            # the right answer here, because the evidence is the process tree.
+            return survey(adapter.port, adapter.describe())
         # The listener is re-probed on every measurement rather than read once:
         # --provision can *start* one part way through this function, and a
         # port sampled before that would emit a configuration whose "already
@@ -1992,43 +2169,17 @@ def _for_target(
         listening_owner = (
             found.describe() if found is not None and found.attributed else None
         )
-        # The languages that reach gdb only (NATIVE_LANGUAGES, which is where
-        # Rust joins), and still, though the debugpy pid
-        # injection now withdraws on the same answer — it drives gdb to `call
-        # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
-        # says about a python-build-standalone interpreter is issue #90's open
-        # question, and measuring it here would settle that issue by accident,
-        # in a verb that otherwise only authors a file, at the price of a gdb
-        # start-up per candidate. #90 is where the Python case joins.
-        load_error = (
-            program_load_error(target.pid, gdb_program, runner=runner)
-            if gdb_program and target.language in NATIVE_LANGUAGES
-            else None
-        )
-        surveyed = survey_seat(
-            target,
-            proc=proc,
-            which=which,
-            debugpy_root=debugpy_root,
-            listening_port=listening,
-            listening_owner=listening_owner,
-            provision_dest=provision_dest,
-            program_load_error=load_error,
-        )
-        if not attach_asked:
-            attach_asked = True
-            attach_ok = measured_attach(
-                target,
-                target_mode,
-                surveyed,
-                proc=proc,
-                attacher=attacher,
-                probe=probe,
-            )
-        return replace(surveyed, target_attach_ok=attach_ok)
+        return survey(listening, listening_owner)
 
     seat = measure()
-    if provision:
+    # `adapter_answers` and not merely `provision`: a live adapter that has
+    # stopped answering is not licence to start a second one. debugpy serves a
+    # process once, so the injection would return 0 and leave nothing behind
+    # (§8.2) - and the workload would have been ptraced for it. Both mutations
+    # are skipped rather than refused one layer down, because `_provision`'s
+    # "already listening ... and the emitted configuration connects to it"
+    # sentence is untrue of a run that has just withdrawn that configuration.
+    if provision and adapter_answers:
         if _provision(
             target,
             mode,
@@ -2047,7 +2198,7 @@ def _for_target(
         # debugpy takes the "nothing is installed" path above and still has
         # nothing listening, which is the case this whole flag exists to end.
         injected_on = serving_port()
-        if _inject(
+        injected = _inject(
             target,
             mode,
             seat,
@@ -2055,17 +2206,66 @@ def _for_target(
             host_network=host_network,
             runner=runner,
             prove=prove,
-        ):
+        )
+        if injected is not None and injected.ok:
             # The re-measure has to look where the server was actually put, not
             # where a server conventionally is.
             probe_at = injected_on
             seat = measure()
+        if injected is not None and not injected.proved:
+            # **The handshake decides what may be written**, and this is the
+            # whole of #218. The DAP `initialize` above is the only evidence
+            # anywhere in this run that a session can be started, and a run that
+            # computed it and then emitted the port anyway replaced a working
+            # launch.json with one naming a closed port (2026-08-24, §8.2).
+            #
+            # Withdrawing the flavour keeps whatever the file already holds:
+            # `merge_launch_configs` matches on name, so an entry podbench does
+            # not emit is an entry it does not touch. That is deliberately the
+            # answer to a question nobody has measured - whether a third
+            # injection into a pid whose pydevd threads have exited would work -
+            # because it does not need answering.
+            wanted = wanted - {Flavour.DEBUGPY}
+            _withhold(
+                target.pid,
+                injected_on,
+                # The injector's own outcome, where there was one: a run that
+                # never reached a handshake has `session is None`, and inventing
+                # a refusal for it would read as a second failure rather than as
+                # the absence of a question.
+                detail=injected.session.detail if injected.session else None,
+                remedy=(
+                    "debugpy serves a process once, so a target that has "
+                    "already been debugged needs a restart before it can be "
+                    "again; `debugpy.listen()` in the app image needs none"
+                ),
+            )
+            # The paste survives the withdrawal, because now it is the reader's
+            # only way through: `_hint` is suppressed with the flavour, and its
+            # own first sentence ("the configuration above connects to a closed
+            # port") would name a configuration this run did not write.
+            print(
+                "debug-config: --provision: the injection this run attempted, "
+                "to run by hand - it runs in *this seat*, whose interpreter and "
+                "PYTHONPATH are not the target's however alike they are "
+                f"spelled:\n{injection_command(target, seat, injected_on)}",
+                file=sys.stderr,
+            )
     assessments = assess(target, mode, seat, wanted=wanted)
 
     _warn(
         f"pid {pid} ({target.name}): {target.language.value} target, "
         f"{mode.value} mode" + (f", {target.machine}" if target.machine else "")
     )
+    # The best candidate only. `hint` is what marks it, and N candidates each
+    # naming an interpreter would leave the laptop to pick one - which is a
+    # choice made twice, in the half of the pair that cannot see /proc.
+    if hint and target.language is Language.PYTHON and target.program:
+        # `program` is the exe as the *target's* rootfs spells it, which for a
+        # Python process is its interpreter. Whether that spelling means the
+        # same file in the seat is `interpreter_for_folder`'s question, not this
+        # one: see INTERPRETER_NOTE.
+        _warn(f"{INTERPRETER_NOTE}{target.program}")
     # An attributed server's own port beats any port this run would have chosen:
     # the configuration has to connect to the process that exists, and where the
     # app started its own `debugpy --listen` that is neither 5678-by-default nor

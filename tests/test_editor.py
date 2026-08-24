@@ -36,10 +36,25 @@ from podbench.editor import (
 )
 from podbench.kubectl import CommandResult, Kubectl
 from podbench.model import ContainerRef, PodRef
+from podbench.vscode import (
+    INTERPRETER_NOTE,
+    PYTHON_INTERPRETER_KEY,
+    WITHHELD_NOTE,
+)
 
 SEAT = ContainerRef(PodRef("demo", "api-7f9"), "podbench-1")
 ALIAS = "podbench-demo-api-7f9"
 HOME = "/root"
+CLAIM = "/podbench/app"
+CLAIM_INTERPRETER = f"{CLAIM}/.venv/bin/python3"
+"""The live p47 target's own, measured 2026-08-24: on a hotfixed pod this
+resolves to the same file in the seat and in the application, which is the
+property that makes it worth writing anywhere."""
+
+MACHINE = "~/.vscode-server/data/Machine/settings.json"
+"""Where the excludes live now, under the *ssh login's* home rather than in the
+folder — so the fake stores them under the `~` spelling and a test that finds
+them there has also proved they did not go over ``kubectl exec``."""
 
 DEBUGPY_CONFIG: dict[str, Any] = {
     "name": "podbench: attach to app.py (debugpy)",
@@ -69,6 +84,7 @@ class FakeSeat:
         debug_config_rc: int = 0,
         debug_config_stderr: str = "",
         provision_rc: int = 0,
+        provision_stderr: str | None = None,
         provisioned_configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
         files: dict[str, str] | None = None,
         unreadable: Sequence[str] = (),
@@ -86,6 +102,10 @@ class FakeSeat:
         self.debug_config_rc = debug_config_rc
         self.debug_config_stderr = debug_config_stderr
         self.provision_rc = provision_rc
+        # A separate narration for the provisioning run, because the two runs
+        # genuinely say different things: only the second one can report what a
+        # DAP handshake answered.
+        self.provision_stderr = provision_stderr
         self.provisioned_configurations = list(provisioned_configurations)
         self.provisioned = False
         self.files = dict(files or {})
@@ -135,6 +155,8 @@ class FakeSeat:
                 self.provisioned = True
                 self.debug_config_rc = self.provision_rc
                 self.configurations = list(self.provisioned_configurations)
+                if self.provision_stderr is not None:
+                    self.debug_config_stderr = self.provision_stderr
             if self.debug_config_rc != 0:
                 return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
             document = {"version": "0.2.0", "configurations": self.configurations}
@@ -173,6 +195,12 @@ class FakeSeat:
             "the preflight has to use the alias VS Code will, through the same "
             f"config: {argv}"
         )
+        if argv[-1].startswith(("mkdir -p ~/", "test -e ~/")):
+            # The machine settings, which travel over ssh rather than over
+            # kubectl exec because `~` has to be the *login's* home. Same two
+            # scripts as a seat file, so the fake reuses the same store - under
+            # the `~` spelling, which is what proves they went the ssh way.
+            return self._in_seat(["sh", "-c", argv[-1]], stdin)
         if self.server_cli is not None and argv[-1].startswith(self.server_cli):
             extension = argv[-1].rsplit(" ", 1)[-1]
             if self.seat_install_rc == 0:
@@ -346,14 +374,18 @@ def test_the_alias_is_proven_before_the_first_thing_that_needs_it() -> None:
 # -- the OOM guard -----------------------------------------------------------
 
 
-def test_the_excludes_are_written_into_the_folder_that_opens() -> None:
+def test_the_excludes_are_written_into_the_seats_machine_settings() -> None:
     """/proc/<pid>/root is a symlink into another container's root, so a walk
     from a folder that does not exclude it has no bottom — and an OOM-killed
-    ephemeral container cannot be restarted."""
+    ephemeral container cannot be restarted.
+
+    Machine scope and not the folder's own file (D1b): the folder is the user's
+    committed checkout on a hotfixed pod, and an exclude list is not worth a
+    permanent line in their git diff."""
     seat = FakeSeat()
     run_open(seat)
 
-    settings = json.loads(seat.files[f"{HOME}/.vscode/settings.json"])
+    settings = json.loads(seat.files[MACHINE])
     assert settings["files.watcherExclude"]["**/proc/**"] is True
     assert settings["search.exclude"]["**/sys/**"] is True
     assert "/proc/**" in settings["python.analysis.exclude"]
@@ -362,13 +394,42 @@ def test_the_excludes_are_written_into_the_folder_that_opens() -> None:
     assert settings["C_Cpp.files.exclude"]["**/proc/**"] is True
 
 
+def test_the_interpreter_the_seat_measured_answers_the_python_popup() -> None:
+    """Issue #219: the window pops "no Python interpreter found" on a pod where
+    debug attach then works perfectly, and podbench measured the answer while it
+    was emitting the debugpy configuration. It travels on the seat's stderr,
+    because `--print-config`'s stdout has to stay a launch document."""
+    seat = FakeSeat(
+        debug_config_stderr=f"debug-config: {INTERPRETER_NOTE}{CLAIM_INTERPRETER}"
+    )
+    notes = run_open(seat, folder=CLAIM)
+
+    settings = json.loads(seat.files[MACHINE])
+    assert settings[PYTHON_INTERPRETER_KEY] == CLAIM_INTERPRETER
+    assert any(PYTHON_INTERPRETER_KEY in note for note in notes)
+
+
+def test_an_interpreter_outside_the_folder_that_opens_is_not_written() -> None:
+    """The gate, and it is about mounts rather than about Python: on a pod with
+    no hotfix layout the target's interpreter is in another mount namespace, and
+    this seat's file at that path is a different one. Naming it is a confident
+    wrong answer where the popup was an annoying right one."""
+    seat = FakeSeat(
+        debug_config_stderr=f"debug-config: {INTERPRETER_NOTE}/app/.venv/bin/python3"
+    )
+    notes = run_open(seat)
+
+    assert PYTHON_INTERPRETER_KEY not in json.loads(seat.files[MACHINE])
+    assert not any(PYTHON_INTERPRETER_KEY in note for note in notes)
+
+
 def test_the_excludes_land_before_the_window_does() -> None:
     """The watcher starts walking the moment the folder opens, so configuring
     afterwards is a race whose loser is a seat that cannot be restarted."""
     seat = FakeSeat()
     run_open(seat)
 
-    assert seat.index_of_write("settings.json") < seat.index_of_open
+    assert seat.index_of_write(MACHINE) < seat.index_of_open
 
 
 def test_the_folder_opened_is_the_seats_home_and_never_the_root() -> None:
@@ -385,12 +446,10 @@ def test_the_folder_opened_is_the_seats_home_and_never_the_root() -> None:
 
 
 def test_settings_a_user_wrote_are_not_clobbered() -> None:
-    seat = FakeSeat(
-        files={f"{HOME}/.vscode/settings.json": json.dumps({"editor.tabSize": 2})}
-    )
+    seat = FakeSeat(files={MACHINE: json.dumps({"editor.tabSize": 2})})
     run_open(seat)
 
-    settings = json.loads(seat.files[f"{HOME}/.vscode/settings.json"])
+    settings = json.loads(seat.files[MACHINE])
     assert settings["editor.tabSize"] == 2
     assert settings["search.exclude"]["**/proc/**"] is True
 
@@ -398,10 +457,10 @@ def test_settings_a_user_wrote_are_not_clobbered() -> None:
 def test_a_settings_file_that_will_not_parse_is_left_alone() -> None:
     """A file that is not JSONC either. Rewriting would drop what this parser
     cannot see, so the file stands and the note says so."""
-    seat = FakeSeat(files={f"{HOME}/.vscode/settings.json": "{ mine }"})
+    seat = FakeSeat(files={MACHINE: "{ mine }"})
     notes = run_open(seat)
 
-    assert seat.files[f"{HOME}/.vscode/settings.json"] == "{ mine }"
+    assert seat.files[MACHINE] == "{ mine }"
     assert any("left exactly as it is" in note for note in notes)
 
 
@@ -410,18 +469,17 @@ def test_a_projects_own_commented_vscode_files_are_merged_into() -> None:
     pod the folder opened is the application's checkout, and a real project
     ships all four ``.vscode/*.json`` committed, with comments and a trailing
     comma. Both merges refused, and no ``launch.json`` means no F5."""
-    settings = f"{HOME}/.vscode/settings.json"
     launch = f"{HOME}/.vscode/launch.json"
     seat = FakeSeat(
         files={
-            settings: '{\n  // ours\n  "editor.tabSize": 2,\n}\n',
+            MACHINE: '{\n  // ours\n  "editor.tabSize": 2,\n}\n',
             launch: '{\n  "configurations": [\n    // none yet\n  ],\n}\n',
         }
     )
     notes = run_open(seat)
 
     assert not any("left exactly as it is" in note for note in notes)
-    assert "// ours" in seat.files[settings]
+    assert "// ours" in seat.files[MACHINE]
     assert "// none yet" in seat.files[launch]
     assert DEBUGPY_CONFIG["name"] in seat.files[launch]
 
@@ -456,7 +514,7 @@ def test_a_target_no_debugger_fits_still_gets_the_guard_and_the_folder() -> None
     notes = run_open(seat)
 
     assert f"{HOME}/.vscode/launch.json" not in seat.files
-    assert f"{HOME}/.vscode/settings.json" in seat.files
+    assert MACHINE in seat.files
     assert seat.installed == []
     assert any("no launch.json" in note for note in notes)
 
@@ -484,6 +542,20 @@ _SUCCESS = (
 )
 """A live *successful* run, trimmed. It names the flag, which is the whole
 point: the prerequisites are met and there is still nothing to connect to."""
+
+_WITHHELD = (
+    "debug-config: --provision: injected in 1.8s, but nothing is listening on "
+    "127.0.0.1:37516 (Connection refused): the injector returned 0 and left no "
+    "server behind\n"
+    "debug-config: --provision: no debug session could be started on "
+    f"127.0.0.1:37516, {WITHHELD_NOTE} for pid 13 and whatever launch.json "
+    "already holds is kept\n"
+)
+"""Run 3 on p47, once slice 2 gates the write on the handshake (#218).
+
+The seat proved, with a DAP `initialize`, that no session can be started - so
+the retry's *empty* answer is a measurement and not an absence, and the laptop
+may not paper over it with the first run's."""
 
 _NO_DEBUGPY_WANTED = (
     "debug-config: c++ target, observe mode, x86_64\n"
@@ -620,6 +692,27 @@ def test_a_failed_install_keeps_the_configuration_the_first_run_authored() -> No
     assert seat.provisioned
     document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
     assert document["configurations"] == [DEBUGPY_CONFIG]
+
+
+def test_a_withheld_configuration_is_not_replaced_by_the_first_runs_dead_port() -> None:
+    """The other half of #218, one layer up.
+
+    The fallback exists so that a provisioning run failing on egress does not
+    take the first run's good configurations with it. A *withheld* answer is the
+    one case where it must not fire: the first run's configurations name a port
+    it never started a server on either, so falling back to them writes exactly
+    the closed port the seat has just refused to write.
+    """
+    seat = FakeSeat(
+        debug_config_stderr=_SUCCESS,
+        provision_stderr=_WITHHELD,
+        provisioned_configurations=(),
+    )
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert seat.provisioned
+    assert f"{HOME}/.vscode/launch.json" not in seat.files
+    assert any(WITHHELD_NOTE in note for note in notes)
 
 
 def test_the_retry_cannot_loop_however_loudly_it_names_the_flag() -> None:
@@ -768,12 +861,18 @@ def test_a_c_target_asks_for_cpptools_alone() -> None:
     assert seat.installed == ["ms-vscode.cpptools"]
 
 
-def test_the_same_extensions_are_recommended_to_the_folder() -> None:
+def test_the_only_file_written_into_the_folder_is_launch_json() -> None:
+    """D1b, and the falsification the plan named: after a run against a hotfixed
+    pod, ``git status`` on the user's checkout must show nothing podbench
+    authored other than ``.vscode/launch.json``. ``extensions.json`` was
+    recommendations only — this module installs the extensions itself and then
+    asks the seat whether they landed — and the excludes moved to the seat's own
+    machine settings."""
     seat = FakeSeat()
-    run_open(seat)
+    run_open(seat, folder="/podbench/app")
 
-    document = json.loads(seat.files[f"{HOME}/.vscode/extensions.json"])
-    assert document["recommendations"] == ["ms-python.python", "ms-python.debugpy"]
+    under_folder = [name for name in seat.files if name.startswith("/podbench/app/")]
+    assert under_folder == ["/podbench/app/.vscode/launch.json"]
 
 
 def test_an_install_that_fails_is_reported_and_the_folder_still_opens() -> None:
@@ -950,9 +1049,7 @@ def test_the_seat_install_waits_for_the_window_that_bootstraps_the_server() -> N
     seat = FakeSeat(install_lands=False)
     run_open(seat)
 
-    settings = next(
-        i for i, call in enumerate(seat.calls) if "settings.json" in " ".join(call)
-    )
+    settings = next(i for i, call in enumerate(seat.calls) if MACHINE in " ".join(call))
     opened = next(
         i
         for i, call in enumerate(seat.calls)
@@ -1084,8 +1181,8 @@ def test_a_file_that_cannot_be_written_ends_the_run_before_anything_opens() -> N
     """The first of these files is the exclude list, and a window opened without
     it walks /proc/<pid>/root. The sentence names the layer that refused, which
     a raw KubectlError - argv and all - does not."""
-    seat = FakeSeat(unwritable=[f"{HOME}/.vscode/settings.json"])
-    with pytest.raises(EditorError, match="cannot write /root/.vscode/settings.json"):
+    seat = FakeSeat(unwritable=[f"{HOME}/.vscode/launch.json"])
+    with pytest.raises(EditorError, match="cannot write /root/.vscode/launch.json"):
         run_open(seat)
 
     assert [call for call in seat.calls if call[0] == "code"] == []
@@ -1095,15 +1192,15 @@ def test_a_file_that_cannot_be_read_is_not_replaced_with_a_fresh_one() -> None:
     """`cat` exits non-zero for "not there" and for "could not read it" alike,
     and reading the second as the first turns the merge this promises into a
     replacement of whatever the seat was already carrying."""
-    settings = '{"files.watcherExclude": {"**/mine/**": true}}'
+    launch = '{"configurations": [{"name": "mine"}]}'
     seat = FakeSeat(
-        files={f"{HOME}/.vscode/settings.json": settings},
-        unreadable=[f"{HOME}/.vscode/settings.json"],
+        files={f"{HOME}/.vscode/launch.json": launch},
+        unreadable=[f"{HOME}/.vscode/launch.json"],
     )
-    with pytest.raises(EditorError, match="cannot read /root/.vscode/settings.json"):
+    with pytest.raises(EditorError, match="cannot read /root/.vscode/launch.json"):
         run_open(seat)
 
-    assert seat.files[f"{HOME}/.vscode/settings.json"] == settings
+    assert seat.files[f"{HOME}/.vscode/launch.json"] == launch
 
 
 def test_a_file_that_is_simply_absent_is_written_rather_than_refused() -> None:
@@ -1112,7 +1209,8 @@ def test_a_file_that_is_simply_absent_is_written_rather_than_refused() -> None:
     seat = FakeSeat()
     run_open(seat)
 
-    assert f"{HOME}/.vscode/settings.json" in seat.files
+    assert MACHINE in seat.files
+    assert f"{HOME}/.vscode/launch.json" in seat.files
 
 
 def test_the_editor_is_found_on_path_and_named_by_its_absolute_route() -> None:
@@ -1125,11 +1223,7 @@ def test_the_files_are_written_where_the_folder_is_and_nowhere_else() -> None:
     seat = FakeSeat()
     run_open(seat, folder="/home/podbench")
 
-    assert set(seat.files) == {
-        "/home/podbench/.vscode/settings.json",
-        "/home/podbench/.vscode/launch.json",
-        "/home/podbench/.vscode/extensions.json",
-    }
+    assert set(seat.files) == {MACHINE, "/home/podbench/.vscode/launch.json"}
 
 
 def test_a_write_creates_the_directory_and_never_redirects_stderr() -> None:
@@ -1185,11 +1279,12 @@ def test_every_step_carries_a_tick_and_the_seats_own_words_do_not() -> None:
         assert len(note.split(". ")) <= 2, note
 
 
-def test_the_three_files_are_one_line_and_the_directory_is_said_once() -> None:
-    """Three `wrote <base>/<name>.json` lines are three lines of one fact."""
+def test_each_file_is_one_line_and_the_directory_is_said_once() -> None:
+    """A `wrote <base>/<name>.json` line per file is one fact said N times."""
     notes = run_open(FakeSeat())
 
-    (wrote,) = [note for note in notes if note.startswith(f"{OK} wrote")]
-    assert wrote == (
-        f"{OK} wrote settings.json, launch.json, extensions.json in {HOME}/.vscode"
-    )
+    wrote = [note for note in notes if note.startswith(f"{OK} wrote")]
+    assert wrote == [
+        f"{OK} wrote {MACHINE} in the seat: the folder-walk excludes",
+        f"{OK} wrote launch.json in {HOME}/.vscode",
+    ]

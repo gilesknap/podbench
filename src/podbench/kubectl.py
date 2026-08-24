@@ -31,6 +31,9 @@ from .model import as_dict
 
 __all__ = [
     "ADMISSION_DENIAL_MARKERS",
+    "CONFLICT_ATTEMPTS",
+    "CONFLICT_BACKOFF",
+    "CONFLICT_MARKERS",
     "CREATE_CONTAINER_CONFIG_ERROR",
     "DEFAULT_CALL_TIMEOUT",
     "DRY_RUN_QUERY",
@@ -43,6 +46,7 @@ __all__ = [
     "CommandResult",
     "EphemeralContainerError",
     "Kubectl",
+    "KubectlConflictError",
     "KubectlError",
     "KubectlTimeoutError",
     "Runner",
@@ -98,6 +102,43 @@ would break the moment upstream reworded an evaluation error, and a broken
 policy that refuses everything ends the walk with "no rung was admitted"
 anyway.
 """
+
+CONFLICT_MARKERS = (
+    ("(Conflict)",),
+    ("Operation cannot be fulfilled", "the object has been modified"),
+)
+"""What a *lost write* looks like, as opposed to a verdict about the request.
+
+Read the same way as :data:`ADMISSION_DENIAL_MARKERS`: all fragments in a group,
+any group. Two groups because the two halves arrive independently — ``kubectl``
+prefixes the API server's ``Status`` with ``Error from server (Conflict):``,
+while the sentence after it is the registry's own optimistic-concurrency
+wording, and something relaying the ``Status`` body alone still has to be read
+as transient.
+
+Narrow for the same reason the admission groups are: this decides whether
+podbench *retries*. A conflict is the only refusal where the request was fine
+and the read it was built on was stale, so re-reading and re-sending is the
+whole remedy; an admission denial, an RBAC ``Forbidden`` and a webhook that
+never answered are all answers about the request itself, and retrying them
+turns one honest failure into several.
+
+Measured on p47, 2026-08-24: the kubelet's writeback of an in-place resize
+lands on the pod between podbench's own read and write, and the first
+``podbench vscode`` against any pod it resizes loses that race.
+"""
+
+CONFLICT_ATTEMPTS = 4
+"""How many times a write may lose the race before podbench gives up.
+
+Bounded rather than deadline-driven: the writer podbench is racing is the
+kubelet actuating a resize podbench asked for, which settles in one or two
+writebacks, so a fourth attempt that still conflicts is evidence of something
+else writing continuously and not of a slow cluster.
+"""
+
+CONFLICT_BACKOFF = 0.5
+"""Seconds between conflicting attempts. Injectable so tests need not sleep."""
 
 CREATE_CONTAINER_CONFIG_ERROR = "CreateContainerConfigError"
 """The kubelet's waiting reason when it refuses a container the API server took."""
@@ -359,11 +400,51 @@ class KubectlError(RuntimeError):
         >>> KubectlError(CommandResult((), 1, "", rbac)).is_admission_denial
         False
         """
+        return self._says(ADMISSION_DENIAL_MARKERS)
+
+    @property
+    def is_conflict(self) -> bool:
+        """Whether this was a lost write rather than an answer about the request.
+
+        The one refusal worth retrying, and the only one podbench does: the API
+        server compared the ``resourceVersion`` of the object podbench read
+        against the one stored and found the object had moved under it. Nothing
+        was created, so nothing was spent — in particular no ephemeral-container
+        name, which is what lets
+        :meth:`Kubectl.add_ephemeral_container` re-send under the *same* name
+        rather than climbing the ladder (issue #136).
+
+        Deliberately not true for any of the refusals the ladder acts on. A
+        retry there would replace one honest verdict with several, and on a
+        webhook that never answered it would also treble the wait.
+
+        >>> from podbench.kubectl import CommandResult, KubectlError
+        >>> lost = 'Error from server (Conflict): Operation cannot be \\
+        ... fulfilled on pods "bl47p-ea-fastcs-01-0": the object has been \\
+        ... modified; please apply your changes to the latest version and \\
+        ... try again'
+        >>> KubectlError(CommandResult((), 1, "", lost)).is_conflict
+        True
+        >>> psa = 'Error from server (Forbidden): pods "app" is forbidden: \\
+        ... violates PodSecurity "restricted:latest": must not include \\
+        ... "SYS_PTRACE" in securityContext.capabilities.add'
+        >>> KubectlError(CommandResult((), 1, "", psa)).is_conflict
+        False
+        >>> unreachable = 'Error from server (InternalError): failed calling \\
+        ... webhook "validate.kyverno.svc": context deadline exceeded'
+        >>> KubectlError(CommandResult((), 1, "", unreachable)).is_conflict
+        False
+        """
+        return self._says(CONFLICT_MARKERS)
+
+    def _says(self, markers: Sequence[Sequence[str]]) -> bool:
+        """Whether either stream matches one whole group of ``markers``.
+
+        Both streams, because ``kubectl`` puts a refusal on stderr and some
+        subcommands echo the server's message on stdout instead.
+        """
         text = f"{self.stderr}\n{self.stdout}"
-        return any(
-            all(fragment in text for fragment in group)
-            for group in ADMISSION_DENIAL_MARKERS
-        )
+        return any(all(fragment in text for fragment in group) for group in markers)
 
     @property
     def allowed_run_as_user(self) -> tuple[int, ...]:
@@ -414,6 +495,47 @@ class KubectlTimeoutError(KubectlError):
         return (
             f"{' '.join(result.argv)} did not answer within {self.timeout:g}s "
             "and was stopped" + (f", having said: {said[-1].strip()}" if said else "")
+        )
+
+
+class KubectlConflictError(KubectlError):
+    """A write that lost the same optimistic-concurrency race every time.
+
+    A :class:`KubectlError` for :class:`KubectlTimeoutError`'s reason — every
+    verb already catches that and prints one sentence — and a distinct type
+    only so that the sentence can be *this* one. Relaying the API server's
+    ``Operation cannot be fulfilled`` unadorned is what the p47 run did on
+    2026-08-24, and it reads as a defect in podbench rather than as the one
+    failure where doing exactly the same thing again works.
+
+    ``attempts`` is carried so the message can say how hard podbench tried: a
+    reader deciding whether to re-run wants to know that this was not the first
+    go.
+    """
+
+    def __init__(self, error: KubectlError, attempts: int) -> None:
+        self.attempts = attempts
+        super().__init__(
+            CommandResult(
+                argv=error.argv,
+                returncode=error.returncode,
+                stdout=error.stdout,
+                stderr=error.stderr,
+            )
+        )
+
+    def _message(self, result: CommandResult) -> str:
+        # The three beats a user-facing note gets (#203): what happened, what it
+        # means here, what to do. The cluster's own words go last with nothing
+        # after them, because relayed text may or may not end in a stop and a
+        # sentence following it reads as more of the API server's.
+        said = result.stderr.strip() or result.stdout.strip()
+        return (
+            f"{' '.join(result.argv)} hit a conflict on all {self.attempts} "
+            "attempts: something else wrote to this pod between each read and "
+            "each write. A conflict is transient and creates nothing, so "
+            "nothing was changed and no container name was spent - re-run the "
+            f"same command. The API server said: {said}"
         )
 
 
@@ -991,7 +1113,13 @@ class Kubectl:
     # -- ephemeral containers ---------------------------------------------
 
     def add_ephemeral_container(
-        self, pod: str, spec: Mapping[str, Any], *, dry_run: bool = False
+        self,
+        pod: str,
+        spec: Mapping[str, Any],
+        *,
+        dry_run: bool = False,
+        attempts: int = CONFLICT_ATTEMPTS,
+        backoff: float = CONFLICT_BACKOFF,
     ) -> dict[str, Any]:
         """Add one ephemeral container through the subresource.
 
@@ -1023,29 +1151,59 @@ class Kubectl:
         So a caller comparing what it asked for against what came back must find
         its own container by name — admission rewrites the others too.
 
+        The whole body carries the ``resourceVersion`` of the GET it was built
+        from, so anything writing to the pod in between costs this call a 409 —
+        and the writer podbench most often races is *itself*, since ``--resize``
+        patches the pod moments earlier and the kubelet writes the actuated
+        resources back (issue #136, measured on p47 2026-08-24). That is retried
+        here rather than by the caller, and under the **same container name**:
+        the ladder spends a fresh name per rung because a name is burnt once
+        used, but a conflict creates no container, and the splice above filters
+        an existing entry of the same name before appending — so re-sending is
+        idempotent by construction. Retrying a rung's *refusal* would be wrong
+        for the opposite reason, which is why only
+        :attr:`KubectlError.is_conflict` is retried.
+
         Raises :class:`KubectlError` on a synchronous refusal; check
         :attr:`KubectlError.is_psa_ptrace_denial` to tell a capability refusal
-        from any other failure.
+        from any other failure, and :class:`KubectlConflictError` for a race
+        that never settled.
         """
         name = spec.get("name")
-        current = self.get_pod_subresource(pod, "ephemeralcontainers")
-        pod_spec = as_dict(current.get("spec"))
-        existing = pod_spec.get("ephemeralContainers")
-        kept: list[Any] = []
-        if isinstance(existing, list):
-            kept = [
-                container
-                for container in cast(list[Any], existing)
-                if _entry_name(container) != name
-            ]
-        pod_spec["ephemeralContainers"] = [*kept, dict(spec)]
-        current["spec"] = pod_spec
         path = f"/api/v1/namespaces/{self.namespace}/pods/{pod}/ephemeralcontainers"
-        result = self.raw_put(f"{path}{DRY_RUN_QUERY}" if dry_run else path, current)
-        try:
-            return _parse_json_object(result.stdout, result.argv)
-        except (KubectlError, json.JSONDecodeError):
-            return {}
+        if dry_run:
+            path += DRY_RUN_QUERY
+        attempt = 0
+        while True:
+            attempt += 1
+            # Re-read every time round: the point of a retry is the fresh
+            # `resourceVersion`, and re-sending the body that just lost would
+            # lose again for the same reason.
+            current = self.get_pod_subresource(pod, "ephemeralcontainers")
+            pod_spec = as_dict(current.get("spec"))
+            existing = pod_spec.get("ephemeralContainers")
+            kept: list[Any] = []
+            if isinstance(existing, list):
+                kept = [
+                    container
+                    for container in cast(list[Any], existing)
+                    if _entry_name(container) != name
+                ]
+            pod_spec["ephemeralContainers"] = [*kept, dict(spec)]
+            current["spec"] = pod_spec
+            try:
+                result = self.raw_put(path, current)
+            except KubectlError as error:
+                if not error.is_conflict:
+                    raise
+                if attempt >= attempts:
+                    raise KubectlConflictError(error, attempt) from error
+                time.sleep(backoff)
+            else:
+                try:
+                    return _parse_json_object(result.stdout, result.argv)
+                except (KubectlError, json.JSONDecodeError):
+                    return {}
 
     def wait_for_ephemeral_container(
         self,

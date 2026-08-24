@@ -81,6 +81,7 @@ from .proc import (
     shares_pod_pid_namespace,
     strip_deleted,
     sysroot_path,
+    without_adapters,
 )
 
 __all__ = [
@@ -432,7 +433,9 @@ def resolve_target_pids(
     and is the only answer — the caller named a process, so offering it three
     others is not helpfulness.
 
-    Otherwise at most :data:`MAX_OFFERED_PIDS`, and never a dead one. This is
+    Otherwise at most :data:`MAX_OFFERED_PIDS`, never a dead one, and never a
+    debugpy adapter a previous ``--provision`` left in the container
+    (:func:`podbench.proc.without_adapters`). This is
     where :func:`podbench.proc.debug_candidates`'s "sort, never exclude"
     discipline is spent: a report has to name something whatever the container
     looks like, but every pid returned here becomes a *selectable entry* in a
@@ -444,7 +447,11 @@ def resolve_target_pids(
     if cid is None:
         return [], [_no_container_id_note(shares_pod_pid_namespace(proc=proc))]
     listing = scan_processes(cid, proc=proc)
-    targets = listing.targets
+    # A debugpy adapter is a child podbench's own `--provision` started, and it
+    # ranks *first* among candidates - Python, alive, readable, deepest. Run 3
+    # on p47 offered it, then spent three lines reporting that it could not read
+    # the exe of a process podbench had created (2026-08-24, §8.3).
+    targets = without_adapters(listing.targets)
     if not targets:
         return [], [f"no process found in a cgroup matching container id {cid}"]
     notes = [] if listing.warning is None else [listing.warning]
@@ -675,13 +682,18 @@ def _cells(process: ProcInfo, *, picked: int | None) -> list[str]:
 def default_pid(listing: ProcessListing) -> int | None:
     """The pid ``podbench dbg`` attaches to when given none, or ``None``.
 
-    The same two filters :func:`resolve_target_pids` applies, and deliberately
+    The same three filters :func:`resolve_target_pids` applies - no adapter, no
+    zombie, no shell where anything else ran - and deliberately
     *not* a second ranking: this marks a row with the answer another function
     computes, so the two agreeing is the whole value of the mark. If they ever
     disagree the table is worse than no table, because it points at a pid the
     verb it names will not use.
     """
-    alive = [info for info in debug_candidates(listing.targets) if info.alive]
+    alive = [
+        info
+        for info in debug_candidates(without_adapters(listing.targets))
+        if info.alive
+    ]
     ranked = [info for info in alive if not is_shell(info)] or alive
     return ranked[0].pid if ranked else None
 

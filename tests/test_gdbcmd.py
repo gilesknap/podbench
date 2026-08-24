@@ -1107,10 +1107,14 @@ def test_a_zombie_is_never_offered_though_a_shell_still_is(tmp_path: Path) -> No
     entry that can only fail, whatever seat selects it. A shell is dropped only
     because something better ran — on a container that is nothing but a shell it
     is still offered.
+
+    Pid 10 is gone for a third reason: it is the debugpy adapter blueapi's own
+    ``-m debugpy --listen 5678`` spawned, a child of pid 1, and nobody debugs
+    the adapter (§8.3).
     """
     proc = write_tree(tmp_path / "proc", sample("blueapi"))
     pids, _ = resolve_target_pids(None, CID, proc=proc)
-    assert pids == [1, 233, 10, 232]
+    assert pids == [1, 233, 232]
 
 
 def test_the_pids_table_marks_the_disqualified(

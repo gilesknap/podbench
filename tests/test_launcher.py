@@ -23,6 +23,7 @@ import pytest
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
 from podbench.console import console, wrap, wrap_width
+from podbench.editor import MACHINE_SETTINGS
 from podbench.hotfix import hold_loop_args, wrapped_liveness_probe
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
@@ -444,6 +445,14 @@ class FakeCluster:
         if argv[0] == "ssh":
             # `--open`'s preflight, for the same reason: it proves the alias
             # before anything is written, and a unit test opens no connection.
+            if argv[-1].startswith(("mkdir -p ~/", "test -e ~/")):
+                # The machine settings, which go over ssh and not over kubectl
+                # exec because `~` has to be the *login's* home. Same two
+                # scripts as any seat file, so the same store answers them.
+                result = self._seat_file(argv[-1], stdin)
+                return CommandResult(
+                    tuple(argv), result.returncode, result.stdout, result.stderr
+                )
             if stdin is not None:
                 # Resolving the seat's own vscode-server, which the extension
                 # install goes through. Answering "not yet" here is not a
@@ -472,6 +481,25 @@ class FakeCluster:
         if rest and rest[0].startswith("--request-timeout="):
             rest = rest[1:]
         return rest
+
+    def _seat_file(self, script: str, stdin: str | None) -> CommandResult:
+        """The two file scripts, whether they arrived over exec or over ssh.
+
+        One store for both, because they are the same two scripts: what the
+        machine settings prove by going over ssh is that ``~`` was left for the
+        *login* shell to expand, and the key they land under here is that
+        spelling.
+        """
+        if script.startswith("mkdir -p"):
+            path = script.rsplit("> ", 1)[1].strip("'")
+            if path in self.unwritable:
+                return _fail(f"sh: cannot create {path}: Permission denied")
+            self.seat_files[path] = stdin or ""
+            return _ok("")
+        text = self.seat_files.get(script.rsplit("cat ", 1)[1].strip("'"))
+        # 3 is the read script's own "no such file"; anything else means it
+        # found one and could not read it, which `--open` refuses to guess.
+        return _ok(text) if text is not None else _fail("", returncode=3)
 
     def _dispatch(
         self, rest: list[str], stdin: str | None, argv: Sequence[str]
@@ -750,17 +778,8 @@ class FakeCluster:
             return _ok(
                 json.dumps({"version": "0.2.0", "configurations": self.configurations})
             )
-        if command[:2] == ["sh", "-c"] and command[2].startswith("mkdir -p"):
-            path = command[2].rsplit("> ", 1)[1].strip("'")
-            if path in self.unwritable:
-                return _fail(f"sh: cannot create {path}: Permission denied")
-            self.seat_files[path] = stdin or ""
-            return _ok("")
         if command[:2] == ["sh", "-c"]:
-            text = self.seat_files.get(command[2].rsplit("cat ", 1)[1].strip("'"))
-            # 3 is the read script's own "no such file"; anything else means it
-            # found one and could not read it, which `--open` refuses to guess.
-            return _ok(text) if text is not None else _fail("", returncode=3)
+            return self._seat_file(command[2], stdin)
         if command[:1] == ["cat"] and command[-1].endswith("authorized_keys"):
             if self.authorized_keys is None:
                 return _fail("cat: no such file", returncode=1)
@@ -4124,7 +4143,7 @@ def test_open_configures_the_seats_home_and_opens_that(
     )
     assert code == 0
 
-    settings = json.loads(cluster.seat_files["/root/.vscode/settings.json"])
+    settings = json.loads(cluster.seat_files[MACHINE_SETTINGS])
     assert settings["files.watcherExclude"]["**/proc/**"] is True
     assert "/root/.vscode/launch.json" in cluster.seat_files
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
@@ -4160,7 +4179,12 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     )
     assert code == 0
 
-    assert f"{HOTFIX_APP_PATH}/.vscode/settings.json" in cluster.seat_files
+    # The claim's own .vscode gets launch.json and nothing else (D1b): it is a
+    # committed checkout on an NFS PVC, so every other file podbench used to
+    # author there was a permanent line in the user's git diff.
+    assert [
+        name for name in cluster.seat_files if name.startswith(f"{HOTFIX_APP_PATH}/")
+    ] == [f"{HOTFIX_APP_PATH}/.vscode/launch.json"]
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
     assert editor[-1][-1] == HOTFIX_APP_PATH
     # Flattened, because the note is wrapped under its own tick before it is
@@ -4521,9 +4545,8 @@ def test_open_follows_the_home_volume_rather_than_assuming_root(
     assert code == 0
 
     assert set(cluster.seat_files) == {
-        "/home/podbench/.vscode/settings.json",
+        MACHINE_SETTINGS,
         "/home/podbench/.vscode/launch.json",
-        "/home/podbench/.vscode/extensions.json",
     }
     opened = [
         call
@@ -4563,7 +4586,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
     and it ends the run, because a window opened without the exclude list is the
     walk that OOMs a seat which cannot be restarted."""
     cluster = FakeCluster(pod_document(uid=1000))
-    cluster.unwritable.add("/root/.vscode/settings.json")
+    cluster.unwritable.add("/root/.vscode/launch.json")
     code = main(
         vscode_argv(tmp_path, "--max-rung", "full"),
         runner=cluster,
@@ -4572,7 +4595,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
 
     assert code == 2
     assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
-    assert "cannot write /root/.vscode/settings.json" in capsys.readouterr().err
+    assert "cannot write /root/.vscode/launch.json" in capsys.readouterr().err
 
 
 def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(
@@ -6549,6 +6572,36 @@ def test_an_explicit_resize_beats_the_editors_default(
     assert "6Gi" not in out
 
 
+def test_a_resize_is_reported_by_the_run_that_made_it_not_by_the_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mutation is announced before the seat that may never land (D5).
+
+    Measured on p47, 2026-08-24: a `vscode` run raised a production pod from
+    256Mi to 6Gi, lost its ephemeral-container write, and printed one line about
+    the write and nothing whatever about the 6Gi it had just spent - because the
+    outcome was a string folded into a report that was never reached. The
+    refusal here is an allow-listed uid rather than a conflict only because a
+    conflict is retried, and this test is about the reporting and not the wait.
+    """
+    cluster = FakeCluster(
+        limited_pod("4Gi"), top="target   1m   3Gi\n", allowed_uids=(36096,)
+    )
+    assert (
+        main(
+            vscode_argv(tmp_path, "--resize", "3Gi"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "resized app to memory 3Gi" in " ".join(captured.out.split())
+    assert "--target-uid 36096" in captured.err
+    # No report at all: the seat never landed, which is the whole point.
+    assert "supports" not in captured.out
+
+
 def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -7128,6 +7181,121 @@ def test_a_reconnect_whose_key_file_cannot_be_read_says_unmeasured() -> None:
     unmeasured = [w for w in session.warnings if "unmeasured" in w]
     assert len(unmeasured) == 1
     assert "`--new` lands a seat that takes it." in unmeasured[0]
+
+
+# -- and `vscode` acts on that measurement rather than reporting it (#204) ---
+
+
+def reconnectable_pod() -> dict[str, Any]:
+    """A pod with a running seat, which is the only shape the key is read on.
+
+    Nothing measures ``authorized_keys`` on a seat this run landed itself: the
+    agent wrote the file from the key it was given, so the question only arises
+    where the container was somebody else's - or an earlier day's.
+    """
+    return pod_document(
+        uid=1000,
+        ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+        ephemeral_statuses=[running_status("podbench-1")],
+    )
+
+
+def test_vscode_refuses_a_reconnect_whose_key_the_seat_does_not_authorise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole of #204's second half. ssh is what `vscode` delivers, so a run
+    podbench has already measured cannot connect must not print a report that
+    reads like one, wire a stanza, and fail in the window afterwards."""
+    cluster = FakeCluster(reconnectable_pod(), authorized_keys="")
+
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    captured = capsys.readouterr()
+    refusal = " ".join(captured.err.split())
+    assert "does not authorise the key being offered" in refusal
+    # The remedy, and the only one that can work: an ephemeral container's spec
+    # is immutable, so the key arrives with another container or not at all.
+    assert "`--new` lands a seat that takes it." in refusal
+    # Nothing that reads like a successful run, in either direction: no report,
+    # no ssh stanza, no window - and no seat of its own, which is the half
+    # `attach-endgame` refused rather than the half #204 asked for.
+    assert captured.out == ""
+    assert not (tmp_path / "cfg" / "config.d").exists()
+    assert not [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert cluster.added == []
+
+
+def test_vscode_opens_a_reconnect_the_seat_does_authorise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The common case, and the one a refusal here would break: the seat was
+    landed with this identity, so ssh works and there is nothing to say."""
+    cluster = FakeCluster(reconnectable_pod())
+
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 0
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert "authorise" not in capsys.readouterr().out
+
+
+def test_vscode_opens_a_reconnect_whose_key_file_could_not_be_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unmeasured is not absent, and this is the distinction D4 turns on: a
+    `cat` that failed is no evidence ssh will be refused, and a preflight whose
+    false negatives block a working setup is worse than no preflight at all. So
+    the window opens and the line is still said."""
+    cluster = FakeCluster(reconnectable_pod(), authorized_keys=None)
+
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 0
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    # Flattened: the warning is wrapped under its leader before it is printed.
+    assert "unmeasured" in " ".join(capsys.readouterr().out.split())
+
+
+def test_attach_runs_whatever_the_seat_authorises(tmp_path: Path) -> None:
+    """`attach` is unchanged in all three states, deliberately: ssh is one
+    feature among several there and the kubectl exec helpers need no key, so a
+    refusal would block a seat that still does most of its job."""
+    for authorized_keys in ("", None, CLIENT_KEY):
+        cluster = FakeCluster(reconnectable_pod(), authorized_keys=authorized_keys)
+        config_dir = tmp_path / str(authorized_keys)
+
+        code = main(
+            [
+                "attach",
+                "pod/target",
+                "-n",
+                "demo",
+                "--identity",
+                identity(tmp_path),
+                "--config-dir",
+                str(config_dir),
+            ],
+            runner=cluster,
+        )
+
+        assert code == 0
+        # The stanza is written on every one of them, which is what "unchanged"
+        # means here: the absent case warns inside the report and wires ssh
+        # anyway.
+        assert (config_dir / "config.d" / "demo-target-1.conf").exists()
 
 
 def test_landing_a_seat_names_the_other_two_modes_once(

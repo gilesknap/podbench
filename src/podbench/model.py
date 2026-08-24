@@ -36,6 +36,7 @@ __all__ = [
     "SEAT_HOME_VOLUME",
     "SEAT_IDENTITY_VOLUME",
     "SEAT_PASSWD_KEY",
+    "CLAIM_PATH_ENV",
     "IMAGE_ENV",
     "HOST_NETWORK_ENV",
     "OWNER_ENV",
@@ -273,6 +274,27 @@ writes it into the container spec, the in-pod side reads it to attribute
 processes, and a rename on one side alone degrades attribution to the cgroup
 fallback silently (report 3.15). It is a name, not a type, but it is an
 agreement, so it lives with the rest of them.
+"""
+
+CLAIM_PATH_ENV = "PODBENCH_CLAIM_PATH"
+"""Env var carrying *this seat's* mountPath for :data:`HOTFIX_CLAIM_VOLUME`.
+
+The seat has to know it and cannot work it out: the mountPath is the
+application's choice - podbench matches it, never picks it
+(:func:`podbench.hotfix.claim_mount_path`) - and from inside the container a
+directory that is on a volume looks like any other. So it arrives the way the
+seat's other launcher-known facts do, in the container spec's ``env``, and
+:func:`podbench.agent.ensure_seat_gitconfig` writes a ``safe.directory`` for it
+at start-up.
+
+Written from the mounts being authored rather than passed in beside them
+(:func:`podbench.spec.ephemeral_container_spec`), so the two cannot disagree:
+a seat told the claim is somewhere it does not mount would authorise a
+directory that is not there, and :data:`HOTFIX_APP_PATH` is precisely the guess
+:func:`podbench.launcher.seat_claim_path` exists to avoid.
+
+Absent means **no claim**, which is the ordinary ``attach`` seat and every
+seat an older launcher landed. Nothing is written for one.
 """
 
 

@@ -48,15 +48,24 @@ so keying on the exit code meant the second silently skipped provisioning and
 handed over a launch.json whose F5 met ``ECONNREFUSED``. The trigger is now the
 seat naming the flag, which it does for either.
 
-The order below is load-bearing. ``.vscode/settings.json`` is written **before**
-the window opens, because the watcher and the indexer start walking the moment
-it does; opening first and configuring afterwards is the race whose loser is an
+The order below is load-bearing. The excludes are written **before** the window
+opens, because the watcher and the indexer start walking the moment it does;
+opening first and configuring afterwards is the race whose loser is an
 unrecoverable seat.
+
+**The one file podbench writes into the folder is ``launch.json``** (D1b,
+2026-08-24). The folder on a hotfixed pod is the user's committed checkout on an
+NFS PVC, so anything authored there is a permanent line in somebody's git diff —
+seen first-hand while hotfix mode was being driven — and the excludes have a
+home of their own in the seat that costs nobody a diff. ``extensions.json`` went
+with it and costs nothing: it is recommendations only, while this module
+installs the extensions itself and then asks the seat whether they landed.
 
 Files reach the seat over ``kubectl exec`` rather than over the ssh transport:
 this runs while the launcher still has the :class:`podbench.kubectl.Kubectl` it
 landed the seat with, and the ssh path additionally requires the user to have
-made the one manual edit (``Include``) podbench has always asked for.
+made the one manual edit (``Include``) podbench has always asked for. The
+machine settings are the exception, and :data:`MACHINE_SETTINGS` says why.
 """
 
 from __future__ import annotations
@@ -66,6 +75,7 @@ import json
 import shutil
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from shlex import quote
 from typing import Any, cast
 
@@ -78,10 +88,13 @@ from .kubectl import (
 )
 from .model import SEAT_HOME_VOLUME, ContainerRef, as_dict
 from .vscode import (
+    INTERPRETER_NOTE,
+    MACHINE_SETTINGS_PATH,
+    PYTHON_INTERPRETER_KEY,
+    WITHHELD_NOTE,
     extensions_for,
-    merge_extensions_json,
-    merge_folder_settings,
     merge_launch_configs,
+    merge_machine_settings,
 )
 
 __all__ = [
@@ -89,6 +102,7 @@ __all__ = [
     "DEFAULT_EDITOR",
     "DEFAULT_SSH",
     "EXTENSIONS_DIR",
+    "MACHINE_SETTINGS",
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_DEST_FLAG",
@@ -100,6 +114,7 @@ __all__ = [
     "Provision",
     "WARN",
     "check_reachable",
+    "interpreter_for_folder",
     "is_step",
     "open_seat",
     "remote_authority",
@@ -601,6 +616,9 @@ def open_seat(
     Anything that went wrong but left the seat usable is a line rather than an
     exception — a missing ``launch.json`` costs an F5, whereas the excludes and
     the folder are what keep the seat alive.
+
+    ``launch.json`` is the *only* thing written into ``folder``; see the module
+    docstring for why, and :data:`MACHINE_SETTINGS` for where the excludes went.
     """
     if not folder.startswith("/") or folder.strip("/") == "":
         raise EditorError(
@@ -624,49 +642,44 @@ def open_seat(
     report(f"{OK} ssh reaches the seat, so Remote-SSH will too")
     # Everything from here is one line each: this is a sequence of steps, and
     # a step that explains itself in a paragraph buries the one that failed.
-    configurations = _configurations(
+    authored = _configurations(
         kubectl, seat, report, provision=provision, dest=provision_dest
     )
+    configurations = authored.configurations
     extensions = extensions_for(configurations)
 
+    # The machine settings first, and not merely early: the excludes have to be
+    # on disk before the window that starts the walk. They are also the only
+    # copy now, so this is the run's whole answer to Kill VS Code Server on
+    # Host having deleted the seat's ~/.vscode-server since the last one.
+    _machine_settings(
+        alias,
+        interpreter=interpreter_for_folder(folder, authored.interpreter),
+        ssh=ssh,
+        runner=run,
+        report=report,
+    )
+
     base = f"{folder}/{VSCODE_DIR}"
-    # settings.json first, and not merely early: the excludes have to be on
-    # disk before the window that starts the walk.
-    settings = f"{base}/settings.json"
-    merged = [_merge_into(kubectl, seat, settings, merge_folder_settings, report)]
-    if configurations:
-        merged.append(
-            _merge_into(
-                kubectl,
-                seat,
-                f"{base}/launch.json",
-                lambda existing: merge_launch_configs(existing, configurations),
-                report,
-            )
+    merged = (
+        _merge_into(
+            kubectl,
+            seat,
+            f"{base}/launch.json",
+            lambda existing: merge_launch_configs(existing, configurations),
+            report,
         )
-    if extensions:
-        merged.append(
-            _merge_into(
-                kubectl,
-                seat,
-                f"{base}/extensions.json",
-                lambda existing: merge_extensions_json(existing, extensions),
-                report,
-            )
-        )
-    # Two lines at most for three files, and the directory said once. Both are
-    # worth saying: "wrote" is what this run did, and "already said" is what a
-    # reconnect into a configured seat looks like - which is not nothing, since
-    # it is the answer to "why did my edits survive".
-    for names, said in (
-        ([name for name, changed in filter(None, merged) if changed], "wrote"),
-        (
-            [name for name, changed in filter(None, merged) if not changed],
-            "already said everything podbench would in",
-        ),
-    ):
-        if names:
-            report(f"{OK} {said} {', '.join(names)} in {base}")
+        if configurations
+        else None
+    )
+    if merged is not None:
+        # Both halves are worth saying: "wrote" is what this run did, and
+        # "already said" is what a reconnect into a configured seat looks like -
+        # which is not nothing, since it is the answer to "why did my edits
+        # survive".
+        name, changed = merged
+        said = "wrote" if changed else "already said everything podbench would in"
+        report(f"{OK} {said} {name} in {base}")
 
     authority = remote_authority(alias)
     if extensions:
@@ -757,6 +770,25 @@ because the home that matters is the one NSS gives the seat's login user — whi
 is not always the container's ``$HOME`` (see :func:`podbench.agent.session_home`).
 Asking through the same client, as the same user, is the only spelling that
 cannot be right here and wrong for VS Code.
+"""
+
+MACHINE_SETTINGS = f"~/{MACHINE_SETTINGS_PATH}"
+"""VS Code's machine settings, under the *ssh login's* home.
+
+``~`` rather than a path, and written over **ssh** rather than over ``kubectl
+exec``, for :data:`EXTENSIONS_DIR`'s reason and with more at stake: sshd sets a
+session's ``HOME`` from the passwd record and never from the container's
+environment (:func:`podbench.agent.session_home`), so ``~`` here is the home
+vscode-server unpacks into and ``$HOME`` under ``kubectl exec`` may be a
+different directory entirely. Writing through the same client, as the same user,
+is the only spelling that cannot be right here and wrong for VS Code.
+
+This is the file :func:`podbench.agent.ensure_vscode_settings` already owns, and
+that overlap is deliberate. The agent writes it at seat start-up, when the
+excludes are all it can know; this run merges into the same file afterwards,
+when it has also measured which interpreter the target runs — and it is what
+puts the excludes back on a reconnect into a seat whose ``~/.vscode-server``
+*Kill/Uninstall VS Code Server on Host* has since deleted.
 """
 
 SERVERS_DIR = "~/.vscode-server/cli/servers"
@@ -1009,6 +1041,31 @@ def _relay(stderr: str, report: Callable[[str], None]) -> bool:
     return bool(lines)
 
 
+@dataclass(frozen=True)
+class _Authored:
+    """One ``debug-config`` run's answer, which is three facts and not a list.
+
+    ``configurations`` is what goes in ``launch.json``. The other two are things
+    only the seat can know and only the laptop can act on, and both travel on
+    :func:`_author`'s **stderr** rather than in the printed document — see
+    :data:`PROVISION_FLAG` and :data:`podbench.vscode.INTERPRETER_NOTE`.
+    """
+
+    configurations: list[dict[str, Any]]
+    wants_provisioning: bool = False
+    interpreter: str | None = None
+    """The target's own interpreter, in the *target's* spelling. Whether it means
+    anything in this seat is :func:`interpreter_for_folder`'s question."""
+
+    withheld: bool = False
+    """Whether the seat deliberately emitted no debugpy configuration.
+
+    Read off :data:`podbench.vscode.WITHHELD_NOTE`, and the whole of its value
+    is that it distinguishes an empty answer from a *withdrawn* one, which is
+    what :func:`_configurations`' fallback must not step on.
+    """
+
+
 def _configurations(
     kubectl: Kubectl,
     seat: ContainerRef,
@@ -1016,7 +1073,7 @@ def _configurations(
     *,
     provision: Provision = Provision.NEVER,
     dest: str | None = None,
-) -> list[dict[str, Any]]:
+) -> _Authored:
     """What ``debug-config`` would write, asked for rather than recomputed.
 
     A target no debugger fits is not a failure of the editor: the folder, the
@@ -1040,16 +1097,34 @@ def _configurations(
     or widening the trigger would be a regression for the very case it was
     widened to serve.
     """
-    entries, unprovisioned = _author(
+    first = _author(
         kubectl, seat, report, provision=provision is Provision.ALWAYS, dest=dest
     )
-    if not unprovisioned:
-        return entries
+    if not first.wants_provisioning:
+        return first
     if provision is not Provision.IF_NEEDED:
         report(_PROVISION_REMEDY)
-        return entries
+        return first
     report(_PROVISION_NEEDED)
-    return _author(kubectl, seat, report, provision=True, dest=dest)[0] or entries
+    retried = _author(kubectl, seat, report, provision=True, dest=dest)
+    # The fallback is per *field*: a provisioning run that failed on egress
+    # still measured the target, and the interpreter it named is the same file
+    # either way, so each answer comes from whichever run had one.
+    #
+    # `withheld` is the one case it must not fire on. The retry proved, with a
+    # DAP `initialize`, that no session can be started - and the first run's
+    # configurations name a port *it* never started a server on either, so
+    # falling back to them writes the closed port #218 is about, having just
+    # been told not to (measured on p47, 2026-08-24, §8.2).
+    return _Authored(
+        configurations=(
+            retried.configurations
+            if retried.configurations or retried.withheld
+            else first.configurations
+        ),
+        interpreter=retried.interpreter or first.interpreter,
+        withheld=retried.withheld,
+    )
 
 
 def _author(
@@ -1059,11 +1134,11 @@ def _author(
     *,
     provision: bool,
     dest: str | None = None,
-) -> tuple[list[dict[str, Any]], bool]:
-    """One ``debug-config`` run, and whether the seat asked to be provisioned.
+) -> _Authored:
+    """One ``debug-config`` run, read for everything it said.
 
-    The second half of the pair is the only thing :func:`_configurations` needs
-    that a list of configurations cannot carry: "empty" is the same answer for a
+    ``wants_provisioning`` is the thing :func:`_configurations` needs that a
+    list of configurations cannot carry: "empty" is the same answer for a
     target with no debugger, a seat that could not run the verb at all, and a
     Python workload one ``uv pip install`` away from working. Reading
     :data:`PROVISION_FLAG` out of the seat's own stderr keeps the three apart
@@ -1088,6 +1163,13 @@ def _author(
     the reasons on :data:`PROVISION_DEST_FLAG`. It cannot disturb the guard
     above: ``wants_provisioning`` reads the seat's *stderr*, not the argv it was
     sent.
+
+    The interpreter comes off the same stderr and for the same reason, one
+    layer further on: the seat measured it, ``--print-config``'s stdout may not
+    carry a key that is not a launch document's (see
+    :func:`podbench.vscode.launch_json_text`), and it is read on a failed run
+    too - a target no debugger fits still has an
+    interpreter, and the popup it answers is raised by the window regardless.
     """
     argv = [
         *DEBUG_CONFIG_ARGV,
@@ -1106,6 +1188,12 @@ def _author(
     )
     relayed = _relay(result.stderr, report)
     wants_provisioning = not provision and PROVISION_FLAG in result.stderr
+    interpreter = _narrated_interpreter(result.stderr)
+    # Read on a failed run too, and for the reason the exit code is not enough:
+    # a pod whose only candidate is the withdrawn one emits nothing at all, and
+    # that is exactly the run whose answer must not be replaced by an earlier
+    # one.
+    withheld = WITHHELD_NOTE in result.stderr
     if result.returncode != 0:
         # The last line only when there was nothing to relay - a `podbench` the
         # image does not resolve exits 127 with sh's message and no narration,
@@ -1115,21 +1203,175 @@ def _author(
             if relayed
             else f"{WARN} no launch.json: {_detail(result.stderr)}"
         )
-        return [], wants_provisioning
+        return _Authored([], wants_provisioning, interpreter, withheld)
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
         report(f"{WARN} no launch.json: debug-config printed no JSON ({error})")
-        return [], False
+        return _Authored([], interpreter=interpreter, withheld=withheld)
     if not isinstance(document, dict):
         report(f"{WARN} no launch.json: debug-config printed no JSON object")
-        return [], False
+        return _Authored([], interpreter=interpreter, withheld=withheld)
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
-    return [
-        as_dict(entry) for entry in entries if isinstance(entry, dict)
-    ], wants_provisioning
+    return _Authored(
+        [as_dict(entry) for entry in entries if isinstance(entry, dict)],
+        wants_provisioning,
+        interpreter,
+        withheld,
+    )
+
+
+def _narrated_interpreter(stderr: str) -> str | None:
+    """The interpreter :data:`podbench.vscode.INTERPRETER_NOTE` named, if any.
+
+    The last one wins, which is the only ordering that can be right: the seat
+    narrates for its best candidate, and a provisioning re-run narrates again
+    after the target has been measured a second time.
+    """
+    found: str | None = None
+    for line in stderr.splitlines():
+        _, marker, path = line.partition(INTERPRETER_NOTE)
+        if marker and path.strip():
+            found = path.strip()
+    return found
+
+
+def interpreter_for_folder(folder: str, interpreter: str | None) -> str | None:
+    """The target's interpreter, if the folder being opened is the tree it is in.
+
+    The gate on :data:`podbench.vscode.PYTHON_INTERPRETER_KEY`, and it is a
+    question about *mounts* rather than about Python. ``interpreter`` is the
+    target's own spelling of a path in the target's mount namespace; it names the
+    same file for the seat only where the seat has that tree mounted too. The
+    folder ``vscode`` opens is exactly that tree on a hotfixed pod
+    (``launcher.editor_folder`` opens the claim, which the launcher mounts into
+    the seat at the application's own path) and is the seat's *own* home on every
+    other pod — where the target's interpreter is never under it.
+
+    So the containment test answers the layout question without this side of the
+    wire re-deriving the layout, and it is right for the three shapes
+    ``launcher.seat_claim_path`` distinguishes: no claim, a claim the seat did
+    not get (the folder is the home, so nothing matches), and a claim mounted
+    wherever the application put it.
+
+    >>> interpreter_for_folder("/podbench/app", "/podbench/app/.venv/bin/python3")
+    '/podbench/app/.venv/bin/python3'
+    >>> interpreter_for_folder("/root", "/app/.venv/bin/python3") is None
+    True
+    >>> interpreter_for_folder("/podbench/app", None) is None
+    True
+
+    A prefix, never a bare ``startswith``: ``/podbench/application`` is not
+    inside ``/podbench/app``.
+
+    >>> interpreter_for_folder("/podbench/app", "/podbench/application/py") is None
+    True
+    """
+    if interpreter is None:
+        return None
+    inside = f"{folder.rstrip('/')}/"
+    return interpreter if interpreter.startswith(inside) else None
+
+
+def _machine_settings(
+    alias: str,
+    *,
+    interpreter: str | None,
+    ssh: str,
+    runner: Runner,
+    report: Callable[[str], None],
+) -> None:
+    """Merge the excludes, and the measured interpreter, into :data:`MACHINE_SETTINGS`.
+
+    Every failure here is a line rather than an exception, which is the
+    *opposite* of what the folder's ``settings.json`` used to get and is right
+    for the same reason that one was not: the excludes are no longer written
+    for the first time here. :func:`podbench.agent.ensure_vscode_settings` put
+    them in this file at seat start-up, before any window could exist, and the
+    seat's own report says so when that failed. What this run adds is the
+    interpreter and a repair for a seat whose ``~/.vscode-server`` has been
+    deleted since — neither of which is worth refusing to open an editor over.
+
+    The warning still names the walk, because the case where it matters is
+    exactly the case that cannot be distinguished from here: a file that could
+    not be read might be a file that no longer carries ``**/proc/**``.
+    """
+    result = runner(
+        _ssh_argv(alias, ssh, _READ_MACHINE_SETTINGS),
+        # Same exemption as the preflight: another ssh to the same alias, which
+        # may prompt for the same passphrase.
+        timeout=UNBOUNDED,
+    )
+    if result.returncode not in (0, _ABSENT):
+        report(
+            f"{WARN} {_MACHINE_SETTINGS_UNREAD.format(detail=_detail(result.stderr))}"
+        )
+        return
+    existing = result.stdout if result.returncode == 0 else None
+    try:
+        merged = merge_machine_settings(existing, interpreter=interpreter)
+    except ValueError as error:
+        report(f"{WARN} {MACHINE_SETTINGS} left exactly as it is: {error}")
+        return
+    clause = (
+        f": the folder-walk excludes, and {PYTHON_INTERPRETER_KEY} for the "
+        f"target's own {interpreter}"
+        if interpreter is not None
+        else ": the folder-walk excludes"
+    )
+    if merged is None:
+        report(
+            f"{OK} {MACHINE_SETTINGS} already said everything podbench would{clause}"
+        )
+        return
+    written = runner(
+        _ssh_argv(alias, ssh, _WRITE_MACHINE_SETTINGS),
+        stdin=merged,
+        timeout=UNBOUNDED,
+    )
+    if written.returncode != 0:
+        detail = _detail(written.stderr)
+        report(f"{WARN} {_MACHINE_SETTINGS_UNWRITTEN.format(detail=detail)}")
+        return
+    report(f"{OK} wrote {MACHINE_SETTINGS} in the seat{clause}")
+
+
+def _ssh_argv(alias: str, ssh: str, command: str) -> list[str]:
+    """One command over the alias, through the config VS Code will use."""
+    return [ssh, "-T", "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT}", alias, command]
+
+
+# Unquoted on purpose, unlike every path in `_read`/`_write`: the login shell
+# has to expand `~`, which is the whole point of writing this file over ssh, and
+# `shlex.quote` would hand it a literal directory called `~`. Safe because these
+# are constants with no shell metacharacter in them - a caller's path never
+# reaches either string.
+_READ_MACHINE_SETTINGS = (
+    f"test -e {MACHINE_SETTINGS} || exit {_ABSENT}; cat {MACHINE_SETTINGS}"
+)
+_WRITE_MACHINE_SETTINGS = (
+    f"mkdir -p {MACHINE_SETTINGS.rsplit('/', 1)[0]} && cat > {MACHINE_SETTINGS}"
+)
+
+_MACHINE_SETTINGS_UNREAD = (
+    "could not read " + MACHINE_SETTINGS + " in the seat ({detail}), so nothing "
+    "was added to it: the excludes are whatever `podbench agent` wrote at seat "
+    "start-up, and a window that opens without them walks /proc/<pid>/root"
+)
+_MACHINE_SETTINGS_UNWRITTEN = (
+    "could not write " + MACHINE_SETTINGS + " in the seat ({detail}), so the "
+    "excludes are whatever `podbench agent` wrote at seat start-up - which is "
+    "nothing at all if Kill VS Code Server on Host has since deleted "
+    "~/.vscode-server"
+)
+"""Two lines, because the reader's next move differs and neither is a verdict.
+
+Both say *unmeasured* rather than "fine" or "broken": this run could not see the
+file, and the copy that decides whether the next folder ends the seat was
+written by something else, at a different time.
+"""
 
 
 def _merge_into(

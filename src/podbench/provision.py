@@ -598,8 +598,7 @@ def _proof(answer: Answer, *, seconds: float, port: int) -> tuple[str, ...]:
             f"injected in {seconds:.1f}s, but nothing is listening on "
             f"{LOOPBACK}:{port} ({answer.detail}): the injector returned 0 and "
             "left no server behind, so no debug session can be started and a "
-            "configuration pointing here connects to a closed port. The "
-            "injection command printed below runs the same thing by hand",
+            "configuration pointing here would connect to a closed port",
         )
     if answer.outcome is Handshake.REJECTED:
         return (
