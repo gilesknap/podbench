@@ -7183,6 +7183,121 @@ def test_a_reconnect_whose_key_file_cannot_be_read_says_unmeasured() -> None:
     assert "`--new` lands a seat that takes it." in unmeasured[0]
 
 
+# -- and `vscode` acts on that measurement rather than reporting it (#204) ---
+
+
+def reconnectable_pod() -> dict[str, Any]:
+    """A pod with a running seat, which is the only shape the key is read on.
+
+    Nothing measures ``authorized_keys`` on a seat this run landed itself: the
+    agent wrote the file from the key it was given, so the question only arises
+    where the container was somebody else's - or an earlier day's.
+    """
+    return pod_document(
+        uid=1000,
+        ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+        ephemeral_statuses=[running_status("podbench-1")],
+    )
+
+
+def test_vscode_refuses_a_reconnect_whose_key_the_seat_does_not_authorise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole of #204's second half. ssh is what `vscode` delivers, so a run
+    podbench has already measured cannot connect must not print a report that
+    reads like one, wire a stanza, and fail in the window afterwards."""
+    cluster = FakeCluster(reconnectable_pod(), authorized_keys="")
+
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 2
+    captured = capsys.readouterr()
+    refusal = " ".join(captured.err.split())
+    assert "does not authorise the key being offered" in refusal
+    # The remedy, and the only one that can work: an ephemeral container's spec
+    # is immutable, so the key arrives with another container or not at all.
+    assert "`--new` lands a seat that takes it." in refusal
+    # Nothing that reads like a successful run, in either direction: no report,
+    # no ssh stanza, no window - and no seat of its own, which is the half
+    # `attach-endgame` refused rather than the half #204 asked for.
+    assert captured.out == ""
+    assert not (tmp_path / "cfg" / "config.d").exists()
+    assert not [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert cluster.added == []
+
+
+def test_vscode_opens_a_reconnect_the_seat_does_authorise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The common case, and the one a refusal here would break: the seat was
+    landed with this identity, so ssh works and there is nothing to say."""
+    cluster = FakeCluster(reconnectable_pod())
+
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 0
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    assert "authorise" not in capsys.readouterr().out
+
+
+def test_vscode_opens_a_reconnect_whose_key_file_could_not_be_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unmeasured is not absent, and this is the distinction D4 turns on: a
+    `cat` that failed is no evidence ssh will be refused, and a preflight whose
+    false negatives block a working setup is worse than no preflight at all. So
+    the window opens and the line is still said."""
+    cluster = FakeCluster(reconnectable_pod(), authorized_keys=None)
+
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert code == 0
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"]
+    # Flattened: the warning is wrapped under its leader before it is printed.
+    assert "unmeasured" in " ".join(capsys.readouterr().out.split())
+
+
+def test_attach_runs_whatever_the_seat_authorises(tmp_path: Path) -> None:
+    """`attach` is unchanged in all three states, deliberately: ssh is one
+    feature among several there and the kubectl exec helpers need no key, so a
+    refusal would block a seat that still does most of its job."""
+    for authorized_keys in ("", None, CLIENT_KEY):
+        cluster = FakeCluster(reconnectable_pod(), authorized_keys=authorized_keys)
+        config_dir = tmp_path / str(authorized_keys)
+
+        code = main(
+            [
+                "attach",
+                "pod/target",
+                "-n",
+                "demo",
+                "--identity",
+                identity(tmp_path),
+                "--config-dir",
+                str(config_dir),
+            ],
+            runner=cluster,
+        )
+
+        assert code == 0
+        # The stanza is written on every one of them, which is what "unchanged"
+        # means here: the absent case warns inside the report and wires ssh
+        # anyway.
+        assert (config_dir / "config.d" / "demo-target-1.conf").exists()
+
+
 def test_landing_a_seat_names_the_other_two_modes_once(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
