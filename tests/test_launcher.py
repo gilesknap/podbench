@@ -23,6 +23,7 @@ import pytest
 from podbench import __version__
 from podbench.agent import SEAT_NSS_PATH
 from podbench.console import console, wrap, wrap_width
+from podbench.editor import MACHINE_SETTINGS
 from podbench.hotfix import hold_loop_args, wrapped_liveness_probe
 from podbench.kubectl import (
     CREATE_CONTAINER_CONFIG_ERROR,
@@ -444,6 +445,14 @@ class FakeCluster:
         if argv[0] == "ssh":
             # `--open`'s preflight, for the same reason: it proves the alias
             # before anything is written, and a unit test opens no connection.
+            if argv[-1].startswith(("mkdir -p ~/", "test -e ~/")):
+                # The machine settings, which go over ssh and not over kubectl
+                # exec because `~` has to be the *login's* home. Same two
+                # scripts as any seat file, so the same store answers them.
+                result = self._seat_file(argv[-1], stdin)
+                return CommandResult(
+                    tuple(argv), result.returncode, result.stdout, result.stderr
+                )
             if stdin is not None:
                 # Resolving the seat's own vscode-server, which the extension
                 # install goes through. Answering "not yet" here is not a
@@ -472,6 +481,25 @@ class FakeCluster:
         if rest and rest[0].startswith("--request-timeout="):
             rest = rest[1:]
         return rest
+
+    def _seat_file(self, script: str, stdin: str | None) -> CommandResult:
+        """The two file scripts, whether they arrived over exec or over ssh.
+
+        One store for both, because they are the same two scripts: what the
+        machine settings prove by going over ssh is that ``~`` was left for the
+        *login* shell to expand, and the key they land under here is that
+        spelling.
+        """
+        if script.startswith("mkdir -p"):
+            path = script.rsplit("> ", 1)[1].strip("'")
+            if path in self.unwritable:
+                return _fail(f"sh: cannot create {path}: Permission denied")
+            self.seat_files[path] = stdin or ""
+            return _ok("")
+        text = self.seat_files.get(script.rsplit("cat ", 1)[1].strip("'"))
+        # 3 is the read script's own "no such file"; anything else means it
+        # found one and could not read it, which `--open` refuses to guess.
+        return _ok(text) if text is not None else _fail("", returncode=3)
 
     def _dispatch(
         self, rest: list[str], stdin: str | None, argv: Sequence[str]
@@ -750,17 +778,8 @@ class FakeCluster:
             return _ok(
                 json.dumps({"version": "0.2.0", "configurations": self.configurations})
             )
-        if command[:2] == ["sh", "-c"] and command[2].startswith("mkdir -p"):
-            path = command[2].rsplit("> ", 1)[1].strip("'")
-            if path in self.unwritable:
-                return _fail(f"sh: cannot create {path}: Permission denied")
-            self.seat_files[path] = stdin or ""
-            return _ok("")
         if command[:2] == ["sh", "-c"]:
-            text = self.seat_files.get(command[2].rsplit("cat ", 1)[1].strip("'"))
-            # 3 is the read script's own "no such file"; anything else means it
-            # found one and could not read it, which `--open` refuses to guess.
-            return _ok(text) if text is not None else _fail("", returncode=3)
+            return self._seat_file(command[2], stdin)
         if command[:1] == ["cat"] and command[-1].endswith("authorized_keys"):
             if self.authorized_keys is None:
                 return _fail("cat: no such file", returncode=1)
@@ -4124,7 +4143,7 @@ def test_open_configures_the_seats_home_and_opens_that(
     )
     assert code == 0
 
-    settings = json.loads(cluster.seat_files["/root/.vscode/settings.json"])
+    settings = json.loads(cluster.seat_files[MACHINE_SETTINGS])
     assert settings["files.watcherExclude"]["**/proc/**"] is True
     assert "/root/.vscode/launch.json" in cluster.seat_files
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
@@ -4160,7 +4179,12 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     )
     assert code == 0
 
-    assert f"{HOTFIX_APP_PATH}/.vscode/settings.json" in cluster.seat_files
+    # The claim's own .vscode gets launch.json and nothing else (D1b): it is a
+    # committed checkout on an NFS PVC, so every other file podbench used to
+    # author there was a permanent line in the user's git diff.
+    assert [
+        name for name in cluster.seat_files if name.startswith(f"{HOTFIX_APP_PATH}/")
+    ] == [f"{HOTFIX_APP_PATH}/.vscode/launch.json"]
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
     assert editor[-1][-1] == HOTFIX_APP_PATH
     # Flattened, because the note is wrapped under its own tick before it is
@@ -4521,9 +4545,8 @@ def test_open_follows_the_home_volume_rather_than_assuming_root(
     assert code == 0
 
     assert set(cluster.seat_files) == {
-        "/home/podbench/.vscode/settings.json",
+        MACHINE_SETTINGS,
         "/home/podbench/.vscode/launch.json",
-        "/home/podbench/.vscode/extensions.json",
     }
     opened = [
         call
@@ -4563,7 +4586,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
     and it ends the run, because a window opened without the exclude list is the
     walk that OOMs a seat which cannot be restarted."""
     cluster = FakeCluster(pod_document(uid=1000))
-    cluster.unwritable.add("/root/.vscode/settings.json")
+    cluster.unwritable.add("/root/.vscode/launch.json")
     code = main(
         vscode_argv(tmp_path, "--max-rung", "full"),
         runner=cluster,
@@ -4572,7 +4595,7 @@ def test_open_stops_at_a_seat_file_it_cannot_write(
 
     assert code == 2
     assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
-    assert "cannot write /root/.vscode/settings.json" in capsys.readouterr().err
+    assert "cannot write /root/.vscode/launch.json" in capsys.readouterr().err
 
 
 def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(

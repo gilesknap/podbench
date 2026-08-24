@@ -39,8 +39,9 @@ from podbench.proc import DEFAULT_PROC, seat_cwd
 from podbench.provision import INJECTION_TIMEOUT_SECONDS
 from podbench.vscode import (
     GDB_WRAPPER,
+    INTERPRETER_NOTE,
     MACHINE_SETTINGS_PATH,
-    SEAT_FOLDER_SETTINGS,
+    PYTHON_INTERPRETER_KEY,
     SEAT_MACHINE_SETTINGS,
     cppdbg_configuration,
     cppdbg_launch_configuration,
@@ -54,8 +55,6 @@ from podbench.vscode import (
     lldb_configuration,
     main,
     measured_attach,
-    merge_extensions_json,
-    merge_folder_settings,
     merge_launch_json,
     merge_machine_settings,
     program_load_error,
@@ -503,7 +502,7 @@ def test_a_settings_json_with_a_trailing_comma_merges() -> None:
   },
 }
 """
-    merged = merge_folder_settings(existing) or ""
+    merged = merge_machine_settings(existing) or ""
     assert _changes(existing, merged)
     for line in existing.splitlines():
         assert line in merged
@@ -523,7 +522,7 @@ def test_a_comment_or_a_comma_inside_a_string_survives_the_merge() -> None:
         '  "podbench.said": "he said \\" // not a comment"\n'
         "}\n"
     )
-    merged = merge_folder_settings(existing) or ""
+    merged = merge_machine_settings(existing) or ""
     for line in existing.splitlines()[1:-1]:
         assert line in merged
     document = _loads(merged)
@@ -709,44 +708,48 @@ def test_merge_refuses_a_document_that_is_not_an_object() -> None:
         merge_machine_settings("[]")
 
 
-# -- the same guard, in a folder ---------------------------------------------
+# -- the interpreter the target runs (#219) ----------------------------------
 
 
-def test_folder_settings_carry_the_whole_guard_including_cpptools() -> None:
-    """``--open`` opens a single folder, so that file is the *workspace*
-    settings, where window- and resource-scoped keys are both honoured.
-
-    ``C_Cpp.files.exclude`` is the one that would be missed: cpptools' tag
-    parser walks on its own account, so the search and watcher excludes do not
-    stop it, and cpptools is exactly what ``--open`` installs for a C/C++
-    target. A key VS Code ignores costs nothing; an omitted one costs the seat.
-    """
-    document = json.loads(merge_folder_settings(None) or "")
+def test_the_measured_interpreter_is_added_when_the_file_has_none() -> None:
+    """The whole of #219: the window pops "no Python interpreter found" on a pod
+    where debug attach then works, and podbench measured the answer one line
+    earlier."""
+    document = json.loads(
+        merge_machine_settings(None, interpreter="/podbench/app/.venv/bin/python3")
+        or ""
+    )
+    assert document[PYTHON_INTERPRETER_KEY] == "/podbench/app/.venv/bin/python3"
+    # …and it travels with the excludes rather than instead of them.
     assert document["files.watcherExclude"]["**/proc/**"] is True
-    assert document["search.exclude"]["**/sys/**"] is True
-    assert "/proc/**" in document["python.analysis.exclude"]
-    assert document["C_Cpp.files.exclude"]["**/proc/**"] is True
-    assert document["search.followSymlinks"] is False
 
 
-def test_folder_settings_are_the_machine_ones_and_not_a_second_copy() -> None:
-    """Two exclude lists would be two things to keep true, and the one that
-    drifted would look correct until the walk that ends the seat."""
-    assert SEAT_FOLDER_SETTINGS == SEAT_MACHINE_SETTINGS
-
-
-def test_a_folders_own_settings_survive_the_merge() -> None:
-    merged = merge_folder_settings(
-        json.dumps({"editor.tabSize": 2, "search.exclude": {"**/proc/**": False}})
+def test_an_interpreter_the_user_set_wins_over_the_measured_one() -> None:
+    """The "clobbering none" contract, applied to the one key here that a user
+    might plausibly have an opinion about. The key is machine-overridable, so
+    this file is already the low-precedence copy; overwriting a value *in* it
+    would take the only one they could set from the laptop side."""
+    merged = merge_machine_settings(
+        json.dumps({PYTHON_INTERPRETER_KEY: "/usr/bin/python3"}),
+        interpreter="/podbench/app/.venv/bin/python3",
     )
     document = json.loads(merged or "")
-    assert document["editor.tabSize"] == 2
-    assert document["search.exclude"]["**/proc/**"] is False
-    assert document["files.watcherExclude"]["**/proc/**"] is True
+    assert document[PYTHON_INTERPRETER_KEY] == "/usr/bin/python3"
 
 
-def test_merging_folder_settings_twice_changes_nothing() -> None:
-    assert merge_folder_settings(merge_folder_settings(None)) is None
+def test_no_interpreter_is_written_when_none_was_measured() -> None:
+    """A pod without the hotfix layout, where the target's interpreter is in
+    another mount namespace and the seat's copy at that path is a different
+    file. Naming it is a confident wrong answer; the popup is a right one."""
+    assert PYTHON_INTERPRETER_KEY not in json.loads(merge_machine_settings(None) or "")
+
+
+def test_merging_the_interpreter_twice_changes_nothing() -> None:
+    once = merge_machine_settings(None, interpreter="/podbench/app/.venv/bin/python3")
+    assert (
+        merge_machine_settings(once, interpreter="/podbench/app/.venv/bin/python3")
+        is None
+    )
 
 
 # -- extensions --------------------------------------------------------------
@@ -776,40 +779,6 @@ def test_an_adapter_podbench_never_emits_asks_for_nothing() -> None:
     """A hand-written configuration in the same file is not a licence to spend
     the workload's disk on an extension podbench did not choose."""
     assert extensions_for([{"type": "coreclr"}, {}]) == []
-
-
-def test_recommendations_are_added_to_a_folders_own() -> None:
-    merged = merge_extensions_json(
-        json.dumps({"recommendations": ["esbenp.prettier-vscode"]}),
-        ["ms-vscode.cpptools"],
-    )
-    assert json.loads(merged or "")["recommendations"] == [
-        "esbenp.prettier-vscode",
-        "ms-vscode.cpptools",
-    ]
-
-
-def test_recommending_what_is_already_recommended_writes_nothing() -> None:
-    text = merge_extensions_json(None, ["golang.go"]) or ""
-    assert merge_extensions_json(text, ["golang.go"]) is None
-
-
-def test_a_committed_extensions_json_is_recommended_into() -> None:
-    """The fourth file `fastcs-example` ships, and VS Code's scaffold opens it
-    with a comment as well."""
-    scaffold = "// See https://go.microsoft.com/fwlink/?linkid=827846"
-    existing = f'{{\n  {scaffold}\n  "recommendations": ["ms-python.python"]\n}}\n'
-    merged = merge_extensions_json(existing, ["ms-vscode.cpptools"]) or ""
-    assert scaffold in merged
-    assert parse_jsonc(merged).value["recommendations"] == [
-        "ms-python.python",
-        "ms-vscode.cpptools",
-    ]
-
-
-def test_extensions_json_that_is_not_jsonc_either_is_refused() -> None:
-    with pytest.raises(ValueError, match="cannot parse the existing extensions.json"):
-        merge_extensions_json("{ mine }", ["golang.go"])
 
 
 # -- one entry per flavour that applies --------------------------------------
@@ -1466,6 +1435,44 @@ def test_a_capless_seat_asks_the_kernel_rather_than_the_bit(
     warned = capsys.readouterr().err
     assert SEIZE_PROBE in warned
     assert "Pause to the workload: none" in warned
+
+
+def test_the_targets_interpreter_is_narrated_on_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #219's wire. The seat measures which interpreter the target runs;
+    the laptop is the only side that knows whether the seat shares the tree it
+    is in, so the measurement travels and the decision is taken there.
+
+    On stderr and not in the document: `--print-config`'s stdout is pasted into
+    a launch.json by hand, and a top-level key VS Code's schema does not know
+    draws a squiggle on the one file this verb exists to hand over.
+    """
+    main(
+        [str(PID), "--print-config"],
+        proc=python_proc(tmp_path, exe="/podbench/app/.venv/bin/python3"),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=no_listeners,
+        port_chooser=fixed_port,
+    )
+    captured = capsys.readouterr()
+    assert f"{INTERPRETER_NOTE}/podbench/app/.venv/bin/python3" in captured.err
+    assert INTERPRETER_NOTE not in captured.out
+
+
+def test_a_non_python_target_narrates_no_interpreter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """There is nothing for the Python extension to be told about a C binary,
+    and a key naming one would point it at a file that is not an interpreter."""
+    main(
+        [str(PID), "--print-config"],
+        proc=make_proc(tmp_path, exe="/app/victim", cmdline="/app/victim"),
+        which=which_of("gdb", "gdb-podbench"),
+        runner=no_listeners,
+        port_chooser=fixed_port,
+    )
+    assert INTERPRETER_NOTE not in capsys.readouterr().err
 
 
 def test_printing_a_configuration_measures_nothing(

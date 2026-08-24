@@ -124,9 +124,10 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
 │                                                                  │
 │   exec -c SEAT -- podbench debug-config --print-config           │
 │        one assessment; its adapter types name the extensions     │
-│   write <home>/.vscode/settings.json   ← the /proc excludes,     │
+│   ssh <alias> > ~/.vscode-server/data/Machine/settings.json      │
+│        the /proc excludes and the target's interpreter,          │
 │        BEFORE the window: the walk starts when it opens          │
-│   write <home>/.vscode/launch.json, extensions.json              │
+│   write <home>/.vscode/launch.json    ← the only folder file     │
 │   code --remote ssh-remote+<alias> --install-extension …         │
 │        only this flavour's, and attempted rather than believed:  │
 │        it answers from THIS machine's install list               │

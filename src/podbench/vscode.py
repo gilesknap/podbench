@@ -53,11 +53,25 @@ expected to know which side of that line they are on.
 place *before* the user does anything: File -> Open Folder -> ``/`` is the
 obvious first move in a seat and it can OOM the container unrecoverably. See
 that constant for why each entry is there. :func:`podbench.agent.ensure_vscode_settings`
-is what installs it, because the file lives in a directory the client creates.
-:data:`SEAT_FOLDER_SETTINGS` is the same guard in the folder's own file, which
-is the one copy that survives *Kill/Uninstall VS Code Server on Host* — and the
-only one podbench can put in place from the laptop, which is what
-``podbench vscode`` does.
+installs it at seat start-up, because the file lives in a directory the client
+creates; :func:`podbench.editor.open_seat` merges into the same file on every
+``podbench vscode`` run, which is where :data:`PYTHON_INTERPRETER_KEY` joins it
+— only a run that has measured the *target* knows which interpreter is being
+debugged, and the seat's start-up cannot.
+
+Machine scope and **no folder copy**, which is D1b (2026-08-24). The folder
+``podbench vscode`` opens on a hotfixed pod is the user's committed checkout on
+an NFS PVC, so every file podbench authors there is a permanent line in
+somebody's git diff; ``launch.json`` earns that and a duplicate exclude list
+does not. The cost is stated here rather than left to be discovered:
+*Kill/Uninstall VS Code Server on Host* deletes ``~/.vscode-server`` wholesale,
+so that action now takes podbench's excludes with it — including
+``**/proc/**``, which is the one that stops the recursive walk that OOMs an
+unrestartable seat. Two things cover that: the agent writes them at start-up,
+and a re-run of ``podbench vscode`` restores them on a reconnect.
+What is left uncovered is real — a window kept open through a Kill Server and
+reconnected by VS Code itself, rather than by podbench, opens a folder with no
+excludes.
 """
 
 from __future__ import annotations
@@ -145,8 +159,9 @@ __all__ = [
     "ADAPTER_LLDB",
     "EXTENSIONS",
     "GDB_WRAPPER",
+    "INTERPRETER_NOTE",
     "MACHINE_SETTINGS_PATH",
-    "SEAT_FOLDER_SETTINGS",
+    "PYTHON_INTERPRETER_KEY",
     "SEAT_MACHINE_SETTINGS",
     "ListeningServer",
     "configurations_for",
@@ -157,15 +172,12 @@ __all__ = [
     "delve_configuration",
     "ephemeral_port",
     "extensions_for",
-    "extensions_json_text",
     "launch_json_text",
     "launch_setup_commands",
     "lldb_configuration",
     "machine_settings_text",
     "main",
     "measured_attach",
-    "merge_extensions_json",
-    "merge_folder_settings",
     "merge_launch_configs",
     "merge_launch_json",
     "merge_machine_settings",
@@ -282,26 +294,45 @@ recursive walk a folder starts that is not.
 """
 
 
-SEAT_FOLDER_SETTINGS: dict[str, Any] = dict(SEAT_MACHINE_SETTINGS)
-"""The same guard, in a file podbench controls — derived, never restated.
+PYTHON_INTERPRETER_KEY = "python.defaultInterpreterPath"
+"""The setting that answers the Python extension's "no interpreter found" popup.
 
-Machine scope reaches every folder and is the right home for all of these, but
-the machine file lives under ``~/.vscode-server``, a directory the client owns
-and *Kill/Uninstall VS Code Server on Host* deletes wholesale. A folder's own
-``.vscode/settings.json`` is the copy that survives that, and the only one
-``podbench vscode`` can write before a client exists.
+Issue #219: the window raises it on a pod where debug attach then works
+perfectly, because nothing had ever told the extension which interpreter the
+seat is looking at. podbench has measured the answer one line earlier — it is
+narrated beside the debugpy configuration — and simply dropped it.
 
-Every key, not a resource-scoped subset. ``vscode`` opens a *single* folder, so
-that file is VS Code's **workspace** settings, which honour window- and
-resource-scoped settings alike; only machine and application scope are dropped
-there, and none of these is either. The asymmetry settles what is left over:
-a key VS Code ignores costs nothing, while an omitted one costs the seat — and
-``C_Cpp.files.exclude`` is the omission that would bite, since cpptools' tag
-parser walks on its own account (so the search and watcher excludes do not stop
-it) and cpptools is exactly what ``vscode`` installs for a C/C++ target.
+In the **machine** file and never in the folder's, because ms-python declares
+this key ``machine-overridable``: a machine value answers the popup for every
+folder the seat opens, and a value the user sets in their own workspace still
+wins over it. That is exactly what #219 asks for, and it is the reason the key
+can be written at all without overriding somebody's choice.
 
-Two copies of an exclude list would be two things to keep true, and the one that
-drifted would go on looking correct right up to the walk that ends the seat.
+Never the *seat's* own interpreter. What the extension is being told is which
+interpreter is being **debugged**, and on a pod without the hotfix layout that
+file is in another mount namespace: the seat's copy at the same path is a
+different file — the collision :func:`python_path_mappings` and issue #90 are
+both shaped around — so naming it is a confident wrong answer where the popup
+was an annoying right one. :data:`INTERPRETER_NOTE` carries the measurement and
+:func:`podbench.editor.open_seat` decides, because only the laptop side knows
+whether the seat and the target share the tree the path is in.
+"""
+
+INTERPRETER_NOTE = "the target's interpreter is "
+"""How the measured interpreter reaches the laptop, which is over **stderr**.
+
+``--print-config`` prints a launch document on stdout and it has to stay
+pasteable byte for byte (the ``terminal-reports`` skill), so a second top-level
+key cannot travel there: pasted into a ``launch.json`` it draws a schema warning
+on the one file this verb exists to hand over. The precedent is
+:data:`podbench.editor.PROVISION_FLAG`, which the launcher already reads out of
+this same narration — this is that wire carrying a value instead of a request.
+
+Said for every Python target rather than only for a hotfixed one, because it is
+a true and useful sentence either way and the *decision* it feeds is not the
+seat's to take: whether the path means anything on the other side depends on
+whether the tree holding it is shared with the seat, which is a fact about the
+pod's mounts (:func:`podbench.editor.interpreter_for_folder`).
 """
 
 #: Adapter ``type`` to the extension that contributes it. Keyed on the type
@@ -358,51 +389,6 @@ def extensions_for(configurations: Sequence[Mapping[str, Any]]) -> list[str]:
     return found
 
 
-def extensions_json_text(recommendations: Sequence[str]) -> str:
-    """A whole ``extensions.json`` document, newline-terminated."""
-    return json.dumps({"recommendations": list(recommendations)}, indent=2) + "\n"
-
-
-def merge_extensions_json(
-    existing: str | None, recommendations: Sequence[str]
-) -> str | None:
-    """Add ``recommendations`` to a folder's ``extensions.json``.
-
-    ``None`` means every one of them is already recommended. Recommendations are
-    a *fallback* for the install podbench performs itself: the prompt VS Code
-    raises from this file offers "Install in SSH: ``<alias>``", which is the one
-    place the choice can still be got wrong by hand.
-
-    Raises ``ValueError`` on a file that is not JSONC either, for the reason
-    :func:`merge_launch_configs` does.
-
-    >>> print(merge_extensions_json(None, ["golang.go"]), end="")
-    {
-      "recommendations": [
-        "golang.go"
-      ]
-    }
-    >>> merge_extensions_json('{"recommendations": ["golang.go"]}', ["golang.go"])
-    """
-    if existing is None or not existing.strip():
-        return extensions_json_text(recommendations)
-    document = _document(existing, "extensions.json")
-    node = document.member("recommendations")
-    current = cast("list[Any]", node.value) if node and node.items is not None else []
-    missing = [name for name in recommendations if name not in current]
-    if not missing:
-        return None
-    if node is None:
-        edit = insert_members(existing, document, {"recommendations": list(missing)})
-    elif node.items is None:
-        # A `recommendations` that is not a list is a value we cannot add to,
-        # and replacing it is what this function has always done.
-        edit = replace_value(existing, node, list(recommendations))
-    else:
-        edit = append_items(existing, node, missing)
-    return apply_edits(existing, [edit])
-
-
 def machine_settings_text(settings: Mapping[str, Any]) -> str:
     """A whole machine ``settings.json`` document, newline-terminated."""
     return json.dumps(dict(settings), indent=2) + "\n"
@@ -424,7 +410,9 @@ def _document(existing: str, name: str) -> Node:
     return document
 
 
-def merge_machine_settings(existing: str | None) -> str | None:
+def merge_machine_settings(
+    existing: str | None, *, interpreter: str | None = None
+) -> str | None:
     """Add :data:`SEAT_MACHINE_SETTINGS` to a settings document, clobbering none
     of it. ``None`` means the document already says everything we would say.
 
@@ -442,6 +430,13 @@ def merge_machine_settings(existing: str | None) -> str | None:
     ``ValueError``, and the caller reports the refusal rather than swallowing it:
     unapplied excludes are exactly the silence this file exists to end.
 
+    ``interpreter`` adds :data:`PYTHON_INTERPRETER_KEY`, and is keyword-only and
+    optional because the two callers know different things:
+    :func:`podbench.agent.ensure_vscode_settings` runs at seat start-up, before
+    any target has been measured, and only :func:`podbench.editor.open_seat` has
+    an answer. It goes through the same merge as everything else, so a value the
+    user set at machine scope wins — see the "clobbering none" rule above.
+
     >>> shipped = merge_machine_settings(None)
     >>> json.loads(shipped)["search.followSymlinks"]
     False
@@ -452,21 +447,17 @@ def merge_machine_settings(existing: str | None) -> str | None:
     True
     >>> json.loads(mine)["search.exclude"]["**/proc/**"]
     True
+    >>> pinned = merge_machine_settings(None, interpreter="/podbench/app/.venv/bin/py")
+    >>> json.loads(pinned)["python.defaultInterpreterPath"]
+    '/podbench/app/.venv/bin/py'
+    >>> "python.defaultInterpreterPath" in json.loads(shipped)
+    False
     """
-    return _merge_settings(existing, SEAT_MACHINE_SETTINGS)
-
-
-def merge_folder_settings(existing: str | None) -> str | None:
-    """The same, for the ``.vscode/settings.json`` of the folder about to open.
-
-    The same set — see :data:`SEAT_FOLDER_SETTINGS` — and the same key-by-key
-    merge, so a folder that already carries a user's excludes keeps every one of
-    them.
-
-    >>> json.loads(merge_folder_settings(None))["files.watcherExclude"]["**/proc/**"]
-    True
-    """
-    return _merge_settings(existing, SEAT_FOLDER_SETTINGS)
+    if interpreter is None:
+        return _merge_settings(existing, SEAT_MACHINE_SETTINGS)
+    return _merge_settings(
+        existing, {**SEAT_MACHINE_SETTINGS, PYTHON_INTERPRETER_KEY: interpreter}
+    )
 
 
 def _merge_settings(existing: str | None, defaults: Mapping[str, Any]) -> str | None:
@@ -994,7 +985,23 @@ def _debugpy_configurations(
 
 
 def launch_json_text(configurations: Sequence[Mapping[str, Any]]) -> str:
-    """A whole ``launch.json`` document, newline-terminated."""
+    """A whole ``launch.json`` document, newline-terminated.
+
+    This is what ``--print-config`` puts on stdout, and it is pasted into a
+    ``launch.json`` by hand often enough that its **top-level keys are part of
+    the contract**: exactly the two a launch document has, and nothing else. A
+    third — the measured interpreter was the candidate, #219 — would make every
+    pasted copy carry a key VS Code's own schema does not know, and draw a
+    squiggle on the file this verb exists to hand over. Anything else podbench
+    has to tell the laptop travels on stderr instead; see
+    :data:`INTERPRETER_NOTE`.
+
+    >>> document = json.loads(launch_json_text([{"name": "podbench: x"}]))
+    >>> sorted(document)
+    ['configurations', 'version']
+    >>> document["version"], [entry["name"] for entry in document["configurations"]]
+    ('0.2.0', ['podbench: x'])
+    """
     document = {"version": _VERSION, "configurations": list(configurations)}
     return json.dumps(document, indent=2) + "\n"
 
@@ -2066,6 +2073,15 @@ def _for_target(
         f"pid {pid} ({target.name}): {target.language.value} target, "
         f"{mode.value} mode" + (f", {target.machine}" if target.machine else "")
     )
+    # The best candidate only. `hint` is what marks it, and N candidates each
+    # naming an interpreter would leave the laptop to pick one - which is a
+    # choice made twice, in the half of the pair that cannot see /proc.
+    if hint and target.language is Language.PYTHON and target.program:
+        # `program` is the exe as the *target's* rootfs spells it, which for a
+        # Python process is its interpreter. Whether that spelling means the
+        # same file in the seat is `interpreter_for_folder`'s question, not this
+        # one: see INTERPRETER_NOTE.
+        _warn(f"{INTERPRETER_NOTE}{target.program}")
     # An attributed server's own port beats any port this run would have chosen:
     # the configuration has to connect to the process that exists, and where the
     # app started its own `debugpy --listen` that is neither 5678-by-default nor
